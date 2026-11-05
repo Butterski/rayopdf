@@ -1,0 +1,10 @@
+RayoPDF
+Copyright 2026 RayoPDF contributors
+
+This repository includes third-party material:
+
+- eval/fixtures/md/d01-tester.md is derived from RayoMD's tester.md
+  (Apache-2.0, https://github.com/Butterski/rayomd, commit ef106ca).
+- eval/fixtures/md/d05-book-chapter.md holds chapters I and II of "Alice's Adventures in
+  Wonderland" by Lewis Carroll (1865), public domain, from Project Gutenberg eBook #11 with
+  the Project Gutenberg header, footer and licence removed.

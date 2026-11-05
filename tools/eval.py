@@ -1,0 +1,1256 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""RayoPDF evaluation harness driver.
+
+Every third-party tool runs inside the Docker images built from eval/docker/. This script only
+builds those images, lays out files on the host, starts containers and writes the report.
+
+Usage:
+  python3 tools/eval.py all [--resume]
+  python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
+  python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
+  python3 tools/eval.py corpus [--producers a,b] [--only fixture,ids] [--jobs 6]
+  python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE] [--bin-dir DIR]
+  python3 tools/eval.py score --selftest
+  python3 tools/eval.py score --suite S [--tools a,b]
+  python3 tools/eval.py speed --tool T [--cmd TEMPLATE] [--bin-dir DIR]
+  python3 tools/eval.py census [--jobs 8] [--limit N]
+  python3 tools/eval.py report
+
+Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
+pymupdf, opendataloader, liteparse, edgeparse, docling, cli. Suites: synthetic, odl, olmocr,
+readoc. The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
+--cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_ROOT = REPO / "benchmark-output" / "eval"
+
+WORK_CPUS = "0-2,4,6-8,10"
+TIMING_CPU = "3"
+GIB = 1024 ** 3
+
+TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse", "edgeparse",
+         "docling", "cli"]
+TEXT_LAYER_TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse",
+                    "edgeparse"]
+SUITES = ["synthetic", "odl", "olmocr", "readoc"]
+IMAGES = ["producers", "scorer", "olmocr", "readoc"] + TOOLS
+DATASETS = ["odl", "olmocr", "readoc", "safedocs"]
+
+ODL_URL = "https://github.com/opendataloader-project/opendataloader-bench"
+ODL_COMMIT = "7af1d8f4d0c09f51ea1a5c6ba5f66e993286d109"
+OLMOCR_DATASET = "allenai/olmOCR-bench"
+OLMOCR_REVISION = "54a96a6fb6a2bd3b297e59869491db4d3625b711"
+OLMOCR_CATEGORIES = ["arxiv_math", "headers_footers", "long_tiny_text", "multi_column", "tables"]
+OLMOCR_JSONL = {"arxiv_math": "arxiv_math", "headers_footers": "headers_footers",
+                "long_tiny_text": "long_tiny_text", "multi_column": "multi_column",
+                "tables": "table_tests"}
+READOC_URL = "https://github.com/icip-cas/READoc"
+READOC_COMMIT = "afa047715184ac319046ce0230a6109cd270e6fc"
+READOC_DATASET = "lazyc/READoc"
+READOC_REVISION = "782bf954e4d9a31ae2bcfe14ff59f1f4b2467592"
+READOC_SUBSETS = ["arxiv", "github"]
+READOC_PER_SUBSET = 150
+SAFEDOCS_URL = ("https://digitalcorpora.s3.amazonaws.com/corpora/files/"
+                "CC-MAIN-2021-31-PDF-UNTRUNCATED/zipfiles/0000-0999/0000.zip")
+SAFEDOCS_SIZE = 1_266_879_273
+# Bytes each dataset needs while it is fetched (READoc holds one 1.2 GB zip until its selection
+# is extracted).
+DATASET_NEED = {"odl": GIB // 2, "olmocr": GIB // 2, "readoc": 3 * GIB // 2,
+                "safedocs": 3 * GIB // 2}
+FULL_RUN_NEED = 25 * GIB
+
+SPEED_SYNTHETIC = [f"{p}/{f}" for p in ("rayomd", "xelatex", "libreoffice")
+                   for f in ("d03-user-manual", "d05-book-chapter")]
+CLASSES = ["renderer", "office", "academic", "book"]
+CONSTRUCT_CATEGORIES = ["heading", "list_item", "code_block", "quote_para", "alert", "link",
+                        "strong", "emph", "strike", "code_inline", "sup", "sub", "footnote"]
+CONSTRUCT_ATTRS = ["heading.level", "list_item.depth", "list_item.ordered", "list_item.task",
+                   "alert.type", "link.url", "code_block.exact"]
+
+
+# --------------------------------------------------------------------------------------------
+# helpers
+
+
+def log(message: str) -> None:
+    print(f"[eval {datetime.datetime.now():%H:%M:%S}] {message}", flush=True)
+
+
+def run(cmd: list[str], *, check: bool = True, capture: bool = False,
+        stdout_path: Path | None = None) -> subprocess.CompletedProcess:
+    log("$ " + " ".join(cmd))
+    if stdout_path is not None:
+        with stdout_path.open("w", encoding="utf-8") as fh:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
+    elif capture:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    else:
+        proc = subprocess.run(cmd)
+    if check and proc.returncode != 0:
+        detail = (proc.stderr or "")[-2000:] if capture else ""
+        raise SystemExit(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{detail}")
+    return proc
+
+
+def tag(name: str) -> str:
+    return f"rayopdf-eval-{name}:1"
+
+
+def dockerfile(name: str) -> Path:
+    stem = f"tool-{name}" if name in TOOLS else name
+    return REPO / "eval" / "docker" / f"{stem}.Dockerfile"
+
+
+def docker_cmd(image: str, argv: list[str], *, mounts: list[tuple[Path | str, str, bool]],
+               network: bool = False, timing: bool = False, env: dict[str, str] | None = None,
+               hf_offline: bool = True, workdir: str | None = None) -> list[str]:
+    """Build the shared `docker run` invocation (see docs/development/evaluation.md)."""
+    cmd = ["docker", "run", "--rm", "--init", "-u", f"{os.getuid()}:{os.getgid()}",
+           "-e", "HOME=/tmp", "-e", "XDG_CACHE_HOME=/tmp/.cache", "-e", "TEXMFVAR=/tmp/texmf-var",
+           "-e", "HF_HOME=/tmp/hf"]
+    if hf_offline:
+        cmd += ["-e", "HF_HUB_OFFLINE=1"]
+    cmd += ["--tmpfs", "/tmp:exec,size=4g", "--memory=8g"]
+    if not network:
+        cmd += ["--network", "none"]
+    if timing:
+        cmd += [f"--cpuset-cpus={TIMING_CPU}", "--cpus=1"]
+    else:
+        cmd += [f"--cpuset-cpus={WORK_CPUS}"]
+    for key, value in (env or {}).items():
+        cmd += ["-e", f"{key}={value}"]
+    for host, ctr, read_only in mounts:
+        cmd += ["-v", f"{Path(host).resolve()}:{ctr}" + (":ro" if read_only else "")]
+    if workdir:
+        cmd += ["-w", workdir]
+    return cmd + [image] + argv
+
+
+def read_json(path: Path, default=None):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    except OSError:
+        pass
+    return rows
+
+
+def reset_dir(path: Path) -> Path:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
+def free_bytes(path: Path) -> int:
+    probe = path
+    while not probe.exists():
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def preflight(path: Path, need: int, what: str) -> None:
+    free = free_bytes(path)
+    if free < need:
+        raise SystemExit(f"pre-flight: {what} needs {need / GIB:.1f} GiB free on the filesystem of "
+                         f"{path}, only {free / GIB:.1f} GiB is free. Free space yourself; this "
+                         "script never prunes Docker images.")
+
+
+def median(values: list[float]) -> float | None:
+    return statistics.median(values) if values else None
+
+
+def p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(0, -(-95 * len(ordered) // 100) - 1)]
+
+
+def mean(values) -> float | None:
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+# --------------------------------------------------------------------------------------------
+# suites
+
+
+def corpus_items(root: Path) -> list[dict]:
+    data = read_json(root / "corpus" / "corpus.json")
+    if not data:
+        raise SystemExit(f"{root / 'corpus' / 'corpus.json'} is missing; run `corpus` first")
+    return data["items"]
+
+
+def suite_root(root: Path, suite: str) -> Path:
+    return {
+        "synthetic": root / "corpus",
+        "odl": root / "data" / "odl-bench" / "pdfs",
+        "olmocr": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
+        "readoc": root / "data" / "READoc-data" / "sel",
+    }[suite]
+
+
+def pdf_ids(base: Path, sub: str = "") -> list[str]:
+    folder = base / sub if sub else base
+    if not folder.is_dir():
+        return []
+    return sorted(str(p.relative_to(base).with_suffix("")) for p in folder.glob("*.pdf"))
+
+
+def suite_ids(root: Path, suite: str) -> list[str]:
+    base = suite_root(root, suite)
+    if suite == "synthetic":
+        return [item["id"] for item in corpus_items(root) if item["valid"]]
+    if suite == "odl":
+        ids = pdf_ids(base)
+    elif suite == "olmocr":
+        ids = [i for cat in OLMOCR_CATEGORIES for i in pdf_ids(base, cat)]
+    else:
+        ids = [i for sub in READOC_SUBSETS for i in pdf_ids(base, sub)]
+    if not ids:
+        raise SystemExit(f"suite {suite}: no PDFs under {base}; run `fetch` first")
+    return ids
+
+
+def write_list(path: Path, ids: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
+
+
+def tool_timeout(tool: str) -> int:
+    return 600 if tool == "docling" else 120
+
+
+def odl_pages(root: Path) -> dict[str, int | None]:
+    """Page counts of the odl PDFs, computed once with pdfinfo in the producers image."""
+    path = root / "data" / "odl-pages.json"
+    pages = read_json(path)
+    if pages is None:
+        src = suite_root(root, "odl")
+        run(docker_cmd(tag("producers"), ["python3", "/opt/eval/producers/pages.py", "--in", "/in",
+                                          "--out", "/out/odl-pages.json"],
+                       mounts=[(src, "/in", True), (root / "data", "/out", False)]))
+        pages = read_json(path, {})
+    return pages
+
+
+# --------------------------------------------------------------------------------------------
+# images
+
+
+def cmd_images(args) -> int:
+    root: Path = args.root
+    names = args.only.split(",") if args.only else IMAGES
+    unknown = [n for n in names if n not in IMAGES]
+    if unknown:
+        raise SystemExit(f"unknown image(s): {', '.join(unknown)}")
+    record = read_json(root / "images.json", {"images": {}})
+    for name in names:
+        run(["docker", "build", "-f", str(dockerfile(name)), "-t", tag(name), str(REPO / "eval")])
+        info = json.loads(run(["docker", "image", "inspect", tag(name)], capture=True).stdout)[0]
+        versions = run(["docker", "run", "--rm", "--network", "none", tag(name), "cat",
+                        "/opt/eval/versions.json"], capture=True).stdout
+        record["images"][name] = {"tag": tag(name), "id": info["Id"], "size": info["Size"],
+                                  "created": info["Created"], "versions": json.loads(versions)}
+        write_json(root / "images.json", record)
+    record["date"] = datetime.date.today().isoformat()
+    write_json(root / "images.json", record)
+    log(f"images.json: {len(record['images'])} images")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# fetch
+
+
+def fetch_in_container(data: Path, script: str) -> None:
+    run(docker_cmd(tag("scorer"), ["sh", "-ec", script], mounts=[(data, "/data", False)],
+                   network=True, hf_offline=False, workdir="/data",
+                   env={"HF_HUB_DISABLE_PROGRESS_BARS": "1"}))
+
+
+OLMOCR_PDFS = 1403
+
+
+def dataset_present(data: Path, name: str) -> bool:
+    if name == "odl":
+        repo = data / "odl-bench"
+        return (len(list((repo / "pdfs").glob("*.pdf"))) == 200
+                and (repo / "src" / "evaluator.py").is_file())
+    if name == "olmocr":
+        bench = data / "olmOCR-bench" / "bench_data"
+        return (len(list((bench / "pdfs").glob("*/*.pdf"))) == OLMOCR_PDFS
+                and all((bench / f"{j}.jsonl").is_file() for j in OLMOCR_JSONL.values()))
+    if name == "readoc":
+        return ((data / "READoc-data" / "selection.json").is_file()
+                and (data / "READoc" / ".git").is_dir())
+    target = data / "safedocs" / "0000.zip"
+    return target.is_file() and target.stat().st_size == SAFEDOCS_SIZE
+
+
+def fetch_odl(data: Path) -> None:
+    fetch_in_container(data, f"""
+        [ -d odl-bench/.git ] || git clone --no-checkout {ODL_URL} odl-bench
+        git -C odl-bench -c advice.detachedHead=false checkout {ODL_COMMIT}
+        git -C odl-bench lfs install --local
+        git -C odl-bench lfs pull
+    """)
+
+
+def fetch_olmocr(data: Path) -> None:
+    fetch_in_container(data, f"hf download {OLMOCR_DATASET} --repo-type dataset "
+                             f"--revision {OLMOCR_REVISION} --local-dir olmOCR-bench")
+
+
+def fetch_readoc(data: Path) -> None:
+    sel = data / "READoc-data" / "selection.json"
+    fetch_in_container(data, f"""
+        [ -d READoc/.git ] || git clone --no-checkout {READOC_URL} READoc
+        git -C READoc -c advice.detachedHead=false checkout {READOC_COMMIT}
+    """)
+    if sel.is_file():
+        log("readoc: selection present")
+        return
+    base = data / "READoc-data"
+    selection = {"dataset": READOC_DATASET, "revision": READOC_REVISION,
+                 "rule": f"GT stems sorted by SHA-256 of the stem; first {READOC_PER_SUBSET} "
+                         "with a same-stem PDF", "subsets": {}}
+    for sub in READOC_SUBSETS:
+        # One subset at a time keeps only one zip (up to 1.2 GB) on disk.
+        fetch_in_container(data, f"hf download {READOC_DATASET} --repo-type dataset "
+                                 f"--revision {READOC_REVISION} --include {sub}.zip "
+                                 f"--include '{sub}_ground_truth/*' --local-dir READoc-data")
+        gt_dir = base / f"{sub}_ground_truth"
+        stems = sorted(p.stem for p in gt_dir.glob("*.md"))
+        with zipfile.ZipFile(base / f"{sub}.zip") as archive:
+            members = [m for m in archive.namelist()
+                       if m.lower().endswith(".pdf") and not m.startswith("__MACOSX/")]
+            exact = {Path(m).stem: m for m in members}
+            lower = {Path(m).stem.lower(): m for m in members}
+            paired_by = "stem" if sum(s in exact for s in stems) == len(stems) else "lowercased stem"
+            chosen = []
+            for stem in sorted(stems, key=lambda s: hashlib.sha256(s.encode()).hexdigest()):
+                member = exact.get(stem) or lower.get(stem.lower())
+                if member is None:
+                    continue
+                chosen.append((stem, member))
+                if len(chosen) == READOC_PER_SUBSET:
+                    break
+            out_pdf = reset_dir(base / "sel" / sub)
+            out_gt = reset_dir(base / "sel-gt" / sub)
+            for stem, member in chosen:
+                with archive.open(member) as src, (out_pdf / f"{stem}.pdf").open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                shutil.copyfile(gt_dir / f"{stem}.md", out_gt / f"{stem}.md")
+        selection["subsets"][sub] = {
+            "gt_files": len(stems), "pdf_members": len(members), "paired_by": paired_by,
+            "paired": sum(1 for s in stems if s in exact or s.lower() in lower),
+            "selected": [stem for stem, _ in chosen]}
+        (base / f"{sub}.zip").unlink()
+        log(f"readoc/{sub}: {len(chosen)} selected of {len(stems)} GT files")
+    write_json(sel, selection)
+    shutil.rmtree(base / ".cache", ignore_errors=True)
+
+
+def fetch_safedocs(data: Path) -> None:
+    target = data / "safedocs" / "0000.zip"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fetch_in_container(data, f"curl -fsSL --retry 3 -o safedocs/0000.zip {SAFEDOCS_URL}")
+    size = target.stat().st_size
+    if size != SAFEDOCS_SIZE:
+        raise SystemExit(f"safedocs: {target} has {size} bytes, expected {SAFEDOCS_SIZE}")
+
+
+def cmd_fetch(args) -> int:
+    data: Path = args.root / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    names = args.only.split(",") if args.only else DATASETS
+    unknown = [n for n in names if n not in DATASETS]
+    if unknown:
+        raise SystemExit(f"unknown dataset(s): {', '.join(unknown)}")
+    missing = [n for n in names if not dataset_present(data, n)]
+    for name in names:
+        if name not in missing:
+            log(f"{name}: present")
+    if missing:
+        preflight(data, sum(DATASET_NEED[n] for n in missing) + 2 * GIB, "fetch")
+    for name in missing:
+        log(f"fetch {name}")
+        {"odl": fetch_odl, "olmocr": fetch_olmocr, "readoc": fetch_readoc,
+         "safedocs": fetch_safedocs}[name](data)
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# corpus, convert
+
+
+def cmd_corpus(args) -> int:
+    out = args.root / "corpus"
+    out.mkdir(parents=True, exist_ok=True)
+    argv = ["python3", "/opt/eval/producers/render.py", "--fixtures", "/fixtures", "--out", "/out",
+            "--jobs", str(args.jobs)]
+    if args.producers:
+        argv += ["--producers", args.producers]
+    if args.only:
+        argv += ["--only", args.only]
+    run(docker_cmd(tag("producers"), argv,
+                   mounts=[(REPO / "eval" / "fixtures", "/fixtures", True), (out, "/out", False)]))
+    items = corpus_items(args.root)
+    valid = sum(1 for i in items if i["valid"])
+    log(f"corpus: {valid}/{len(items)} valid")
+    return 0
+
+
+def tool_argv(tool: str, list_path: str, out: str, extra: list[str], cmd: str | None) -> list[str]:
+    argv = ["python3", "/opt/eval/convert.py", "--tool", tool, "--in", "/in", "--list", list_path,
+            "--out", out, "--timeout", str(tool_timeout(tool))] + extra
+    if tool == "cli":
+        if not cmd:
+            raise SystemExit("--tool cli needs --cmd")
+        argv += ["--cmd", cmd]
+    return argv
+
+
+def tool_mounts(tool: str, bin_dir: str | None) -> list[tuple[Path, str, bool]]:
+    # The repository's adapter replaces the image's copy, so an adapter change needs no rebuild
+    # of the (multi-GB) tool images.
+    mounts = [(REPO / "eval" / "competitors" / "convert.py", "/opt/eval/convert.py", True)]
+    if tool == "cli" and bin_dir:
+        mounts.append((Path(bin_dir), "/opt/tool", True))
+    return mounts
+
+
+def cmd_convert(args) -> int:
+    root: Path = args.root
+    ids = suite_ids(root, args.suite)
+    list_dir = root / "suites" / args.suite
+    write_list(list_dir / "list.txt", ids)
+    out = reset_dir(root / "runs" / args.tool / args.suite)
+    argv = tool_argv(args.tool, "/list/list.txt", "/out", [], args.cmd)
+    mounts = [(suite_root(root, args.suite), "/in", True), (list_dir, "/list", True),
+              (out, "/out", False)] + tool_mounts(args.tool, args.bin_dir)
+    run(docker_cmd(tag(args.tool), argv, mounts=mounts, env={"OMP_NUM_THREADS": "4"}))
+    rows = read_jsonl(out / "results.jsonl")
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    log(f"convert {args.tool}/{args.suite}: {len(rows)}/{len(ids)} records {counts}")
+    return 0 if len(rows) == len(ids) else 1
+
+
+def run_complete(root: Path, tool: str, suite: str) -> bool:
+    lst = root / "suites" / suite / "list.txt"
+    res = root / "runs" / tool / suite / "results.jsonl"
+    if not (lst.is_file() and res.is_file()):
+        return False
+    expected = [l for l in lst.read_text(encoding="utf-8").splitlines() if l]
+    return len(read_jsonl(res)) == len(expected)
+
+
+# --------------------------------------------------------------------------------------------
+# score
+
+
+def available_tools(root: Path, suite: str, only: str | None) -> list[str]:
+    tools = only.split(",") if only else TOOLS
+    return [t for t in tools if (root / "runs" / t / suite / "results.jsonl").is_file()]
+
+
+def odl_evaluator(gt: str, pred_root: str, engine: str | None, output: str) -> list[str]:
+    argv = ["python3", "/odl/src/evaluator.py", "--ground-truth-dir", gt, "--prediction-root",
+            pred_root, "--output-filename", output, "--log-level", "WARNING"]
+    return argv + (["--engine", engine] if engine else [])
+
+
+def score_selftest(args) -> int:
+    proc = run(docker_cmd(tag("scorer"), ["python3", "/opt/eval/scorer/selftest.py", "--fixtures",
+                                          "/fixtures/md"],
+                          mounts=[(REPO / "eval" / "fixtures", "/fixtures", True)]), check=False)
+    return proc.returncode
+
+
+def score_synthetic(root: Path, tools: list[str]) -> None:
+    items = [i for i in corpus_items(root) if i["valid"]]
+    work = root / "scores" / "synthetic" / "work"
+    gt_flat = reset_dir(work / "gt")
+    gt_nested = reset_dir(work / "gt-nested")
+    for item in items:
+        src = REPO / "eval" / "fixtures" / "md" / f"{item['fixture']}.md"
+        shutil.copyfile(src, gt_flat / f"{item['producer']}__{item['fixture']}.md")
+        (gt_nested / item["producer"]).mkdir(exist_ok=True)
+        shutil.copyfile(src, gt_nested / item["producer"] / f"{item['fixture']}.md")
+    odl = root / "data" / "odl-bench"
+    for tool in tools:
+        runs = root / "runs" / tool / "synthetic"
+        pred = reset_dir(work / "pred" / tool / "markdown")
+        for item in items:
+            src = runs / f"{item['id']}.md"
+            if src.is_file():
+                shutil.copyfile(src, pred / f"{item['producer']}__{item['fixture']}.md")
+        script = (" ".join(odl_evaluator("/work/gt", "/work/pred", tool, "evaluation.json"))
+                  + " && python3 /opt/eval/scorer/constructs.py --gt-dir /work/gt-nested"
+                  + f" --pred-dir /pred --out /work/constructs-{tool}.json")
+        run(docker_cmd(tag("scorer"), ["sh", "-ec", script],
+                       mounts=[(work, "/work", False), (runs, "/pred", True), (odl, "/odl", True)]))
+        evaluation = read_json(work / "pred" / tool / "evaluation.json", {})
+        odl_docs = {d["document_id"]: d["scores"] for d in evaluation.get("documents", [])}
+        constructs = read_json(work / f"constructs-{tool}.json", {}).get("docs", {})
+        status = {r["id"]: r["status"] for r in read_jsonl(runs / "results.jsonl")}
+        joined = []
+        for item in items:
+            joined.append({**item, "status": status.get(item["id"], "missing"),
+                           "odl": odl_docs.get(f"{item['producer']}__{item['fixture']}"),
+                           "constructs": constructs.get(f"{item['id']}.md")})
+        write_json(root / "scores" / "synthetic" / f"{tool}.json",
+                   {"schema": 1, "tool": tool, "items": joined})
+        log(f"synthetic/{tool}: scored {len(joined)} items")
+
+
+def score_odl(root: Path, tools: list[str], force: bool) -> None:
+    odl = root / "data" / "odl-bench"
+    gt = "/odl/ground-truth/markdown"
+    work = root / "scores" / "odl" / "work"
+    for tool in tools:
+        pred = reset_dir(work / tool / "markdown")
+        for src in (root / "runs" / tool / "odl").glob("*.md"):
+            shutil.copyfile(src, pred / src.name)
+        run(docker_cmd(tag("scorer"), odl_evaluator(gt, "/work", tool, "evaluation.json"),
+                       mounts=[(work, "/work", False), (odl, "/odl", True)]))
+    stored = root / "scores" / "odl" / "stored"
+    if force or not list(stored.glob("*/evaluation.rescored.json")):
+        shutil.rmtree(stored, ignore_errors=True)
+        shutil.copytree(odl / "prediction", stored)
+        run(docker_cmd(tag("scorer"), odl_evaluator(gt, "/stored", None, "evaluation.rescored.json"),
+                       mounts=[(stored, "/stored", False), (odl, "/odl", True)]))
+
+
+def score_olmocr(root: Path, tools: list[str]) -> None:
+    dataset = root / "data" / "olmOCR-bench" / "bench_data"
+    out = root / "scores" / "olmocr"
+    out.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        work = reset_dir(out / "work" / tool)
+        bench = work / "bench_data"
+        # The benchmark expects a candidate file for every PDF under pdfs/, so pdfs/ holds only
+        # the born-digital categories; the scanned ones belong to the OCR gate.
+        (bench / "pdfs").mkdir(parents=True)
+        for category in OLMOCR_CATEGORIES:
+            (bench / "pdfs" / category).symlink_to(f"/data/bench_data/pdfs/{category}")
+        for jsonl in OLMOCR_JSONL.values():
+            shutil.copyfile(dataset / f"{jsonl}.jsonl", bench / f"{jsonl}.jsonl")
+        runs = root / "runs" / tool / "olmocr"
+        for doc_id in suite_ids(root, "olmocr"):
+            src = runs / f"{doc_id}.md"
+            category, name = doc_id.split("/", 1)
+            dst = bench / tool / category / f"{name}_pg1_repeat1.md"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # A failed conversion scores as empty output.
+            dst.write_bytes(src.read_bytes() if src.is_file() else b"")
+        argv = ["python", "-m", "olmocr.bench.benchmark", "--dir", "/work/bench_data",
+                "--candidate", tool, "--skip_baseline"]
+        run(docker_cmd(tag("olmocr"), argv,
+                       mounts=[(work, "/work", False), (dataset.parent, "/data", True)]),
+            check=False, stdout_path=out / f"{tool}.log")
+        shutil.rmtree(work)
+
+
+def score_readoc(root: Path, tools: list[str]) -> None:
+    data = root / "data"
+    out = root / "scores" / "readoc"
+    out.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        work = reset_dir(out / "work" / tool)
+        runs = root / "runs" / tool / "readoc"
+        for sub in READOC_SUBSETS:
+            (work / sub).mkdir()
+            for gt in (data / "READoc-data" / "sel-gt" / sub).glob("*.md"):
+                src = runs / sub / gt.name
+                (work / sub / gt.name).write_bytes(src.read_bytes() if src.is_file() else b"")
+            argv = ["python", "/data/READoc/src/evaluation/suite_e2e.py",
+                    "--gold_dir", f"/data/READoc-data/sel-gt/{sub}", "--pred_dir", f"/work/{sub}",
+                    "--result_json", f"/out/{tool}-{sub}.json"]
+            run(docker_cmd(tag("readoc"), argv, mounts=[(data, "/data", True), (work, "/work", True),
+                                                        (out, "/out", False)],
+                           workdir="/data/READoc"),
+                check=False, stdout_path=out / f"{tool}-{sub}.log")
+        shutil.rmtree(work)
+
+
+def cmd_score(args) -> int:
+    if args.selftest:
+        return score_selftest(args)
+    if not args.suite:
+        raise SystemExit("score needs --selftest or --suite")
+    tools = available_tools(args.root, args.suite, args.tools)
+    if not tools and args.suite != "odl":
+        raise SystemExit(f"no runs for suite {args.suite}; run `convert` first")
+    if args.suite == "synthetic":
+        score_synthetic(args.root, tools)
+    elif args.suite == "odl":
+        score_odl(args.root, tools, args.force)
+    elif args.suite == "olmocr":
+        score_olmocr(args.root, tools)
+    else:
+        score_readoc(args.root, tools)
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# speed
+
+
+def cmd_speed(args) -> int:
+    root: Path = args.root
+    tool = args.tool
+    pages_odl = odl_pages(root)
+    corpus = {i["id"]: i for i in corpus_items(root)}
+    ids = [f"odl/{i}" for i in sorted(pages_odl)]
+    ids += [f"synthetic/{i}" for i in SPEED_SYNTHETIC if corpus.get(i, {}).get("valid")]
+    pages = {f"odl/{k}": v for k, v in pages_odl.items()}
+    pages.update({f"synthetic/{k}": v["pages"] for k, v in corpus.items()})
+    cold_id = next(i for i in ids if pages.get(i) == 1)
+    out = reset_dir(root / "speed" / tool)
+    write_list(out / "list.txt", ids)
+    write_list(out / "cold.txt", [cold_id])
+    mounts = [(suite_root(root, "odl"), "/in/odl", True),
+              (suite_root(root, "synthetic"), "/in/synthetic", True),
+              (out, "/out", False)] + tool_mounts(tool, args.bin_dir)
+    env = {k: "1" for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                            "RAYON_NUM_THREADS")}
+    warm = ["/usr/bin/time", "-f", "%M", "-o", "/out/warm-time.txt"] + tool_argv(
+        tool, "/out/list.txt", "/out/warm", ["--warmup", "1", "--repeat", "3"], args.cmd)
+    run(docker_cmd(tag(tool), warm, mounts=mounts, timing=True, env=env), check=False)
+    one = " ".join(shlex_quote(a) for a in tool_argv(tool, "/out/cold.txt", "/out/cold-$i", [],
+                                                       args.cmd))
+    one = one.replace("'/out/cold-$i'", '"/out/cold-$i"')
+    cold = ("for i in 1 2 3 4 5; do /usr/bin/time -f '%e %M' -o /out/cold-$i.txt " + one
+            + " >/dev/null 2>&1 || true; done")
+    run(docker_cmd(tag(tool), ["sh", "-c", cold], mounts=mounts, timing=True, env=env),
+        check=False)
+
+    rows = read_jsonl(out / "warm" / "results.jsonl")
+    meta = read_json(out / "warm" / "meta.json", {})
+    timing_kind = meta.get("timing")
+    per_doc = {}
+    ok_ms, ok_pages, ms_per_page = 0.0, 0, []
+    for row in rows:
+        n = pages.get(row["id"])
+        per_doc[row["id"]] = {"status": row["status"], "ms": row.get("ms"), "pages": n}
+        if row["status"] == "ok" and row.get("ms") is not None and n:
+            ok_ms += row["ms"]
+            ok_pages += n
+            ms_per_page.append(row["ms"] / n)
+    batch = read_json(out / "warm" / "batch.json")
+    if batch and batch.get("total_ms"):
+        ok_docs = [r["id"] for r in rows if r["status"] in ("ok", "empty")]
+        ok_pages = sum(pages.get(i) or 0 for i in ok_docs)
+        ok_ms = batch["total_ms"]
+    cold_s, cold_rss = [], []
+    for i in range(1, 6):
+        parts = (out / f"cold-{i}.txt").read_text().split() if (out / f"cold-{i}.txt").is_file() else []
+        if len(parts) >= 2 and re.fullmatch(r"[\d.]+", parts[-2]) and parts[-1].isdigit():
+            cold_s.append(float(parts[-2]))
+            cold_rss.append(int(parts[-1]))
+    warm_rss = None
+    if (out / "warm-time.txt").is_file():
+        last = (out / "warm-time.txt").read_text().split()
+        warm_rss = int(last[-1]) if last and last[-1].isdigit() else None
+    result = {
+        "schema": 1, "tool": tool, "date": datetime.date.today().isoformat(),
+        "timing": timing_kind, "cpu": f"cpuset {TIMING_CPU}, --cpus=1",
+        "docs": len(ids), "records": len(rows),
+        "ok": sum(1 for r in rows if r["status"] == "ok"),
+        "failed": sum(1 for r in rows if r["status"] in ("error", "timeout")),
+        "empty": sum(1 for r in rows if r["status"] == "empty"),
+        "pages": ok_pages, "total_ms": ok_ms,
+        "pages_per_s": (ok_pages / (ok_ms / 1000)) if ok_ms else None,
+        "ms_per_page_median": median(ms_per_page), "ms_per_page_p95": p95(ms_per_page),
+        "cold_start_s": median(cold_s), "cold_start_runs": len(cold_s),
+        "cold_start_peak_rss_kib": max(cold_rss) if cold_rss else None,
+        "peak_rss_kib": warm_rss, "cold_id": cold_id, "per_doc": per_doc,
+    }
+    write_json(root / "speed" / f"{tool}.json", result)
+    log(f"speed {tool}: {result['pages_per_s']} pages/s, cold {result['cold_start_s']} s, "
+        f"rss {warm_rss} KiB")
+    return 0
+
+
+def shlex_quote(arg: str) -> str:
+    import shlex
+    return shlex.quote(arg)
+
+
+# --------------------------------------------------------------------------------------------
+# census
+
+
+def cmd_census(args) -> int:
+    data = args.root / "data" / "safedocs"
+    if not list(data.glob("*.zip")):
+        raise SystemExit(f"no zips in {data}; run `fetch --only safedocs` first")
+    out = reset_dir(args.root / "census")
+    argv = ["python3", "/opt/eval/census/census.py", "--zips", "/data", "--out", "/out",
+            "--jobs", str(args.jobs)]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    run(docker_cmd(tag("producers"), argv, mounts=[(data, "/data", True), (out, "/out", False)]))
+    summary = read_json(out / "summary.json", {})
+    log(f"census: {summary.get('files_processed')} files, R_upper={summary.get('R_upper')}")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# report
+
+
+def fmt(value, digits: int = 3) -> str:
+    if value is None:
+        return "–"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
+def table(header: list[str], rows: list[list]) -> list[str]:
+    out = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
+    out += ["| " + " | ".join(fmt(c) if not isinstance(c, str) else c.replace("|", "\\|")
+                              for c in row) + " |"
+            for row in rows]
+    return out + [""]
+
+
+def tool_versions(images: dict) -> dict[str, str]:
+    out = {}
+    for name, info in images.get("images", {}).items():
+        versions = info.get("versions", {})
+        flat = [f"{k} {v}" for k, v in versions.items() if isinstance(v, str)]
+        out[name] = "; ".join(flat)[:400]
+    return out
+
+
+def construct_pool(docs: list[dict]) -> dict:
+    """Micro-average construct counts over documents (missing docs count as empty output)."""
+    cats = {c: {"gt": 0, "pred": 0, "matched": 0} for c in CONSTRUCT_CATEGORIES}
+    attrs = {a: [0, 0] for a in CONSTRUCT_ATTRS}
+    math = [0, 0]
+    image = [0, 0, 0, 0]
+    for d in docs:
+        if not d:
+            continue
+        for cat, v in d.get("categories", {}).items():
+            if cat in cats:
+                for k in ("gt", "pred", "matched"):
+                    cats[cat][k] += v.get(k, 0)
+            for name, a in (v.get("attr") or {}).items():
+                key = name if "." in name else f"{cat}.{name}"
+                if key in attrs:
+                    attrs[key][0] += a.get("correct", 0)
+                    attrs[key][1] += a.get("total", 0)
+        m = d.get("math") or {}
+        math[0] += m.get("found", 0)
+        math[1] += m.get("gt", 0)
+        im = d.get("image") or {}
+        image[0] += im.get("gt", 0)
+        image[1] += min(im.get("pred", 0), im.get("gt", 0))
+        image[2] += im.get("alt_matched", 0)
+        image[3] += im.get("files_exist", 0)
+
+    def f1(c):
+        if c["gt"] == 0 and c["pred"] == 0:
+            return None
+        p = c["matched"] / c["pred"] if c["pred"] else 0.0
+        r = c["matched"] / c["gt"] if c["gt"] else 0.0
+        return 2 * p * r / (p + r) if p + r else 0.0
+
+    total = {k: sum(c[k] for c in cats.values()) for k in ("gt", "pred", "matched")}
+    return {"f1": {c: f1(v) for c, v in cats.items()}, "all": f1(total),
+            "attr": {a: (v[0] / v[1] if v[1] else None) for a, v in attrs.items()},
+            "math_recall": math[0] / math[1] if math[1] else None,
+            "image_recall": image[1] / image[0] if image[0] else None}
+
+
+def odl_means(items: list[dict]) -> dict:
+    return {m: mean((i.get("odl") or {}).get(m) if (i.get("odl") or {}) else
+                    (0.0 if m == "nid" else None) for i in items) for m in ("nid", "teds", "mhs")}
+
+
+def report_synthetic(root: Path) -> list[str]:
+    lines = ["## 3. Synthetic", ""]
+    scored = {t: read_json(root / "scores" / "synthetic" / f"{t}.json")
+              for t in TOOLS if (root / "scores" / "synthetic" / f"{t}.json").is_file()}
+    if not scored:
+        return lines + ["Not scored.", ""]
+    lines += ["NID/TEDS/MHS: opendataloader-bench evaluator means over documents where the metric "
+              "applies. Construct F1: micro-averaged over documents. Development items exclude "
+              "the weasyprint holdout. \"overall\" = macro-average over the 4 classes.", ""]
+    for tagged in (False, True):
+        label = "tagged" if tagged else "untagged"
+        rows = []
+        for tool, data in scored.items():
+            dev = [i for i in data["items"] if not i["holdout"] and bool(i["tagged"]) == tagged]
+            if not dev:
+                continue
+            row = [tool, str(len(dev))]
+            per_class = {}
+            for cls in CLASSES:
+                group = [i for i in dev if i["class"] == cls]
+                per_class[cls] = odl_means(group) if group else None
+            for metric in ("nid", "teds", "mhs"):
+                vals = [per_class[c][metric] for c in CLASSES
+                        if per_class[c] and per_class[c][metric] is not None]
+                row.append(mean(vals))
+            for cls in CLASSES:
+                row.append(per_class[cls]["nid"] if per_class[cls] else None)
+            row.append(construct_pool([i["constructs"] for i in dev])["all"])
+            rows.append(row)
+        if rows:
+            lines += [f"### 3.{1 if not tagged else 2} Development, {label} items", ""]
+            lines += table(["tool", "items", "NID overall", "TEDS overall", "MHS overall",
+                            "NID renderer", "NID office", "NID academic", "NID book",
+                            "construct F1 (all)"], rows)
+    for tagged in (False, True):
+        label = "tagged" if tagged else "untagged"
+        rows, arows = [], []
+        for tool, data in scored.items():
+            dev = [i for i in data["items"] if not i["holdout"] and bool(i["tagged"]) == tagged]
+            if not dev:
+                continue
+            pool = construct_pool([i["constructs"] for i in dev])
+            rows.append([tool] + [pool["f1"][c] for c in CONSTRUCT_CATEGORIES])
+            arows.append([tool] + [pool["attr"][a] for a in CONSTRUCT_ATTRS]
+                         + [pool["math_recall"], pool["image_recall"]])
+        if rows:
+            lines += [f"### Construct F1 per category, development {label}", ""]
+            lines += table(["tool"] + CONSTRUCT_CATEGORIES, rows)
+            lines += [f"### Attribute accuracy, math and image recall, development {label}", ""]
+            lines += table(["tool"] + CONSTRUCT_ATTRS + ["math recall", "image recall"], arows)
+    rows = []
+    for tool, data in scored.items():
+        hold = [i for i in data["items"] if i["holdout"]]
+        if hold:
+            m = odl_means(hold)
+            rows.append([tool, str(len(hold)), m["nid"], m["teds"], m["mhs"],
+                         construct_pool([i["constructs"] for i in hold])["all"]])
+    if rows:
+        lines += ["### Holdout (weasyprint), aggregate only", ""]
+        lines += table(["tool", "items", "NID", "TEDS", "MHS", "construct F1 (all)"], rows)
+    producers = sorted({(i["producer"], bool(i["tagged"])) for d in scored.values()
+                        for i in d["items"]})
+    rows = []
+    for producer, tagged in producers:
+        row = [producer, "yes" if tagged else "no"]
+        for tool, data in scored.items():
+            group = [i for i in data["items"] if i["producer"] == producer
+                     and bool(i["tagged"]) == tagged]
+            m = odl_means(group)
+            f = construct_pool([i["constructs"] for i in group])["all"]
+            row.append(f"{fmt(m['nid'], 2)} / {fmt(f, 2)}")
+        rows.append(row)
+    lines += ["### Per producer: NID / construct F1 (all)", ""]
+    lines += table(["producer", "tagged"] + list(scored), rows)
+    return lines
+
+
+def report(root: Path) -> str:
+    images = read_json(root / "images.json", {"images": {}})
+    lines = [f"# RayoPDF evaluation report", "",
+             f"Generated {datetime.datetime.now():%Y-%m-%d %H:%M} by `tools/eval.py report`.", ""]
+
+    # 1. setup
+    cpu = next((l.split(":", 1)[1].strip() for l in Path("/proc/cpuinfo").read_text().splitlines()
+                if l.startswith("model name")), "unknown")
+    docker = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                            capture_output=True, text=True).stdout.strip()
+    lines += ["## 1. Setup", "", f"- Date: {datetime.date.today().isoformat()}",
+              f"- CPU: {cpu} ({os.cpu_count()} logical CPUs); work cpuset `{WORK_CPUS}`, "
+              f"timing cpuset `{TIMING_CPU}` with `--cpus=1`", f"- Docker: {docker}",
+              f"- opendataloader-bench `{ODL_COMMIT}`; olmOCR-bench `{OLMOCR_REVISION}`; "
+              f"READoc code `{READOC_COMMIT}`, data `{READOC_REVISION}`; SafeDocs "
+              f"CC-MAIN-2021-31-PDF-UNTRUNCATED `0000.zip`", ""]
+    rows = [[name, info.get("id", "")[7:19], f"{info.get('size', 0) / 1e9:.2f} GB",
+             tool_versions(images).get(name, "")] for name, info in images["images"].items()]
+    lines += table(["image", "id", "size", "versions"], rows)
+
+    # 2. corpus validity
+    lines += ["## 2. Corpus validity", ""]
+    corpus = read_json(root / "corpus" / "corpus.json")
+    if corpus:
+        items = corpus["items"]
+        producers = sorted({i["producer"] for i in items})
+        fixtures = sorted({i["fixture"] for i in items})
+        by = {(i["producer"], i["fixture"]): i for i in items}
+        rows = []
+        for f in fixtures:
+            row = [f]
+            for p in producers:
+                i = by.get((p, f))
+                row.append("" if i is None else ("ok" if i["valid"] else "**x**"))
+            rows.append(row)
+        valid = sum(1 for i in items if i["valid"])
+        lines += [f"{valid} of {len(items)} items valid; blank = excluded by the manifest.", ""]
+        lines += table(["fixture"] + producers, rows)
+        bad = [[i["id"], i.get("reason") or ""] for i in items if not i["valid"]]
+        if bad:
+            lines += table(["invalid item", "reason"], bad)
+        tagged = sorted({i["producer"] for i in items if i.get("tagged")})
+        lines += [f"Producers with tagged output: {', '.join(tagged) or 'none'}.", ""]
+    else:
+        lines += ["Not run.", ""]
+
+    # 3. synthetic
+    lines += report_synthetic(root)
+
+    # 4. odl
+    lines += ["## 4. opendataloader-bench (200 documents)", ""]
+    rows = []
+    for tool in TOOLS:
+        ev = read_json(root / "scores" / "odl" / "work" / tool / "evaluation.json")
+        if ev:
+            s, m = ev["metrics"]["score"], ev["metrics"]
+            rows.append([tool, s["overall_mean"], s["nid_mean"], s["nid_s_mean"], s["teds_mean"],
+                         s["teds_s_mean"], s["mhs_mean"], s["mhs_s_mean"],
+                         str(m.get("missing_predictions"))])
+    if rows:
+        lines += ["Local runs (reproduced):", ""]
+        lines += table(["tool", "overall", "NID", "NID-S", "TEDS", "TEDS-S", "MHS", "MHS-S",
+                        "missing"], rows)
+    rows = []
+    for d in sorted((root / "scores" / "odl" / "stored").glob("*")):
+        new = read_json(d / "evaluation.rescored.json")
+        old = read_json(d / "evaluation.json")
+        if not new:
+            continue
+        ns = new["metrics"]["score"]
+        os_ = (old or {}).get("metrics", {}).get("score", {})
+        diff = (abs(ns["overall_mean"] - os_["overall_mean"])
+                if os_.get("overall_mean") is not None and ns["overall_mean"] is not None else None)
+        differs = [k.replace("_mean", "") for k in ("nid_mean", "teds_mean", "mhs_mean")
+                   if ns.get(k) is not None and os_.get(k) is not None
+                   and abs(ns[k] - os_[k]) > 0.001]
+        rows.append([d.name, os_.get("overall_mean"), ns["overall_mean"], diff, ns["nid_mean"],
+                     ns["teds_mean"], ns["mhs_mean"], ", ".join(differs) or "none"])
+    if rows:
+        lines += ["Stored engine predictions shipped with the benchmark, rescored in our scorer "
+                  "image against the pinned ground truth (their conversions were not run here). "
+                  "A stored evaluation.json older than the benchmark's last ground-truth change "
+                  "differs from the rescore in the metrics that change touched.", ""]
+        lines += table(["engine", "stored overall", "rescored overall", "abs. diff", "NID", "TEDS",
+                        "MHS", "metrics differing by > 0.001"], rows)
+
+    # 5. olmOCR
+    lines += ["## 5. olmOCR-bench (born-digital categories)", ""]
+    rows, verbatim = [], []
+    cats = list(OLMOCR_JSONL.values())
+    for tool in TOOLS:
+        path = root / "scores" / "olmocr" / f"{tool}.log"
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        rates = parse_olmocr_log(text)
+        if not rates:
+            verbatim += [f"`{tool}`: summary could not be parsed; its final block:", "", "```",
+                         olmocr_summary_block(text), "```", ""]
+            continue
+        bd = [rates.get(c) for c in cats if c != "arxiv_math"]
+        rows.append([tool] + [rates.get(c) for c in cats]
+                    + [mean(bd) if all(v is not None for v in bd) else None])
+    if rows:
+        lines += ["Pass rate per JSONL (tests passed / tests); last column = mean of the 4 "
+                  "born-digital categories excluding arxiv_math. Scanned categories "
+                  "(`old_scans*`) are left to the M8 OCR gate.", ""]
+        lines += table(["tool"] + cats + ["born-digital mean (excl. arxiv_math)"], rows)
+    lines += verbatim
+    if not rows and not verbatim:
+        lines += ["Not scored.", ""]
+
+    # 6. READoc
+    lines += ["## 6. READoc-300 (holdout, aggregate only)", ""]
+    any_readoc = False
+    for sub in READOC_SUBSETS:
+        rows, keys = [], []
+        results = {}
+        for tool in TOOLS:
+            res = read_json(root / "scores" / "readoc" / f"{tool}-{sub}.json")
+            if res is None:
+                continue
+            flat = flatten_numbers(res)
+            results[tool] = flat
+            keys += [k for k in flat if k not in keys]
+        if results:
+            any_readoc = True
+            lines += [f"### {sub}", ""]
+            lines += table(["metric"] + list(results),
+                           [[k] + [results[t].get(k) for t in results] for k in keys])
+    if not any_readoc:
+        lines += ["Not scored.", ""]
+
+    # 7. speed
+    lines += ["## 7. Speed and memory", "",
+              "Single pinned core (`--cpuset-cpus=3 --cpus=1`, thread env vars = 1). 200 odl PDFs + "
+              "6 multi-page synthetic PDFs; warm = median of 3 repeats after 1 warm-up; "
+              "pages/s = pages of successful documents / sum of their medians; cold start = "
+              "median wall time of 5 fresh adapter processes on one 1-page PDF; peak RSS = "
+              "max RSS of the whole warm run.", ""]
+    rows = []
+    for tool in TOOLS:
+        s = read_json(root / "speed" / f"{tool}.json")
+        if s:
+            rows.append([tool, s["timing"], s["pages_per_s"], s["ms_per_page_median"],
+                         s["ms_per_page_p95"], s["cold_start_s"],
+                         None if s["peak_rss_kib"] is None else s["peak_rss_kib"] / 1024,
+                         f"{s['ok']}/{s['docs']}"])
+    lines += table(["tool", "timing", "pages/s", "ms/page median", "ms/page p95",
+                    "cold start s", "peak RSS MiB", "ok docs"], rows) if rows else ["Not run.", ""]
+
+    # 8. failures
+    lines += ["## 8. Failures", ""]
+    rows = []
+    for tool in TOOLS:
+        for suite in SUITES:
+            res = read_jsonl(root / "runs" / tool / suite / "results.jsonl")
+            if not res:
+                continue
+            c = {k: sum(1 for r in res if r["status"] == k) for k in ("error", "timeout", "empty")}
+            rows.append([tool, suite, str(len(res)), str(c["error"]), str(c["timeout"]),
+                         str(c["empty"])])
+    lines += table(["tool", "suite", "docs", "error", "timeout", "empty"], rows)
+    for entry in read_json(root / "all-failures.json", []):
+        lines.append(f"- not run: `{entry['step']}`: {entry['reason']}")
+    lines.append("")
+
+    # 9. census
+    lines += ["## 9. Text-layer census (SafeDocs CC-MAIN-2021-31 0000.zip)", ""]
+    summary = read_json(root / "census" / "summary.json")
+    if summary:
+        lines += [f"- files: {summary['files_total']} total, {summary['files_processed']} opened by "
+                  f"pdfinfo; pages examined: {summary['pages_examined']} (≤ 50 per file)",
+                  f"- tool failures: {json.dumps(summary['failures'])}",
+                  f"- tagged {fmt(summary['tagged_pct'], 1)} %, encrypted "
+                  f"{fmt(summary['encrypted_pct'], 1)} %, Type 3 font "
+                  f"{fmt(summary['type3_pct'], 1)} %, non-Unicode font "
+                  f"{fmt(summary['non_unicode_font_pct'], 1)} % of processed files",
+                  f"- **R_upper = {fmt(summary['R_upper'] * 100, 2)} %** of examined pages are "
+                  "image_only or broken (upper bound of the OCR need before RayoPDF's own "
+                  "Unicode repair)", ""]
+        classes = list(summary["page_class_pct"])
+        lines += table(["scope", "docs", "pages"] + [f"{c} % pages" for c in classes],
+                       [["all", str(summary["files_processed"]), str(summary["pages_examined"])]
+                        + [summary["page_class_pct"][c] for c in classes]]
+                       + [[fam, str(v["docs"]), str(v["pages"])]
+                          + [v["page_class_pct"].get(c) for c in classes]
+                          for fam, v in sorted(summary["by_family"].items(),
+                                               key=lambda kv: -kv[1]["docs"])])
+        lines += table(["class", "% of documents with ≥ 1 such page"],
+                       [[c, v] for c, v in summary["doc_class_pct"].items()])
+        lines += table(["script", "% of image_only + broken pages"],
+                       [[k, v] for k, v in sorted(summary["ocr_need_script_mix"].items(),
+                                                  key=lambda kv: -kv[1])])
+    else:
+        lines += ["Not run.", ""]
+    return "\n".join(lines) + "\n"
+
+
+def flatten_numbers(data, prefix: str = "") -> dict[str, float]:
+    out = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            out.update(flatten_numbers(v, f"{prefix}{k}." if not isinstance(v, (int, float))
+                                       else f"{prefix}{k}"))
+    elif isinstance(data, (int, float)) and not isinstance(data, bool):
+        out[prefix.rstrip(".")] = float(data)
+    return out
+
+
+OLMOCR_RESULT = re.compile(r"^\s+(\S+)\.jsonl\s*:\s*([\d.]+)% \((\d+)/(\d+) tests\)", re.M)
+
+
+def parse_olmocr_log(text: str) -> dict[str, float]:
+    """Per-JSONL pass rates (fractions 0-1) from the benchmark's "Results by JSONL file" block."""
+    summary = text[text.rfind("Final Summary"):] if "Final Summary" in text else ""
+    return {m.group(1): int(m.group(3)) / int(m.group(4))
+            for m in OLMOCR_RESULT.finditer(summary) if int(m.group(4))}
+
+
+def olmocr_summary_block(text: str) -> str:
+    return text[text.rfind("Final Summary"):].strip() if "Final Summary" in text else text[-2000:]
+
+
+def cmd_report(args) -> int:
+    text = report(args.root)
+    (args.root / "report.md").write_text(text, encoding="utf-8")
+    log(f"wrote {args.root / 'report.md'}")
+    return 0
+
+
+# --------------------------------------------------------------------------------------------
+# all
+
+
+def images_current(root: Path) -> bool:
+    """True when images.json records every image under the id it has now."""
+    recorded = read_json(root / "images.json", {}).get("images", {})
+    for name in IMAGES:
+        proc = subprocess.run(["docker", "image", "inspect", "-f", "{{.Id}}", tag(name)],
+                              capture_output=True, text=True)
+        if proc.returncode or recorded.get(name, {}).get("id") != proc.stdout.strip():
+            return False
+    return True
+
+
+def footprint(root: Path) -> int:
+    """Bytes already used by this harness (rayopdf-eval images + --root)."""
+    total = 0
+    for name in IMAGES:
+        proc = subprocess.run(["docker", "image", "inspect", "-f", "{{.Size}}", tag(name)],
+                              capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip().isdigit():
+            total += int(proc.stdout.strip())
+    for path in root.rglob("*") if root.is_dir() else []:
+        if path.is_file() and not path.is_symlink():
+            total += path.stat().st_size
+    return total
+
+
+def cmd_all(args) -> int:
+    root: Path = args.root
+    root.mkdir(parents=True, exist_ok=True)
+    preflight(root, max(0, FULL_RUN_NEED - footprint(root)), "a full run (images + data)")
+    failures: list[dict] = []
+
+    def step(name: str, func, ns: argparse.Namespace) -> None:
+        log(f"=== {name}")
+        try:
+            code = func(ns)
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+            if not isinstance(exc.code, int):
+                print(exc.code, file=sys.stderr)
+        if code:
+            failures.append({"step": name, "reason": f"exit {code}"})
+            write_json(root / "all-failures.json", failures)
+
+    def ns(**kw) -> argparse.Namespace:
+        base = {"root": root, "only": None, "producers": None, "jobs": 6, "cmd": None,
+                "bin_dir": None, "selftest": False, "suite": None, "tools": None, "force": False,
+                "limit": None, "tool": None}
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    write_json(root / "all-failures.json", [])
+    if args.resume and images_current(root):
+        log("=== images: every image is built and recorded, skipped (--resume)")
+    else:
+        step("images", cmd_images, ns())
+    step("fetch", cmd_fetch, ns())
+    if args.resume and (root / "corpus" / "corpus.json").is_file():
+        log("=== corpus: corpus.json present, skipped (--resume)")
+    else:
+        step("corpus", cmd_corpus, ns())
+    step("score --selftest", cmd_score, ns(selftest=True))
+    for tool in TOOLS[:-1]:
+        for suite in SUITES:
+            if args.resume and run_complete(root, tool, suite):
+                log(f"=== convert {tool}/{suite}: complete, skipped (--resume)")
+                continue
+            step(f"convert --tool {tool} --suite {suite}", cmd_convert, ns(tool=tool, suite=suite))
+    for suite in SUITES:
+        step(f"score --suite {suite}", cmd_score, ns(suite=suite))
+    for tool in TOOLS[:-1]:
+        if args.resume and (root / "speed" / f"{tool}.json").is_file():
+            log(f"=== speed {tool}: present, skipped (--resume)")
+            continue
+        step(f"speed --tool {tool}", cmd_speed, ns(tool=tool))
+    if not (args.resume and (root / "census" / "summary.json").is_file()):
+        step("census", cmd_census, ns(jobs=8))
+    step("report", cmd_report, ns())
+    log(f"all: {len(failures)} failed step(s)")
+    return 1 if failures else 0
+
+
+# --------------------------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__.split("\n\n", 1)[1])
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add(name: str, func, help_text: str) -> argparse.ArgumentParser:
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--root", type=Path, default=DEFAULT_ROOT,
+                       help="output root (default: benchmark-output/eval)")
+        p.set_defaults(func=func)
+        return p
+
+    p = add("all", cmd_all, "run every step in order and write the report")
+    p.add_argument("--resume", action="store_true",
+                   help="skip conversions, speed runs and the census whose outputs are complete")
+    p = add("images", cmd_images, "build the Docker images and record their versions")
+    p.add_argument("--only", help=f"comma-separated subset of: {', '.join(IMAGES)}")
+    p = add("fetch", cmd_fetch, "download the public benchmarks (network)")
+    p.add_argument("--only", help=f"comma-separated subset of: {', '.join(DATASETS)}")
+    p = add("corpus", cmd_corpus, "render the synthetic corpus")
+    p.add_argument("--producers", help="comma-separated producer ids")
+    p.add_argument("--only", help="comma-separated fixture ids")
+    p.add_argument("--jobs", type=int, default=6)
+    p = add("convert", cmd_convert, "convert one suite with one tool")
+    p.add_argument("--tool", required=True, choices=TOOLS)
+    p.add_argument("--suite", required=True, choices=SUITES)
+    p.add_argument("--cmd", help="cli only: command template with {in} and {out}")
+    p.add_argument("--bin-dir", help="cli only: host directory mounted at /opt/tool")
+    p = add("score", cmd_score, "score conversions of one suite, or run the scorer self-test")
+    p.add_argument("--selftest", action="store_true")
+    p.add_argument("--suite", choices=SUITES)
+    p.add_argument("--tools", help="comma-separated tools (default: every tool with a run)")
+    p.add_argument("--force", action="store_true", help="odl: rescore stored predictions again")
+    p = add("speed", cmd_speed, "single-core speed and memory of one tool")
+    p.add_argument("--tool", required=True, choices=TOOLS)
+    p.add_argument("--cmd", help="cli only: command template with {in} and {out}")
+    p.add_argument("--bin-dir", help="cli only: host directory mounted at /opt/tool")
+    p = add("census", cmd_census, "text-layer census of the SafeDocs sample")
+    p.add_argument("--jobs", type=int, default=8)
+    p.add_argument("--limit", type=int, help="process only the first N PDFs")
+    add("report", cmd_report, "write report.md from all recorded outputs")
+    args = parser.parse_args()
+    args.root = args.root.resolve()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

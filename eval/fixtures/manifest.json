@@ -1,0 +1,176 @@
+{
+  "schema": 1,
+  "fixtures": [
+    {
+      "id": "c01-headings",
+      "file": "md/c01-headings.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c02-paragraphs",
+      "file": "md/c02-paragraphs.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c03-emphasis",
+      "file": "md/c03-emphasis.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c04-lists",
+      "file": "md/c04-lists.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c05-code",
+      "file": "md/c05-code.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c06-tables",
+      "file": "md/c06-tables.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c07-links",
+      "file": "md/c07-links.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c08-quotes",
+      "file": "md/c08-quotes.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c09-footnotes",
+      "file": "md/c09-footnotes.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c10-images",
+      "file": "md/c10-images.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c11-unicode",
+      "file": "md/c11-unicode.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c12-rtl",
+      "file": "md/c12-rtl.md",
+      "exclude": [
+        "rayomd",
+        "rayomd-pdfua",
+        "rayomd-tech",
+        "xelatex",
+        "xelatex-2col",
+        "beamer"
+      ]
+    },
+    {
+      "id": "c13-math",
+      "file": "md/c13-math.md",
+      "exclude": [
+        "rayomd-pdfua",
+        "weasyprint",
+        "libreoffice",
+        "libreoffice-tagged",
+        "beamer"
+      ]
+    },
+    {
+      "id": "c14-misc",
+      "file": "md/c14-misc.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "c15-alerts",
+      "file": "md/c15-alerts.md",
+      "exclude": [
+        "xelatex",
+        "xelatex-2col",
+        "typst",
+        "chromium",
+        "weasyprint",
+        "libreoffice",
+        "libreoffice-tagged",
+        "beamer"
+      ]
+    },
+    {
+      "id": "d01-tester",
+      "file": "md/d01-tester.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "d02-business-report",
+      "file": "md/d02-business-report.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "d03-user-manual",
+      "file": "md/d03-user-manual.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "d04-paper",
+      "file": "md/d04-paper.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "d05-book-chapter",
+      "file": "md/d05-book-chapter.md",
+      "exclude": [
+        "beamer"
+      ]
+    },
+    {
+      "id": "d06-slides",
+      "file": "md/d06-slides.md",
+      "exclude": [
+        "rayomd-pdfua",
+        "rayomd-tech",
+        "xelatex",
+        "xelatex-2col",
+        "typst",
+        "chromium",
+        "weasyprint",
+        "libreoffice",
+        "libreoffice-tagged"
+      ]
+    }
+  ]
+}
