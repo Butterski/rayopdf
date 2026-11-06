@@ -1,0 +1,334 @@
+// SPDX-License-Identifier: Apache-2.0
+// The rayopdf command line (roadmap D7).
+//
+//   rayopdf --convert IN.pdf OUT.md [--password=PW] [--pages=A-B] [--no-annotations] [--report]
+//   rayopdf --inspect IN.pdf [--password=PW]
+//   rayopdf --version | --help
+//
+// OUT.md "-" writes the Markdown to standard output. Exit codes: 0 converted, 2 usage error,
+// 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
+// 13 unsupported encryption.
+
+#include "common/file.h"
+#include "layout/convert.h"
+#include "pdf/document.h"
+
+#include <cinttypes>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+
+#ifndef RAYOPDF_VERSION
+#define RAYOPDF_VERSION "0.0.0"
+#endif
+
+namespace {
+
+using namespace RayoPdf;
+
+enum Exit : int {
+    kExitOk = 0,
+    kExitUsage = 2,
+    kExitUnreadable = 3,
+    kExitCorrupt = 10,
+    kExitPassword = 11,
+    kExitUnwritable = 12,
+    kExitUnsupported = 13,
+};
+
+// Inputs larger than this are refused (exit 3): far beyond any document a converter meets.
+constexpr uint64_t kMaxInputBytes = uint64_t(4) << 30;
+
+void PrintUsage(std::FILE* out) {
+    std::fputs(
+        "rayopdf " RAYOPDF_VERSION " - PDF to Markdown\n"
+        "\n"
+        "Usage:\n"
+        "  rayopdf --convert IN.pdf OUT.md [options]   convert (OUT.md \"-\" is standard output)\n"
+        "  rayopdf --inspect IN.pdf [--password=PW]     print the document's structure as JSON\n"
+        "  rayopdf --version | --help\n"
+        "\n"
+        "Options:\n"
+        "  --password=PW      user or owner password of an encrypted PDF\n"
+        "  --pages=A-B        convert pages A to B (1-based; \"A\", \"A-\", \"-B\" also work)\n"
+        "  --no-annotations   do not turn link annotations into Markdown links\n"
+        "  --report           print one JSON line of conversion counters\n"
+        "\n"
+        "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
+        "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
+        out);
+}
+
+int Usage(const char* message, std::string_view detail = {}) {
+    std::fprintf(stderr, "rayopdf: %s%.*s\n", message, static_cast<int>(detail.size()), detail.data());
+    std::fputs("Try 'rayopdf --help'.\n", stderr);
+    return kExitUsage;
+}
+
+// A positive page number; false for anything else.
+bool ParsePage(std::string_view text, int& out) {
+    if (text.empty() || text.size() > 9) return false;
+    int value = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+        value = value * 10 + (c - '0');
+    }
+    if (value < 1) return false;
+    out = value;
+    return true;
+}
+
+// "A", "A-B", "A-", "-B".
+bool ParsePages(std::string_view text, int& first, int& last) {
+    const size_t dash = text.find('-');
+    if (dash == std::string_view::npos) {
+        if (!ParsePage(text, first)) return false;
+        last = first;
+        return true;
+    }
+    const std::string_view a = text.substr(0, dash);
+    const std::string_view b = text.substr(dash + 1);
+    if (a.empty() && b.empty()) return false;
+    first = 1;
+    last = 0;
+    if (!a.empty() && !ParsePage(a, first)) return false;
+    if (!b.empty() && !ParsePage(b, last)) return false;
+    return last == 0 || first <= last;
+}
+
+void AppendJsonString(std::string& out, std::string_view text) {
+    out.push_back('"');
+    for (unsigned char c : text) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof buf, "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out.push_back(static_cast<char>(c));
+                }
+        }
+    }
+    out.push_back('"');
+}
+
+void AppendField(std::string& out, const char* key, uint64_t value) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "\"%s\":%" PRIu64, key, value);
+    if (out.size() > 1) out.push_back(',');
+    out += buf;
+}
+
+void AppendField(std::string& out, const char* key, bool value) {
+    if (out.size() > 1) out.push_back(',');
+    out += '"';
+    out += key;
+    out += value ? "\":true" : "\":false";
+}
+
+void AppendField(std::string& out, const char* key, std::string_view value) {
+    if (out.size() > 1) out.push_back(',');
+    out += '"';
+    out += key;
+    out += "\":";
+    AppendJsonString(out, value);
+}
+
+// Reads the input; an exit code other than kExitOk when it cannot.
+int ReadInput(const std::string& path, File::InputFile& file) {
+    switch (file.Open(path, kMaxInputBytes)) {
+        case File::ReadStatus::Ok: return kExitOk;
+        case File::ReadStatus::NotFound:
+            std::fprintf(stderr, "rayopdf: cannot open %s\n", path.c_str());
+            return kExitUnreadable;
+        case File::ReadStatus::NotRegular:
+            std::fprintf(stderr, "rayopdf: %s is not a regular file\n", path.c_str());
+            return kExitUnreadable;
+        case File::ReadStatus::TooLarge:
+            std::fprintf(stderr, "rayopdf: %s is too large\n", path.c_str());
+            return kExitUnreadable;
+        case File::ReadStatus::Failed: break;
+    }
+    std::fprintf(stderr, "rayopdf: cannot read %s\n", path.c_str());
+    return kExitUnreadable;
+}
+
+int OpenDocument(const std::string& path, std::string_view bytes, std::string_view password,
+                 std::unique_ptr<Document>& document) {
+    switch (Document::Open(bytes, password, document)) {
+        case OpenStatus::Ok: return kExitOk;
+        case OpenStatus::NotPdf:
+            std::fprintf(stderr, "rayopdf: %s is not a PDF file\n", path.c_str());
+            return kExitCorrupt;
+        case OpenStatus::Corrupt:
+            std::fprintf(stderr, "rayopdf: %s is corrupt beyond repair\n", path.c_str());
+            return kExitCorrupt;
+        case OpenStatus::TooLarge:
+            std::fprintf(stderr, "rayopdf: %s exceeds a document limit\n", path.c_str());
+            return kExitCorrupt;
+        case OpenStatus::PasswordRequired:
+            std::fprintf(stderr, "rayopdf: %s needs a password (--password=PW)\n", path.c_str());
+            return kExitPassword;
+        case OpenStatus::Unsupported: break;
+    }
+    std::fprintf(stderr, "rayopdf: %s uses an unsupported encryption\n", path.c_str());
+    return kExitUnsupported;
+}
+
+int Inspect(const std::string& input, std::string_view password) {
+    File::InputFile file;
+    if (const int code = ReadInput(input, file)) return code;
+    std::unique_ptr<Document> document;
+    if (const int code = OpenDocument(input, file.Bytes(), password, document)) return code;
+
+    const DocumentReport& report = document->Report();
+    std::string json = "{";
+    AppendField(json, "file", std::string_view(input));
+    AppendField(json, "bytes", static_cast<uint64_t>(file.Bytes().size()));
+    AppendField(json, "version", document->Version());
+    AppendField(json, "pages", static_cast<uint64_t>(document->PageCount()));
+    AppendField(json, "objects", static_cast<uint64_t>(document->ObjectCount()));
+    AppendField(json, "encrypted", report.encrypted);
+    AppendField(json, "repaired", report.repaired);
+    AppendField(json, "linearized", report.linearized);
+    AppendField(json, "xref_sections", static_cast<uint64_t>(report.xrefSections));
+    const PdfValue& info = document->Info();
+    for (const char* key : {"Title", "Producer", "Creator"}) {
+        const PdfValue& value = document->Get(info, key);
+        if (value.IsString()) {
+            std::string name = key;
+            name[0] = static_cast<char>(name[0] - 'A' + 'a');
+            AppendField(json, name.c_str(), value.String());
+        }
+    }
+    const PdfValue& markInfo = document->Get(document->Catalog(), "MarkInfo");
+    AppendField(json, "tagged", document->Get(markInfo, "Marked").Bool());
+    if (document->PageCount() > 0) {
+        const PdfRect box = document->CropBox(0);
+        char buf[96];
+        std::snprintf(buf, sizeof buf, ",\"first_page\":{\"width\":%.2f,\"height\":%.2f,\"rotate\":%d}", box.Width(),
+                      box.Height(), document->Rotate(0));
+        json += buf;
+    }
+    AppendField(json, "broken_objects", static_cast<uint64_t>(report.brokenObjects));
+    json += "}\n";
+    std::fwrite(json.data(), 1, json.size(), stdout);
+    return kExitOk;
+}
+
+std::string ReportJson(const std::string& input, const Document& document, const Layout::ConvertReport& r) {
+    const DocumentReport& d = document.Report();
+    std::string json = "{";
+    AppendField(json, "file", std::string_view(input));
+    AppendField(json, "pages", static_cast<uint64_t>(r.pages));
+    AppendField(json, "pages_without_text", static_cast<uint64_t>(r.pagesWithoutText));
+    AppendField(json, "glyphs", r.glyphs);
+    AppendField(json, "unmapped_glyphs", r.unmappedGlyphs);
+    AppendField(json, "guessed_glyphs", r.guessedGlyphs);
+    AppendField(json, "hidden_glyphs", r.hiddenGlyphs);
+    AppendField(json, "headings", static_cast<uint64_t>(r.headings));
+    AppendField(json, "paragraphs", static_cast<uint64_t>(r.paragraphs));
+    AppendField(json, "list_items", static_cast<uint64_t>(r.listItems));
+    AppendField(json, "code_blocks", static_cast<uint64_t>(r.codeBlocks));
+    AppendField(json, "tables", static_cast<uint64_t>(r.tables));
+    AppendField(json, "links", static_cast<uint64_t>(r.links));
+    AppendField(json, "header_footer_lines", static_cast<uint64_t>(r.headerFooterLines));
+    AppendField(json, "content_errors", static_cast<uint64_t>(r.contentErrors));
+    AppendField(json, "repaired", d.repaired);
+    AppendField(json, "encrypted", d.encrypted);
+    AppendField(json, "broken_objects", static_cast<uint64_t>(d.brokenObjects));
+    AppendField(json, "salvaged_streams", static_cast<uint64_t>(d.salvagedStreams));
+    AppendField(json, "failed_streams", static_cast<uint64_t>(d.failedStreams));
+    AppendField(json, "limit_hits", static_cast<uint64_t>(d.limitHits));
+    json += "}\n";
+    return json;
+}
+
+int ConvertFile(const std::string& input, const std::string& output, std::string_view password,
+                const Layout::ConvertOptions& options, bool report) {
+    File::InputFile file;
+    if (const int code = ReadInput(input, file)) return code;
+    std::unique_ptr<Document> document;
+    if (const int code = OpenDocument(input, file.Bytes(), password, document)) return code;
+
+    std::string markdown;
+    Layout::ConvertReport counters;
+    Layout::Convert(*document, options, markdown, counters);
+    if (!File::WriteAll(output, markdown)) {
+        std::fprintf(stderr, "rayopdf: cannot write %s\n", output.c_str());
+        return kExitUnwritable;
+    }
+    if (report) {
+        const std::string json = ReportJson(input, *document, counters);
+        std::fwrite(json.data(), 1, json.size(), output == "-" ? stderr : stdout);
+    }
+    return kExitOk;
+}
+
+bool StartsWith(std::string_view text, std::string_view prefix) {
+    return text.substr(0, prefix.size()) == prefix;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        PrintUsage(stderr);
+        return kExitUsage;
+    }
+    enum class Mode { None, Convert, Inspect } mode = Mode::None;
+    std::string input;
+    std::string output;
+    std::string password;
+    Layout::ConvertOptions options;
+    bool report = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            PrintUsage(stdout);
+            return kExitOk;
+        }
+        if (arg == "--version" || arg == "-V") {
+            std::fputs("rayopdf " RAYOPDF_VERSION "\n", stdout);
+            return kExitOk;
+        }
+        if (arg == "--convert") {
+            if (mode != Mode::None) return Usage("only one of --convert and --inspect");
+            if (i + 2 >= argc) return Usage("--convert needs IN.pdf and OUT.md");
+            mode = Mode::Convert;
+            input = argv[++i];
+            output = argv[++i];
+        } else if (arg == "--inspect") {
+            if (mode != Mode::None) return Usage("only one of --convert and --inspect");
+            if (i + 1 >= argc) return Usage("--inspect needs IN.pdf");
+            mode = Mode::Inspect;
+            input = argv[++i];
+        } else if (StartsWith(arg, "--password=")) {
+            password = std::string(arg.substr(11));
+        } else if (StartsWith(arg, "--pages=")) {
+            if (!ParsePages(arg.substr(8), options.firstPage, options.lastPage)) {
+                return Usage("invalid page range: ", arg.substr(8));
+            }
+        } else if (arg == "--no-annotations") {
+            options.annotations = false;
+        } else if (arg == "--report") {
+            report = true;
+        } else {
+            return Usage("unknown argument: ", arg);
+        }
+    }
+    if (mode == Mode::Inspect) return Inspect(input, password);
+    if (mode == Mode::Convert) return ConvertFile(input, output, password, options, report);
+    return Usage("nothing to do: give --convert or --inspect");
+}

@@ -4,7 +4,37 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Research and evaluation; there is no converter yet.
+Version 0.0.1, the first converter: born-digital PDFs to GitHub Flavored Markdown with headings,
+paragraphs, lists, code blocks, emphasis and links. Tables, images, footnotes and OCR are not
+written yet; the [roadmap](docs/development/roadmap.md) lists what comes next.
+
+## Usage
+
+```sh
+rayopdf --convert IN.pdf OUT.md [--password=PW] [--pages=A-B] [--no-annotations] [--report]
+rayopdf --inspect IN.pdf          # the document's structure as one JSON object
+```
+
+`OUT.md` `-` writes to standard output. Text that could not be read is never dropped silently: a
+`<!-- rayopdf: ... -->` comment marks the spot. Exit codes: 0 converted, 2 usage, 3 unreadable
+input, 10 corrupt beyond repair, 11 password required, 12 unwritable output, 13 unsupported
+encryption.
+
+## Building
+
+The compilers live in a Docker image (`docker/build.Dockerfile`); nothing is installed on the
+host. Requirements: Linux, Docker and Python 3.10 or newer.
+
+```sh
+python3 tools/dev.py image                    # build rayopdf-build:1 once
+python3 tools/dev.py build                    # build/release/rayopdf
+python3 tools/dev.py test --config asan       # core tests and the CLI verifier under ASan + UBSan
+python3 tools/dev.py build --config static    # a fully static build/static/rayopdf
+```
+
+The source is C++17 with no third-party library: `src/crypt` (Standard security handler),
+`src/pdf` (objects, filters, page tree), `src/text` (fonts to Unicode), `src/layout`
+(interpretation, reading order, Markdown) and `src/cli`.
 
 ## Documents
 
@@ -16,6 +46,8 @@ Research and evaluation; there is no converter yet.
 - [Evaluation contract](docs/development/evaluation.md): suites, metrics, competitors, speed and
   census method.
 - [Baselines](docs/benchmarks/baselines-2026-11-05.md): the first full harness run.
+- [RayoPDF 0.0.1 on the harness](docs/benchmarks/v0-2026-11-05.md): the first converter against
+  the baselines.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation

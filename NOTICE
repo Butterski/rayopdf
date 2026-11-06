@@ -3,8 +3,28 @@ Copyright 2026 RayoPDF contributors
 
 This repository includes third-party material:
 
+- Source files forked from RayoMD (https://github.com/Butterski/rayomd, commit ef106ca) and
+  RayoMD GUI (https://github.com/Butterski/rayomd-gui, commit 9fbbfaf), both licensed under
+  the Apache License 2.0; each forked file names its origin in its second line.
+- src/text/tables_data.cpp holds data generated from the Adobe Glyph List (glyphlist.txt) and
+  the ITC Zapf Dingbats Glyph List (zapfdingbats.txt), https://github.com/adobe-type-tools/agl-aglfn
+  commit 4036a9c, Copyright 2002-2019 Adobe, licensed under the BSD 3-Clause License. See
+  third_party/licenses/agl-aglfn.txt.
+- src/text/tables_data.cpp holds tables derived from Mozilla pdf.js
+  (https://github.com/mozilla/pdf.js, commit 2b183c9), licensed under the Apache License 2.0:
+  src/core/encodings.js, metrics.js, standard_fonts.js, cff_parser.js (CFFStandardStrings),
+  charsets.js, string_utils.js (PDFStringTranslateTable) and fonts_utils.js
+  (MacStandardGlyphOrdering).
 - eval/fixtures/md/d01-tester.md is derived from RayoMD's tester.md
   (Apache-2.0, https://github.com/Butterski/rayomd, commit ef106ca).
 - eval/fixtures/md/d05-book-chapter.md holds chapters I and II of "Alice's Adventures in
   Wonderland" by Lewis Carroll (1865), public domain, from Project Gutenberg eBook #11 with
   the Project Gutenberg header, footer and licence removed.
+
+Binaries built from this source also contain libraries linked into them:
+
+- The GCC runtime libraries (libstdc++, libgcc), licensed under the GNU GPL version 3 with
+  the GCC Runtime Library Exception.
+- The GNU C Library, licensed under the GNU LGPL version 2.1 or later, in fully static
+  builds (cmake -DRAYOPDF_STATIC=ON); RayoPDF's complete source lets such a build be
+  relinked with a modified C library.

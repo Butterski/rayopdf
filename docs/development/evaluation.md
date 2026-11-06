@@ -121,7 +121,10 @@ producer `libreoffice*` → office; producer `xelatex-2col` → academic; everyt
 
 ## Metrics
 
-A conversion that errors, times out or is missing scores as empty output in every scorer.
+A conversion that errors, times out or is missing scores as empty output in every scorer, and so
+does output that is only white space: olmOCR's text-presence test passes on a lone newline (11 of
+the 12 tests of the image-only page `long_tiny_text/10a_pg1`), which would reward tools that write
+nothing.
 
 ### opendataloader-bench evaluator (unmodified, commit `7af1d8f`)
 
@@ -310,17 +313,21 @@ report.md
 
 ## Scoring a new converter
 
-Any converter, RayoPDF included, is scored through the `cli` image:
+Any converter, RayoPDF included, is scored through the `cli` image (Debian 12 with Python 3).
+RayoPDF's fully static build runs there as is:
 
 ```sh
-python3 tools/eval.py convert --tool cli --suite odl --bin-dir build/linux --cmd 'rayopdf --convert {in} {out}'
-python3 tools/eval.py score --suite odl --tools cli
-python3 tools/eval.py speed --tool cli --bin-dir build/linux --cmd 'rayopdf --convert {in} {out}'
+python3 tools/dev.py build --config static        # build/static/rayopdf
+for s in synthetic odl olmocr readoc; do
+    python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
+    python3 tools/eval.py score --suite $s --tools cli
+done
+python3 tools/eval.py speed --tool cli --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
+python3 tools/eval.py report
 ```
 
-Run the conversion for every suite, then `score` and `report`. The `cli` image is Debian 12 with
-Python 3; a static binary runs as is. Save a milestone's report as
-`docs/benchmarks/m<N>-<date>.md`.
+The `cli` timing is fresh-process through Python's `subprocess.run` (see Speed and memory). Save
+a milestone's report as `docs/benchmarks/m<N>-<date>.md`.
 
 ## Hygiene
 
@@ -360,3 +367,6 @@ Recorded so that the next run reproduces the same harness:
   benchmark's 2026-01 ground-truth changes ("multiline headings", commits `1691385` and
   `ab65ec2`): their rescored MHS differs; rescored against the ground truth of their own commits
   they match exactly. Every other stored engine matches to 0.000.
+- The baseline run of 2026-11-05 first scored olmOCR with whitespace-only outputs as written;
+  the same day every tool was rescored with whitespace-only output scored as empty (see Metrics),
+  and `docs/benchmarks/baselines-2026-11-05.md` carries the rescored olmOCR numbers.

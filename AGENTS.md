@@ -1,8 +1,9 @@
 # RayoPDF Agent Guide
 
 Read this file before changing the project. RayoPDF is a PDF to Markdown converter, the reverse
-of [RayoMD](https://github.com/Butterski/rayomd). The repository currently holds the research,
-the evaluation harness and the roadmap; there is no converter yet.
+of [RayoMD](https://github.com/Butterski/rayomd): the C++17 engine under `src/` (modules crypt,
+pdf, text, layout, cli), its tests under `tests/`, the evaluation harness under `eval/` and
+`tools/eval.py`, and the research and roadmap under `docs/`.
 
 ## Rules
 
@@ -40,3 +41,11 @@ the evaluation harness and the roadmap; there is no converter yet.
    clone and never copy it.
 
 9. Engine code follows `docs/development/roadmap.md` § Engineering conventions.
+
+10. Build and test only through `tools/dev.py`, which runs the compilers in the
+    `rayopdf-build:1` image. Every change keeps `python3 tools/dev.py test --config asan` passing
+    and a fresh build free of compiler warnings. Each module's core tests live in
+    `tests/test_<module>.cpp`, every check with its own exit code in the module's range (crypt
+    100–199, pdf 200–299, text 300–399, layout 400–499); `tests/verify_cli.py` checks the built
+    binary. Every parser of untrusted input has a libFuzzer target in `tests/fuzz/`. Tests build
+    the PDFs they read in memory.

@@ -140,6 +140,7 @@ rayopdf --serve --json
 |10|corrupt beyond repair|
 |11|password required|
 |12|unwritable output|
+|13|unsupported encryption (a handler or revision other than the Standard handler R2–R6)|
 
 ### D8 Limits
 
@@ -181,6 +182,25 @@ Cyrillic, 3.7 % other scripts, and 52.3 % have no text to tell (`unknown`). 14.0
 documents have at least one `image_only` page and 4.1 % at least one `broken` page. The sample
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
+
+### Status: 0.0.1 (2026-11-05)
+
+The first converter covers M1 and the core of M2, M3 and M4 at once, so that every later step is
+measured on a working pipeline. Harness results: [v0-2026-11-05.md](../benchmarks/v0-2026-11-05.md).
+
+- **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
+  hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
+  tree, `--inspect`); exact recovery of RayoMD PDFs is not. Gates met: page counts (996 of 996),
+  0 crashes and hangs under ASan. Open: 24 h of fuzzing, the `--inspect` timing.
+- **M2 Text:** the font → Unicode chain without the Adobe CJK tables, words, lines, duplicates as
+  bold, ligatures, dehyphenation, uncertainty comments. Open: NID is 0.012 below the best
+  text-layer tool on odl and below it on every synthetic producer.
+- **M3 Layout:** XY cuts with column checks and header/footer removal across pages. Open:
+  single-page headers and footers, right-to-left text.
+- **M4 Semantics:** headings (outline, size, bold lines), lists, code, quotes, emphasis, links;
+  construct F1 and MHS already above every measured tool on the synthetic corpus. Open:
+  footnotes, images, heading levels that do not start at H1.
+- **M5–M8:** not started.
 
 ## Engineering conventions
 

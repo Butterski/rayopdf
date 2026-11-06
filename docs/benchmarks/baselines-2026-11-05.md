@@ -7,7 +7,7 @@ measured here ("reproduced"), except the stored odl-bench engine predictions in 
 third-party conversions rescored by our scorer. Quality runs used 8 cores with
 `OMP_NUM_THREADS=4`; speed runs used one pinned core with thread variables set to 1 (§ 7).
 `tools/eval.py all --resume` ended with 0 failed steps. `benchmark-output/eval/report.md` of the
-same run is reproduced unchanged from § 1 on.
+same run is reproduced from § 1 on, except § 5, which holds olmOCR rescored the same day.
 
 ## Findings
 
@@ -35,7 +35,7 @@ among the text-layer tools; the last column is docling's score minus that score.
 | synthetic tagged heading-level acc | liteparse | 0.972 | 0.575 | -0.397 |
 | olmOCR arxiv_math | liteparse | 0.538 | 0.000 | -0.538 |
 | olmOCR headers_footers | liteparse | 0.554 | 0.898 | +0.344 |
-| olmOCR long_tiny_text | pdftotext | 0.876 | 0.523 | -0.353 |
+| olmOCR long_tiny_text | pdftotext | 0.471 | 0.523 | +0.052 |
 | olmOCR multi_column | pymupdf | 0.667 | 0.695 | +0.027 |
 | olmOCR table_tests | pymupdf | 0.615 | 0.610 | -0.005 |
 | olmOCR born-digital mean (excl. arxiv_math) | liteparse | 0.504 | 0.681 | +0.178 |
@@ -62,8 +62,8 @@ among the text-layer tools; the last column is docling's score minus that score.
   strikethrough 0.424, inline code 0.752, untagged). No tool, as configured here, writes Markdown
   image references (image recall 0.000 for all).
 - **olmOCR-bench:** docling leads the born-digital mean by +0.178 (0.681 against liteparse's
-  0.504), mostly through `headers_footers` (0.898 against 0.554). pdftotext is best on
-  `long_tiny_text` (0.876 against docling's 0.523). On `arxiv_math` only liteparse scores (0.538):
+  0.504), mostly through `headers_footers` (0.898 against 0.554); on `long_tiny_text` it leads
+  pdftotext by +0.052 (0.523 against 0.471). On `arxiv_math` only liteparse scores (0.538):
   it writes LaTeX rebuilt from the text layer; every other tool, docling included, scores 0.000.
 - **READoc-300 (holdout, aggregate only):** docling has the best text similarity on both subsets
   (`text_eds` 0.841 arxiv, 0.908 github). Text-layer tools lead on heading structure (`head_teds`
@@ -314,11 +314,17 @@ Stored engine predictions shipped with the benchmark, rescored in our scorer ima
 
 Pass rate per JSONL (tests passed / tests); last column = mean of the 4 born-digital categories excluding arxiv_math. Scanned categories (`old_scans*`) are left to the M8 OCR gate.
 
+Rescored the same day with whitespace-only output scored as empty (evaluation.md § Metrics):
+olmOCR's text-presence test passes on a lone newline. The first scoring gave pdftotext 0.876 on
+long_tiny_text (now 0.471), 0.282 on headers_footers (now 0.313) and a mean of 0.452 (now 0.359);
+markitdown's and pymupdf's headers_footers moved from 0.384 and 0.381 to 0.386 and 0.385; every
+other number is unchanged.
+
 | tool | arxiv_math | headers_footers | long_tiny_text | multi_column | table_tests | born-digital mean (excl. arxiv_math) |
 |---|---|---|---|---|---|---|
-| pdftotext | 0.000 | 0.282 | 0.876 | 0.653 | 0.000 | 0.452 |
-| markitdown | 0.000 | 0.384 | 0.312 | 0.393 | 0.249 | 0.334 |
-| pymupdf | 0.000 | 0.381 | 0.337 | 0.667 | 0.615 | 0.500 |
+| pdftotext | 0.000 | 0.313 | 0.471 | 0.653 | 0.000 | 0.359 |
+| markitdown | 0.000 | 0.386 | 0.312 | 0.393 | 0.249 | 0.335 |
+| pymupdf | 0.000 | 0.385 | 0.337 | 0.667 | 0.615 | 0.501 |
 | opendataloader | 0.000 | 0.361 | 0.348 | 0.638 | 0.247 | 0.399 |
 | liteparse | 0.538 | 0.554 | 0.240 | 0.662 | 0.559 | 0.504 |
 | edgeparse | 0.000 | 0.490 | 0.251 | 0.462 | 0.401 | 0.401 |

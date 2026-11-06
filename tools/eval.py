@@ -579,8 +579,11 @@ def score_olmocr(root: Path, tools: list[str]) -> None:
             category, name = doc_id.split("/", 1)
             dst = bench / tool / category / f"{name}_pg1_repeat1.md"
             dst.parent.mkdir(parents=True, exist_ok=True)
-            # A failed conversion scores as empty output.
-            dst.write_bytes(src.read_bytes() if src.is_file() else b"")
+            # A failed conversion scores as empty output, and so does whitespace-only output:
+            # olmOCR's text-presence test passes on a lone newline (11 of 12 tests of
+            # long_tiny_text/10a_pg1, an image-only page), which would reward empty output.
+            data = src.read_bytes() if src.is_file() else b""
+            dst.write_bytes(data if data.strip() else b"")
         argv = ["python", "-m", "olmocr.bench.benchmark", "--dir", "/work/bench_data",
                 "--candidate", tool, "--skip_baseline"]
         run(docker_cmd(tag("olmocr"), argv,

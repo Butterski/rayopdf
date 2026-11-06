@@ -1,0 +1,982 @@
+// SPDX-License-Identifier: Apache-2.0
+// Core tests of the pdf module (exit codes 200-299): the filters with known vectors (zlib data
+// made once with Python's zlib, the LZW example of ISO 32000-1 section 7.4.4.2), and the object
+// layer on files tests/pdf_builder.h makes: cross-reference tables and streams, object streams,
+// hybrid files, /Prev chains, repair, the page tree and the Standard security handler.
+#include "check.h"
+#include "pdf_builder.h"
+
+#include "crypt/crypt.h"
+#include "pdf/content_lexer.h"
+#include "pdf/document.h"
+#include "pdf/filters.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+using namespace RayoPdf;
+using RayoPdf::Test::BuildOptions;
+using RayoPdf::Test::OnePage;
+using RayoPdf::Test::PdfBuilder;
+using RayoPdf::Test::ZlibStored;
+
+namespace {
+
+// zlib.compress(SampleText(), 9), zlib.compressobj(9, DEFLATED, -15) of the same, and
+// zlib.compressobj(9, DEFLATED, 15, 9, Z_FIXED) of "Hello, Hello, Hello! Fixed codes.".
+constexpr const char* kZlibHex =
+    "78da95d83b8a95411040e1dc5574a8915dd5ef74c0890cef0604efa0e20bbc81cb37fc0f1308670127fbe8aeaaa75b79ff1c"
+    "25b2dc5ecacab26a2db7cfe5edc7af3fefa5965f2fe5f1e55efe7cfaf1fbfbbd3cee7f1fefcaed5bf9707bf3f42a9ce75c61"
+    "a8705f61aa705d6153e1bcc2aec271854385fd0aa70adb152e15e6156e15c6151e15424e283a9b74949d0d3ba1f06ce009a5"
+    "67434f283e1b7c42f9d9f0130ad006a0508236048522b4412894a10d43a90c2d184a6568f1fd5186160ca532b4602895a105"
+    "43a90c2d184a6568c1502a430b8652195a3094cad082a1a60c4d186acad084a1a60c4d7e62cad084a1a60c4d186acad084a1"
+    "a60c4d186acad084a1a60c4d186acad084a1ae0c0d18eacad080a1ae0c0d18eacad0e024a40c0d18eacad080a1ae0c0d18ea"
+    "cad080a1ae0c0d18eacad080a1a10c75181aca5087a1a10c75181aca5087a1a10c758ed3ca5087a1a10c75181aca5087a1a1"
+    "0c75181aca5087a1a90c35189aca5083a1a90c35189aca5083a1a90c35189aca50e34ea60c35189aca5083a1a90c35189aca"
+    "5083a1a50c250c2d65286168294309434b194a185aca50c2d0528612869632945cec95a184a1a50c250c2d652861682b4301"
+    "435b190a18daca50c0d056860286b6321430b495a180a1ad0c050c6d6528781d52860286b63214307494a10a434719aa3074"
+    "94a10a434719aa307494a10a434719aa307494a10a434719aa307494a1ca13e3ff0cfd0391ee2f40";
+constexpr const char* kRawHex =
+    "95d83b8a95411040e1dc5574a8915dd5ef74c0890cef0604efa0e20bbc81cb37fc0f1308670127fbe8aeaaa75b79ff1c25b2"
+    "dc5ecacab26a2db7cfe5edc7af3fefa5965f2fe5f1e55efe7cfaf1fbfbbd3cee7f1fefcaed5bf9707bf3f42a9ce75c61a870"
+    "5f61aa705d6153e1bcc2aec271854385fd0aa70adb152e15e6156e15c6151e15424e283a9b74949d0d3ba1f06ce009a56743"
+    "4f283e1b7c42f9d9f0130ad006a0508236048522b4412894a10d43a90c2d184a6568f1fd5186160ca532b4602895a10543a9"
+    "0c2d184a6568c1502a430b8652195a3094cad082a1a60c4d186acad084a1a60c4d7e62cad084a1a60c4d186acad084a1a60c"
+    "4d186acad084a1a60c4d186acad084a1ae0c0d18eacad080a1ae0c0d18eacad0e024a40c0d18eacad080a1ae0c0d18eacad0"
+    "80a1ae0c0d18eacad080a1a10c75181aca5087a1a10c75181aca5087a1a10c758ed3ca5087a1a10c75181aca5087a1a10c75"
+    "181aca5087a1a90c35189aca5083a1a90c35189aca5083a1a90c35189aca50e34ea60c35189aca5083a1a90c35189aca5083"
+    "a1a50c250c2d65286168294309434b194a185aca50c2d0528612869632945cec95a184a1a50c250c2d652861682b4301435b"
+    "190a18daca50c0d056860286b6321430b495a180a1ad0c050c6d6528781d52860286b63214307494a10a434719aa307494a1"
+    "0a434719aa307494a10a434719aa307494a10a434719aa307494a1ca13e3ff0cfd03";
+constexpr const char* kFixedHex = "7801f348cdc9c9d751f040a21415dc322b52531492f353528bf500b9d40b02";
+
+std::string Unhex(std::string_view hex) {
+    std::string out;
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+        out.push_back(static_cast<char>(digit(hex[i]) * 16 + digit(hex[i + 1])));
+    }
+    return out;
+}
+
+std::string Hex(std::string_view bytes) {
+    static const char* const kDigits = "0123456789abcdef";
+    std::string out;
+    for (unsigned char c : bytes) {
+        out.push_back(kDigits[c >> 4]);
+        out.push_back(kDigits[c & 15]);
+    }
+    return out;
+}
+
+// The text kZlibHex and kRawHex hold.
+std::string SampleText() {
+    std::string text;
+    char line[96];
+    for (int i = 0; i < 100; i++) {
+        std::snprintf(line, sizeof line, "BT /F1 12 Tf 72 %d Td (Line %d of the sample text) Tj ET\n", 700 - i, i);
+        text += line;
+    }
+    return text;
+}
+
+StreamStatus Decode(Filters::Kind kind, std::string_view in, std::string& out, size_t limit = size_t(1) << 30,
+                    const Filters::Params& params = Filters::Params()) {
+    return Filters::Decode(kind, params, in, out, limit);
+}
+
+// Bits for a deflate stream, least significant first; Huffman codes most significant bit first.
+struct BitWriter {
+    std::string out;
+    uint32_t buffer = 0;
+    int count = 0;
+    void Put(uint32_t value, int bits) {
+        for (int i = 0; i < bits; i++) {
+            buffer |= ((value >> i) & 1u) << count;
+            if (++count == 8) {
+                out.push_back(static_cast<char>(buffer));
+                buffer = 0;
+                count = 0;
+            }
+        }
+    }
+    void Code(uint32_t code, int bits) {
+        for (int i = bits - 1; i >= 0; i--) Put((code >> i) & 1u, 1);
+    }
+    std::string Finish() {
+        if (count > 0) out.push_back(static_cast<char>(buffer));
+        return out;
+    }
+};
+
+// A raw deflate block of a zero byte then `matches` matches of 258 zeros at distance 1, with
+// dynamic codes of one bit for length 258 and distance 1: two bits for 258 bytes of output.
+std::string DeflateZeros(size_t matches) {
+    BitWriter w;
+    w.Put(1, 1);    // final
+    w.Put(2, 2);    // dynamic codes
+    w.Put(29, 5);   // 286 literal/length codes
+    w.Put(0, 5);    // 1 distance code
+    w.Put(14, 4);   // 18 code length codes
+    // Code length code lengths in their order 16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1: 18 has
+    // one bit (code 0), 1 and 2 have two (codes 10 and 11).
+    const int order[18] = {0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2};
+    for (int length : order) w.Put(static_cast<uint32_t>(length), 3);
+    // Literal/length lengths: 0 -> 2, 1-255 -> 0, 256 -> 2, 257-284 -> 0, 285 -> 1; distance 0 -> 1.
+    w.Code(3, 2);                // 2
+    w.Code(0, 1), w.Put(127, 7); // 18: 138 zeros
+    w.Code(0, 1), w.Put(106, 7); // 18: 117 zeros
+    w.Code(3, 2);                // 2
+    w.Code(0, 1), w.Put(17, 7);  // 18: 28 zeros
+    w.Code(2, 2);                // 1
+    w.Code(2, 2);                // 1 (the distance code)
+    // Codes: 285 -> 0, 0 -> 10, 256 -> 11; distance 0 -> 0.
+    w.Code(2, 2);
+    for (size_t i = 0; i < matches; i++) {
+        w.Code(0, 1);
+        w.Code(0, 1);
+    }
+    w.Code(3, 2);
+    return w.Finish();
+}
+
+// An LZW encoder (ISO 32000-1 section 7.4.4.2) for round trips.
+std::string LzwEncode(std::string_view in, int earlyChange) {
+    std::string out;
+    uint32_t buffer = 0;
+    int bits = 0;
+    const auto put = [&](unsigned code, unsigned width) {
+        buffer = (buffer << width) | code;
+        bits += static_cast<int>(width);
+        while (bits >= 8) {
+            out.push_back(static_cast<char>(buffer >> (bits - 8)));
+            bits -= 8;
+        }
+    };
+    // The table as (prefix code << 8 | byte) -> code, searched linearly (test sizes only).
+    std::vector<uint32_t> table;
+    unsigned next = 258;
+    unsigned width = 9;
+    put(256, width);
+    int current = -1;
+    for (unsigned char c : in) {
+        if (current < 0) {
+            current = c;
+            continue;
+        }
+        const uint32_t key = static_cast<uint32_t>(current) << 8 | c;
+        const auto found = std::find(table.begin(), table.end(), key);
+        if (found != table.end()) {
+            current = static_cast<int>(258 + (found - table.begin()));
+            continue;
+        }
+        put(static_cast<unsigned>(current), width);
+        if (next < 4096) {
+            table.push_back(key);
+            next++;
+        }
+        if (next + (earlyChange ? 1u : 0u) > (1u << width) && width < 12) width++;
+        if (next == 4096) {
+            put(256, width);
+            table.clear();
+            next = 258;
+            width = 9;
+        }
+        current = c;
+    }
+    if (current >= 0) put(static_cast<unsigned>(current), width);
+    // The decoder adds an entry for the last code before it reads the end-of-data code.
+    if (next + (earlyChange ? 1u : 0u) >= (1u << width) && width < 12) width++;
+    put(257, width);
+    if (bits > 0) out.push_back(static_cast<char>(buffer << (8 - bits)));
+    return out;
+}
+
+std::string Ascii85Encode(std::string_view in) {
+    std::string out;
+    for (size_t i = 0; i < in.size(); i += 4) {
+        const size_t n = std::min<size_t>(4, in.size() - i);
+        uint32_t value = 0;
+        for (size_t k = 0; k < 4; k++) value = value << 8 | (k < n ? static_cast<unsigned char>(in[i + k]) : 0u);
+        if (n == 4 && value == 0) {
+            out.push_back('z');
+            continue;
+        }
+        char group[5];
+        for (int k = 4; k >= 0; k--) {
+            group[k] = static_cast<char>('!' + value % 85);
+            value /= 85;
+        }
+        out.append(group, n + 1);
+        if (i % 40 == 0) out.push_back('\n');  // white space anywhere
+    }
+    return out + "~>";
+}
+
+// The PNG filter of type `type` for one row (the encoder side of the predictors).
+std::string PngFilterRow(int type, std::string_view row, std::string_view up, size_t bpp) {
+    std::string out(1, static_cast<char>(type));
+    for (size_t x = 0; x < row.size(); x++) {
+        const int a = x >= bpp ? static_cast<unsigned char>(row[x - bpp]) : 0;
+        const int b = static_cast<unsigned char>(up[x]);
+        const int c = x >= bpp ? static_cast<unsigned char>(up[x - bpp]) : 0;
+        int predictor = 0;
+        if (type == 1) predictor = a;
+        else if (type == 2) predictor = b;
+        else if (type == 3) predictor = (a + b) / 2;
+        else if (type == 4) {
+            const int p = a + b - c;
+            const int pa = std::abs(p - a), pb = std::abs(p - b), pc = std::abs(p - c);
+            predictor = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        }
+        out.push_back(static_cast<char>(static_cast<unsigned char>(row[x]) - predictor));
+    }
+    return out;
+}
+
+// Deterministic bytes (an LCG) for image-like test data.
+std::string Noise(size_t n, uint32_t seed) {
+    std::string out;
+    for (size_t i = 0; i < n; i++) {
+        seed = seed * 1103515245u + 12345u;
+        out.push_back(static_cast<char>((seed >> 16) & 0xFF));
+    }
+    return out;
+}
+
+// A document with the bytes it views (a Document never copies them).
+struct Opened {
+    std::unique_ptr<std::string> bytes;
+    std::unique_ptr<Document> doc;
+    Document* operator->() const { return doc.get(); }
+    Document& operator*() const { return *doc; }
+};
+
+Opened OpenOk(std::string bytes, int code, std::string_view password = "") {
+    Opened opened;
+    opened.bytes = std::make_unique<std::string>(std::move(bytes));
+    const OpenStatus status = Document::Open(*opened.bytes, password, opened.doc);
+    if (status != OpenStatus::Ok) std::fprintf(stderr, "open status %d\n", static_cast<int>(status));
+    RAYOPDF_CHECK(status == OpenStatus::Ok && opened.doc != nullptr, code);
+    return opened;
+}
+
+std::string Content(const Document& doc, int page) {
+    std::string out;
+    doc.PageContent(page, out);
+    return out;
+}
+
+// OnePage: catalog 1, pages 2, content 3, page 4.
+std::string SimpleDocument(std::string_view content = "BT (Hi) Tj ET") { return OnePage(content); }
+
+// ------------------------------------------------------------------- filters
+
+void TestKinds() {
+    RAYOPDF_CHECK(Filters::KindOf("FlateDecode") == Filters::Kind::Flate &&
+                      Filters::KindOf("Fl") == Filters::Kind::Flate,
+                  200);
+    RAYOPDF_CHECK(Filters::KindOf("LZW") == Filters::Kind::Lzw && Filters::KindOf("A85") == Filters::Kind::Ascii85 &&
+                      Filters::KindOf("AHx") == Filters::Kind::AsciiHex &&
+                      Filters::KindOf("RL") == Filters::Kind::RunLength &&
+                      Filters::KindOf("CCF") == Filters::Kind::Ccitt && Filters::KindOf("DCT") == Filters::Kind::Dct &&
+                      Filters::KindOf("BrotliDecode") == Filters::Kind::Brotli &&
+                      Filters::KindOf("Nonsense") == Filters::Kind::Unknown,
+                  200);
+    RAYOPDF_CHECK(Filters::IsImageFilter(Filters::Kind::Jbig2) && !Filters::IsImageFilter(Filters::Kind::Flate), 200);
+}
+
+void TestFlate() {
+    const std::string text = SampleText();
+    std::string out;
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, Unhex(kZlibHex), out) == StreamStatus::Ok && out == text, 201);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, Unhex(kRawHex), out) == StreamStatus::Ok && out == text, 202);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, Unhex(kFixedHex), out) == StreamStatus::Ok &&
+                      out == "Hello, Hello, Hello! Fixed codes.",
+                  203);
+    const std::string big = Noise(200000, 7);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(big), out) == StreamStatus::Ok && out == big, 204);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, "", out) == StreamStatus::Corrupt && out.empty(), 205);
+    // A bad Adler-32 is ignored; a stray end of line before the header is skipped.
+    std::string badAdler = Unhex(kZlibHex);
+    badAdler.back() ^= 0x55;
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, badAdler, out) == StreamStatus::Ok && out == text, 204);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, "\n" + Unhex(kZlibHex), out) == StreamStatus::Ok && out == text, 204);
+
+    // Truncated: what was decoded before the end is kept, never a byte from past it.
+    const std::string zlib = Unhex(kZlibHex);
+    for (size_t cut : {size_t(40), zlib.size() / 2, zlib.size() - 6}) {
+        const StreamStatus status = Decode(Filters::Kind::Flate, zlib.substr(0, cut), out);
+        RAYOPDF_CHECK(status == StreamStatus::Salvaged || (status == StreamStatus::Corrupt && out.empty()), 206);
+        RAYOPDF_CHECK(text.compare(0, out.size(), out) == 0, 206);
+    }
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, zlib.substr(0, zlib.size() / 2), out) == StreamStatus::Salvaged &&
+                      out.size() > 100,
+                  206);
+    // Ends of the stream before any output.
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, zlib.substr(0, 3), out) == StreamStatus::Corrupt && out.empty(), 207);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, "\x78\x9c\xff\xff\xff\xff", out) == StreamStatus::Corrupt, 207);
+    // Corrupt data after some output: salvaged. A stored block that is not the last, then a block
+    // of the reserved type 3.
+    std::string corrupt = std::string("\x78\x01\x00\xe8\x03\x17\xfc", 7) + std::string(1000, 'a') + "\x07\xff\xff";
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, corrupt, out) == StreamStatus::Salvaged && out == std::string(1000, 'a'),
+                  207);
+
+    // The limit cuts the output.
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, zlib, out, 100) == StreamStatus::TooLarge && out == text.substr(0, 100),
+                  208);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, zlib, out, text.size()) == StreamStatus::Ok && out == text, 208);
+    // The bomb guard: 40,000 matches of 258 bytes in 10 KB pass 1000 times the input.
+    const std::string bomb = DeflateZeros(40000);
+    const StreamStatus bombStatus = Decode(Filters::Kind::Flate, bomb, out);
+    RAYOPDF_CHECK(bombStatus == StreamStatus::TooLarge && out.size() == bomb.size() * 1000 + (64 << 10), 209);
+    RAYOPDF_CHECK(out.find_first_not_of('\0') == std::string::npos, 209);
+    const std::string small = DeflateZeros(10);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, small, out) == StreamStatus::Ok && out == std::string(2581, '\0'), 209);
+}
+
+void TestLzw() {
+    std::string out;
+    RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, Unhex("800b6050220c0c8501"), out) == StreamStatus::Ok &&
+                      out == "-----A---B",
+                  210);
+    // Round trips through 12-bit codes and a full table, with and without EarlyChange.
+    std::string text = SampleText() + Noise(3000, 3) + SampleText();
+    for (int early : {1, 0}) {
+        Filters::Params params;
+        params.earlyChange = early;
+        RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, LzwEncode(text, early), out, size_t(1) << 30, params) ==
+                              StreamStatus::Ok &&
+                          out == text,
+                      211);
+    }
+    // A code past the table: the output before it is kept.
+    RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, Unhex("800b7fe0"), out) == StreamStatus::Salvaged && out == "-", 211);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, Unhex("800b6050220c0c8501"), out, 4) == StreamStatus::TooLarge &&
+                      out == "----",
+                  211);
+}
+
+void TestAscii() {
+    std::string out;
+    RAYOPDF_CHECK(Decode(Filters::Kind::Ascii85, "9jqo^BlbD-BleB1DJ+*+F(f,q~>", out) == StreamStatus::Ok &&
+                      out == "Man is distinguished",
+                  212);
+    for (size_t n = 0; n < 13; n++) {
+        std::string data = Noise(n, static_cast<uint32_t>(n));
+        if (n >= 8) data.replace(4, 4, std::string(4, '\0'));  // a 'z' group
+        RAYOPDF_CHECK(Decode(Filters::Kind::Ascii85, Ascii85Encode(data), out) == StreamStatus::Ok && out == data, 212);
+    }
+    // "<~" before, no "~>" after, and a bad byte.
+    RAYOPDF_CHECK(Decode(Filters::Kind::Ascii85, "<~9jqo^", out) == StreamStatus::Ok && out == "Man ", 212);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Ascii85, "9jqo^Bl\x01", out) == StreamStatus::Salvaged && out == "Man ", 212);
+
+    RAYOPDF_CHECK(Decode(Filters::Kind::AsciiHex, "48 65\n6C6c6f>", out) == StreamStatus::Ok && out == "Hello", 213);
+    RAYOPDF_CHECK(Decode(Filters::Kind::AsciiHex, "414>", out) == StreamStatus::Ok && out == "A@", 213);
+    RAYOPDF_CHECK(Decode(Filters::Kind::AsciiHex, "4142", out) == StreamStatus::Ok && out == "AB", 213);
+    RAYOPDF_CHECK(Decode(Filters::Kind::AsciiHex, "41zz", out) == StreamStatus::Salvaged && out == "A", 213);
+    RAYOPDF_CHECK(Decode(Filters::Kind::AsciiHex, "zz", out) == StreamStatus::Corrupt, 213);
+
+    RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, std::string("\x02" "abc" "\xfe" "x" "\x80" "junk", 11), out) ==
+                          StreamStatus::Ok &&
+                      out == "abcxxx",
+                  214);
+    RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, std::string("\x05" "ab", 3), out) == StreamStatus::Salvaged &&
+                      out == "ab",
+                  214);
+    RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, std::string("\x81" "y", 2), out, 10) == StreamStatus::TooLarge &&
+                      out == std::string(10, 'y'),
+                  214);
+}
+
+void TestPredictors() {
+    std::string out;
+    // PNG: every filter type, for 8 and 16 bits a component and for 1 bit.
+    struct Shape {
+        int colors, bpc, columns;
+    };
+    for (const Shape shape : {Shape{3, 8, 5}, Shape{2, 16, 7}, Shape{1, 1, 13}, Shape{4, 8, 1}, Shape{5, 8, 9}}) {
+        const size_t rowBytes = (static_cast<size_t>(shape.colors * shape.bpc * shape.columns) + 7) / 8;
+        const size_t bpp = std::max<size_t>(1, static_cast<size_t>(shape.colors * shape.bpc) / 8);
+        std::string image;
+        std::string filtered;
+        std::string up(rowBytes, '\0');
+        for (int row = 0; row < 10; row++) {
+            const std::string data = Noise(rowBytes, static_cast<uint32_t>(row * 31 + shape.columns));
+            filtered += PngFilterRow(row % 5, data, up, bpp);
+            image += data;
+            up = data;
+        }
+        Filters::Params params;
+        params.predictor = 12 + shape.columns % 4;  // the type byte of each row decides, whatever 10-15
+        params.colors = shape.colors;
+        params.bitsPerComponent = shape.bpc;
+        params.columns = shape.columns;
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(filtered), out, size_t(1) << 30, params) ==
+                              StreamStatus::Ok &&
+                          out == image,
+                      215);
+        // A short last row is kept as far as it goes.
+        const std::string cut = filtered.substr(0, filtered.size() - 2);
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(cut), out, size_t(1) << 30, params) ==
+                              StreamStatus::Salvaged &&
+                          out == image.substr(0, image.size() - 2),
+                      217);
+        // The limit counts predicted bytes.
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(filtered), out, rowBytes * 3, params) ==
+                              StreamStatus::TooLarge &&
+                          out == image.substr(0, rowBytes * 3),
+                      217);
+    }
+    // TIFF predictor 2.
+    {
+        Filters::Params params;
+        params.predictor = 2;
+        params.colors = 3;
+        params.columns = 4;
+        // Rows of 12 bytes: differences to the pixel before, per component.
+        const std::string coded = std::string("\x01\x02\x03\x01\x01\x01\x10\x00\xff\x00\x00\x00", 12);
+        const std::string expect = std::string("\x01\x02\x03\x02\x03\x04\x12\x03\x03\x12\x03\x03", 12);
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(coded + coded), out, size_t(1) << 30, params) ==
+                              StreamStatus::Ok &&
+                          out == expect + expect,
+                      216);
+        params.colors = 1;
+        params.bitsPerComponent = 16;
+        params.columns = 3;
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(std::string("\x01\x00\x00\xff\x00\x02", 6)), out,
+                             size_t(1) << 30, params) == StreamStatus::Ok &&
+                          out == std::string("\x01\x00\x01\xff\x02\x01", 6),
+                      216);
+        params.bitsPerComponent = 4;
+        params.columns = 4;
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(std::string("\x31\x1f", 2)), out, size_t(1) << 30,
+                             params) == StreamStatus::Ok &&
+                          out == std::string("\x34\x54", 2),
+                      216);
+    }
+    // A shape no image has.
+    Filters::Params bad;
+    bad.predictor = 12;
+    bad.bitsPerComponent = 3;
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored("abc"), out, size_t(1) << 30, bad) == StreamStatus::Corrupt,
+                  216);
+    // Image filters and unknown names are left as they are.
+    RAYOPDF_CHECK(Decode(Filters::Kind::Dct, "\xff\xd8 jpeg", out) == StreamStatus::Unsupported &&
+                      out == "\xff\xd8 jpeg",
+                  218);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Unknown, "x", out) == StreamStatus::Unsupported && out == "x", 218);
+}
+
+// ------------------------------------------------------------------- documents
+
+void TestClassic() {
+    const auto doc = OpenOk(SimpleDocument(), 220);
+    RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Hi) Tj ET", 220);
+    RAYOPDF_CHECK(doc->Version() == "1.7" && !doc->Report().repaired && doc->Report().xrefSections == 1, 220);
+    const PdfRect box = doc->MediaBox(0);
+    RAYOPDF_CHECK(box.x0 == 0 && box.y0 == 0 && box.x1 == 612 && box.y1 == 792 && doc->Rotate(0) == 0, 220);
+    RAYOPDF_CHECK(doc->Get(doc->Catalog(), "Type").IsName("Catalog") && doc->Info().IsNull(), 220);
+    RAYOPDF_CHECK(doc->Get(doc->Resources(0), "Font").IsDict() && doc->ObjectCount() == 5, 220);
+    RAYOPDF_CHECK(doc->PageDict(1).IsNull() && doc->PageDict(-1).IsNull() && doc->Object(0).IsNull() &&
+                      doc->Object(99).IsNull(),
+                  220);
+    std::string out;
+    RAYOPDF_CHECK(doc->PageContent(5, out) == StreamStatus::NotStream, 220);
+    RAYOPDF_CHECK(doc->StreamData(doc->Catalog(), out) == StreamStatus::NotStream, 238);
+}
+
+void BuildThreeObjects(PdfBuilder& b, int& catalog, const std::string& content = "BT (Stream) Tj ET") {
+    catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int stream = b.AddFlateStream("", content);
+    const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pages) + " 0 R /Contents " +
+                           std::to_string(stream) + " 0 R /Resources << >> >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) + " 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] /Count 1 /MediaBox [0 0 200 300] >>");
+    b.Add("<< /Title (Info) >>");
+}
+
+void TestXrefStreams() {
+    for (int variant = 0; variant < 3; variant++) {
+        PdfBuilder b;
+        int catalog = 0;
+        BuildThreeObjects(b, catalog);
+        BuildOptions options;
+        options.xrefStream = true;
+        options.pngPredictor = variant >= 1;
+        options.objectStream = variant == 2;
+        const std::string file = b.Build(catalog, "/Info 5 0 R", options);
+        const auto doc = OpenOk(file, 221 + (variant == 2 ? 1 : 0));
+        RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Stream) Tj ET", 221);
+        RAYOPDF_CHECK(doc->MediaBox(0).x1 == 200 && doc->MediaBox(0).y1 == 300 && !doc->Report().repaired, 221);
+        RAYOPDF_CHECK(doc->Get(doc->Info(), "Title").String() == "Info", 222);
+        RAYOPDF_CHECK(doc->Trailer().Find("Root") != nullptr && doc->Trailer().IsDict(), 222);
+    }
+}
+
+// Catalog, pages and page (1-3) in an object stream (5); content (4) direct; 6 the hybrid's
+// cross-reference stream. The table marks 1-3 free, as writers of hybrid files do.
+std::string HybridDocument(bool withXrefStm) {
+    std::string out = "%PDF-1.5\n";
+    const std::string objects[3] = {"<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                                    "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /MediaBox [0 0 10 10] >>"};
+    std::string header, packed;
+    for (int i = 0; i < 3; i++) {
+        header += std::to_string(i + 1) + " " + std::to_string(packed.size()) + " ";
+        packed += objects[i] + "\n";
+    }
+    size_t offsets[7] = {};
+    offsets[4] = out.size();
+    out += "4 0 obj\n<< /Length 14 >>\nstream\nBT (Hyb) Tj ET\nendstream\nendobj\n";
+    offsets[5] = out.size();
+    const std::string data = ZlibStored(header + packed);
+    out += "5 0 obj\n<< /Type /ObjStm /N 3 /First " + std::to_string(header.size()) +
+           " /Filter /FlateDecode /Length " + std::to_string(data.size()) + " >>\nstream\n" + data +
+           "\nendstream\nendobj\n";
+    offsets[6] = out.size();
+    std::string rows;
+    for (int num = 0; num < 7; num++) {
+        unsigned char row[4] = {0, 0, 0, 0};  // /W [1 2 1]
+        if (num >= 1 && num <= 3) {
+            row[0] = 2;
+            row[2] = 5;
+            row[3] = static_cast<unsigned char>(num - 1);
+        } else if (num >= 4) {
+            row[0] = 1;
+            row[1] = static_cast<unsigned char>(offsets[num] >> 8);
+            row[2] = static_cast<unsigned char>(offsets[num]);
+        }
+        rows.append(reinterpret_cast<const char*>(row), 4);
+    }
+    out += "6 0 obj\n<< /Type /XRef /Size 7 /W [1 2 1] /Length " + std::to_string(rows.size()) + " >>\nstream\n" +
+           rows + "\nendstream\nendobj\n";
+    const size_t xref = out.size();
+    out += "xref\n0 7\n0000000000 65535 f \n0000000000 00000 f \n0000000000 00000 f \n0000000000 00000 f \n";
+    char line[32];
+    for (int num = 4; num < 7; num++) {
+        std::snprintf(line, sizeof line, "%010zu 00000 n \n", offsets[num]);
+        out += line;
+    }
+    out += "trailer\n<< /Size 7 /Root 1 0 R";
+    if (withXrefStm) out += " /XRefStm " + std::to_string(offsets[6]);
+    out += " >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+    return out;
+}
+
+void TestHybrid() {
+    const auto doc = OpenOk(HybridDocument(true), 223);
+    RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Hyb) Tj ET" && !doc->Report().repaired, 223);
+    RAYOPDF_CHECK(doc->Report().xrefSections == 2 && doc->Version() == "1.5", 223);
+    // Without /XRefStm the compressed objects are free: found again by repair.
+    const auto repaired = OpenOk(HybridDocument(false), 223);
+    RAYOPDF_CHECK(repaired->PageCount() == 1 && repaired->Report().repaired, 223);
+}
+
+// `base` with an incremental update replacing object 3 (the content of BuildThreeObjects); /Prev
+// is written with ten digits so that tests can rewrite it in place.
+std::string Update(const std::string& base, const std::string& content) {
+    const size_t start = base.rfind("startxref");
+    const size_t oldXref = std::stoul(base.substr(start + 10));
+    std::string out = base;
+    const size_t offset = out.size();
+    const std::string data = ZlibStored(content);
+    out += "3 0 obj\n<< /Filter /FlateDecode /Length " + std::to_string(data.size()) + " >>\nstream\n" + data +
+           "\nendstream\nendobj\n";
+    const size_t xref = out.size();
+    char line[64];
+    std::snprintf(line, sizeof line, "%010zu 00000 n \n", offset);
+    out += "xref\n0 1\n0000000000 65535 f \n3 1\n" + std::string(line) + "trailer\n<< /Size 6 /Root 1 0 R /Prev ";
+    std::snprintf(line, sizeof line, "%010zu", oldXref);
+    out += std::string(line) + " >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+    return out;
+}
+
+void TestPrevChain() {
+    for (const bool placeholder : {false, true}) {
+        PdfBuilder b;
+        int catalog = 0;
+        BuildThreeObjects(b, catalog, "BT (Old) Tj ET");
+        // The oldest trailer's /Prev 0 points at the header, no section: the chain ends there.
+        const std::string file = b.Build(catalog, placeholder ? "/Prev 0000000000" : "");
+        const std::string updated = Update(file, "BT (New) Tj ET");
+        const auto doc = OpenOk(updated, 224);
+        RAYOPDF_CHECK(Content(*doc, 0) == "BT (New) Tj ET" && doc->Report().xrefSections == 2, 224);
+        // Two updates: the newest wins.
+        std::string twice = Update(updated, "BT (Newest) Tj ET");
+        const auto doc2 = OpenOk(twice, 224);
+        RAYOPDF_CHECK(Content(*doc2, 0) == "BT (Newest) Tj ET" && doc2->Report().xrefSections == 3, 224);
+        if (!placeholder) continue;
+        // The oldest section's /Prev naming the newest: a cycle, cut, every section read once.
+        const size_t newest = std::stoul(twice.substr(twice.rfind("startxref") + 10));
+        char digits[16];
+        std::snprintf(digits, sizeof digits, "%010zu", newest);
+        twice.replace(twice.find("/Prev 0000000000") + 6, 10, digits);
+        const auto doc3 = OpenOk(twice, 225);
+        RAYOPDF_CHECK(Content(*doc3, 0) == "BT (Newest) Tj ET" && doc3->Report().xrefSections == 3, 225);
+        RAYOPDF_CHECK(doc3->Report().limitHits > 0 && !doc3->Report().repaired, 225);
+    }
+}
+
+void TestGarbageAndRepair() {
+    const std::string file = SimpleDocument();
+    // Garbage before the header: offsets count from the header.
+    const auto shifted = OpenOk("GARBAGE GARBAGE\r\n" + file, 226);
+    RAYOPDF_CHECK(Content(*shifted, 0) == "BT (Hi) Tj ET" && !shifted->Report().repaired, 226);
+    // A startxref pointing nowhere.
+    std::string badStart = file;
+    const size_t at = badStart.rfind("startxref\n") + 10;
+    badStart.replace(at, badStart.find('\n', at) - at, "12345");
+    const auto repaired = OpenOk(badStart, 227);
+    RAYOPDF_CHECK(Content(*repaired, 0) == "BT (Hi) Tj ET" && repaired->Report().repaired, 227);
+    // No startxref at all, no table: the scan finds the objects and the trailer.
+    const std::string noXref = file.substr(0, file.find("xref\n")) + "trailer\n<< /Root 1 0 R >>\n";
+    const auto scanned = OpenOk(noXref, 229);
+    RAYOPDF_CHECK(Content(*scanned, 0) == "BT (Hi) Tj ET" && scanned->Report().repaired, 229);
+    // No trailer either: the catalog is found by its /Type.
+    const auto bare = OpenOk(file.substr(0, file.find("xref\n")), 229);
+    RAYOPDF_CHECK(bare->PageCount() == 1 && Content(*bare, 0) == "BT (Hi) Tj ET", 229);
+    // Every offset of the table 3 bytes off: entries point at no "N G obj".
+    std::string badOffsets = file;
+    for (size_t p = badOffsets.find(" 00000 n"); p != std::string::npos; p = badOffsets.find(" 00000 n", p + 1)) {
+        const size_t offset = std::stoul(badOffsets.substr(p - 10, 10)) + 3;
+        char digits[16];
+        std::snprintf(digits, sizeof digits, "%010zu", offset);
+        badOffsets.replace(p - 10, 10, digits);
+    }
+    const auto lazy = OpenOk(badOffsets, 228);
+    RAYOPDF_CHECK(Content(*lazy, 0) == "BT (Hi) Tj ET" && lazy->Report().repaired, 228);
+    // The scan skips stream data and takes the last definition of a number.
+    std::string twice = file.substr(0, file.find("xref\n"));
+    const std::string data = ZlibStored("BT (Later) Tj ET");
+    twice += "3 0 obj\n<< /Filter /FlateDecode /Length " + std::to_string(data.size()) +
+             " >>\nstream\n" + data + "\nendstream\nendobj\n";
+    const auto last = OpenOk(twice, 249);
+    RAYOPDF_CHECK(Content(*last, 0) == "BT (Later) Tj ET", 249);
+    std::string inside = file.substr(0, file.find("xref\n"));
+    inside += "9 0 obj\n<< /Length 30 >>\nstream\n1 0 obj << /Type /Bogus >> endobj\nendstream\nendobj\n";
+    const auto skipped = OpenOk(inside, 249);
+    RAYOPDF_CHECK(skipped->PageCount() == 1 && skipped->Get(skipped->Catalog(), "Type").IsName("Catalog"), 249);
+    // Not a PDF; a header and nothing else.
+    std::unique_ptr<Document> none;
+    RAYOPDF_CHECK(Document::Open("hello world, no pdf here", "", none) == OpenStatus::NotPdf && !none, 236);
+    RAYOPDF_CHECK(Document::Open("", "", none) == OpenStatus::NotPdf, 236);
+    RAYOPDF_CHECK(Document::Open("%PDF-1.4\n%%EOF\n", "", none) == OpenStatus::Corrupt && !none, 236);
+}
+
+void TestStreams() {
+    // /Length too short, too long, missing, and by reference.
+    for (const std::string length : {"5", "500", "", "6 0 R"}) {
+        PdfBuilder b;
+        const int catalog = b.Reserve();
+        const int pages = b.Reserve();
+        const std::string data = "BT (Length) Tj ET";
+        const int stream = b.Add("<< " + (length.empty() ? std::string() : "/Length " + length) + " >>\nstream\n" +
+                                 data + "\nendstream");
+        const int page = b.Add("<< /Type /Page /Parent 2 0 R /Contents " + std::to_string(stream) + " 0 R >>");
+        b.Add(std::to_string(data.size()));  // 5: unused
+        b.Add(std::to_string(data.size()));  // 6: the length by reference
+        b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+        b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] >>");
+        const auto doc = OpenOk(b.Build(catalog), 230);
+        RAYOPDF_CHECK(Content(*doc, 0) == data, 230);
+    }
+    // /Contents arrays are joined with a newline; a broken piece makes the worst status.
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int a = b.AddFlateStream("", "BT (A) Tj");
+    const int c = b.AddStream("/Filter [/AHx /Fl] /DecodeParms [null << /Predictor 12 /Columns 3 >>]",
+                              Hex(ZlibStored(std::string("\x00" "ET " "\x02" "\x00\x00\x00", 8))) + ">");
+    std::string truncated = ZlibStored(SampleText());
+    truncated.resize(truncated.size() / 2);
+    const int t = b.AddStream("/Filter /FlateDecode", truncated);
+    const int image = b.AddStream("/Filter [/AHx /DCTDecode]", "4142>");
+    const int page1 = b.Add("<< /Type /Page /Parent 2 0 R /Contents [" + std::to_string(a) + " 0 R " +
+                            std::to_string(c) + " 0 R] >>");
+    const int page2 = b.Add("<< /Type /Page /Parent 2 0 R /Contents [" + std::to_string(a) + " 0 R " +
+                            std::to_string(t) + " 0 R] >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page1) + " 0 R " + std::to_string(page2) + " 0 R] >>");
+    const auto doc = OpenOk(b.Build(catalog), 237);
+    std::string out;
+    RAYOPDF_CHECK(doc->PageContent(0, out) == StreamStatus::Ok && out == "BT (A) Tj\nET ET ", 237);
+    RAYOPDF_CHECK(doc->PageContent(1, out) == StreamStatus::Salvaged && out.compare(0, 10, "BT (A) Tj\n") == 0, 243);
+    RAYOPDF_CHECK(doc->Report().salvagedStreams == 1 && doc->Report().failedStreams == 0, 243);
+    PdfValue ref;
+    ref.type = PdfValue::Type::Ref;
+    ref.refNum = static_cast<uint32_t>(image);
+    RAYOPDF_CHECK(doc->StreamData(ref, out) == StreamStatus::Unsupported && out == "AB", 238);
+    ref.refNum = static_cast<uint32_t>(a);
+    RAYOPDF_CHECK(doc->StreamData(ref, out, 4) == StreamStatus::TooLarge && out == "BT (", 238);
+    // A reference with the wrong generation is null.
+    ref.refGen = 1;
+    RAYOPDF_CHECK(doc->Resolve(ref).IsNull() && doc->StreamData(ref, out) == StreamStatus::NotStream, 240);
+}
+
+void TestNesting() {
+    // Arrays nested past the limit: the object is broken, the document still opens.
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int deep = b.Add(std::string(100, '[') + std::string(100, ']'));
+    const int ok = b.Add(std::string(60, '[') + "1" + std::string(60, ']'));
+    const int page = b.Add("<< /Type /Page /Parent 2 0 R >>");
+    // A reference chain longer than 32 resolves to null.
+    int chain = b.Add("42");
+    for (int i = 0; i < 40; i++) chain = b.Add(std::to_string(chain) + " 0 R");
+    b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] >>");
+    const auto doc = OpenOk(b.Build(catalog), 231);
+    RAYOPDF_CHECK(doc->Object(static_cast<uint32_t>(deep)).IsNull() && doc->Report().brokenObjects == 1, 231);
+    RAYOPDF_CHECK(doc->Object(static_cast<uint32_t>(ok)).IsArray(), 231);
+    PdfValue ref;
+    ref.type = PdfValue::Type::Ref;
+    ref.refNum = static_cast<uint32_t>(chain);
+    RAYOPDF_CHECK(doc->Resolve(ref).IsNull() && doc->Report().limitHits > 0, 231);
+    ref.refNum = static_cast<uint32_t>(chain - 30);
+    double number = 0;
+    RAYOPDF_CHECK(doc->Number(ref, number) && number == 42, 240);
+}
+
+void TestPageTree() {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int root = b.Reserve();
+    const int middle = b.Reserve();
+    const int resources = b.Add("<< /Font << >> >>");
+    // A node without /Type but with /Kids is a Pages node; a leaf without /Type is a page. The
+    // root lists itself (a cycle) and the middle node twice (visited once).
+    const int p1 = b.Add("<< /Type /Page /Parent " + std::to_string(middle) + " 0 R >>");
+    const int p2 = b.Add("<< /Parent " + std::to_string(middle) + " 0 R /Rotate -90 /CropBox [-10 -10 100 2000] >>");
+    const int p3 = b.Add("<< /Type /Page /MediaBox [0 0 0 0] /Rotate 45 /Resources << /Own true >> >>");
+    b.Set(middle, "<< /Kids [" + std::to_string(p1) + " 0 R " + std::to_string(p2) +
+                      " 0 R] /MediaBox [0 0 300 400] /Rotate 180 >>");
+    b.Set(root, "<< /Type /Pages /Kids [" + std::to_string(middle) + " 0 R " + std::to_string(root) + " 0 R " +
+                    std::to_string(middle) + " 0 R " + std::to_string(p3) + " 0 R] /Resources " +
+                    std::to_string(resources) + " 0 R /MediaBox [0 0 500 600] >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(root) + " 0 R /Version /2.0 >>");
+    const auto doc = OpenOk(b.Build(catalog), 232);
+    RAYOPDF_CHECK(doc->PageCount() == 3 && doc->Report().limitHits >= 2, 233);
+    RAYOPDF_CHECK(doc->MediaBox(0).x1 == 300 && doc->Rotate(0) == 180 && doc->Get(doc->Resources(0), "Font").IsDict(),
+                  232);
+    const PdfRect crop = doc->CropBox(1);
+    RAYOPDF_CHECK(doc->Rotate(1) == 270 && crop.x0 == 0 && crop.y0 == 0 && crop.x1 == 100 && crop.y1 == 400, 232);
+    RAYOPDF_CHECK(doc->MediaBox(2).x1 == 612 && doc->MediaBox(2).y1 == 792 && doc->Rotate(2) == 0, 232);
+    RAYOPDF_CHECK(doc->CropBox(2).x1 == 612 && doc->Get(doc->Resources(2), "Own").Bool(), 232);
+    RAYOPDF_CHECK(doc->PageDict(1).Find("Rotate") != nullptr && doc->Version() == "2.0", 234);
+
+    // A broken tree (/Pages names a missing object): pages come from their /Type, with what
+    // they inherit through /Parent.
+    PdfBuilder broken;
+    const int c2 = broken.Reserve();
+    const int parent = broken.Add("<< /Type /Pages /MediaBox [0 0 50 60] >>");
+    broken.Add("<< /Type /Page /Parent " + std::to_string(parent) + " 0 R >>");
+    broken.Add("<< /Type /Page /Parent " + std::to_string(parent) + " 0 R /MediaBox [0 0 70 80] >>");
+    broken.Set(c2, "<< /Type /Catalog /Pages 99 0 R >>");
+    const auto fallback = OpenOk(broken.Build(c2), 235);
+    RAYOPDF_CHECK(fallback->PageCount() == 2 && fallback->MediaBox(0).x1 == 50 && fallback->MediaBox(1).x1 == 70 &&
+                      fallback->Report().repaired,
+                  235);
+}
+
+void TestXrefQuirks() {
+    const std::string file = SimpleDocument();
+    // The table's first subsection numbered from 1 (a writer bug).
+    std::string fromOne = file;
+    fromOne.replace(fromOne.find("xref\n0 "), 7, "xref\n1 ");
+    const auto one = OpenOk(fromOne, 241);
+    RAYOPDF_CHECK(Content(*one, 0) == "BT (Hi) Tj ET" && !one->Report().repaired, 241);
+    // Entries with other line ends and spacing (19 and 21 bytes, tokens apart).
+    std::string spacing = file;
+    for (size_t p = spacing.find(" n \n"); p != std::string::npos; p = spacing.find(" n \n", p + 1)) {
+        spacing.replace(p, 4, " n\r\n");
+    }
+    const size_t first = spacing.find(" 00000 n");
+    spacing.replace(first, 7, "   0 ");
+    const auto spaced = OpenOk(spacing, 242);
+    RAYOPDF_CHECK(Content(*spaced, 0) == "BT (Hi) Tj ET" && !spaced->Report().repaired, 242);
+    // Fewer entries than the subsection says.
+    std::string fewer = file;
+    fewer.replace(fewer.find("xref\n0 5"), 8, "xref\n0 9");
+    const auto few = OpenOk(fewer, 242);
+    RAYOPDF_CHECK(Content(*few, 0) == "BT (Hi) Tj ET", 242);
+    // A linearized file's first object.
+    PdfBuilder b;
+    b.Add("<< /Linearized 1 /L 1000 >>");
+    int catalog = 0;
+    BuildThreeObjects(b, catalog);
+    const std::string withInfo = b.Build(catalog);
+    const auto linear = OpenOk(withInfo, 245);
+    RAYOPDF_CHECK(linear->Report().linearized && linear->PageCount() == 1, 245);
+    RAYOPDF_CHECK(linear->Get(linear->Object(6), "Title").String() == "Info", 250);
+    // A free entry is null: the info dictionary, object 6, the table's last.
+    std::string freed = withInfo;
+    freed.replace(freed.rfind(" 00000 n") + 7, 1, "f");
+    const auto free = OpenOk(freed, 250);
+    RAYOPDF_CHECK(free->Object(6).IsNull() && free->ObjectCount() == 7 && free->PageCount() == 1, 250);
+}
+
+// ------------------------------------------------------------------- encryption
+
+constexpr unsigned char kPad[32] = {0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E,
+                                    0x56, 0xFF, 0xFA, 0x01, 0x08, 0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68,
+                                    0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A};
+
+std::string Md5(std::string_view data) {
+    uint8_t digest[16];
+    Crypt::Md5(data, digest);
+    return std::string(reinterpret_cast<const char*>(digest), 16);
+}
+
+std::string Rc4(std::string key, std::string data) {
+    Crypt::Rc4(reinterpret_cast<const uint8_t*>(key.data()), key.size(), reinterpret_cast<uint8_t*>(&data[0]),
+               data.size());
+    return data;
+}
+
+// A Standard security handler (ISO 32000-1 section 7.6.3) for revision 2 (RC4, 40 bits) or 4
+// (AESV2), with user password `password`, made the way Algorithms 2, 3 and 4/5 say.
+struct Encryptor {
+    int revision;
+    std::string key;
+    std::string o = std::string(32, 'O');
+    std::string u;
+    std::string id = "0123456789abcdef";
+
+    Encryptor(int r, std::string_view password) : revision(r) {
+        std::string padded(password.substr(0, 32));
+        padded.append(reinterpret_cast<const char*>(kPad), 32 - padded.size());
+        const std::string p("\xfc\xff\xff\xff", 4);  // /P -4
+        const size_t n = r == 2 ? 5 : 16;
+        std::string h = Md5(padded + o + p + id);
+        if (r >= 3) {
+            for (int i = 0; i < 50; i++) h = Md5(h.substr(0, n));
+        }
+        key = h.substr(0, n);
+        const std::string pad(reinterpret_cast<const char*>(kPad), 32);
+        if (r == 2) {
+            u = Rc4(key, pad);
+        } else {
+            std::string x = Rc4(key, Md5(pad + id));
+            for (int i = 1; i <= 19; i++) {
+                std::string k = key;
+                for (char& c : k) c = static_cast<char>(c ^ i);
+                x = Rc4(k, x);
+            }
+            u = x + std::string(16, '\0');
+        }
+    }
+
+    std::string Encrypt(int num, std::string_view data) const {
+        std::string seed = key;
+        seed.push_back(static_cast<char>(num & 0xFF));
+        seed.push_back(static_cast<char>((num >> 8) & 0xFF));
+        seed.push_back(static_cast<char>((num >> 16) & 0xFF));
+        seed.append(2, '\0');
+        if (revision == 4) seed += "sAlT";
+        const std::string objectKey = Md5(seed).substr(0, std::min<size_t>(key.size() + 5, 16));
+        if (revision != 4) return Rc4(objectKey, std::string(data));
+        std::string padded(data);
+        const size_t pad = 16 - padded.size() % 16;
+        padded.append(pad, static_cast<char>(pad));
+        const uint8_t iv[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        std::string out;
+        Crypt::AesCbcEncrypt(reinterpret_cast<const uint8_t*>(objectKey.data()), 16, iv, padded, out);
+        return std::string(reinterpret_cast<const char*>(iv), 16) + out;
+    }
+
+    std::string Dictionary() const {
+        std::string d = "<< /Filter /Standard /O <" + Hex(o) + "> /U <" + Hex(u) + "> /P -4 ";
+        if (revision == 2) return d + "/V 1 /R 2 >>";
+        return d + "/V 4 /R 4 /Length 128 /CF << /StdCF << /CFM /AESV2 /AuthEvent /DocOpen /Length 16 >> >> "
+                   "/StmF /StdCF /StrF /StdCF >>";
+    }
+};
+
+std::string EncryptedDocument(const Encryptor& e, std::string_view content) {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int stream = b.Reserve();
+    const int page = b.Add("<< /Type /Page /Parent 2 0 R /Contents " + std::to_string(stream) + " 0 R >>");
+    const int info = b.Reserve();
+    const int encrypt = b.Add(e.Dictionary());
+    const std::string data = e.Encrypt(stream, ZlibStored(content));
+    b.Set(stream, "<< /Filter /FlateDecode /Length " + std::to_string(data.size()) + " >>\nstream\n" + data +
+                      "\nendstream");
+    b.Set(info, "<< /Title <" + Hex(e.Encrypt(info, "Secret title")) + "> >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] >>");
+    return b.Build(catalog, "/Info " + std::to_string(info) + " 0 R /Encrypt " + std::to_string(encrypt) +
+                                " 0 R /ID [<" + Hex(e.id) + "> <" + Hex(e.id) + ">]");
+}
+
+void TestEncryption() {
+    for (int revision : {2, 4}) {
+        const Encryptor open(revision, "");
+        const auto doc = OpenOk(EncryptedDocument(open, "BT (Plain) Tj ET"), 244);
+        RAYOPDF_CHECK(doc->Report().encrypted && Content(*doc, 0) == "BT (Plain) Tj ET", 244);
+        RAYOPDF_CHECK(doc->Get(doc->Info(), "Title").String() == "Secret title", 244);
+        const Encryptor locked(revision, "secret");
+        std::unique_ptr<Document> none;
+        RAYOPDF_CHECK(Document::Open(EncryptedDocument(locked, "x"), "", none) == OpenStatus::PasswordRequired, 246);
+        const auto unlocked = OpenOk(EncryptedDocument(locked, "BT (Locked) Tj ET"), 246, "secret");
+        RAYOPDF_CHECK(Content(*unlocked, 0) == "BT (Locked) Tj ET", 246);
+    }
+    // A security handler RayoPDF does not have.
+    std::string file = OnePage("x");
+    const size_t at = file.rfind(">>\nstartxref");
+    file.insert(at, "/Encrypt << /Filter /Adobe.PubSec /V 4 /R 4 >> ");
+    std::unique_ptr<Document> none;
+    RAYOPDF_CHECK(Document::Open(file, "", none) == OpenStatus::Unsupported, 247);
+}
+
+// Content ending right after "BI ID": the inline image's data is empty, nothing is read past the
+// end (a fuzz finding of Layout's content target).
+void TestInlineImageAtEnd() {
+    for (const std::string_view data : {std::string_view("q BI ID"), std::string_view("q BI /W 4 ID "),
+                                        std::string_view("BI ID\nab EI Q")}) {
+        ContentLexer lexer(data);
+        std::string_view op;
+        std::vector<PdfValue> operands;
+        bool inlineImage = false;
+        while (lexer.Next(op, operands)) {
+            if (op == "BI") {
+                inlineImage = true;
+                RAYOPDF_CHECK(lexer.InlineImageData().size() <= data.size(), 251);
+            }
+            RAYOPDF_CHECK(lexer.Offset() <= data.size(), 251);
+        }
+        RAYOPDF_CHECK(inlineImage, 251);
+    }
+}
+
+} // namespace
+
+int main() {
+    TestKinds();
+    TestFlate();
+    TestLzw();
+    TestAscii();
+    TestPredictors();
+    TestClassic();
+    TestXrefStreams();
+    TestHybrid();
+    TestPrevChain();
+    TestGarbageAndRepair();
+    TestStreams();
+    TestNesting();
+    TestPageTree();
+    TestXrefQuirks();
+    TestEncryption();
+    TestInlineImageAtEnd();
+    std::puts("test_pdf: all checks passed");
+    return 0;
+}
