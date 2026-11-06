@@ -83,6 +83,17 @@ bool IsPageNumberKey(const std::string& key) {
     return number;
 }
 
+// A folio at either end of a running head or foot: "38 Chapter title", "Journal title 39". A
+// leading number must have two digits or be roman, since "3 Methods" is a numbered heading.
+bool HasFolio(const std::string& key, const std::string& text) {
+    if (key.size() < 3) return false;
+    if (key.compare(key.size() - 2, 2, " #") == 0) return true;
+    if (key.compare(0, 2, "# ") != 0) return false;
+    size_t digits = 0;
+    while (digits < text.size() && text[digits] >= '0' && text[digits] <= '9') ++digits;
+    return digits != 1;
+}
+
 struct KeyCount {
     int total = 0;
     int odd = 0;
@@ -95,9 +106,14 @@ struct Rule {
     float y, x0, x1;
 };
 
+// The largest region ordered by Breuel's partial order, whose cost grows with the cube of its
+// lines: larger regions are cut row by row instead.
+constexpr size_t kTopologicalMax = 200;
+
 struct Orderer {
     PageData& page;
     std::vector<uint32_t>& out;
+    uint32_t obstacleFrom;  // lines from this index on are figures added as obstacles
     std::vector<Rule> rules;
     std::vector<uint32_t> scratch;
     std::vector<float> gaps_;
@@ -230,24 +246,55 @@ struct Orderer {
     bool ColumnsLike(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, float size) {
         int texty = 0;
         size_t begin = 0;
-        std::vector<float> widths;
         for (size_t c = 0; c <= cuts.size(); ++c) {
             const size_t end = c < cuts.size() ? cuts[c] : items.size();
             if (end - begin >= 3) {
                 float u0 = L(items[begin]).u0, u1 = L(items[begin]).u1;
-                widths.clear();
+                for (size_t k = begin; k < end; ++k) u0 = std::fmin(u0, L(items[k]).u0), u1 = std::fmax(u1, L(items[k]).u1);
+                // Weighted by characters: display formulas and figure labels inside a column are
+                // many short lines with few characters.
+                // A group of long lines (prose averages 25 characters a line or more, table cells
+                // far fewer) is text even when its lines have different widths, as when it holds
+                // columns of its own.
+                uint32_t chars = 0, full = 0, lines = 0;
                 for (size_t k = begin; k < end; ++k) {
-                    u0 = std::fmin(u0, L(items[k]).u0);
-                    u1 = std::fmax(u1, L(items[k]).u1);
-                    widths.push_back(L(items[k]).u1 - L(items[k]).u0);
+                    chars += L(items[k]).chars;
+                    lines += L(items[k]).chars > 0;
+                    if (L(items[k]).u1 - L(items[k]).u0 >= 0.5f * (u1 - u0)) full += L(items[k]).chars;
                 }
-                std::nth_element(widths.begin(), widths.begin() + static_cast<std::ptrdiff_t>(widths.size() / 2), widths.end());
-                const float median = widths[widths.size() / 2];
-                if (u1 - u0 >= 8 * size && median >= 0.6f * (u1 - u0)) texty++;
+                if (u1 - u0 >= 8 * size && chars > 0 && (full * 2 >= chars || chars >= 25 * lines)) texty++;
             }
             begin = end;
         }
         return texty >= 2;
+    }
+
+
+    // A narrow group of short items, each on the baseline of a line of the group to its right,
+    // is a column of labels (reference numbers "[12]", line numbers, enumerators set apart by a
+    // tab), not a column of text: it is read row by row with the text it labels, so the cut
+    // between them goes.
+    void DropLabelCuts(const std::vector<uint32_t>& items, std::vector<size_t>& cuts, float size) {
+        size_t kept = 0;
+        for (size_t c = 0; c < cuts.size(); ++c) {
+            const size_t begin = c == 0 ? 0 : cuts[c - 1];
+            const size_t end = cuts[c];
+            const size_t next = c + 1 < cuts.size() ? cuts[c + 1] : items.size();
+            float u0 = INFINITY, u1 = -INFINITY;
+            for (size_t k = begin; k < end; ++k) u0 = std::fmin(u0, L(items[k]).u0), u1 = std::fmax(u1, L(items[k]).u1);
+            bool labels = u1 - u0 <= 4 * size && end - begin <= 128 && next - end <= 2048;
+            for (size_t k = begin; k < end && labels; ++k) {
+                const Line& label = L(items[k]);
+                bool mate = false;
+                for (size_t j = end; j < next && !mate; ++j) {
+                    const Line& l = L(items[j]);
+                    mate = std::fabs(l.baseline - label.baseline) <= 0.3f * label.size && l.u0 - label.u1 <= 3 * size;
+                }
+                labels = mate;
+            }
+            if (!labels) cuts[kept++] = cuts[c];
+        }
+        cuts.resize(kept);
     }
 
     void Cut(std::vector<uint32_t>& items, int depth) {
@@ -262,6 +309,7 @@ struct Orderer {
         // LaTeX's 10 pt gutter narrows to 7 pt where hyphens protrude: half an em suffices, since
         // word gaps never reach this stage (lines are whole runs of words).
         SplitX(items, std::fmax(3.0f, 0.5f * size), xCuts);
+        DropLabelCuts(items, xCuts, size);
         if (!xCuts.empty() && (yCuts.empty() || ColumnsLike(items, xCuts, size))) {
             std::vector<size_t> ruleCuts;
             std::vector<uint32_t> byRule(items);
@@ -275,16 +323,172 @@ struct Orderer {
         if (xCuts.empty() && items.size() >= 6) {
             std::vector<uint32_t> soft(items);
             SplitXSoft(soft, size, xCuts);
+            DropLabelCuts(soft, xCuts, size);
             if (!xCuts.empty() && ColumnsLike(soft, xCuts, size)) {
                 Recurse(soft, xCuts, depth);
                 return;
             }
         }
+        // Whitespace no wider than the space between lines is no paragraph or section break: a
+        // y cut there would slice columns into rows, so columns found with their bridging lines
+        // set aside come first.
+        float widest = 0;
+        for (float g : gaps_) widest = std::fmax(widest, g);
+        if ((yCuts.empty() || widest < size) && MaskedColumns(items, size, depth)) return;
+        if (!yCuts.empty() && widest < size && Topological(items)) return;
         if (!yCuts.empty()) {
             Recurse(byY, yCuts, depth);
-        } else {
-            Fallback(items);
+            return;
         }
+        // Figures keep a column's whitespace from reading as a page-wide gap; a region they make
+        // uncuttable (text beside and between figures) is cut again without them.
+        size_t text = 0;
+        for (uint32_t i : items) text += i < obstacleFrom;
+        if (text < items.size() && text >= 2) {
+            items.erase(std::remove_if(items.begin(), items.end(), [&](uint32_t i) { return i >= obstacleFrom; }),
+                        items.end());
+            Cut(items, depth + 1);
+            return;
+        }
+        Fallback(items);
+    }
+
+    // Breuel's partial order (algorithms §5.1), for a region whose columns no cut separates (text
+    // flowing around a figure set into both columns, a box straddling a gutter): a comes before b
+    // when they overlap horizontally and a is above b, or when a lies wholly left of b and no line
+    // between them vertically overlaps both. Lines are taken in that order, topmost first among
+    // those free. Regions without two lines of text side by side (labels beside their entries do not
+    // count), or too large for the cubic order, are left to the y cuts.
+    bool Topological(const std::vector<uint32_t>& items) {
+        const size_t n = items.size();
+        if (n < 3 || n > kTopologicalMax) return false;
+        bool side = false;
+        for (size_t a = 0; a < n && !side; ++a)
+            for (size_t b = a + 1; b < n && !side; ++b) {
+                const Line& la = L(items[a]);
+                const Line& lb = L(items[b]);
+                side = la.vb < lb.vt && lb.vb < la.vt && (la.u1 <= lb.u0 || lb.u1 <= la.u0) &&
+                       la.u1 - la.u0 >= 6 * la.size && lb.u1 - lb.u0 >= 6 * lb.size;
+            }
+        if (!side) return false;
+        std::vector<uint32_t> v(items);
+        std::sort(v.begin(), v.end(), [&](uint32_t a, uint32_t b) {
+            if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
+            return L(a).u0 < L(b).u0;
+        });
+        std::vector<uint8_t> edge(n * n, 0);
+        std::vector<uint32_t> indegree(n, 0);
+        for (size_t a = 0; a < n; ++a) {
+            const Line& la = L(v[a]);
+            for (size_t b = 0; b < n; ++b) {
+                if (a == b) continue;
+                const Line& lb = L(v[b]);
+                const float tolerance = 0.3f * std::fmin(la.size, lb.size);
+                bool before = la.u0 < lb.u1 && lb.u0 < la.u1 && la.baseline > lb.baseline + tolerance;
+                if (!before && la.u1 <= lb.u0) {
+                    before = true;
+                    const float high = std::fmax(la.baseline, lb.baseline) - tolerance;
+                    const float low = std::fmin(la.baseline, lb.baseline) + tolerance;
+                    for (size_t c = std::min(a, b) + 1; c < std::max(a, b) && before; ++c) {
+                        const Line& lc = L(v[c]);
+                        if (lc.baseline >= high || lc.baseline <= low) continue;
+                        before = !(lc.u0 < la.u1 && lc.u1 > la.u0 && lc.u0 < lb.u1 && lc.u1 > lb.u0);
+                    }
+                }
+                if (before) {
+                    edge[a * n + b] = 1;
+                    indegree[b]++;
+                }
+            }
+        }
+        // v is sorted top first: the first free line is the topmost. A cycle (possible with
+        // overlapping boxes) is broken by taking the topmost line left.
+        std::vector<uint8_t> done(n, 0);
+        for (size_t step = 0; step < n; ++step) {
+            size_t pick = n;
+            for (size_t k = 0; k < n && pick == n; ++k)
+                if (!done[k] && indegree[k] == 0) pick = k;
+            for (size_t k = 0; k < n && pick == n; ++k)
+                if (!done[k]) pick = k;
+            done[pick] = 1;
+            out.push_back(v[pick]);
+            for (size_t b = 0; b < n; ++b)
+                if (edge[pick * n + b] && indegree[b] > 0) indegree[b]--;
+        }
+        return true;
+    }
+
+    // Lines that bridge a gutter inside a region (XY-Cut++'s cross-layout lines: a line
+    // overlapping, near its baseline, two substantial lines that do not overlap each other):
+    // headlines over some columns of a newspaper page, a line run across a gutter. Fills `cross`
+    // and `rest`.
+    void CrossLines(const std::vector<uint32_t>& items, std::vector<uint32_t>& cross, std::vector<uint32_t>& rest) {
+        cross.clear();
+        rest.clear();
+        float left = INFINITY, right = -INFINITY;
+        scratch.clear();
+        for (uint32_t i : items) {
+            left = std::fmin(left, L(i).u0), right = std::fmax(right, L(i).u1);
+            if (L(i).count > 0) scratch.push_back(i);
+        }
+        float median = 0;
+        if (!scratch.empty()) {
+            auto mid = scratch.begin() + static_cast<std::ptrdiff_t>(scratch.size() / 2);
+            std::nth_element(scratch.begin(), mid, scratch.end(),
+                             [&](uint32_t a, uint32_t b) { return L(a).u1 - L(a).u0 < L(b).u1 - L(b).u0; });
+            median = L(*mid).u1 - L(*mid).u0;
+        }
+        // Substantial: a quarter of the region, or most of a typical line when the region holds
+        // many narrow columns.
+        const float wide = std::fmin(0.25f * (right - left), 0.6f * median);
+        scratch.assign(items.begin(), items.end());
+        std::sort(scratch.begin(), scratch.end(), [&](uint32_t a, uint32_t b) { return L(a).baseline > L(b).baseline; });
+        size_t from = 0;
+        for (size_t k = 0; k < scratch.size(); ++k) {
+            const Line& lf = L(scratch[k]);
+            const float window = 6 * lf.size;
+            while (from < k && L(scratch[from]).baseline - lf.baseline > window) ++from;
+            float minRight = INFINITY, maxLeft = -INFINITY;
+            for (size_t j = from; j < scratch.size(); ++j) {
+                const Line& lg = L(scratch[j]);
+                if (lf.baseline - lg.baseline > window) break;
+                if (j == k || lg.u1 - lg.u0 < wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
+                if (std::fabs(lg.baseline - lf.baseline) > window) continue;
+                minRight = std::fmin(minRight, lg.u1);
+                maxLeft = std::fmax(maxLeft, lg.u0);
+            }
+            (maxLeft > minRight ? cross : rest).push_back(scratch[k]);
+        }
+    }
+
+    // A region no gutter crosses cleanly: its columns found with the bridging lines set aside,
+    // each bridging line then read with the column it starts in. Returns whether it cut.
+    bool MaskedColumns(const std::vector<uint32_t>& items, float size, int depth) {
+        if (items.size() < 6 || items.size() > 2000) return false;
+        std::vector<uint32_t> cross, rest;
+        CrossLines(items, cross, rest);
+        if (cross.empty() || rest.size() < 6) return false;
+        std::vector<size_t> cuts;
+        SplitX(rest, std::fmax(3.0f, 0.5f * size), cuts);
+        DropLabelCuts(rest, cuts, size);
+        if (cuts.empty() || !ColumnsLike(rest, cuts, size)) return false;
+        // The columns' left edges, to place the bridging lines.
+        std::vector<std::vector<uint32_t>> groups(cuts.size() + 1);
+        std::vector<float> starts;
+        size_t begin = 0;
+        for (size_t c = 0; c <= cuts.size(); ++c) {
+            const size_t end = c < cuts.size() ? cuts[c] : rest.size();
+            groups[c].assign(rest.begin() + static_cast<std::ptrdiff_t>(begin), rest.begin() + static_cast<std::ptrdiff_t>(end));
+            starts.push_back(L(rest[begin]).u0);
+            begin = end;
+        }
+        for (uint32_t f : cross) {
+            size_t g = 0;
+            while (g + 1 < starts.size() && L(f).u0 >= starts[g + 1]) ++g;
+            groups[g].push_back(f);
+        }
+        for (std::vector<uint32_t>& group : groups) Cut(group, depth + 1);
+        return true;
     }
 
     void Recurse(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, int depth) {
@@ -309,9 +513,25 @@ struct Orderer {
         float left = L(items[0]).u0, right = L(items[0]).u1;
         for (uint32_t i : items) left = std::fmin(left, L(i).u0), right = std::fmax(right, L(i).u1);
         const float wide = 0.25f * (right - left);
+        // XY-Cut++'s length condition: a cross-layout line is longer than β = 1.3 times the
+        // median line, so a line of text wrapped around a pull quote or a figure is not one.
+        scratch.clear();
+        for (uint32_t i : items)
+            if (L(i).count > 0) scratch.push_back(i);
+        float median = 0;
+        if (!scratch.empty()) {
+            auto mid = scratch.begin() + static_cast<std::ptrdiff_t>(scratch.size() / 2);
+            std::nth_element(scratch.begin(), mid, scratch.end(),
+                             [&](uint32_t a, uint32_t b) { return L(a).u1 - L(a).u0 < L(b).u1 - L(b).u0; });
+            median = L(*mid).u1 - L(*mid).u0;
+        }
         std::vector<uint32_t> separators, rest;
         for (uint32_t f : items) {
             const Line& lf = L(f);
+            if (lf.u1 - lf.u0 < 1.3f * median) {
+                rest.push_back(f);
+                continue;
+            }
             const float window = 6 * lf.size;
             float minRight = INFINITY, maxLeft = -INFINITY;
             for (uint32_t g : items) {
@@ -375,7 +595,32 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
     });
     const float h = page.height;
+    // The horizontal extent of the page's text, against which a row's spread is measured.
+    float textLeft = INFINITY, textRight = -INFINITY;
+    for (uint32_t i : lines) textLeft = std::fmin(textLeft, page.lines[i].u0), textRight = std::fmax(textRight, page.lines[i].u1);
+    // The text's own line spacing: the median gap from a line to the next line below it in its
+    // column. A header or footer is set apart by more than that, so double-spaced text keeps its
+    // first and last lines.
+    std::vector<float> gaps;
+    for (size_t k = 0; k + 1 < lines.size(); ++k) {
+        const Line& a = page.lines[lines[k]];
+        for (size_t j = k + 1; j < lines.size() && j <= k + 8; ++j) {
+            const Line& b = page.lines[lines[j]];
+            if (b.u1 <= a.u0 || b.u0 >= a.u1) continue;
+            const float g = a.vb - b.vt;
+            if (g > -0.5f * body && g < 3 * body) gaps.push_back(g);
+            break;
+        }
+    }
+    float spacing = 0;
+    if (!gaps.empty()) {
+        std::nth_element(gaps.begin(), gaps.begin() + static_cast<std::ptrdiff_t>(gaps.size() / 2), gaps.end());
+        spacing = gaps[gaps.size() / 2];
+    }
+    const float minGap = std::fmax(body, 1.5f * spacing);
     int removed = 0;
+    std::vector<uint32_t> rowLines;
+    std::string piece;
     size_t first = 0, last = lines.size();  // the lines not removed: lines[first, last)
     for (int side = 0; side < 2; ++side) {
         for (int row = 0; row < 2 && last - first > kEdgeMinLines; ++row) {
@@ -383,9 +628,10 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // The row: lines on the edge line's baseline.
             size_t count = 0;
             float inner = side == 0 ? INFINITY : -INFINITY;  // the row's inner edge
+            float rowLeft = INFINITY, rowRight = -INFINITY;
             uint32_t chars = 0;
             float largest = 0;
-            bool superscript = false;
+            bool superscript = false, bold = true, mono = true;
             for (size_t k = 0; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
                 if (std::fabs(l.baseline - edge.baseline) > 0.3f * std::fmax(l.size, edge.size)) break;
@@ -393,6 +639,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 inner = side == 0 ? std::fmin(inner, l.vb) : std::fmax(inner, l.vt);
                 chars += l.chars;
                 largest = std::fmax(largest, l.size);
+                rowLeft = std::fmin(rowLeft, l.u0), rowRight = std::fmax(rowRight, l.u1);
+                bold = bold && (l.flags & kLineAllBold);
+                mono = mono && (l.flags & kLineAllMono);
                 superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
                 // A row starting with a list marker or enumerator ("5. The last note") is content.
                 uint32_t end = 1, value = 0;
@@ -417,18 +666,48 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const float center = (edge.vb + edge.vt) / 2;
             const bool margin = side == 0 ? center > h * (1 - kMarginBand) : center < h * kMarginBand;
             const bool band = side == 0 ? center > h * (1 - kRunningBand) : center < h * kRunningBand;
-            bool number = false;
-            if (count == 1 && band) {
-                LineText(page, edge, text);
+            bool number = false, folio = false, note = false;
+            if (band) {
+                // The row's text, left to right.
+                rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
+                           lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
+                std::sort(rowLines.begin(), rowLines.end(),
+                          [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
+                text.clear();
+                for (uint32_t li : rowLines) {
+                    if (!text.empty()) text.push_back(' ');
+                    LineText(page, page.lines[li], piece);
+                    text += piece;
+                }
                 RunningKey(text, key);
-                number = IsPageNumberKey(key);
+                number = count == 1 && IsPageNumberKey(key);
+                folio = !bold && HasFolio(key, text);
+                // A foot row that starts with a number or a reference mark is a footnote.
+                note = side == 1 && (key.compare(0, 2, "# ") == 0 || text.compare(0, 1, "*") == 0 ||
+                                     text.compare(0, 3, "\xE2\x80\xA0") == 0 || text.compare(0, 3, "\xE2\x80\xA1") == 0 ||
+                                     text.compare(0, 2, "\xC2\xA7") == 0);
             }
             // A body-size row above a heading is the document's first paragraph, set high on a page
             // with narrow margins: a header must be smaller than the body to be told from it.
             const bool beforeHeading = side == 0 && nextSize >= 1.12f * body && largest > 0.95f * body;
-            const bool qualifies = gap >= body && !superscript && chars <= kEdgeMaxChars &&
+            // Furniture evidence inside the running band: pieces spread across the text width
+            // ("Journal 12(3) ... Author et al."), a folio at an end of the row ("38 Chapter
+            // title"), or print smaller than the body. Figures between the row and the text count
+            // as content: a caption or credit under a figure is not set apart.
+            float figureGap = gap;
+            for (const ImageBox& image : page.images) {
+                if ((image.x1 - image.x0) * (image.y1 - image.y0) < 0.01f * page.width * h) continue;
+                if (side == 0 && image.y1 <= inner + 1) figureGap = std::fmin(figureGap, inner - image.y1);
+                if (side == 1 && image.y0 >= inner - 1) figureGap = std::fmin(figureGap, image.y0 - inner);
+            }
+            // A spread row reaches both edges of the text: a row with a piece in each column of a
+            // two-column page does not.
+            const bool spread = count >= 2 && rowLeft <= textLeft + 2 * body && rowRight >= textRight - 2 * body;
+            const bool evidence = spread || (!note && (folio || (largest <= 0.9f * body && !mono)));
+            const bool qualifies = gap >= minGap && !superscript && chars <= kEdgeMaxChars &&
                                    ((number && largest <= 1.3f * body) ||
-                                    (margin && largest <= 1.02f * body && !beforeHeading));
+                                    (margin && largest <= 1.02f * body && !beforeHeading) ||
+                                    (band && evidence && figureGap >= minGap && largest <= 1.35f * body));
             if (!qualifies) break;
             for (size_t k = 0; k < count; ++k) {
                 page.lines[lines[side == 0 ? first + k : last - 1 - k]].flags |= kLineRemoved;
@@ -438,6 +717,35 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 first += count;
             else
                 last -= count;
+        }
+    }
+    return removed;
+}
+
+// Page furniture set sideways in a side margin (§5.2): download stamps ("Downloaded from ... on
+// <date>"), repository and licence notes, arXiv identifiers. A line of another direction lying
+// wholly left or right of the upright text, on a page with upright text, is removed. Rotated text
+// inside the text's width (table headers, figure labels) stays.
+int RemoveMarginLines(PageData& page) {
+    float left = INFINITY, right = -INFINITY;
+    uint32_t upright = 0;
+    for (const Line& l : page.lines) {
+        if (l.dir != 0 || l.count == 0 || (l.flags & kLineRemoved)) continue;
+        left = std::fmin(left, l.u0), right = std::fmax(right, l.u1);
+        upright++;
+    }
+    if (upright < kEdgeMinLines) return 0;
+    int removed = 0;
+    for (Line& l : page.lines) {
+        if (l.dir == 0 || l.count == 0 || (l.flags & kLineRemoved)) continue;
+        float x0 = INFINITY, x1 = -INFINITY;
+        for (uint32_t k = 0; k < l.count; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[l.first + k]];
+            x0 = std::fmin(x0, g.x0), x1 = std::fmax(x1, g.x1);
+        }
+        if (x1 <= left || x0 >= right) {
+            l.flags |= kLineRemoved;
+            removed++;
         }
     }
     return removed;
@@ -517,7 +825,10 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
     for (const auto& kv : sizeChars)
         if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey))
             bodyKey = kv.first, bodyCount = kv.second;
-    for (PageData& page : pages) removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
+    for (PageData& page : pages) {
+        removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
+        removed += RemoveMarginLines(page);
+    }
     return removed;
 }
 
@@ -567,7 +878,7 @@ void AddObstacles(PageData& page, std::vector<uint32_t>& items) {
 
 void OrderLines(PageData& page) {
     page.order.clear();
-    Orderer orderer{page, page.order, {}, {}, {}};
+    Orderer orderer{page, page.order, static_cast<uint32_t>(page.lines.size()), {}, {}, {}};
     orderer.CollectRules();
     std::vector<uint32_t> items;
     const size_t lineCount = page.lines.size();
@@ -601,6 +912,17 @@ void OrderLines(PageData& page) {
             }
         }
         if (at == SIZE_MAX) at = below != SIZE_MAX ? below : page.order.size();
+        // Not inside a paragraph: a line that runs on from the one before it (the next line down
+        // in its column, at the paragraph's line spacing) takes the image after the paragraph.
+        const auto continues = [&](const Line& a, const Line& b) {
+            if (a.count == 0 || b.count == 0 || a.dir != 0 || b.dir != 0) return false;
+            const float gap = a.vb - b.vt;
+            return gap > -0.3f * a.size && gap < 0.8f * a.size && b.u0 < a.u1 && a.u0 < b.u1 &&
+                   std::fabs(a.size - b.size) <= 0.15f * a.size;
+        };
+        while (at > 0 && at < page.order.size() &&
+               continues(page.lines[page.order[at - 1]], page.lines[page.order[at]]))
+            ++at;
         // Images placed before the same line stay top to bottom.
         while (at > 0 && (page.lines[page.order[at - 1]].flags & kLineImage) &&
                page.lines[page.order[at - 1]].vt < image.vt)

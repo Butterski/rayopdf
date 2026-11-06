@@ -23,6 +23,7 @@ constexpr int kMaxBins = 4096;     // whitespace histogram resolution limit
 struct Edge {
     float pos = 0, a = 0, b = 0;  // horizontal: y = pos, x in [a, b]; vertical: x = pos, y in [a, b]
     int32_t comp = -1;            // connected component of the lattice pass
+    bool area = false;            // only the side of a filled area (a shaded box), no drawn rule
 };
 
 // A word: glyphs of one line between word breaks, with its box.
@@ -38,7 +39,9 @@ struct TWord {
 struct Row {
     uint32_t first = 0, count = 0;
     float base = 0, top = 0, bottom = 0, x0 = 0, x1 = 0, size = 0;
-    float prose = 0;    // the largest size of its words not set in monospace (0: all code)
+    float prose = 0;    // the size of its longest word not set in monospace (0: all code): larger
+                        // math or a superscript does not set the row's size
+    uint32_t proseGlyphs = 0;
     uint32_t mono = 0;  // words set in monospace
 };
 
@@ -96,6 +99,7 @@ void MergeEdges(std::vector<Edge>& edges) {
         for (size_t k = i + 1; k < j; ++k) {
             if (edges[k].a <= cur.b + kJoin) {
                 cur.b = std::fmax(cur.b, edges[k].b);
+                cur.area = cur.area && edges[k].area;
             } else {
                 if (cur.b - cur.a >= kMinEdge) out.push_back(cur);
                 cur = edges[k];
@@ -112,6 +116,7 @@ void CollectEdges(const PageData& page, std::vector<Edge>& h, std::vector<Edge>&
     h.clear();
     v.clear();
     const float pageArea = page.width * page.height;
+    std::vector<const Ruling*> areas;
     for (const Ruling& r : page.rulings) {
         const float w = r.x1 - r.x0, t = r.y1 - r.y0;
         if (!(w >= 0) || !(t >= 0) || !std::isfinite(w) || !std::isfinite(t)) continue;
@@ -121,12 +126,25 @@ void CollectEdges(const PageData& page, std::vector<Edge>& h, std::vector<Edge>&
             v.push_back(Edge{(r.x0 + r.x1) / 2, r.y0, r.y1, -1});
         } else if (w > kMaxThick && t > kMaxThick && (r.flags & kRulingFill) && !(r.flags & kRulingStroke) &&
                    w * t < 0.5f * pageArea) {
-            // A filled area (a cell or row background): its sides.
-            h.push_back(Edge{r.y0, r.x0, r.x1, -1});
-            h.push_back(Edge{r.y1, r.x0, r.x1, -1});
-            v.push_back(Edge{r.x0, r.y0, r.y1, -1});
-            v.push_back(Edge{r.x1, r.y0, r.y1, -1});
+            areas.push_back(&r);
         }
+    }
+    // Filled areas (cell and row backgrounds): their sides. An area inside another (the shading of
+    // each line of text inside a shaded cell) marks no cell boundary.
+    const bool nesting = areas.size() <= 2048;
+    for (const Ruling* r : areas) {
+        bool inner = false;
+        for (size_t k = 0; nesting && k < areas.size() && !inner; ++k) {
+            const Ruling* o = areas[k];
+            if (o == r) continue;
+            inner = o->x0 <= r->x0 + 0.5f && o->x1 >= r->x1 - 0.5f && o->y0 <= r->y0 + 0.5f && o->y1 >= r->y1 - 0.5f &&
+                    (o->x1 - o->x0) * (o->y1 - o->y0) > 1.2f * (r->x1 - r->x0) * (r->y1 - r->y0);
+        }
+        if (inner) continue;
+        h.push_back(Edge{r->y0, r->x0, r->x1, -1, true});
+        h.push_back(Edge{r->y1, r->x0, r->x1, -1, true});
+        v.push_back(Edge{r->x0, r->y0, r->y1, -1, true});
+        v.push_back(Edge{r->x1, r->y0, r->y1, -1, true});
     }
     MergeEdges(h);
     MergeEdges(v);
@@ -222,6 +240,9 @@ private:
     bool Free(float x0, float y0, float x1, float y1) const;
     bool Validate(Grid& g, bool column);
     void CollapseEmpty(Grid& g) const;
+    void Boundaries(Grid& g, int32_t root) const;
+    void SplitByText(Grid& g) const;
+    void JoinStripes();
     void Commit();
     void MarkUsed(const Grid& g);
     std::string_view WordText(const TWord& w, std::string& scratch) const;
@@ -304,6 +325,11 @@ bool Detector::MathWord(const TWord& w) const {
             continue;
         }
         if (t.size() == 1 && t[0] >= '0' && t[0] <= '9') continue;
+        // Mathematical alphanumeric symbols (U+1D400-U+1D7FF): letters set as math.
+        if (t.size() == 4 && t.substr(0, 2) == "\xF0\x9D") {
+            math = true;
+            continue;
+        }
         bool op = t.size() == 1 && std::string_view("=+-/<>*").find(t[0]) != std::string_view::npos;
         for (const char* o : kOperators) op = op || t == o;
         if (!op) return false;
@@ -338,8 +364,12 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
             r.top = std::fmax(r.top, w.y1), r.bottom = std::fmin(r.bottom, w.y0);
             r.x0 = std::fmin(r.x0, w.x0), r.x1 = std::fmax(r.x1, w.x1);
             r.size = std::fmax(r.size, w.size);
-            if (w.mono) r.mono++;
-            else r.prose = std::fmax(r.prose, w.size);
+            if (w.mono) {
+                r.mono++;
+            } else if (w.k1 - w.k0 > r.proseGlyphs) {
+                r.prose = w.size;
+                r.proseGlyphs = w.k1 - w.k0;
+            }
         } else {
             Row r;
             r.first = static_cast<uint32_t>(rowWords.size());
@@ -347,6 +377,7 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
             r.base = w.base, r.top = w.y1, r.bottom = w.y0, r.x0 = w.x0, r.x1 = w.x1, r.size = w.size;
             r.mono = w.mono ? 1 : 0;
             r.prose = w.mono ? 0 : w.size;
+            r.proseGlyphs = w.mono ? 0 : w.k1 - w.k0;
             rows.push_back(r);
         }
         rowWords.push_back(static_cast<uint32_t>(i));
@@ -563,6 +594,24 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             above.swap(here);
         }
     }
+    // Header lines above the header rule are one header row (its cells' text wraps, or sits at
+    // different heights), unless a line runs across a column boundary: then the header has levels
+    // (a label over several columns) and keeps its rows.
+    if (headerRows >= 2) {
+        bool levels = false;
+        for (size_t r = rowBegin; r < rowBegin + headerRows && r < rowEnd && !levels; ++r)
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !levels; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                for (const Gap& gap : gaps) levels = levels || (w.x0 < gap.a && w.x1 > gap.b);
+            }
+        if (!levels) {
+            size_t kept = 0;
+            for (size_t s : starts)
+                if (s == rowBegin || s >= rowBegin + headerRows) starts[kept++] = s;
+            starts.resize(kept);
+            headerRows = 1;
+        }
+    }
     const int nrows = static_cast<int>(starts.size());
     if (nrows > kMaxTableRows) return;
     g.headerRows = 0;
@@ -605,6 +654,66 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     grids_.push_back(std::move(g));
 }
 
+// The boundary maps of a lattice from its component's edges (each edge counts for the nearest
+// boundary: one whose sliver of a column was collapsed counts for the boundary that took its place).
+void Detector::Boundaries(Grid& g, int32_t root) const {
+    const int rows = g.Rows(), cols = g.Cols();
+    const float reach = std::fmax(kSnap, 1.2f * bodySize_);
+    g.vb.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols + 1), 0);
+    g.hb.assign(static_cast<size_t>(rows + 1) * static_cast<size_t>(cols), 0);
+    for (const Edge& e : v_) {
+        if (e.comp != root) continue;
+        int c = 0;
+        for (int k = 1; k <= cols; ++k)
+            if (std::fabs(g.xs[static_cast<size_t>(k)] - e.pos) < std::fabs(g.xs[static_cast<size_t>(c)] - e.pos)) c = k;
+        if (std::fabs(g.xs[static_cast<size_t>(c)] - e.pos) > reach) continue;
+        for (int r = 0; r < rows; ++r) {
+            const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
+            const float overlap = std::fmin(top, e.b) - std::fmax(bottom, e.a);
+            if (overlap >= 0.5f * (top - bottom)) g.vb[static_cast<size_t>(r * (cols + 1) + c)] = 1;
+        }
+    }
+    for (const Edge& e : h_) {
+        if (e.comp != root) continue;
+        int r = 0;
+        for (int k = 1; k <= rows; ++k)
+            if (std::fabs(g.ys[static_cast<size_t>(k)] - e.pos) < std::fabs(g.ys[static_cast<size_t>(r)] - e.pos)) r = k;
+        if (std::fabs(g.ys[static_cast<size_t>(r)] - e.pos) > reach) continue;
+        for (int c = 0; c < cols; ++c) {
+            const float left = g.xs[static_cast<size_t>(c)], right = g.xs[static_cast<size_t>(c + 1)];
+            const float overlap = std::fmin(right, e.b) - std::fmax(left, e.a);
+            if (overlap >= 0.5f * (right - left)) g.hb[static_cast<size_t>(r * cols + c)] = 1;
+        }
+    }
+}
+
+// A vertical boundary missing in a row (shaded rows without their rulings) still parts the row
+// when the row has text on both sides of it and none across it: a cell spans a column only when
+// its text does.
+void Detector::SplitByText(Grid& g) const {
+    const int rows = g.Rows(), cols = g.Cols();
+    const size_t n = static_cast<size_t>(rows) * static_cast<size_t>(cols + 1);
+    std::vector<uint8_t> left(n, 0), right(n, 0), across(n, 0);
+    auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
+    for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
+        const TWord& w = *it;
+        int r = 0, c = 0;
+        if (!Locate(g, (w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, r, c)) continue;
+        const size_t row = static_cast<size_t>(r) * static_cast<size_t>(cols + 1);
+        left[row + static_cast<size_t>(c) + 1] = 1;  // ink left of the column's right boundary
+        right[row + static_cast<size_t>(c)] = 1;     // ink right of its left boundary
+        for (int k = 1; k < cols; ++k) {
+            const float x = g.xs[static_cast<size_t>(k)];
+            if (w.x0 < x - 1 && w.x1 > x + 1) across[row + static_cast<size_t>(k)] = 1;
+        }
+    }
+    for (int r = 0; r < rows; ++r)
+        for (int k = 1; k < cols; ++k) {
+            const size_t i = static_cast<size_t>(r) * static_cast<size_t>(cols + 1) + static_cast<size_t>(k);
+            if (!g.vb[i] && left[i] && right[i] && !across[i]) g.vb[i] = 1;
+        }
+}
+
 void Detector::Lattices() {
     if (h_.size() > kMaxTableEdges || v_.size() > kMaxTableEdges) return;
     const size_t nh = h_.size(), nv = v_.size();
@@ -619,6 +728,39 @@ void Detector::Lattices() {
             const int32_t a = Find(parent, static_cast<int32_t>(i));
             const int32_t b = Find(parent, static_cast<int32_t>(nh + static_cast<size_t>(it - v_.begin())));
             if (a != b) parent[static_cast<size_t>(a)] = b;
+        }
+    }
+    // Grids drawn as separate boxes a hair apart (each cell its own rectangle with a white gutter, a
+    // band of shaded rows) are one grid: components whose boxes lie within kNear of each other, and
+    // overlap along the other axis, join.
+    {
+        std::vector<int32_t> rootList;
+        std::vector<float> bx0(nh + nv, INFINITY), by0(nh + nv, INFINITY), bx1(nh + nv, -INFINITY), by1(nh + nv, -INFINITY);
+        for (size_t i = 0; i < nh + nv; ++i) {
+            const size_t r = static_cast<size_t>(Find(parent, static_cast<int32_t>(i)));
+            const Edge& e = i < nh ? h_[i] : v_[i - nh];
+            const float x0 = i < nh ? e.a : e.pos, x1 = i < nh ? e.b : e.pos;
+            const float y0 = i < nh ? e.pos : e.a, y1 = i < nh ? e.pos : e.b;
+            if (bx0[r] == INFINITY) rootList.push_back(static_cast<int32_t>(r));
+            bx0[r] = std::fmin(bx0[r], x0), bx1[r] = std::fmax(bx1[r], x1);
+            by0[r] = std::fmin(by0[r], y0), by1[r] = std::fmax(by1[r], y1);
+        }
+        constexpr float kNear = 6.0f;
+        if (rootList.size() <= 512) {
+            for (size_t a = 0; a < rootList.size(); ++a)
+                for (size_t b = a + 1; b < rootList.size(); ++b) {
+                    const size_t p = static_cast<size_t>(rootList[a]), q = static_cast<size_t>(rootList[b]);
+                    const float gapX = std::fmax(bx0[p], bx0[q]) - std::fmin(bx1[p], bx1[q]);
+                    const float gapY = std::fmax(by0[p], by0[q]) - std::fmin(by1[p], by1[q]);
+                    const float spanX = std::fmin(bx1[p] - bx0[p], bx1[q] - bx0[q]);
+                    const float spanY = std::fmin(by1[p] - by0[p], by1[q] - by0[q]);
+                    // Side by side with rows in common, or stacked with columns in common.
+                    const bool beside = gapX <= kNear && gapX > -kNear && -gapY >= 0.5f * spanY;
+                    const bool stacked = gapY <= kNear && gapY > -kNear && -gapX >= 0.5f * spanX;
+                    if (!beside && !stacked) continue;
+                    const int32_t ra = Find(parent, rootList[a]), rb = Find(parent, rootList[b]);
+                    if (ra != rb) parent[static_cast<size_t>(ra)] = rb;
+                }
         }
     }
     std::vector<int32_t> roots;
@@ -655,37 +797,26 @@ void Detector::Lattices() {
         Cluster(g.ys);
         std::reverse(g.ys.begin(), g.ys.end());
         CollapseEmpty(g);
-        const int rows = g.Rows(), cols = g.Cols();
-        if (rows < 1 || cols < 1 || rows > kMaxTableRows || cols > kMaxTableCols) continue;
+        if (g.Rows() < 1 || g.Cols() < 1 || g.Rows() > kMaxTableRows || g.Cols() > kMaxTableCols) continue;
         if (!Free(g.x0, g.y0, g.x1, g.y1)) continue;
-        g.vb.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols + 1), 0);
-        g.hb.assign(static_cast<size_t>(rows + 1) * static_cast<size_t>(cols), 0);
-        for (const Edge& e : v_) {
-            if (e.comp != root) continue;
-            // The nearest boundary: an edge whose sliver of a column was collapsed counts for the
-            // boundary that took its place.
-            int c = 0;
-            for (int k = 1; k <= cols; ++k)
-                if (std::fabs(g.xs[static_cast<size_t>(k)] - e.pos) < std::fabs(g.xs[static_cast<size_t>(c)] - e.pos)) c = k;
-            if (std::fabs(g.xs[static_cast<size_t>(c)] - e.pos) > std::fmax(kSnap, 1.2f * bodySize_)) continue;
-            for (int r = 0; r < rows; ++r) {
-                const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
-                const float overlap = std::fmin(top, e.b) - std::fmax(bottom, e.a);
-                if (overlap >= 0.5f * (top - bottom)) g.vb[static_cast<size_t>(r * (cols + 1) + c)] = 1;
+        Boundaries(g, root);
+        // A horizontal boundary drawn across fewer than half the columns (the bottom of a short
+        // header cell, a line under one value) parts no rows: it goes, and the rows join.
+        {
+            const int cols = g.Cols();
+            bool pruned = false;
+            for (int r = g.Rows() - 1; r >= 1; --r) {
+                int present = 0;
+                for (int c = 0; c < cols; ++c) present += g.hb[static_cast<size_t>(r * cols + c)];
+                if (2 * present < cols) {
+                    g.ys.erase(g.ys.begin() + r);
+                    pruned = true;
+                }
             }
+            if (pruned) Boundaries(g, root);
         }
-        for (const Edge& e : h_) {
-            if (e.comp != root) continue;
-            int r = 0;
-            for (int k = 1; k <= rows; ++k)
-                if (std::fabs(g.ys[static_cast<size_t>(k)] - e.pos) < std::fabs(g.ys[static_cast<size_t>(r)] - e.pos)) r = k;
-            if (std::fabs(g.ys[static_cast<size_t>(r)] - e.pos) > std::fmax(kSnap, 1.2f * bodySize_)) continue;
-            for (int c = 0; c < cols; ++c) {
-                const float left = g.xs[static_cast<size_t>(c)], right = g.xs[static_cast<size_t>(c + 1)];
-                const float overlap = std::fmin(right, e.b) - std::fmax(left, e.a);
-                if (overlap >= 0.5f * (right - left)) g.hb[static_cast<size_t>(r * cols + c)] = 1;
-            }
-        }
+        SplitByText(g);
+        const int rows = g.Rows(), cols = g.Cols();
         ComputeSpans(g);
         // Rows that are one cell across, in most of the grid: verticals only frame the table (or
         // a header): its columns come from whitespace instead.
@@ -707,6 +838,62 @@ void Detector::Lattices() {
     }
     for (size_t i = 0; i < nh; ++i)
         if (!hUsed[i] && h_[i].b - h_[i].a >= kMinRule) rules_.push_back(h_[i]);
+    JoinStripes();
+}
+
+// Tables shaded on every other row draw boxes around the shaded rows only: lattices with the same
+// columns stacked a row apart, with a row of text between them that keeps their columns, are one
+// table with that row between.
+void Detector::JoinStripes() {
+    for (size_t a = 0; a < grids_.size(); ++a) {
+        if (grids_[a].kind != TableKind::Lattice) continue;
+        for (size_t b = 0; b < grids_.size(); ++b) {
+            if (b == a || grids_[b].kind != TableKind::Lattice) continue;
+            Grid& up = grids_[a];
+            const Grid& down = grids_[b];
+            if (up.xs.size() != down.xs.size() || up.xs.size() < 3) continue;
+            bool same = true;
+            for (size_t k = 0; k < up.xs.size() && same; ++k) same = std::fabs(up.xs[k] - down.xs[k]) <= 3;
+            const float gapTop = up.y0, gapBottom = down.y1;
+            if (!same || gapBottom >= gapTop || gapTop - gapBottom > 2.5f * bodySize_) continue;
+            // The row between: words inside one column each, two columns filled.
+            uint64_t columns = 0;
+            bool crossing = false;
+            auto it = std::lower_bound(words_.begin(), words_.end(), gapTop, [](const TWord& w, float y) { return w.base > y; });
+            for (; it != words_.end() && it->base >= gapBottom; ++it) {
+                const float cx = (it->x0 + it->x1) / 2;
+                if (cx < up.xs.front() || cx > up.xs.back()) continue;
+                for (size_t k = 1; k + 1 < up.xs.size(); ++k) crossing = crossing || (it->x0 < up.xs[k] - 1 && it->x1 > up.xs[k] + 1);
+                const size_t c = static_cast<size_t>(std::upper_bound(up.xs.begin(), up.xs.end(), cx) - up.xs.begin()) - 1;
+                columns |= uint64_t(1) << std::min<size_t>(c, 63);
+            }
+            int filled = 0;
+            for (uint64_t m = columns; m; m &= m - 1) filled++;
+            if (crossing || filled < 2 || up.Rows() + down.Rows() + 1 > kMaxTableRows) continue;
+            const int cols = up.Cols();
+            Grid joined;
+            joined.kind = TableKind::Lattice;
+            joined.xs = up.xs;
+            joined.ys = up.ys;
+            joined.ys.insert(joined.ys.end(), down.ys.begin(), down.ys.end());
+            joined.vb = up.vb;
+            joined.vb.insert(joined.vb.end(), static_cast<size_t>(cols + 1), 1);  // the row between
+            joined.vb.insert(joined.vb.end(), down.vb.begin(), down.vb.end());
+            joined.hb = up.hb;
+            joined.hb.insert(joined.hb.end(), down.hb.begin(), down.hb.end());
+            joined.x0 = std::fmin(up.x0, down.x0), joined.x1 = std::fmax(up.x1, down.x1);
+            joined.y0 = down.y0, joined.y1 = up.y1;
+            joined.size = up.size;
+            joined.headerRows = up.headerRows;
+            ComputeSpans(joined);
+            if (!Validate(joined, false)) continue;
+            MarkUsed(joined);
+            grids_[a] = std::move(joined);
+            grids_.erase(grids_.begin() + static_cast<std::ptrdiff_t>(b));
+            if (b < a) --a;
+            b = static_cast<size_t>(-1);  // look again: a third stripe may follow
+        }
+    }
 }
 
 // Grid columns and rows no word falls in that are narrower than the text (the space between double
@@ -793,6 +980,8 @@ void Detector::RuleStacks() {
     struct Stack {
         float a, b;
         std::vector<float> ys;
+        bool drawn;  // a drawn rule among them: the top and bottom of a shaded box alone (a quote, a
+                     // note, code) make no table
     };
     std::vector<Stack> stacks;
     for (const Edge& e : rules_) {
@@ -806,14 +995,16 @@ void Detector::RuleStacks() {
             }
         if (into) {
             into->ys.push_back(e.pos);
+            into->drawn = into->drawn || !e.area;
         } else if (stacks.size() < static_cast<size_t>(kMaxStacks)) {
-            stacks.push_back(Stack{e.a, e.b, {e.pos}});
+            stacks.push_back(Stack{e.a, e.b, {e.pos}, !e.area});
         }
     }
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
     std::vector<Gap> gaps, trial;
     for (const Stack& s : stacks) {
+        if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
         // Bands between consecutive rules: tabular ones (rows that split into columns) form tables.
         size_t i = 0;
@@ -843,7 +1034,7 @@ void Detector::RuleStacks() {
             // closing rule of a continued table), rows above it too.
             const float top = s.ys[i], bottom = s.ys[j];
             const bool single = i == j;
-            const bool open = j - i <= 1;
+            bool open = j - i <= 1;
             float yhi = top, ylo = bottom;
             {
                 const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
@@ -855,6 +1046,9 @@ void Detector::RuleStacks() {
             size_t coreBegin = rows.size(), coreEnd = 0;
             for (size_t r = 0; r < rows.size(); ++r)
                 if (rows[r].base < top && rows[r].base > bottom) coreBegin = std::min(coreBegin, r), coreEnd = r + 1;
+            // Two rules around three rows or more are a top and a bottom rule, not a top and a header
+            // rule: the table is closed.
+            if (j - i == 1 && coreEnd >= coreBegin + 3) open = false;
             size_t begin, end;
             if (coreEnd > coreBegin) {
                 begin = coreBegin, end = coreEnd;
@@ -920,8 +1114,10 @@ void Detector::RuleStacks() {
             if (open) extend(begin, end, true);
             if (single) extend(begin, end, false);
             const auto multiCell = [&]() {
-                // Rows with two cells filled at least: most rows, two at least.
-                size_t n = 0;
+                // Rows with two cells filled at least: most rows, two at least. Between a top and a
+                // bottom rule (three rules or more), a header row of two cells suffices: the body may
+                // leave a column empty (a form to fill in).
+                size_t n = 0, cells = 0;
                 for (size_t q = begin; q < end; ++q) {
                     int occupied = 0, lastCol = -1;
                     for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
@@ -930,8 +1126,11 @@ void Detector::RuleStacks() {
                         if (c != lastCol) occupied++, lastCol = c;
                     }
                     n += occupied >= 2;
+                    cells += static_cast<size_t>(occupied);
                 }
-                return n >= 2 && 2 * n >= end - begin;
+                // Most cells empty: labels scattered over a chart's gridlines.
+                if (5 * cells < 2 * (end - begin) * (gaps.size() + 1)) return false;
+                return open ? n >= 2 && 2 * n >= end - begin : n >= 1;
             };
             const auto code = [&]() {
                 // Mostly monospace: aligned code, not a table; mostly math symbols and italic
@@ -1112,8 +1311,11 @@ void Detector::Borderless() {
         const float numericShare = filled ? float(numeric) / float(filled) : 0;
         // Short cells: running text has several words to a line.
         const float wordsPerCell = filled ? float(cellWords) / float(filled) : 0;
+        // Two columns without numbers: a long run of short, evenly set, fully filled pairs (names and
+        // affiliations, terms and values).
+        const bool pairs = n >= 6 && fill >= 0.9f && wordsPerCell <= 3 && cv <= 0.15f;
         const bool high = fill >= 0.75f && aligned == m && cv <= 0.2f && wordsPerCell <= 4 &&
-                          (m >= 3 ? numericShare >= 0.2f || n >= 4 : numericShare >= 0.3f);
+                          (m >= 3 ? numericShare >= 0.2f || n >= 4 : numericShare >= 0.3f || pairs);
         const float y0 = rows[e - 1].bottom, y1 = rows[begin].top;
         if (!Free(xa, y0, xb, y1)) continue;
         if (high) TextGrid(rows, rowWords, begin, e, gaps, TableKind::Borderless, 0, xa, xb);
@@ -1313,6 +1515,20 @@ void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::
     }
 }
 
+// A cell's Markdown without emphasis that covers the whole cell: a bold header row or first column,
+// an italic total, is the table's styling, not emphasis inside text. Emphasis on part of a cell
+// stays.
+std::string_view CellStyleless(std::string_view t) {
+    for (const std::string_view d : {"***", "**", "*"}) {
+        if (t.size() <= 2 * d.size() || t.substr(0, d.size()) != d || t.substr(t.size() - d.size()) != d) continue;
+        const std::string_view inner = t.substr(d.size(), t.size() - 2 * d.size());
+        bool other = false;
+        for (size_t i = 0; i < inner.size() && !other; ++i) other = inner[i] == '*' && (i == 0 || inner[i - 1] != '\\');
+        return other ? t : inner;
+    }
+    return t;
+}
+
 // How many leading rows of `part` repeat the header of `head` (a header repeated on each page).
 uint16_t RepeatedHeader(const TablePart& head, const TablePart& part) {
     const uint16_t n = std::max<uint16_t>(1, head.table->headerRows);
@@ -1384,7 +1600,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
                 if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
                     part.page->tableCells[table.firstCell + i].col == c) {
                     if (write)
-                        for (char ch : std::string_view(part.cellText[i])) {
+                        for (char ch : CellStyleless(part.cellText[i])) {
                             if (ch == '|') out.push_back('\\');
                             out.push_back(ch == '\n' ? ' ' : ch);
                         }

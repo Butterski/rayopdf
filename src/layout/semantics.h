@@ -70,6 +70,7 @@ struct BlockList {
     std::vector<Block> blocks;
     std::vector<BlockLine> lines;
     std::vector<NoteRef> noteRefs;  // sorted by page, then glyph
+    bool monoDocument = false;      // typeset in a monospace font: monospace text is the body, not code
 };
 
 // Pages carry their lines in reading order (PageData::order). Pages whose text is mostly unmapped

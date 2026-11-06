@@ -186,7 +186,8 @@ void TestBooktabs() {
     const std::string md = Run(pages, &report);
     Show("booktabs", md);
     RAYOPDF_CHECK(report.tables == 1, 556);
-    RAYOPDF_CHECK(Contains(md, "| **Region** | **Q1** | **Q2** |\n| --- | --- | --- |\n| North | 1,200 | 1,340 |"), 557);
+    // Bold over a whole header cell is the table's styling: no emphasis written.
+    RAYOPDF_CHECK(Contains(md, "| Region | Q1 | Q2 |\n| --- | --- | --- |\n| North | 1,200 | 1,340 |"), 557);
     RAYOPDF_CHECK(Contains(md, "| West | 770 | 805 |"), 558);
 }
 
@@ -409,6 +410,46 @@ void TestColumnLattice() {
     RAYOPDF_CHECK(Contains(md, "| Competence Framework |\n| --- |\n| #1: Recycle |"), 579);
 }
 
+// Shaded rows boxed one by one, white rows between them with no rulings: one table of all rows.
+void TestStripes() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const char* const names[] = {"Cambodia", "Indonesia", "Lao PDR", "Malaysia", "Myanmar"};
+    for (int r = 0; r < 5; ++r) {
+        const float top = 700 - 20.0f * float(r);
+        if (r % 2 == 0) {
+            page.rulings.push_back(Ruling{72, top - 20, 372, top, kRulingFill});
+            for (float x : {172.0f, 272.0f}) VLine(page, x, top - 20, top);
+        }
+        AddText(page, names[r], 76, top - 14);
+        AddText(page, std::to_string(10 + r) + ".5%", 176, top - 14);
+        AddText(page, std::to_string(200 + 37 * r), 276, top - 14);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("stripes", md);
+    RAYOPDF_CHECK(report.tables == 1, 580);
+    RAYOPDF_CHECK(Contains(md, "| Indonesia | 11.5% | 237 |\n| Lao PDR | 12.5% | 274 |"), 581);
+}
+
+// A top and a bottom rule around a header and body rows whose second column is empty (a form):
+// a table; the same rows without rules are not.
+void TestClosedEmptyColumn() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 300, 712);
+    AddText(page, "Added cation", 76, 700);
+    AddText(page, "Relative size", 200, 700);
+    const char* const ions[] = {"K+", "Na+", "Ca2+", "Al3+"};
+    for (int r = 0; r < 4; ++r) AddText(page, ions[r], 76, 684 - 14.0f * float(r));
+    HLine(page, 72, 300, 628);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("closed empty column", md);
+    RAYOPDF_CHECK(report.tables == 1, 582);
+    RAYOPDF_CHECK(Contains(md, "| Added cation | Relative size |\n| --- | --- |\n| K+ |  |"), 583);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -475,6 +516,8 @@ int main(int argc, char** argv) {
     TestFractionBar();
     TestDoubleRules();
     TestColumnLattice();
+    TestStripes();
+    TestClosedEmptyColumn();
     std::puts("test_layout_tables: ok");
     return 0;
 }

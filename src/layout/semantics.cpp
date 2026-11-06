@@ -41,6 +41,8 @@ struct Info {
     bool startsLower = false;
     bool hasLetter = false;
     bool rowPeer = false;    // another line of its style shares its baseline (a table row)
+    bool pageRef = false;    // a lone page number sits far to its right (a table-of-contents entry)
+    bool verbatimMarker = false;  // a list marker Markdown cannot write ("(2)", "(iv)"): kept as text
     bool numbering = false;  // only a section or item number ("1.5.", "IV", "(3)")
     uint32_t note = 0;       // the number of the footnote the line starts or continues
     bool noteStart = false;
@@ -110,10 +112,12 @@ bool IsCaption(std::string_view t) {
     return false;
 }
 
-// Display math: a math symbol (Mathematical Alphanumeric Symbols, Mathematical Operators,
-// Supplemental Mathematical Operators, "=") and fewer than three letters of ordinary text.
-// "Heading with ∇ ⋅ E" has words around its math and stays a possible heading.
-bool MostlyMath(std::string_view t) {
+// Text that titles nothing: display math (a math symbol from Mathematical Alphanumeric Symbols,
+// Mathematical Operators, Supplemental Mathematical Operators or "=", and fewer than three letters
+// of ordinary text) or fewer than two letters at all ("20%↑", "1.7X"). "Heading with ∇ ⋅ E" has
+// words around its math and stays a possible heading. Letters are ASCII ones and every code point
+// from U+00C0 up outside the symbol, punctuation, private-use and math blocks.
+bool NoTitle(std::string_view t) {
     uint32_t math = 0, letters = 0;
     size_t at = 0;
     while (at < t.size()) {
@@ -123,11 +127,13 @@ bool MostlyMath(std::string_view t) {
         if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || (cp >= 0x2A00 && cp <= 0x2AFF) ||
             cp == '=')
             math++;
-        else if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0x24F) ||
-                 (cp >= 0x370 && cp <= 0x52F) || (cp >= 0x3040 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF))
+        else if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') ||
+                 (cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x2000 && cp <= 0x2BFF) &&
+                  !(cp >= 0x3000 && cp <= 0x303F) && !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0xFE00 && cp <= 0xFE0F) &&
+                  !(cp >= 0xFF00 && cp <= 0xFF20) && cp != 0xFFFD))
             letters++;
     }
-    return math > 0 && letters < 3;
+    return letters < 2 || (math > 0 && letters < 3);
 }
 
 // Lowercase ASCII letters and digits plus every non-ASCII byte: the outline matching key.
@@ -230,6 +236,9 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
         info.marker = marker;
         info.value = value;
         info.skip = skip;
+        // "(2)" and "(iv)" have no Markdown form: the item keeps them as its text. ("(a)", LaTeX's
+        // second enumerate level, stays an ordered item like "1." and "a.".)
+        info.verbatimMarker = !scratch.empty() && scratch[0] == '(' && (marker == Marker::Number || marker == Marker::Roman);
         info.task = marker == Marker::TaskOpen ? 1 : marker == Marker::TaskDone ? 2 : 0;
         info.textU0 = skip < line.count ? page.glyphs[page.lineGlyphs[line.first + skip]].u0 : line.u1;
         // A task box right after a bullet: "• ☐ text".
@@ -320,7 +329,8 @@ struct RawBlock {
     uint32_t note = 0;  // a footnote's lines
 };
 
-bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next) {
+// `monoDocument`: the document is set in a monospace font, whose lines are prose, not code.
+bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next, bool monoDocument) {
     if (next.page != last.page || next.dir != last.dir) return false;
     // A section number set apart from its title ("1.5.   Migrant Workers") joins it.
     if (b.count == 1 && last.numbering && std::fabs(last.baseline - next.baseline) <= 0.3f * last.size &&
@@ -339,7 +349,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     const float limit = b.pitch > 0 ? std::fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : 1.6f * em;
     if (pitch > limit) return false;
     if (next.u0 > last.u1 || next.u1 < last.u0) return false;
-    const bool monoNext = next.mono >= kMonoShare;
+    const bool monoNext = next.mono >= kMonoShare && !monoDocument;
     if (b.mono != monoNext) return false;
     if (b.mono) return true;
     if (b.bold != ((next.flags & kLineAllBold) != 0)) return false;
@@ -626,7 +636,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             LineInfo(page, p, li, marks, infos.back(), scratch);
         }
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
-        // (a table header), not headings; a heading beside the other column's text has no peer.
+        // (a table header), not headings; a heading beside the other column's text has no peer. A
+        // line with a lone number far to its right on its baseline is a table-of-contents entry
+        // and its page, not a heading either.
         byBase.clear();
         for (size_t i = pageFirst; i < infos.size(); ++i) byBase.push_back(static_cast<uint32_t>(i));
         std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
@@ -637,6 +649,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             for (size_t o = k + 1; o < byBase.size(); ++o) {
                 Info& b = infos[byBase[o]];
                 if (a.baseline - b.baseline > 0.3f * a.size) break;
+                if (a.dir == b.dir && a.numbering != b.numbering) {
+                    Info& entry = a.numbering ? b : a;
+                    const Info& number = a.numbering ? a : b;
+                    if (number.chars <= 4 && number.u0 - entry.u1 >= 3 * entry.size) entry.pageRef = true;
+                }
                 if (a.dir != b.dir || std::fabs(a.size - b.size) > 0.03f * a.size) continue;
                 if (a.chars > 60 || b.chars > 60 || a.numbering || b.numbering) continue;
                 if (((a.flags ^ b.flags) & kLineAllBold) || !(b.u0 > a.u1 || b.u1 < a.u0)) continue;
@@ -647,27 +664,37 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     }
 
     // Body size: the most common size by characters (algorithms §6.1), of prose lines: code blocks
-    // set in a smaller monospace size do not define it. Document-wide styles.
+    // set in a smaller monospace size do not define it. Table cells vote too: on a page that is
+    // mostly a table, the few lines outside it are its title and labels, not the body.
+    // Document-wide styles.
     std::unordered_map<int, uint64_t> sizeChars, proseChars;
     uint64_t totalChars = 0, monoChars = 0, boldChars = 0;
+    uint64_t proseLineChars = 0;  // characters of lines in a proportional font, outside tables
     for (const Info& in : infos) {
         const int key = static_cast<int>(std::lround(in.size * 2));
         sizeChars[key] += in.chars;
-        if (in.mono < 0.5f) proseChars[key] += in.chars;
+        if (in.mono < 0.5f) proseChars[key] += in.chars, proseLineChars += in.chars;
         totalChars += in.chars;
         monoChars += static_cast<uint64_t>(in.mono * float(in.chars));
         if (in.flags & kLineAllBold) boldChars += in.chars;
     }
+    for (const PageData& page : pages)
+        for (const Line& l : page.lines)
+            if ((l.flags & (kLineTableCell | kLineRemoved)) == kLineTableCell && !(l.flags & kLineAllMono)) {
+                const int key = static_cast<int>(std::lround(l.size * 2));
+                sizeChars[key] += l.chars;
+                proseChars[key] += l.chars;
+            }
     int bodyKey = 0;
     uint64_t bodyCount = 0;
     for (const auto& kv : proseChars.empty() ? sizeChars : proseChars)
         if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey)) bodyKey = kv.first, bodyCount = kv.second;
     const float body = float(bodyKey) / 2;
     // A document typeset in a monospace font: most characters monospace and next to no lines in
-    // another font (code-heavy documents keep their prose in a proportional font).
-    uint64_t proseLineChars = 0;
-    for (const auto& kv : proseChars) proseLineChars += kv.second;
+    // another font (code-heavy documents keep their prose in a proportional font). Its lines make
+    // paragraphs, and the writer marks no code spans in them.
     const bool monoDocument = totalChars > 0 && monoChars * 10 > totalChars * 6 && proseLineChars * 10 < totalChars;
+    out.monoDocument = monoDocument;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
     FindNotes(pages, infos, body, out.noteRefs);
     // A bar beside text set at heading size is an accent rule (slide titles, call-outs), not a
@@ -700,7 +727,18 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     b.count++;
                     continue;
                 }
-            } else if (b.first + b.count == i && Continues(b, first, last, in)) {
+            } else if (b.first + b.count == i && b.count == 1 && last.numbering && in.page == last.page &&
+                       in.dir == last.dir && !in.numbering && last.size >= kHeadingSize * body &&
+                       in.size >= kHeadingSize * body && std::fabs(in.u0 - last.u0) <= last.size &&
+                       last.baseline - in.baseline > 0 &&
+                       last.baseline - in.baseline <= 2.5f * std::fmax(last.size, in.size)) {
+                // A chapter or section number set large on a line of its own above its title
+                // ("4" over "Basis Fields") heads it with the title.
+                b.count++;
+                b.right = std::fmax(b.right, in.u1);
+                b.bold = b.bold && (in.flags & kLineAllBold) != 0;
+                continue;
+            } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument)) {
                 if (b.count == 1) {
                     b.pitch = last.baseline - in.baseline;
                     b.bodyU0 = in.u0;
@@ -739,6 +777,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         int level = 0;      // outline level, or 0
         int styleKey = -1;  // heading style above body size: size key * 2 + bold
         bool boldHeading = false;
+        bool runIn = false;  // a bold heading its paragraph runs on from, on the same baseline
         bool bold = false;
         float size = 0;     // the size of most of its characters
         uint32_t chars = 0;
@@ -807,15 +846,35 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (k.kind != BlockKind::Heading && first.listStart()) k.kind = BlockKind::ListItem;
             continue;
         }
-        const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer;
+        // Text rotated to read upwards (an arXiv stamp in the margin) or upside down heads nothing.
+        const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer && !first.pageRef &&
+                                first.dir != 1 && first.dir != 2;
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
         // Captions are set apart like headings but title no section; display math set large (an
-        // integral sign, a fraction's numerator) titles nothing either.
+        // integral sign, a fraction's numerator), a figure set large ("20%↑") and an author list
+        // (names with raised affiliation marks) title nothing either.
         const auto caption = [&]() {
             const PageData& page = pages[first.page];
             LineText(page, page.lines[first.line], line);
-            return IsCaption(line) || MostlyMath(line);
+            if (IsCaption(line)) return true;
+            text = line;
+            uint32_t marks = 0;
+            for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+                const PageData& p = pages[infos[i].page];
+                const Line& l = p.lines[infos[i].line];
+                bool raised = false;
+                for (uint32_t g = 0; g < l.count; ++g) {
+                    const bool sup = IsSuperscript(p.glyphs[p.lineGlyphs[l.first + g]], l);
+                    if (sup && !raised) marks++;
+                    raised = sup;
+                }
+                if (i == b.first) continue;
+                LineText(p, l, line);
+                text += ' ';
+                text += line;
+            }
+            return marks >= 2 || NoTitle(text);
         };
         // Slightly larger text (from 7 % up) is a heading only as one or two short unpunctuated lines.
         const bool larger = size >= body * kHeadingSize ||
@@ -827,14 +886,23 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
         if (k.kind == BlockKind::Heading) continue;
         // A bold line of body size: a heading, numbered ("5. Natural dispersal") or not. It may
-        // ask or introduce ("Procedure:"), but a bold sentence is emphasis.
+        // ask or introduce ("Procedure:"), but a bold sentence is emphasis. "Body size" reaches a
+        // little below the body (11 pt headings over 12 pt table text); a table's bold header row
+        // in its 90 % size does not.
         const bool enumerated =
             first.marker == Marker::Number || first.marker == Marker::Roman || first.marker == Marker::Letter;
         const bool titleEnd = unpunctuated || last.lastCp == ':' || last.lastCp == '?';
-        if (shortBlock && b.bold && !boldDocument && b.count <= 2 && chars <= 100 && size >= body * 0.95f &&
+        if (shortBlock && b.bold && !boldDocument && b.count <= 2 && chars <= 100 && size >= body * 0.915f &&
             titleEnd && (!first.listStart() || enumerated) && !caption()) {
             k.kind = BlockKind::Heading;
             k.boldHeading = true;
+            // Run in: its paragraph's text goes on beside it on its baseline (lines.cpp split the
+            // line after the heading's bold run).
+            if (b.count == 1 && b.first + 1 < infos.size()) {
+                const Info& rest = infos[b.first + 1];
+                k.runIn = rest.page == first.page && rest.dir == first.dir && !(rest.flags & kLineAllBold) &&
+                          std::fabs(rest.baseline - first.baseline) <= 0.3f * first.size && rest.u0 >= first.u1 - 0.5f;
+            }
             continue;
         }
         if (first.listStart()) k.kind = BlockKind::ListItem;
@@ -857,7 +925,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // Heading levels (§6.1). Outline levels where the outline matched; a heading the outline
     // missed takes the level of the last matched heading of its style, else sits one below the
     // last matched heading. Without the outline: style keys ranked by size (bold first), below
-    // them bold body-size lines.
+    // them bold body-size lines. A run-in heading the outline missed sits one below the last
+    // heading set on a line of its own (below the deepest one before any), whatever its style.
     std::vector<int> styleKeys;
     for (const Classified& k : kinds)
         if (k.kind == BlockKind::Heading && k.styleKey >= 0 && k.level == 0) styleKeys.push_back(k.styleKey);
@@ -873,7 +942,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         float lastSize = 0;
         for (size_t r = 0; r < raws.size(); ++r) {
             const Classified& k = kinds[r];
-            if (k.kind != BlockKind::Heading) continue;
+            if (k.kind != BlockKind::Heading || (k.runIn && k.level == 0)) continue;
             if (k.level > 0) {
                 levelOf[r] = k.level;
                 matchedLevel[anyStyle(k)] = k.level;
@@ -899,6 +968,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             } else {
                 levelOf[r] = std::min(static_cast<int>(styleKeys.size()) + 1, 6);
             }
+        }
+        int deepest = 0, last = 0;
+        for (size_t r = 0; r < raws.size(); ++r)
+            if (kinds[r].kind == BlockKind::Heading && levelOf[r] > 0) deepest = std::max(deepest, levelOf[r]);
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const Classified& k = kinds[r];
+            if (k.kind != BlockKind::Heading) continue;
+            if (k.runIn && k.level == 0)
+                levelOf[r] = std::min((last > 0 ? last : deepest) + 1, 6);
+            else
+                last = levelOf[r];
         }
     }
     // Never skip a level: the levels in use renumbered 1..n. Then the top level is made absolute:
@@ -993,11 +1073,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     markerStack.back() = mu;
                 }
                 block.depth = static_cast<uint8_t>(markerStack.size() - 1);
-                block.ordered = first.marker == Marker::Number || first.marker == Marker::Letter ||
-                                first.marker == Marker::Roman;
+                block.ordered = !first.verbatimMarker && (first.marker == Marker::Number ||
+                                                          first.marker == Marker::Letter || first.marker == Marker::Roman);
                 block.number = first.value;
                 block.task = first.task;
-                lines[block.first].skip = first.skip;
+                if (!first.verbatimMarker) lines[block.first].skip = first.skip;
                 itemTextU0 = first.textU0;
                 itemPage = first.page;
                 itemDepth = block.depth;

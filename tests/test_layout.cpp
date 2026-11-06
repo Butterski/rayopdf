@@ -803,6 +803,94 @@ void TestSmallTitle() {
     RAYOPDF_CHECK(md.compare(0, 17, "# Document Title\n") == 0 && Contains(md, "\n## Section One\n"), 715);
 }
 
+void TestRunInHeading() {
+    // A bold run set off by a quad starts its paragraph: a heading one level below the last
+    // heading of its own line. A bold lead-in that ends its sentence stays in the paragraph.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Subsection Title", 72, 740, 10, kGlyphBold);
+    AddText(pages[0], "Body text under the subsection runs long enough to be the body here.", 72, 720, 10);
+    float x = AddText(pages[0], "Topic Heading", 72, 690, 10, kGlyphBold);
+    AddText(pages[0], "The topic text goes on beside its heading on this line.", x + 10, 690, 10);
+    AddText(pages[0], "It continues on the next line of the same paragraph here.", 72, 678, 10);
+    x = AddText(pages[0], "Results.", 72, 650, 10, kGlyphBold);
+    AddText(pages[0], "We find that lead-ins ending a sentence stay in the text.", x + 10, 650, 10);
+    AddText(pages[0], "The paragraph with the lead-in goes on for a second line.", 72, 638, 10);
+    const std::string md = Run(pages);
+    Show("run-in heading", md);
+    RAYOPDF_CHECK(Contains(md, "## Subsection Title\n") && Contains(md, "\n### Topic Heading\n\nThe topic text"), 716);
+    RAYOPDF_CHECK(Contains(md, "**Results.** We find"), 717);
+}
+
+void TestContentsAndChapterNumbers() {
+    // Table-of-contents entries (a page number far right on the baseline) are no headings; a
+    // chapter number set large above its title heads it with the title.
+    std::vector<PageData> contents{NewPage(1)};
+    AddText(contents[0], "Table of contents", 152, 553, 20);
+    const char* entries[] = {"Introduction", "Part I: New Children", "Part II: Solitary Play"};
+    for (int i = 0; i < 3; ++i) {
+        AddText(contents[0], entries[i], 57, 515.0f - 20 * i, 12);
+        AddText(contents[0], std::to_string(7 + 14 * i), 380, 515.0f - 20 * i, 10.5f);
+        AddText(contents[0], "1. A chapter entry set in the body size of the page", 57, 505.0f - 20 * i, 10.5f);
+        AddText(contents[0], std::to_string(8 + 14 * i), 380, 505.0f - 20 * i, 10.5f);
+    }
+    std::string md = Run(contents);
+    Show("contents", md);
+    RAYOPDF_CHECK(Contains(md, "# Table of contents") && !Contains(md, "# Introduction") && !Contains(md, "# Part"), 718);
+    std::vector<PageData> chapter{NewPage(1)};
+    AddText(chapter[0], "4", 61, 575, 24.8f, kGlyphBold);
+    AddText(chapter[0], "Basis Fields", 61, 550, 17.2f, kGlyphBold);
+    AddText(chapter[0], "A vector field may be written as a combination of basis fields.", 61, 519, 10.9f);
+    AddText(chapter[0], "If n is the dimension, any n independent fields make a basis.", 61, 506, 10.9f);
+    md = Run(chapter);
+    Show("chapter number", md);
+    RAYOPDF_CHECK(Contains(md, "# 4 Basis Fields\n"), 719);
+}
+
+void TestWrappedListingLine() {
+    // A numbered listing breaks a long source line and indents the rest without a number: one
+    // source line again.
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    AddText(page, "Prose before the listing runs long enough to be the body text here.", 72, 740, 10);
+    AddText(page, "1", 82, 710, 10);
+    AddText(page, "./configure --prefix=/usr/local --enable-static --disable-shared --with", 98, 710, 10,
+            kGlyphMonospace);
+    AddText(page, "-simd=avx2 --with-tests", 118, 698, 10, kGlyphMonospace);
+    AddText(page, "2", 82, 686, 10);
+    AddText(page, "make check", 98, 686, 10, kGlyphMonospace);
+    AddText(page, "3", 82, 674, 10);
+    AddText(page, "make install", 98, 674, 10, kGlyphMonospace);
+    AddText(page, "Prose after the listing runs long enough to be the body text too.", 72, 640, 10);
+    const std::string md = Run(pages);
+    Show("wrapped listing", md);
+    RAYOPDF_CHECK(Contains(md, "--with-simd=avx2 --with-tests\nmake check\nmake install\n"), 720);
+}
+
+void TestVerbatimEnumerators() {
+    // "(2)" and "(iv)" have no Markdown list form: the item keeps them as text.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Body text before the list runs long enough to be the body text.", 72, 740, 10);
+    AddText(pages[0], "(1) Voluntary service is one of the options here.", 72, 720, 10);
+    AddText(pages[0], "(2) Paid service is the other of the options here.", 72, 706, 10);
+    AddText(pages[0], "(iv) Aumento de la cobertura en todo el pais.", 72, 692, 10);
+    const std::string md = Run(pages);
+    Show("verbatim enumerators", md);
+    RAYOPDF_CHECK(Contains(md, "(2) Paid service") && Contains(md, "(iv) Aumento") && !Contains(md, "2. Paid"), 721);
+}
+
+void TestMonospaceDocument() {
+    // A page set in a monospace font: its lines make paragraphs, with no code spans.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Critical investigation of the roles public art plays in", 72, 740, 10, kGlyphMonospace);
+    AddText(pages[0], "transnational social justice movements, historically and", 72, 728, 10, kGlyphMonospace);
+    AddText(pages[0], "currently. Examination of the history of the mural.", 72, 716, 10, kGlyphMonospace);
+    const std::string md = Run(pages);
+    Show("monospace document", md);
+    RAYOPDF_CHECK(Contains(md, "plays in transnational social justice movements, historically and currently.") &&
+                      !Contains(md, "`"),
+                  722);
+}
+
 } // namespace
 
 int main() {
@@ -844,6 +932,11 @@ int main() {
     TestMathIsNoHeading();
     TestJustifiedLineStaysWhole();
     TestSmallTitle();
+    TestRunInHeading();
+    TestContentsAndChapterNumbers();
+    TestWrappedListingLine();
+    TestVerbatimEnumerators();
+    TestMonospaceDocument();
     std::puts("test_layout: all checks passed");
     return 0;
 }

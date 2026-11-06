@@ -228,7 +228,9 @@ int Inspect(const std::string& input, std::string_view password) {
     }
     AppendField(json, "broken_objects", static_cast<uint64_t>(report.brokenObjects));
     json += "}\n";
-    std::fwrite(json.data(), 1, json.size(), stdout);
+    // One write(2), as before unchecked: stdio's first write to stdout would also fstat it and
+    // allocate its buffer, which a fresh process pays for (--inspect is timed fresh-process).
+    File::WriteAll("-", json);
     return kExitOk;
 }
 

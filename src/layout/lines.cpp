@@ -183,6 +183,7 @@ struct NumberCandidate {
     uint32_t digits = 0;  // glyphs of the number
     float right = 0, baseline = 0, size = 0;
     bool code = false;  // monospace text follows it on its baseline
+    uint32_t codeLine = UINT32_MAX;  // the line holding that text (its own line, or the one beside it)
 };
 
 constexpr uint32_t kMaxNumberCandidates = 4096;
@@ -212,9 +213,10 @@ void DropLineNumbers(PageData& page) {
         c.right = page.glyphs[page.lineGlyphs[line.first + k - 1]].u1;
         c.baseline = line.baseline, c.size = line.size;
         c.code = MostlyMono(page, line, k);
+        if (c.code) c.codeLine = li;
         cands.push_back(c);
     }
-    if (cands.size() < 3) return;
+    if (cands.empty()) return;
 
     // Number-only lines: the nearest line to the right on their baseline is monospace (deeply
     // indented code starts far from its number).
@@ -228,12 +230,14 @@ void DropLineNumbers(PageData& page) {
         auto it = std::lower_bound(byBase.begin(), byBase.end(), c.baseline - 0.3f * c.size,
                                    [&](uint32_t li, float v) { return page.lines[li].baseline < v; });
         const Line* nearest = nullptr;
+        uint32_t nearestIndex = UINT32_MAX;
         for (int scanned = 0; it != byBase.end() && scanned < 64; ++it, ++scanned) {
             const Line& o = page.lines[*it];
             if (o.baseline > c.baseline + 0.3f * c.size) break;
-            if (o.u0 > c.right && (!nearest || o.u0 < nearest->u0)) nearest = &o;
+            if (o.u0 > c.right && (!nearest || o.u0 < nearest->u0)) nearest = &o, nearestIndex = *it;
         }
         c.code = nearest && nearest->u0 - c.right <= 30 * c.size && MostlyMono(page, *nearest, 0);
+        if (c.code) c.codeLine = nearestIndex;
     }
 
     // Runs, top to bottom.
@@ -245,14 +249,21 @@ void DropLineNumbers(PageData& page) {
     while (begin < cands.size()) {
         size_t end = begin + 1;
         float pitch = 0;
+        // Steps are whole multiples of the line pitch: a wrapped source line has no number.
         while (end < cands.size()) {
             const NumberCandidate& a = cands[end - 1];
             const NumberCandidate& b = cands[end];
             const float step = a.baseline - b.baseline;
             if (b.value != a.value + 1 || std::fabs(b.right - a.right) > 0.3f * a.size || step <= 0.5f * a.size ||
-                step > 2.5f * a.size || (pitch > 0 && std::fabs(step - pitch) > 0.25f * pitch))
+                step > 5 * a.size)
                 break;
-            if (pitch == 0) pitch = step;
+            if (pitch > 0) {
+                const float ratio = std::fmax(step, pitch) / std::fmin(step, pitch);
+                const float whole = std::round(ratio);
+                if (whole > 4 || std::fabs(ratio - whole) > 0.25f) break;
+            }
+            pitch = pitch > 0 ? std::fmin(pitch, step) : step;
+            if (pitch > 2.5f * a.size) break;
             ++end;
         }
         uint32_t code = 0;
@@ -292,6 +303,44 @@ void DropLineNumbers(PageData& page) {
         if (all & kGlyphMonospace) line.flags |= kLineAllMono;
     }
     if (!any) return;
+
+    // Wrapped source lines: a listing breaks a line too long for its frame and sets the rest on
+    // the next line, indented and without a number. Such a line (monospace, just below a numbered
+    // line that runs to the text's right edge, indented past its start, itself neither numbered
+    // nor beside a number) joins the line it continues, as one source line again.
+    std::vector<uint8_t> numbered(page.lines.size(), 0);
+    float textRight = -INFINITY;
+    for (const Line& l : page.lines)
+        if (l.dir == 0 && l.count > 0) textRight = std::fmax(textRight, l.u1);
+    for (const NumberCandidate& c : cands) {
+        numbered[c.line] = 1;
+        if (c.codeLine != UINT32_MAX) numbered[c.codeLine] = 1;
+    }
+    for (size_t k = 0; k < cands.size(); ++k) {
+        if (!drop[k] || cands[k].codeLine == UINT32_MAX) continue;
+        Line& code = page.lines[cands[k].codeLine];
+        const float size = cands[k].size;
+        if (code.count == 0 || code.u1 < textRight - 2 * size) continue;
+        auto it = std::lower_bound(byBase.begin(), byBase.end(), cands[k].baseline - 1.6f * size,
+                                   [&](uint32_t li, float v) { return page.lines[li].baseline < v; });
+        for (int scanned = 0; it != byBase.end() && scanned < 64; ++it, ++scanned) {
+            Line& o = page.lines[*it];
+            if (o.baseline > cands[k].baseline - 0.5f * size) break;
+            if (numbered[*it] || o.count == 0 || o.u0 <= code.u0 + 0.5f * size || o.u0 >= code.u1 ||
+                !MostlyMono(page, o, 0))
+                continue;
+            const uint32_t first = static_cast<uint32_t>(page.lineGlyphs.size());
+            for (uint32_t i = 0; i < code.count; ++i) page.lineGlyphs.push_back(page.lineGlyphs[code.first + i]);
+            for (uint32_t i = 0; i < o.count; ++i) page.lineGlyphs.push_back(page.lineGlyphs[o.first + i]);
+            code.first = first;
+            code.count += o.count;
+            code.chars += o.chars;
+            if (!(o.flags & kLineAllMono)) code.flags = static_cast<uint16_t>(code.flags & ~kLineAllMono);
+            o.count = 0;
+            numbered[*it] = 1;
+            break;
+        }
+    }
     page.lines.erase(std::remove_if(page.lines.begin(), page.lines.end(), [](const Line& l) { return l.count == 0; }),
                      page.lines.end());
 }
@@ -618,8 +667,10 @@ void BuildLines(PageData& page) {
                 const float gap = g.u0 - right;
                 const bool combining = StartsWithCombiningMark(page.GlyphText(g));
                 if (!combining && (pendingSpace || gap > wordGap * em)) g.flags |= kGlyphSpaceBefore;
-                // Ink segments: runs of glyphs without a wide gap, for gutter detection.
-                if (gap > kGutterCandidate * grp.size) {
+                // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
+                // measured in the size of the glyphs beside it: a drop cap must not widen the
+                // threshold for the whole line.
+                if (gap > kGutterCandidate * em) {
                     segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
                 } else {
                     segments.back().u1 = std::fmax(segments.back().u1, g.u1);
@@ -638,6 +689,22 @@ void BuildLines(PageData& page) {
         }
         p.count = static_cast<uint32_t>(proto.size() - p.first);
         p.segCount = static_cast<uint32_t>(segments.size() - p.segFirst);
+        // The size of most of its glyphs (not a drop cap's): gutter windows and gaps scale with it.
+        {
+            float sizes[16];
+            uint32_t counts[16] = {}, distinct = 0, best = 0;
+            for (uint32_t k = p.first; k < p.first + p.count; ++k) {
+                const float s = glyphs[proto[k]].size;
+                uint32_t d = 0;
+                while (d < distinct && std::fabs(sizes[d] - s) >= 0.25f) ++d;
+                if (d == distinct) {
+                    if (distinct == 16) continue;
+                    sizes[distinct++] = s;
+                }
+                if (++counts[d] > counts[best]) best = d;
+            }
+            if (distinct > 0) p.size = sizes[best];
+        }
         if (p.count > 0) protos.push_back(p);
     }
 
@@ -777,6 +844,71 @@ void BuildLines(PageData& page) {
         const float em = std::fmax(line.size, 1.0f);
         const int direction = line.u0 - left <= em && right - line.u1 >= 3 * em ? 0 : -1;
         if (ToLogicalOrder(page, line, bidi, direction)) line.flags |= kLineRtl;
+    }
+}
+
+namespace {
+
+// Extent, character count and common style of `line` from its glyphs.
+void Measure(const PageData& page, Line& line) {
+    uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible;
+    line.chars = line.count;
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (k == 0) line.u0 = g.u0, line.u1 = g.u1, line.vb = g.vb, line.vt = g.vt;
+        line.u0 = std::fmin(line.u0, g.u0), line.u1 = std::fmax(line.u1, g.u1);
+        line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+        all &= g.flags;
+    }
+    line.flags = static_cast<uint16_t>(line.flags & ~(kLineAllBold | kLineAllItalic | kLineAllMono | kLineArtifact |
+                                                     kLineInvisible));
+    if (all & kGlyphBold) line.flags |= kLineAllBold;
+    if (all & kGlyphItalic) line.flags |= kLineAllItalic;
+    if (all & kGlyphMonospace) line.flags |= kLineAllMono;
+    if (all & kGlyphArtifact) line.flags |= kLineArtifact;
+    if (all & kGlyphInvisible) line.flags |= kLineInvisible;
+}
+
+} // namespace
+
+void SplitRunInHeadings(PageData& page) {
+    const size_t ordered = page.order.size();
+    for (size_t at = 0; at < ordered && page.order.size() < (size_t(1) << 24); ++at) {
+        // Indices into page.order shift as rests are inserted: `at` walks the original entries.
+        const uint32_t li = page.order[at + (page.order.size() - ordered)];
+        Line& line = page.lines[li];
+        if (line.dir != 0 || line.count < 3 || (line.flags & (kLineAnchor | kLineTableCell | kLineTable))) continue;
+        uint32_t k = 0, letters = 0;
+        while (k < line.count && k <= 80) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            if (!(g.flags & kGlyphBold)) break;
+            const std::string_view t = page.GlyphText(g);
+            if (!t.empty() && ((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= 'a' && t[0] <= 'z') ||
+                               static_cast<unsigned char>(t[0]) >= 0xC0))
+                letters++;
+            ++k;
+        }
+        if (k < 2 || k >= line.count || k > 80 || letters < 2) continue;
+        const Glyph& last = page.glyphs[page.lineGlyphs[line.first + k - 1]];
+        const Glyph& next = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (next.u0 - last.u1 < 0.6f * line.size) continue;
+        const std::string_view lastText = page.GlyphText(last);
+        // Ending in punctuation it leads into its sentence; ending in a number it labels a caption
+        // ("Table 4", "Fig. 2").
+        if (lastText.empty() || std::strchr(".:;,!?0123456789", lastText.back()) != nullptr) continue;
+        // The body text after it is set in another face (not one bold cell beside another).
+        if (page.glyphs[page.lineGlyphs[line.first + line.count - 1]].flags & kGlyphBold) continue;
+        Line rest = line;
+        rest.first = line.first + k;
+        rest.count = line.count - k;
+        line.count = k;
+        page.glyphs[page.lineGlyphs[rest.first]].flags &= static_cast<uint16_t>(~kGlyphSpaceBefore);
+        Measure(page, line);
+        Measure(page, rest);
+        const size_t position = at + (page.order.size() - ordered) + 1;
+        page.order.insert(page.order.begin() + static_cast<std::ptrdiff_t>(position),
+                          static_cast<uint32_t>(page.lines.size()));
+        page.lines.push_back(rest);
     }
 }
 

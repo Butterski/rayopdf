@@ -26,6 +26,14 @@ constexpr float kMarkerGap = 4.0f;         // a list marker joins the text this 
 // unordered; OrderLines orders them.
 void BuildLines(PageData& page);
 
+// Run-in headings (LaTeX \paragraph, the fourth and fifth levels of many templates): in an ordered
+// line, a bold run that starts it, ends without punctuation and is set off from the text after it
+// by a wide space (a quad, not a word space) becomes a line of its own on the same baseline, with
+// the rest of the line right after it in page.order. Semantics reads it as a heading. A bold
+// lead-in that ends a sentence ("Results. We find ...") or introduces it ("Note: ...") stays.
+// Runs after OrderLines, so that the order of the page's lines is decided on whole lines.
+void SplitRunInHeadings(PageData& page);
+
 // The text of a line with word breaks as single spaces, from its glyph `skip` on.
 void LineText(const PageData& page, const Line& line, std::string& out, uint32_t skip = 0);
 

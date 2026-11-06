@@ -47,12 +47,20 @@ inline size_t ValuePlusExtra(uint32_t entry, uint64_t bits) {
 }
 
 // Codes are looked up by their first kRootBits bits; a longer code's prefix leads to a subtable of
-// its remaining bits, at most 15 in all.
+// its remaining bits, at most 15 in all. The tables hold the root and at most this many subtables:
+// a code is complete wherever it has codes longer than the root (BuildTable refuses an incomplete
+// one but for a single code of one bit), so every prefix with a subtable leads to at least two
+// codes: at most 286 / 2 literal/length and 30 / 2 distance subtables. Smaller tables than for
+// every symbol a subtable: 26 KB instead of 43 KB of stack touched by a fresh process's first
+// dynamic block.
 constexpr unsigned kLitLenRoot = 11;
 constexpr unsigned kDistRoot = 8;
 constexpr unsigned kPrecodeRoot = 7;
-constexpr size_t kLitLenTableSize = (size_t(1) << kLitLenRoot) + 288 * (size_t(1) << (15 - kLitLenRoot));
-constexpr size_t kDistTableSize = (size_t(1) << kDistRoot) + 32 * (size_t(1) << (15 - kDistRoot));
+constexpr size_t kLitLenTableSize = (size_t(1) << kLitLenRoot) + 143 * (size_t(1) << (15 - kLitLenRoot));
+constexpr size_t kDistTableSize = (size_t(1) << kDistRoot) + 15 * (size_t(1) << (15 - kDistRoot));
+// The fixed codes are at most 9 and 5 bits long: no subtables.
+constexpr size_t kFixedLitLenTableSize = size_t(1) << kLitLenRoot;
+constexpr size_t kFixedDistTableSize = size_t(1) << kDistRoot;
 
 constexpr uint16_t kLengthBase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                       31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
@@ -103,10 +111,11 @@ inline unsigned Reverse(unsigned code, unsigned bits) {
 // The decode table of the canonical code with `lengths` (0 for an unused symbol, at most 15),
 // as zlib builds it: false for an over-subscribed code, and for an incomplete one unless it has a
 // single code of one bit or, where `allowEmpty`, no code at all. `incompleteAllowed` false refuses
-// every incomplete code (the code length code).
+// every incomplete code (the code length code). False also when the subtables would pass
+// `tableSize` entries (which the bound above rules out).
 template <typename EntryOf>
-bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, bool incompleteAllowed,
-                bool allowEmpty, EntryOf entryOf) {
+bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
+                bool incompleteAllowed, bool allowEmpty, EntryOf entryOf) {
     unsigned counts[16] = {};
     for (unsigned symbol = 0; symbol < count; symbol++) counts[lengths[symbol]]++;
     counts[0] = 0;
@@ -146,6 +155,7 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
         }
         const unsigned prefix = reversed & static_cast<unsigned>(rootSize - 1);
         if (subOf[prefix] == 0) {
+            if (subNext + (size_t(1) << subBits) > tableSize) return false;
             subOf[prefix] = static_cast<uint16_t>(subNext);
             table[prefix] = Entry(static_cast<uint32_t>(subNext), subBits, kSubtable, 0);  // takes no bits itself
             subNext += size_t(1) << subBits;
@@ -219,17 +229,17 @@ RAYOPDF_HOT_INLINE void CopyMatch(uint8_t* to, size_t back, size_t length) {
 }
 
 struct FixedTables {
-    uint32_t litlen[kLitLenTableSize];
-    uint32_t distance[kDistTableSize];
+    uint32_t litlen[kFixedLitLenTableSize];
+    uint32_t distance[kFixedDistTableSize];
     FixedTables() {
         uint8_t lengths[288];
         std::memset(lengths, 8, 144);
         std::memset(lengths + 144, 9, 112);
         std::memset(lengths + 256, 7, 24);
         std::memset(lengths + 280, 8, 8);
-        BuildTable(lengths, 288, kLitLenRoot, litlen, false, false, LitLenEntry());
+        BuildTable(lengths, 288, kLitLenRoot, litlen, kFixedLitLenTableSize, false, false, LitLenEntry());
         std::memset(lengths, 5, 32);
-        BuildTable(lengths, 32, kDistRoot, distance, false, false, DistanceEntry());
+        BuildTable(lengths, 32, kDistRoot, distance, kFixedDistTableSize, false, false, DistanceEntry());
     }
 };
 
@@ -381,7 +391,10 @@ private:
         }
         if (!Within()) return Step::Truncated;
         uint32_t precode[size_t(1) << kPrecodeRoot];
-        if (!BuildTable(precodeLengths, 19, kPrecodeRoot, precode, false, false, PrecodeEntry())) return Step::Corrupt;
+        if (!BuildTable(precodeLengths, 19, kPrecodeRoot, precode, size_t(1) << kPrecodeRoot, false, false,
+                        PrecodeEntry())) {
+            return Step::Corrupt;
+        }
         uint8_t lengths[286 + 30];
         const unsigned total = litlenCount + distanceCount;
         for (unsigned index = 0; index < total;) {
@@ -411,8 +424,9 @@ private:
         }
         if (!Within()) return Step::Truncated;
         if (lengths[256] == 0) return Step::Corrupt;
-        if (!BuildTable(lengths, litlenCount, kLitLenRoot, dynamicLitlen_, true, false, LitLenEntry()) ||
-            !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamicDistance_, true, true,
+        if (!BuildTable(lengths, litlenCount, kLitLenRoot, dynamicLitlen_, kLitLenTableSize, true, false,
+                        LitLenEntry()) ||
+            !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamicDistance_, kDistTableSize, true, true,
                         DistanceEntry())) {
             return Step::Corrupt;
         }

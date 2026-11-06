@@ -63,7 +63,8 @@ bool IsCjk(uint32_t cp) {
 class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts)
-        : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts) {
+        : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
+          monoIsBody_(blocks.monoDocument) {
         // Bold or italic that covers most text is the document's normal face, not emphasis.
         uint64_t total = 0, bold = 0, italic = 0;
         for (const PageData& page : pages) {
@@ -114,6 +115,7 @@ private:
     WriteCounts& counts_;
     bool boldIsBody_ = false;
     bool italicIsBody_ = false;
+    bool monoIsBody_ = false;  // the document is typeset in a monospace font (BlockList::monoDocument)
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
     std::string plain_;
@@ -209,7 +211,7 @@ void Writer::StyleWords(bool styles) {
             if (g.flags & kGlyphMonospace) mono++;
         }
         if (considered > 0) {
-            if (mono == considered) {
+            if (mono == considered && !monoIsBody_) {
                 w.style = kStyleCode;
             } else {
                 if (bold == considered && !boldIsBody_) w.style |= kStyleBold;
@@ -436,6 +438,13 @@ void Writer::Inline(const Block& block, bool styles) {
 }
 
 void Writer::Code(const Block& block, const std::string& prefix) {
+    // A line's last row: the baseline of its last glyph (a wrapped source line joined again in
+    // lines.cpp ends a row lower than it starts).
+    const auto bottom = [&](const BlockLine& ref) {
+        const PageData& page = pages_[ref.page];
+        const Line& line = page.lines[ref.line];
+        return line.count ? page.glyphs[page.lineGlyphs[line.first + line.count - 1]].v : line.baseline;
+    };
     // The character grid: the median advance of the block's glyphs (algorithms §6.4).
     std::vector<float> widths;
     float left = INFINITY;
@@ -449,7 +458,7 @@ void Writer::Code(const Block& block, const std::string& prefix) {
             if (g.u1 > g.u0) widths.push_back(g.u1 - g.u0);
         }
         if (bl > block.first && lines_[bl - 1].page == lines_[bl].page) {
-            const float pitch = page.lines[lines_[bl - 1].line].baseline - line.baseline;
+            const float pitch = bottom(lines_[bl - 1]) - line.baseline;
             if (pitch > 0) pitches.push_back(pitch);
         }
     }
@@ -469,7 +478,7 @@ void Writer::Code(const Block& block, const std::string& prefix) {
         if (bl > block.first) {
             other_.push_back('\n');
             if (pitch > 0 && lines_[bl - 1].page == lines_[bl].page) {
-                const float gap = page.lines[lines_[bl - 1].line].baseline - line.baseline;
+                const float gap = bottom(lines_[bl - 1]) - line.baseline;
                 // Decided on the float: a huge or non-finite gap must not reach the integer
                 // conversion (fuzz_layout_tables found -2147483648 - 1 here); NaN gives none.
                 const float lines = gap / pitch;

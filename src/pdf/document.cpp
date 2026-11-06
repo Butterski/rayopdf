@@ -161,20 +161,24 @@ struct Document::Impl {
         std::vector<std::pair<uint32_t, size_t>> index;  // object number, offset from /First
     };
 
-    struct Page {
-        const PdfValue* dict = nullptr;
-        const PdfValue* resources = nullptr;
-        PdfRect mediaBox;
-        PdfRect cropBox;
-        int rotate = 0;
-    };
-
     // Unresolved inherited page attributes (ISO 32000-1 section 7.7.3.4).
     struct Inherited {
         const PdfValue* resources = nullptr;
         const PdfValue* mediaBox = nullptr;
         const PdfValue* cropBox = nullptr;
         const PdfValue* rotate = nullptr;
+    };
+
+    // A leaf of the page tree. Its attributes are resolved on first use (ResolvedPage): counting
+    // the pages (--inspect) parses no resources dictionary.
+    struct Page {
+        const PdfValue* dict = nullptr;
+        Inherited inherited;
+        bool resolved = false;
+        const PdfValue* resources = nullptr;
+        PdfRect mediaBox;
+        PdfRect cropBox;
+        int rotate = 0;
     };
 
     std::string_view bytes;
@@ -731,6 +735,13 @@ struct Document::Impl {
             c = probe;
             Syntax::SkipSpace(c);
             if (!ReadUnsigned(Syntax::ReadToken(c), count)) return false;
+            // The slots of the whole subsection at once rather than one reallocation per doubling;
+            // no more than its fixed-form entries (18 bytes or more each) can fill.
+            if (first < numLimit) {
+                const uint64_t fits = (bytes.size() - c.pos) / 18 + 1;
+                const uint64_t want = std::min<uint64_t>(first + std::min(count, fits), numLimit);
+                if (want > slots.capacity()) slots.reserve(static_cast<size_t>(want));
+            }
             uint64_t shift = 0;
             // Every entry takes at least three tokens of the file, so `count` cannot outrun it.
             for (uint64_t k = 0; k < count; k++) {
@@ -1194,22 +1205,38 @@ struct Document::Impl {
     void AddPage(const PdfValue& node, const Inherited& inherited) {
         Page page;
         page.dict = &node;
+        page.inherited = inherited;
+        pages.push_back(page);
+    }
+
+    // Page `index` (in range) with its attributes resolved.
+    const Page& ResolvedPage(size_t index) {
+        if (pages[index].resolved) return pages[index];
+        // Resolving parses objects but never adds pages: `pages` stays put.
+        const Inherited inherited = pages[index].inherited;
+        const PdfValue* resources = nullptr;
         if (inherited.resources) {
-            const PdfValue& resources = Resolve(*inherited.resources);
-            if (resources.IsDict()) page.resources = &resources;
+            const PdfValue& value = Resolve(*inherited.resources);
+            if (value.IsDict()) resources = &value;
         }
         PdfRect box;
-        page.mediaBox = PdfRect{0, 0, 612, 792};
+        PdfRect mediaBox{0, 0, 612, 792};
         if (inherited.mediaBox && Rect(*inherited.mediaBox, box) && box.Width() > 0 && box.Height() > 0) {
-            page.mediaBox = box;
+            mediaBox = box;
         }
-        page.cropBox = page.mediaBox;
+        PdfRect cropBox = mediaBox;
         if (inherited.cropBox && Rect(*inherited.cropBox, box)) {
-            const PdfRect clipped = Intersect(box, page.mediaBox);
-            if (clipped.Width() > 0 && clipped.Height() > 0) page.cropBox = clipped;
+            const PdfRect clipped = Intersect(box, mediaBox);
+            if (clipped.Width() > 0 && clipped.Height() > 0) cropBox = clipped;
         }
-        if (inherited.rotate) page.rotate = NormalizeRotate(Resolve(*inherited.rotate).Int(0));
-        pages.push_back(page);
+        const int rotate = inherited.rotate ? NormalizeRotate(Resolve(*inherited.rotate).Int(0)) : 0;
+        Page& page = pages[index];
+        page.resources = resources;
+        page.mediaBox = mediaBox;
+        page.cropBox = cropBox;
+        page.rotate = rotate;
+        page.resolved = true;
+        return page;
     }
 
     bool IsLeaf(const PdfValue& node) {
@@ -1326,7 +1353,8 @@ struct Document::Impl {
             }
         }
         if (headerPos != std::string_view::npos) {
-            // A linearized file's first object, right after the header, holds /Linearized.
+            // A linearized file's first object, right after the header, holds /Linearized. It is
+            // parsed whatever it holds: a broken one counts in the report (--report shows it).
             Cursor c{bytes, headerPos};
             Syntax::SkipSpace(c);
             const size_t at = c.pos;
@@ -1413,22 +1441,22 @@ const PdfValue& Document::PageDict(int index) const {
 
 PdfRect Document::MediaBox(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return PdfRect{0, 0, 612, 792};
-    return impl_->pages[static_cast<size_t>(index)].mediaBox;
+    return impl_->ResolvedPage(static_cast<size_t>(index)).mediaBox;
 }
 
 PdfRect Document::CropBox(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return PdfRect{0, 0, 612, 792};
-    return impl_->pages[static_cast<size_t>(index)].cropBox;
+    return impl_->ResolvedPage(static_cast<size_t>(index)).cropBox;
 }
 
 int Document::Rotate(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return 0;
-    return impl_->pages[static_cast<size_t>(index)].rotate;
+    return impl_->ResolvedPage(static_cast<size_t>(index)).rotate;
 }
 
 const PdfValue& Document::Resources(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return Null();
-    const PdfValue* resources = impl_->pages[static_cast<size_t>(index)].resources;
+    const PdfValue* resources = impl_->ResolvedPage(static_cast<size_t>(index)).resources;
     return resources ? *resources : Null();
 }
 

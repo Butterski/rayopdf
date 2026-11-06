@@ -22,6 +22,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         PageData& page = pages[p];
         report.headerFooterLines -= DetectTables(page, continuation);
         OrderLines(page);
+        SplitRunInHeadings(page);
         report.hiddenGlyphs += page.hiddenGlyphs;
         report.contentErrors += page.contentErrors;
         if (!page.HasText()) report.pagesWithoutText++;
