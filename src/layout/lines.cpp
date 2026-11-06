@@ -103,6 +103,7 @@ bool StartsWithCombiningMark(std::string_view text) {
 
 struct BidiScratch {
     std::vector<Text::Bidi::Class> classes;
+    std::vector<uint32_t> codePoints;  // each visual item's first code point (paired brackets, N0)
     std::vector<uint32_t> visual;  // the line's glyphs in visual order
     std::vector<uint8_t> breaks;   // word break before visual item k
     std::vector<uint32_t> order;
@@ -128,6 +129,7 @@ bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direct
     }
     if (!candidate) return false;
     s.classes.resize(line.count);
+    s.codePoints.resize(line.count);
     s.visual.assign(page.lineGlyphs.begin() + line.first, page.lineGlyphs.begin() + line.first + line.count);
     s.breaks.resize(line.count);
     for (uint32_t k = 0; k < line.count; ++k) {
@@ -136,9 +138,11 @@ bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direct
         size_t length = 0;
         if (!Utf8::Decode(page.GlyphText(g), 0, cp, length)) cp = ' ';
         s.classes[k] = Text::Bidi::ClassOf(cp);
+        s.codePoints[k] = cp;
         s.breaks[k] = (g.flags & kGlyphSpaceBefore) != 0;
     }
-    const bool rtl = Text::Bidi::VisualToLogical(s.classes.data(), line.count, s.order, &s.levels, direction);
+    const bool rtl = Text::Bidi::VisualToLogical(s.classes.data(), s.codePoints.data(), line.count, s.order, &s.levels,
+                                                 direction);
     if (s.order.size() != line.count || s.levels.size() != line.count) return false;
     for (uint32_t j = 0; j < line.count; ++j) {
         const uint32_t v = s.order[j];

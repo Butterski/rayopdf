@@ -10,6 +10,7 @@
 #include "text/cjk.h"
 #include "text/cmap.h"
 #include "text/font.h"
+#include "text/unicode_text.h"
 
 #include <cmath>
 #include <cstdint>
@@ -86,6 +87,27 @@ void TestTables() {
     RAYOPDF_CHECK(Cjk::EncodingOf(Cjk::FindPredefined("UniKS-UTF8-H")) == Cjk::CMapEncoding::Utf8 &&
                       Cjk::CollectionOf(Cjk::FindPredefined("B5pc-V")) == Collection::CNS1, 668);
 
+    // CMaps of every encoding family, chained to the CMap they differ least from.
+    RAYOPDF_CHECK(CidOf("78-H", 0x3022) == 7633 && Cjk::CidToUnicode(Collection::Japan1, 7633) == 0x555E &&
+                      CidOf("Add-RKSJ-H", 0x889F) == 1125 && Cjk::IsVertical(Cjk::FindPredefined("78-V")), 692);
+    RAYOPDF_CHECK(CidOf("GBK2K-H", 0x8139EF30) == 22530 && CidOf("GBK2K-H", 0xD6D0) == 4559 &&
+                      CidOf("KSC-Johab-H", 0xD065) == 3296, 693);
+    RAYOPDF_CHECK(CidOf("CNS1-H", 0x4421) == 595 && CidOf("CNS2-H", 0x2121) == 5996 &&
+                      CidOf("HKdla-B5-H", 0xA4A4) == 661 && CidOf("B5-H", 0xA4A4) == 661, 694);
+    // A code the base CMap maps but this one does not stays unmapped (78-H lacks 0x223A of H).
+    RAYOPDF_CHECK(CidOf("H", 0x223A) != 0xFFFFFFFF && CidOf("78-H", 0x223A) == 0xFFFFFFFF, 695);
+    // Adobe-KR, through its Unicode CMaps only.
+    RAYOPDF_CHECK(Cjk::CollectionByName("Adobe", "KR") == Collection::KR && CidOf("UniAKR-UTF32-H", 0xD55C) == 2835 &&
+                      Cjk::CidToUnicode(Collection::KR, 2835) == 0xD55C, 696);
+    // CIDs without a Unicode column: an IVD base character (Adobe-Japan1 kanji variant), the character
+    // of the same KS X 1001 code in another CMap (a Macintosh variant).
+    RAYOPDF_CHECK(Cjk::CidToUnicode(Collection::Japan1, 13698) == 0x3402 &&
+                      Cjk::CidToUnicode(Collection::Korea1, 8283) == 0x3001, 697);
+    Codespace gb18030;
+    Cjk::AddCodespace(Cjk::FindPredefined("GBK2K-H"), gb18030);
+    uint32_t four = 0;
+    RAYOPDF_CHECK(gb18030.Read("\x81\x39\xEF\x30"sv, 0, four) == 4 && four == 0x8139EF30, 698);
+
     // The codespace of a legacy CMap splits Shift-JIS strings.
     Codespace codespace;
     Cjk::AddCodespace(Cjk::FindPredefined("90ms-RKSJ-V"), codespace);
@@ -159,6 +181,7 @@ void TestFonts() {
     f += " /F9 " + Type0(b, "/KSCms-UHC-H", "Korea1", "");
     f += " /F10 " + Type0(b, "/B5pc-H", "CNS1", "/W [661 [800]]");
     f += " /F11 " + Type0(b, "/Identity-H", "Identity", "");
+    f += " /F12 " + Type0(b, "/UniCNS-UCS2-H", "CNS1", "");
     const int stream = b.AddFlateStream("", "BT /F1 12 Tf (A) Tj ET");
     const int page = b.Add("<< /Type /Page /Parent " + Ref(pages) + " /MediaBox [0 0 612 792] /Resources << /Font << " +
                            f + " >> >> /Contents " + Ref(stream) + " >>");
@@ -209,6 +232,15 @@ void TestFonts() {
     RAYOPDF_CHECK(Text(Codes(l.Get("F9"), "\xC7\xD1\xB1\xDB"sv)) == "한글", 685);
     codes = Codes(l.Get("F10"), "\xA4\xA4\xA4\xE5"sv);
     RAYOPDF_CHECK(Text(codes) == "中文" && Near(codes[0].width, 0.8), 686);
+
+    // A UCS-2 string holding a UTF-16 surrogate pair (as Acrobat writes emoji): one code, the
+    // advance of its two halves.
+    codes = Codes(l.Get("F12"), "\xD8\x3D\xDE\x31\x4E\x2D"sv);
+    RAYOPDF_CHECK(codes.size() == 2 && codes[0].bytes == 4 && Text(codes) == "\xF0\x9F\x98\xB1中" &&
+                      codes[0].source == UnicodeSource::Collection, 688);
+    RAYOPDF_CHECK(Near(codes[0].width, 2.0) && Near(codes[1].width, 1.0), 689);
+    RAYOPDF_CHECK(CodePointText(0x20B9F) == "\xF0\xA0\xAE\x9F" && CodePointText(0x30000).empty() &&
+                      CodePointText(0xD800).empty() && CodePointText('A') == "A", 699);
 
     // Adobe-Identity without ToUnicode or program stays unmapped.
     codes = Codes(l.Get("F11"), "\x03\x4B"sv);

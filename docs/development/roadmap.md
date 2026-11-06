@@ -183,28 +183,29 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.4 (2026-11-06)
+### Status: 0.0.5 (2026-11-06)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
-CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passes the best text-layer tool on every
-odl metric and on three of olmOCR's four born-digital categories. Harness results:
-[0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
-[0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md).
+CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-layer tool on every
+odl metric and on three of olmOCR's four born-digital categories; 0.0.5 completes the CJK CMaps
+and UAX #9. Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
+[0.0.2](../benchmarks/v0.0.2-2026-11-06.md), [0.0.3](../benchmarks/v0.0.3-2026-11-06.md),
+[0.0.4](../benchmarks/v0.0.4-2026-11-06.md), [0.0.5](../benchmarks/v0.0.5-2026-11-06.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
   tree, `--inspect`); exact recovery of RayoMD PDFs is not. Gates met: page counts (996 of 996),
   0 crashes and hangs under ASan, 24 h of aggregate fuzzing over all 11 targets (the reader's three
-  ran 2.2 h each, clean). Open: `--inspect` measures 0.350 ms fresh-process against the 0.3 ms
-  gate, with an empty static program at 0.250 ms on the same machine.
-- **M2 Text:** the font → Unicode chain including Adobe's CJK collections, words, lines,
-  duplicates as bold, ligatures, dehyphenation, uncertainty comments. NID gate met: above the
-  best text-layer tool on odl (0.915 against 0.914) and on every untagged synthetic producer.
-  Open: garbage ToUnicode detection.
+  ran 2.2 h each, clean). Open: `--inspect` measures 0.352 ms fresh-process against the 0.3 ms
+  gate, with an empty static program at 0.248 ms on the same machine.
+- **M2 Text:** the font → Unicode chain including every predefined CMap of Adobe's five CJK
+  collections, words, lines, duplicates as bold, ligatures, dehyphenation, uncertainty comments.
+  NID gate met: above the best text-layer tool on odl (0.915 against 0.914) and on every untagged
+  synthetic producer. Open: garbage ToUnicode detection.
 - **M3 Layout:** XY cuts with column checks, obstacles, bridging lines and Breuel's partial order
   as fallback; running headers and footers by repetition and, on single pages, by position and
-  style; right-to-left lines (UAX #9 without explicit embeddings). odl NID ≥ docling met. Open:
+  style; right-to-left lines (full UAX #9). odl NID ≥ docling met. Open:
   olmOCR `multi_column` 0.692, `long_tiny_text` 0.507 and `headers_footers` 0.652 pass every
   text-layer tool but not docling (0.695, 0.523, 0.898); `xelatex-2col` NID 0.905 (gate 0.95).
 - **M4 Semantics:** headings with absolute levels (run-in headings included), lists, code
@@ -213,8 +214,8 @@ odl metric and on three of olmOCR's four born-digital categories. Harness result
   odl MHS 0.8267 against docling's 0.8269, construct F1 0.852 (gate 0.95), READoc arxiv
   `head_teds`, image alt text (M6).
 - **M5 Tables:** ruled, horizontal-rule-only, striped and high-confidence borderless tables, GFM
-  or HTML with spans. Gates met: synthetic untagged TEDS 0.985, odl TEDS 0.833 ≥ liteparse's
-  0.818 (docling 0.879). Open: olmOCR `table_tests` 0.540 against 0.615.
+  or HTML with spans. Gates met: synthetic untagged TEDS 0.985, odl TEDS 0.837 ≥ liteparse's
+  0.818 (docling 0.879). Open: olmOCR `table_tests` 0.568 against 0.615.
 - **M6–M8:** not started.
 
 ## Engineering conventions

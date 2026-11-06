@@ -7,7 +7,7 @@
 
 namespace RayoPdf::Text::Cjk {
 
-constexpr int kCollectionCount = 4;
+constexpr int kCollectionCount = 5;
 
 // One Adobe character collection. Its CIDs 0..cidCount-1 index kCidUnicode from tableStart: 0 is
 // no Unicode, 0xD800 + i is kSupplementary[supplementaryStart + i], anything else a BMP code
@@ -25,7 +25,8 @@ struct CollectionTable {
     uint32_t inverseBitsStart;
 };
 
-// Codes low..low+count-1 map to CIDs cid..cid+count-1. Unicode-based CMaps list code points.
+// Codes low..low+count-1 map to CIDs cid..cid+count-1; a run whose cid is 0xFFFF lists codes the
+// CMap does not map although its base does. Unicode-based CMaps list code points.
 struct CidRun {
     uint32_t low;
     uint16_t count;
@@ -40,8 +41,9 @@ struct CodespaceSpan {
 };
 
 // One predefined CMap. Its runs (kRuns from runStart, sorted by low) are searched first, then the
-// CMap `base` (an index into kPredefined, -1 for none), and for Unicode-based CMaps finally the
-// collection's UTF32-H. A CMap without codespace spans uses its base's.
+// CMap `base` (an index into kPredefined, -1 for none) and its bases, and for Unicode-based CMaps
+// finally the collection's UTF32-H. Codespace, WMode and notdefrange are the CMap's own (resolved
+// over usecmap by the generator).
 struct PredefinedTable {
     const char* name;
     uint8_t collection;   // 1-based index into kCollections

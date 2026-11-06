@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Lookups over the generated CJK tables (cjk_tables.h). A predefined CMap is a chain: its own runs,
-// then its base CMap's (a -V CMap's -H), and for Unicode-based CMaps finally the collection's
-// UTF32-H, rebuilt here once as a sorted Unicode -> CID array from the CID -> Unicode table.
+// then its base CMap's (the CMap it differs least from; an "absent" run ends the search), and for
+// Unicode-based CMaps finally the collection's UTF32-H, rebuilt here once as a sorted Unicode ->
+// CID array from the CID -> Unicode table. Codespace and notdefrange are each CMap's own.
 
 #include "text/cjk.h"
 
@@ -17,8 +18,10 @@
 namespace RayoPdf::Text::Cjk {
 namespace {
 
-// A base chain is at most -V -> -H -> (UCS2-H); the bound only guards against a bad table.
-constexpr int kMaxChain = 4;
+// The generator keeps base chains to at most five CMaps; the bound only guards against a bad table.
+constexpr int kMaxChain = 8;
+// A run with this CID lists codes the CMap lacks although its base maps them.
+constexpr uint16_t kAbsent = 0xFFFF;
 
 const CollectionTable* TableOf(Collection collection) {
     const int index = static_cast<int>(collection) - 1;
@@ -72,6 +75,10 @@ const std::vector<uint64_t>& InverseOf(Collection collection) {
         static const std::vector<uint64_t> inverse = BuildInverse(kCollections[3]);
         return inverse;
     }
+    case Collection::KR: {
+        static const std::vector<uint64_t> inverse = BuildInverse(kCollections[4]);
+        return inverse;
+    }
     default: {
         static const std::vector<uint64_t> empty;
         return empty;
@@ -111,15 +118,18 @@ bool ValidPredefined(int predefined) {
     return predefined >= 0 && predefined < kPredefinedCount;
 }
 
-bool FindRun(const PredefinedTable& t, uint32_t key, uint32_t& cid) {
+enum class RunResult : uint8_t { NotListed, Found, Absent };
+
+RunResult FindRun(const PredefinedTable& t, uint32_t key, uint32_t& cid) {
     const CidRun* begin = kRuns + t.runStart;
     const CidRun* end = begin + t.runCount;
     const CidRun* it = std::upper_bound(begin, end, key, [](uint32_t k, const CidRun& r) { return k < r.low; });
-    if (it == begin) return false;
+    if (it == begin) return RunResult::NotListed;
     --it;
-    if (key - it->low >= it->count) return false;
+    if (key - it->low >= it->count) return RunResult::NotListed;
+    if (it->cid == kAbsent) return RunResult::Absent;
     cid = it->cid + (key - it->low);
-    return true;
+    return RunResult::Found;
 }
 
 } // namespace
@@ -172,22 +182,18 @@ bool IsVertical(int predefined) {
 }
 
 void AddCodespace(int predefined, Codespace& codespace) {
-    for (int depth = 0; depth < kMaxChain && ValidPredefined(predefined); ++depth) {
-        const PredefinedTable& t = kPredefined[predefined];
-        if (t.codespaceCount > 0) {
-            for (uint32_t i = 0; i < t.codespaceCount; ++i) {
-                const CodespaceSpan& span = kCodespaces[t.codespaceStart + i];
-                char low[4], high[4];
-                for (uint8_t b = 0; b < span.bytes && b < 4; ++b) {
-                    const int shift = 8 * (span.bytes - 1 - b);
-                    low[b] = static_cast<char>(span.low >> shift);
-                    high[b] = static_cast<char>(span.high >> shift);
-                }
-                codespace.Add(std::string_view(low, span.bytes), std::string_view(high, span.bytes));
-            }
-            return;
+    if (!ValidPredefined(predefined)) return;
+    const PredefinedTable& t = kPredefined[predefined];
+    for (uint32_t i = 0; i < t.codespaceCount; ++i) {
+        const CodespaceSpan& span = kCodespaces[t.codespaceStart + i];
+        if (span.bytes == 0 || span.bytes > 4) continue;
+        char low[4], high[4];
+        for (uint8_t b = 0; b < span.bytes; ++b) {
+            const int shift = 8 * (span.bytes - 1 - b);
+            low[b] = static_cast<char>(span.low >> shift);
+            high[b] = static_cast<char>(span.high >> shift);
         }
-        predefined = t.base;
+        codespace.Add(std::string_view(low, span.bytes), std::string_view(high, span.bytes));
     }
 }
 
@@ -195,11 +201,17 @@ bool Cid(int predefined, uint32_t key, uint32_t& cid) {
     if (!ValidPredefined(predefined)) return false;
     const PredefinedTable& first = kPredefined[predefined];
     int at = predefined;
+    bool absent = false;
     for (int depth = 0; depth < kMaxChain && ValidPredefined(at); ++depth) {
-        if (FindRun(kPredefined[at], key, cid)) return true;
+        const RunResult result = FindRun(kPredefined[at], key, cid);
+        if (result == RunResult::Found) return true;
+        if (result == RunResult::Absent) {
+            absent = true;
+            break;
+        }
         at = kPredefined[at].base;
     }
-    if (first.encoding != static_cast<uint8_t>(CMapEncoding::Legacy) && key <= 0x10FFFF) {
+    if (!absent && first.encoding != static_cast<uint8_t>(CMapEncoding::Legacy) && key <= 0x10FFFF) {
         const std::vector<uint64_t>& inverse = InverseOf(static_cast<Collection>(first.collection));
         const uint64_t probe = static_cast<uint64_t>(key) << 16;
         auto it = std::lower_bound(inverse.begin(), inverse.end(), probe);
@@ -208,14 +220,9 @@ bool Cid(int predefined, uint32_t key, uint32_t& cid) {
             return true;
         }
     }
-    at = predefined;
-    for (int depth = 0; depth < kMaxChain && ValidPredefined(at); ++depth) {
-        const PredefinedTable& t = kPredefined[at];
-        if (t.hasNotdef && key >= t.notdefLow && key <= t.notdefHigh) {
-            cid = t.notdefCid;
-            return true;
-        }
-        at = t.base;
+    if (first.hasNotdef && key >= first.notdefLow && key <= first.notdefHigh) {
+        cid = first.notdefCid;
+        return true;
     }
     return false;
 }

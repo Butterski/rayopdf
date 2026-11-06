@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // The Adobe CJK character collections and predefined CMaps (ISO 32000-1 section 9.7.5.2,
-// algorithms §3.4) over the tables tools/gen_cjk_tables.py generates from Adobe's cmap-resources:
-// CID -> Unicode for Adobe-Japan1, -GB1, -CNS1 and -Korea1, and code -> CID for the common
-// predefined CMaps (Shift-JIS, EUC, GBK, Big Five, UHC and the Unicode-based Uni*-UCS2/-UTF16/
-// -UTF32/-UTF8 ones). Everything is a binary search over constant data except the Unicode -> CID
-// inverse of a collection, built once per process on first use.
+// algorithms §3.4) over the tables tools/gen_cjk_tables.py generates from Adobe's cmap-resources
+// and the Unicode IVD: CID -> Unicode for Adobe-Japan1, -GB1, -CNS1, -Korea1 and -KR, and code ->
+// CID for every predefined CMap of cmap-resources (JIS, Shift-JIS, EUC, GBK, GB 18030, Big Five and
+// its Hong Kong sets, CNS, UHC, Johab, and the Unicode-based Uni*-UCS2/-UTF16/-UTF32/-UTF8 ones).
+// Everything is a binary search over constant data except the Unicode -> CID inverse of a
+// collection, built once per process on first use.
 #pragma once
 
 #include "text/cmap.h"
@@ -14,12 +15,12 @@
 
 namespace RayoPdf::Text::Cjk {
 
-enum class Collection : uint8_t { None, Japan1, GB1, CNS1, Korea1 };
+enum class Collection : uint8_t { None, Japan1, GB1, CNS1, Korea1, KR };
 
 // How a predefined CMap's codes are read: legacy multi-byte codes, or Unicode in one of four forms.
 enum class CMapEncoding : uint8_t { Legacy, Ucs2, Utf16, Utf32, Utf8 };
 
-// The collection a /CIDSystemInfo names: /Registry (Adobe) and /Ordering (Japan1, GB1, CNS1, Korea1).
+// The collection a /CIDSystemInfo names: /Registry (Adobe) and /Ordering (Japan1, GB1, CNS1, Korea1, KR).
 Collection CollectionByName(std::string_view registry, std::string_view ordering);
 
 // The Unicode code point of `cid` in `collection`, 0 when it has none.

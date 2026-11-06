@@ -227,7 +227,7 @@ private:
     void Lattices();
     void RuleStacks();
     void Continue();
-    void Borderless();
+    void Borderless(float gapFactor);
     void BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords);
     bool Columns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                  float xa, float xb, float minGap, std::vector<Gap>& gaps);
@@ -256,18 +256,20 @@ private:
     std::vector<Grid> grids_;
     std::vector<uint8_t> wordUsed_;  // inside an accepted grid
     float bodySize_ = 10;
+    float wordSpace_ = 0.3f;  // the page's median space between words of a line, in ems
     int restored_ = 0;
 };
 
 void Detector::CollectWords() {
     words_.clear();
-    std::vector<float> sizes;
+    std::vector<float> sizes, spaces;
     for (uint32_t li = 0; li < page_.lines.size(); ++li) {
         const Line& line = page_.lines[li];
         // Lines taken for running headers and footers count too: a table's numbers in the page's
         // margin bands look like page numbers (they return to the text inside a table).
         if (line.dir != 0 || line.count == 0 || (line.flags & (kLineTableCell | kLineTableAnchor))) continue;
         uint32_t k = 0;
+        float previousRight = NAN;
         while (k < line.count) {
             TWord w;
             w.line = li;
@@ -285,6 +287,8 @@ void Detector::CollectWords() {
             w.mono = (line.flags & kLineAllMono) != 0;
             w.removed = (line.flags & kLineRemoved) != 0;
             words_.push_back(w);
+            if (spaces.size() < 4096 && w.x0 > previousRight && line.size > 0) spaces.push_back((w.x0 - previousRight) / line.size);
+            previousRight = w.x1;
         }
         if (sizes.size() < 4096) sizes.push_back(line.size);
     }
@@ -296,6 +300,10 @@ void Detector::CollectWords() {
     if (!sizes.empty()) {
         std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
         bodySize_ = std::fmax(1.0f, sizes[sizes.size() / 2]);
+    }
+    if (spaces.size() >= 20) {
+        std::nth_element(spaces.begin(), spaces.begin() + static_cast<std::ptrdiff_t>(spaces.size() / 2), spaces.end());
+        wordSpace_ = spaces[spaces.size() / 2];
     }
 }
 
@@ -564,8 +572,17 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             for (size_t q = band + 1; q < bandEnd && same; ++q) same = mask[q - rowBegin] == mask[band - rowBegin];
             int filled = 0;
             for (uint64_t m = mask[band - rowBegin]; m; m &= m - 1) filled++;
-            if (same && filled >= 2)
+            if (same && filled >= 2) {
                 for (size_t q = band + 1; q < bandEnd; ++q) starts.push_back(q);
+                return;
+            }
+            // A full line (its first cell and another) on the line grid, clear of the line above,
+            // under a line that fills the first cell too, starts a row: sections of one-line rows. A
+            // line filling only the first cell is that cell's wrapped text.
+            for (size_t q = band + 1; q < bandEnd; ++q)
+                if ((mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) && (mask[q - 1 - rowBegin] & 1) &&
+                    !offset(q) && (q + 1 >= rowEnd || !offset(q + 1)) && rows[q - 1].bottom >= rows[q].top)
+                    starts.push_back(q);
         };
         for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
             if (gapAbove(r) < wide && r - rowBegin != headerRows) continue;
@@ -593,6 +610,33 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             if (!wrapped) starts.push_back(r);
             above.swap(here);
         }
+    }
+    // Without a header rule: up to four leading lines with no number in any cell, above a body whose
+    // rows mostly hold numbers, are the header ("Aug 21," over "2011").
+    if (headerRows == 0 && n >= 4) {
+        std::string scratch, cell;
+        const auto numbers = [&](size_t r) {
+            int count = 0, last = -1;
+            cell.clear();
+            for (uint32_t k = rows[r].first; k <= rows[r].first + rows[r].count; ++k) {
+                const int c = k < rows[r].first + rows[r].count
+                                  ? ColumnOf(gaps, (words_[rowWords[k]].x0 + words_[rowWords[k]].x1) / 2)
+                                  : -2;
+                if (c != last && !cell.empty()) {
+                    count += Numeric(cell);
+                    cell.clear();
+                }
+                if (c == -2) break;
+                cell += WordText(words_[rowWords[k]], scratch);
+                last = c;
+            }
+            return count;
+        };
+        size_t lead = 0;
+        while (lead < 4 && rowBegin + lead < rowEnd && numbers(rowBegin + lead) == 0) ++lead;
+        size_t numericRows = 0;
+        for (size_t r = rowBegin + lead; r < rowEnd; ++r) numericRows += numbers(r) > 0;
+        if (lead >= 2 && lead + 2 <= n && 2 * numericRows >= n - lead) headerRows = static_cast<uint16_t>(lead);
     }
     // Header lines above the header rule are one header row (its cells' text wraps, or sits at
     // different heights), unless a line runs across a column boundary: then the header has levels
@@ -644,9 +688,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
+            // The word before it in the row, when only a word space apart: one cell's text.
+            const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
+            const bool joined = before && w.x0 - before->x1 < std::fmax(1.0f, std::fmin(2 * wordSpace_, 0.45f) * w.size);
             for (int c = 1; c < cols; ++c) {
                 const float x = g.xs[static_cast<size_t>(c)];
-                if (w.x0 < x - 0.5f && w.x1 > x + 0.5f) g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
+                if ((w.x0 < x - 0.5f && w.x1 > x + 0.5f) || (joined && before->x1 < x && w.x0 > x))
+                    g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
             }
         }
     }
@@ -829,6 +877,16 @@ void Detector::Lattices() {
         for (int r = 0; r <= rows && column; ++r) column = g.hb[static_cast<size_t>(r)] != 0;
         for (int r = 0; r < rows && column; ++r) column = g.vb[static_cast<size_t>(r * 2)] && g.vb[static_cast<size_t>(r * 2 + 1)];
         for (int r = 0; r < rows && column; ++r) column = g.ys[static_cast<size_t>(r)] - g.ys[static_cast<size_t>(r + 1)] >= 1.5f * bodySize_;
+        if (column) {
+            // Columns of whitespace through every row: a table ruled across only (its columns come
+            // from the rule stacks), not a list of one column.
+            std::vector<Row> textRows;
+            std::vector<uint32_t> textWords;
+            std::vector<Gap> gaps;
+            BuildRows(g.x0, g.x1, g.y0, g.y1, textRows, textWords);
+            if (Columns(textRows, textWords, 0, textRows.size(), g.x0, g.x1, std::fmax(3.0f, 0.8f * bodySize_), gaps))
+                column = false;
+        }
         if (!column && (cols < 2 || rows < 2 || wholeRows * 2 > rows)) continue;
         if (!Validate(g, column)) continue;
         for (size_t i = 0; i < nh; ++i)
@@ -1156,8 +1214,18 @@ void Detector::RuleStacks() {
                     if (header > 3) header = 0;
                 }
                 if (header == end - begin) header = 0;
+                // A header label over several columns (a unit over its sub-columns) closes the gaps
+                // between them: the body rows, three at least, say where the columns are, and the
+                // label spans them.
+                const size_t before = grids_.size();
                 float y0 = rows[end - 1].bottom, y1 = rows[begin].top;
-                if (Free(xa, y0, xb, y1)) TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb);
+                if (header > 0 && end - begin >= header + 3u &&
+                    Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial) && trial.size() > gaps.size() &&
+                    KeepsGaps(gaps, trial) && Free(xa, y0, xb, y1))
+                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb);
+                // Without such a label (or when its rows do not make a grid): the columns of all rows.
+                if (grids_.size() == before && Free(xa, y0, xb, y1))
+                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb);
             }
             i = j + 1;
         }
@@ -1225,12 +1293,13 @@ void Detector::MarkUsed(const Grid& g) {
 // Borderless tables: runs of rows that split into the same columns, kept only when confident.
 // Confidence comes from Camelot-style stream evidence (algorithms §6.7): several rows, filled cells,
 // column edges aligned left, right or centred, numeric cells, an even row pitch.
-void Detector::Borderless() {
+void Detector::Borderless(float gapFactor) {
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
     BuildRows(-INFINITY, INFINITY, -INFINITY, INFINITY, rows, rowWords);
     if (rows.size() < 3 || rows.size() > 4000) return;
-    // Rows that split at a wide gap (at least an em: wider than any word space) and hold no code.
+    // Rows that split at a column gap (gapFactor ems: wider than any word space) and hold no code
+    // are candidates.
     std::vector<uint8_t> split(rows.size(), 0);
     for (size_t r = 0; r < rows.size(); ++r) {
         int segments = 1;
@@ -1239,7 +1308,7 @@ void Detector::Borderless() {
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
             mono = mono || w.mono;
-            if (right > -INFINITY && w.x0 - right >= rows[r].size) segments++;
+            if (right > -INFINITY && w.x0 - right >= gapFactor * rows[r].size) segments++;
             right = std::fmax(right, w.x1);
         }
         split[r] = segments >= 2 && !mono;
@@ -1254,11 +1323,17 @@ void Detector::Borderless() {
             continue;
         }
         const float em = rows[r].size;
-        const float minGap = std::fmax(4.0f, 1.0f * em);
+        const float minGap = std::fmax(4.0f, gapFactor * em);
         float xa = rows[r].x0 - 1, xb = rows[r].x1 + 1;
         Columns(rows, rowWords, r, r + 1, xa, xb, minGap, gaps);
         size_t e = r + 1;
-        while (e < rows.size() && split[e] && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
+        // A row of one cell inside the first column, between split rows, is a section label of the
+        // table ("Revenue:" over its quarters).
+        const auto label = [&](size_t q) {
+            // After two rows of the table at least: a lone line under a header line is a cell.
+            return !gaps.empty() && q >= r + 2 && q + 1 < rows.size() && split[q + 1] && rows[q].x1 < gaps[0].a;
+        };
+        while (e < rows.size() && (split[e] || label(e)) && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
                std::fabs(rows[e].size - em) <= 0.2f * em) {
             const float na = std::fmin(xa, rows[e].x0 - 1), nb = std::fmax(xb, rows[e].x1 + 1);
             if (!Columns(rows, rowWords, r, e + 1, na, nb, minGap, trial) || !KeepsGaps(gaps, trial)) break;
@@ -1481,7 +1556,11 @@ int Detector::Run() {
     Lattices();
     RuleStacks();
     Continue();
-    Borderless();
+    // Columns an em apart first; then, where the page sets its words close (dense tables of small
+    // type), gaps down to 2.5 word spaces (0.6 em at least) for what is left.
+    Borderless(1.0f);
+    const float close = std::fmax(0.6f, 2.5f * wordSpace_);
+    if (close < 1.0f) Borderless(close);
     Commit();
     return restored_;
 }
@@ -1495,6 +1574,25 @@ void AppendHtmlEscaped(std::string_view t, std::string& out) {
         default: out.push_back(c); break;
         }
     }
+}
+
+// A cell's text without the dot leaders that run its label to the next column ("Short ......"):
+// typography, not text. Three dots or more, or ellipses, with spaces, at the end of a cell that has
+// text before them.
+std::string_view TrimLeaders(std::string_view t) {
+    size_t end = t.size(), dots = 0;
+    while (end > 0) {
+        if (t[end - 1] == '.') {
+            dots++, end--;
+        } else if (t[end - 1] == ' ') {
+            end--;
+        } else if (end >= 3 && t.substr(end - 3, 3) == "\xE2\x80\xA6") {  // U+2026
+            dots += 3, end -= 3;
+        } else {
+            break;
+        }
+    }
+    return dots >= 3 && end > 0 ? t.substr(0, end) : t;
 }
 
 // A cell's plain text: its lines joined by spaces, a line-end hyphen before a lowercase letter
@@ -1513,6 +1611,7 @@ void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::
         }
         out += scratch;
     }
+    out.resize(TrimLeaders(out).size());
 }
 
 // A cell's Markdown without emphasis that covers the whole cell: a bold header row or first column,
@@ -1600,7 +1699,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
                 if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
                     part.page->tableCells[table.firstCell + i].col == c) {
                     if (write)
-                        for (char ch : CellStyleless(part.cellText[i])) {
+                        for (char ch : TrimLeaders(CellStyleless(part.cellText[i]))) {
                             if (ch == '|') out.push_back('\\');
                             out.push_back(ch == '\n' ? ' ' : ch);
                         }

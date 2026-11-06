@@ -11,5 +11,9 @@ namespace RayoPdf::Text {
 // The UTF-8 of BMP code point `cp` (a table of all 65,536, built once on first use); empty for
 // surrogates and code points past U+FFFF.
 std::string_view BmpText(uint32_t cp);
+// The UTF-8 of `cp` from the BMP and planes 1 and 2 (emoji, historic scripts, CJK extensions; a
+// table of 65,536 four-byte sequences per plane, each built on its first use); empty for
+// surrogates and the other planes.
+std::string_view CodePointText(uint32_t cp);
 
 } // namespace RayoPdf::Text

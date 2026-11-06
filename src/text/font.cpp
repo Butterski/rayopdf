@@ -243,7 +243,8 @@ constexpr uint32_t kNoCodePoint = UINT32_MAX;
 uint32_t UnicodeCode(CMapKind kind, uint32_t code, uint8_t length) {
     switch (kind) {
     case CMapKind::Ucs2:
-        return (length == 2 || (length == 0 && code <= 0xFFFF)) ? code : kNoCodePoint;
+        if (length == 2 || (length == 0 && code <= 0xFFFF)) return code;
+        [[fallthrough]];  // a surrogate pair written into a UCS-2 string (NextComposite joins them)
     case CMapKind::Utf16:
         if (length == 2 || (length == 0 && code <= 0xFFFF))
             return code >= 0xD800 && code <= 0xDFFF ? kNoCodePoint : code;
@@ -402,16 +403,24 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
     const bool known = CidOf(code, length, cid);
     out.width = known ? WidthOf(cid) : defaultWidth;
     out.verticalAdvance = vertical ? (known ? VerticalOf(cid) : defaultVertical) : 0;
+    if (cmapKind == CMapKind::Ucs2 && length == 4) {
+        // A joined surrogate pair advances as the two UCS-2 codes the font shows.
+        uint32_t half = 0;
+        const float high = CidOf(code >> 16, 2, half) ? WidthOf(half) : defaultWidth;
+        const float low = CidOf(code & 0xFFFF, 2, half) ? WidthOf(half) : defaultWidth;
+        out.width = high + low;
+        if (vertical) out.verticalAdvance = 2 * defaultVertical;
+    }
     if (const UnicodeEntry* entry = toUnicode.Find(code)) {
         out.source = UnicodeSource::ToUnicode;
         out.unicode = toUnicode.Text(*entry);
         return;
     }
-    // A Unicode-based CMap: the code is the text (a supplementary-plane one through the
-    // collection, whose table has storage for it).
+    // A Unicode-based CMap: the code is the text (beyond planes 0-2 through the collection, whose
+    // table has storage for it).
     const uint32_t cp = UnicodeCode(cmapKind, code, length);
     if (cp != kNoCodePoint) {
-        std::string_view text = BmpText(cp);
+        std::string_view text = CodePointText(cp);
         if (text.empty() && known && Cjk::CidToUnicode(collection, cid) == cp) text = Cjk::CidText(collection, cid);
         if (UsableText(text)) {
             out.source = UnicodeSource::Collection;
@@ -451,6 +460,15 @@ bool Font::Impl::NextComposite(std::string_view bytes, size_t& at, Code& out) co
     } else {
         length = cmap.codespace.Read(bytes, at, code);
         if (length == 0) length = 1;
+        // UCS-2 strings with UTF-16 surrogate pairs (Acrobat writes emoji so): one code of 4 bytes.
+        if (cmapKind == CMapKind::Ucs2 && length == 2 && code >= 0xD800 && code <= 0xDBFF && at + 4 <= bytes.size()) {
+            const uint32_t low = static_cast<uint32_t>(static_cast<uint8_t>(bytes[at + 2])) << 8 |
+                                 static_cast<uint8_t>(bytes[at + 3]);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                code = code << 16 | low;
+                length = 4;
+            }
+        }
     }
     at += length;
     Composite(code, length, out);
@@ -870,7 +888,7 @@ CMapKind NamedCMap(std::string_view name, int& predefined, bool& vertical) {
         return KindOfEncoding(Cjk::EncodingOf(predefined));
     }
     if (kind == CMapKind::Ucs2 || kind == CMapKind::Utf16 || kind == CMapKind::Utf8 || kind == CMapKind::Utf32) {
-        static const char* const kPrefixes[4] = {"UniJIS", "UniGB", "UniCNS", "UniKS"};
+        static const char* const kPrefixes[5] = {"UniJIS", "UniGB", "UniCNS", "UniKS", "UniAKR"};
         for (const char* prefix : kPrefixes) {
             const std::string_view p(prefix);
             if (name.substr(0, p.size()) != p) continue;

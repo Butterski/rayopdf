@@ -16,5 +16,8 @@ extern const uint8_t kAsciiClasses[128];
 // Bidi_Mirroring_Glyph: (code point, mirror) pairs sorted by code point.
 extern const uint16_t kMirrorCount;
 extern const uint32_t kMirrorPairs[][2];
+// Bidi_Paired_Bracket: (code point, pair | 1 << 24 for an opening bracket) sorted by code point.
+extern const uint16_t kBracketCount;
+extern const uint32_t kBrackets[][2];
 
 } // namespace RayoPdf::Text::Bidi

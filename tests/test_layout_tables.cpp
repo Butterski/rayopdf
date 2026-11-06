@@ -450,6 +450,33 @@ void TestClosedEmptyColumn() {
     RAYOPDF_CHECK(Contains(md, "| Added cation | Relative size |\n| --- | --- |\n| K+ |  |"), 583);
 }
 
+// Booktabs whose header puts one label over two sub-columns: the body rows set the columns, the
+// label spans them (HTML colspan); dot leaders after a label are not cell text.
+void TestSpanningHeaderLabel() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 712);
+    AddText(page, "Microbiota", 76, 700);
+    // The label's words a word space (2.5 pt) apart.
+    float x = 200;
+    for (const char* word : {"Mean", "log", "DNA", "copies", "per", "gram"}) x = AddText(page, word, x, 700) + 2.5f;
+    HLine(page, 72, 400, 694);
+    const char* const names[] = {"Bifidobacterium ....", "Bacteroides .......", "Clostridium ......."};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 682 - 14.0f * float(r);
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(4 + r) + ".79", 200, y);
+        AddText(page, std::to_string(5 + r) + ".31", 300, y);
+    }
+    HLine(page, 72, 400, 638);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("spanning header label", md);
+    RAYOPDF_CHECK(report.tables == 1, 584);
+    RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Mean log DNA copies per gram</th>"), 585);
+    RAYOPDF_CHECK(Contains(md, "<tr><td>Bifidobacterium</td><td>4.79</td><td>5.31</td></tr>"), 586);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -518,6 +545,7 @@ int main(int argc, char** argv) {
     TestColumnLattice();
     TestStripes();
     TestClosedEmptyColumn();
+    TestSpanningHeaderLabel();
     std::puts("test_layout_tables: ok");
     return 0;
 }
