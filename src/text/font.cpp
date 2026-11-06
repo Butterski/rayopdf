@@ -74,8 +74,10 @@ bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
 }
 
 // Style from a font name (algorithms §6.4, §6.6): "-Bold", ",Bold", "BoldItalic", "Semibold",
-// "Black", "Heavy"; "Italic", "Oblique", a trailing "-It"/"It"; "Mono", "Courier", "Code",
-// "Consol(as)", "Menlo".
+// "Black", "Heavy"; URW's "-Medi" and "-Demi" weights (NimbusRomNo9L-Medi is the Times-Bold clone
+// LaTeX's times packages embed; "Medium" elsewhere is weight 500, not bold); TeX's bold extended
+// "CMBX12", "SFBX1000" and "CMB10"; "Italic", "Oblique", a trailing "-It"/"It"; "Mono", "Courier",
+// "Code", "Consol(as)", "Menlo".
 void StyleFromName(std::string_view name, FontStyle& style) {
     if (ContainsNoCase(name, "bold") || ContainsNoCase(name, "black") || ContainsNoCase(name, "heavy")) style.bold = true;
     if (ContainsNoCase(name, "italic") || ContainsNoCase(name, "oblique")) style.italic = true;
@@ -84,7 +86,15 @@ void StyleFromName(std::string_view name, FontStyle& style) {
     if (dash != std::string_view::npos) {
         const std::string_view suffix = name.substr(dash + 1);
         if (suffix.size() >= 2 && suffix.substr(suffix.size() - 2) == "It") style.italic = true;
+        // "NimbusRomNo9L-Medi", "-MediItal", "URWBookmanL-DemiBold", "AvantGarde-Demi"; never
+        // "NotoSansCJK-DemiLight".
+        if (suffix == "Medi" || suffix.substr(0, 8) == "MediItal" ||
+            (suffix.substr(0, 4) == "Demi" && !ContainsNoCase(suffix, "light")))
+            style.bold = true;
     }
+    if (name.size() >= 4 && (name.substr(0, 4) == "CMBX" || name.substr(0, 4) == "SFBX" ||
+                             (name.substr(0, 3) == "CMB" && name[3] >= '0' && name[3] <= '9')))
+        style.bold = true;
     if (ContainsNoCase(name, "mono") || ContainsNoCase(name, "courier") || ContainsNoCase(name, "code") ||
         ContainsNoCase(name, "consol") || ContainsNoCase(name, "menlo")) {
         style.monospace = true;

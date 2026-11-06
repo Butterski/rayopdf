@@ -470,7 +470,10 @@ void Writer::Code(const Block& block, const std::string& prefix) {
             other_.push_back('\n');
             if (pitch > 0 && lines_[bl - 1].page == lines_[bl].page) {
                 const float gap = page.lines[lines_[bl - 1].line].baseline - line.baseline;
-                const int blanks = std::min(3, std::max(0, static_cast<int>(std::lround(gap / pitch)) - 1));
+                // Decided on the float: a huge or non-finite gap must not reach the integer
+                // conversion (fuzz_layout_tables found -2147483648 - 1 here); NaN gives none.
+                const float lines = gap / pitch;
+                const int blanks = lines >= 3.5f ? 3 : lines >= 1.5f ? static_cast<int>(std::lround(lines)) - 1 : 0;
                 for (int b = 0; b < blanks; ++b) other_.push_back('\n');
             }
         }
@@ -478,8 +481,15 @@ void Writer::Code(const Block& block, const std::string& prefix) {
         for (uint32_t k = 0; k < line.count; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             int target = column;
-            if (cell > 0) target = static_cast<int>(std::lround((g.u0 - left) / cell));
-            if (target > column + 200) target = column + 200;
+            if (cell > 0) {
+                // Compared as a float before converting, for the same reason as the blank lines.
+                const float at = (g.u0 - left) / cell;
+                if (at >= static_cast<float>(column + 200)) {
+                    target = column + 200;
+                } else if (at > static_cast<float>(column)) {
+                    target = static_cast<int>(std::lround(at));
+                }
+            }
             if (target > column) {
                 other_.append(static_cast<size_t>(target - column), ' ');
                 column = target;
@@ -607,10 +617,6 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 html = html || TableNeedsHtml(page, page.tables[line.first]);
             }
             if (parts.empty()) break;
-            if (parts[0].table->kind == static_cast<uint8_t>(TableKind::Possible)) {
-                out += "<!-- rayopdf: possible table not reconstructed -->";
-                break;
-            }
             counts.tables++;
             if (html) {
                 WriteHtmlTable(parts, out);

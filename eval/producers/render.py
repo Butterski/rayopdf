@@ -33,9 +33,10 @@ from make_images import write_images  # noqa: E402
 
 TIMEOUT_S = 300
 PRODUCERS = (
-    "rayomd", "rayomd-pdfua", "rayomd-tech", "xelatex", "xelatex-2col", "typst",
+    "rayomd", "rayomd-pdfua", "rayomd-tech", "xelatex", "xelatex-2col", "xelatex-eisvogel", "typst",
     "chromium", "weasyprint", "libreoffice", "libreoffice-tagged", "beamer",
 )
+EISVOGEL = "/opt/eval/templates/eisvogel.latex"
 SLIDES_FIXTURE = "d06-slides"
 SLIDES_PRODUCERS = ("beamer", "rayomd")
 LO_TAGGED_FILTER = 'pdf:writer_pdf_Export:{"UseTaggedPDF":{"type":"boolean","value":"true"}}'
@@ -70,6 +71,12 @@ def producer_steps(producer, fixture_id, workdir, out, worker):
         if producer == "xelatex-2col":
             cmd += ["-V", "classoption=twocolumn", "-V", "fontsize=10pt", "-V", "geometry:margin=1.8cm"]
         return [cmd]
+    if producer == "xelatex-eisvogel":
+        # READoc's GitHub pipeline (pandoc + the Eisvogel template); listings-style code blocks.
+        return [pandoc_std(src) + ["-o", out, "--pdf-engine=xelatex", f"--template={EISVOGEL}",
+                                   "--syntax-highlighting=idiomatic",
+                                   "-V", "mainfont=DejaVu Sans", "-V", "monofont=DejaVu Sans Mono",
+                                   "-V", "CJKmainfont=Noto Sans CJK SC"]]
     if producer == "typst":
         return [pandoc_std(src) + ["-o", out, "--pdf-engine=typst", "-V", "mainfont=DejaVu Sans"]]
     if producer == "chromium":

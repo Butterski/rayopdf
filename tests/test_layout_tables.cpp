@@ -370,6 +370,45 @@ void TestFractionBar() {
     RAYOPDF_CHECK(report.tables == 0, 576);
 }
 
+// Double rulings 3 pt apart around every column: the empty slivers between them are no columns.
+void TestDoubleRules() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f, 640.0f}) HLine(page, 72, 375, y);
+    for (float x : {72.0f, 172.0f, 272.0f, 372.0f}) {
+        VLine(page, x, 640, 700);
+        VLine(page, x + 3, 640, 700);
+    }
+    const char* const cells[3][3] = {{"Port", "Foreign", "Domestic"}, {"Manila", "2454", "6,125"}, {"Cebu", "1138", "79,500"}};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, cells[r][c], 80 + 100.0f * float(c), 686 - 20.0f * float(r));
+    const std::string md = Run(pages);
+    Show("double rules", md);
+    RAYOPDF_CHECK(Contains(md, "| Port | Foreign | Domestic |\n| --- | --- | --- |\n| Manila | 2454 | 6,125 |"), 577);
+}
+
+// A one-column grid of boxed rows: a table of one column; a single box is not.
+void TestColumnLattice() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (int i = 0; i <= 4; ++i) HLine(page, 100, 400, 700 - 20.0f * float(i));
+    VLine(page, 100, 620, 700);
+    VLine(page, 400, 620, 700);
+    const char* const rows[] = {"Competence Framework", "#1: Recycle", "#2: Lifecycle", "#3: Social"};
+    for (int r = 0; r < 4; ++r) AddText(page, rows[r], 104, 686 - 20.0f * float(r));
+    // A lone box around a note.
+    HLine(page, 100, 400, 560);
+    HLine(page, 100, 400, 520);
+    VLine(page, 100, 520, 560);
+    VLine(page, 400, 520, 560);
+    AddText(page, "Note: a boxed remark.", 104, 536);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("column lattice", md);
+    RAYOPDF_CHECK(report.tables == 1, 578);
+    RAYOPDF_CHECK(Contains(md, "| Competence Framework |\n| --- |\n| #1: Recycle |"), 579);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -434,6 +473,8 @@ int main(int argc, char** argv) {
     TestHostileRulings();
     TestDegenerateGrids();
     TestFractionBar();
+    TestDoubleRules();
+    TestColumnLattice();
     std::puts("test_layout_tables: ok");
     return 0;
 }

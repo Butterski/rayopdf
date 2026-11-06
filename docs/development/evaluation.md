@@ -92,6 +92,7 @@ and `img/photo.png`, generated deterministically at render time by
 |rayomd-tech|no|`rayomd --export {in} {out} native tech compact --page-size=letter --page-numbers --footnotes=page --compress --no-image-cache`|
 |xelatex|no|`P -o {out} --pdf-engine=xelatex -V mainfont="DejaVu Sans" -V monofont="DejaVu Sans Mono" -V CJKmainfont="Noto Sans CJK SC" -V geometry:margin=2.5cm`|
 |xelatex-2col|no|xelatex plus `-V classoption=twocolumn -V fontsize=10pt -V geometry:margin=1.8cm`|
+|xelatex-eisvogel|no|`P -o {out} --pdf-engine=xelatex --template=eisvogel.latex --syntax-highlighting=idiomatic` with xelatex's fonts; the Eisvogel template 3.5.1 (BSD-3-Clause, release SHA-256 pinned in the producers image). READoc's GitHub subset was made with pandoc + Eisvogel: this development producer shows that layout without opening the holdout (added 2026-11-06, after the baselines)|
 |typst|yes|`P -o {out} --pdf-engine=typst -V mainfont="DejaVu Sans"`|
 |chromium|yes|`P --mathml --embed-resources` to HTML, then headless Chromium `--print-to-pdf`|
 |weasyprint (holdout)|no|`P` to HTML, then `weasyprint`|
@@ -104,9 +105,9 @@ LibreOffice producers are tagged and there is no untagged LibreOffice row. The i
 `tagged` flag comes from `pdfinfo`, and tagged and untagged items are always reported apart.
 
 **Exclusions** (`manifest.json`): `c12-rtl` is not rendered by rayomd, rayomd-pdfua, rayomd-tech,
-xelatex, xelatex-2col and beamer; `c13-math` not by rayomd-pdfua, weasyprint, libreoffice and
-libreoffice-tagged; `c15-alerts` only by the three rayomd producers; `d06-slides` only by beamer
-and rayomd; beamer renders only `d06-slides`.
+xelatex, xelatex-2col, xelatex-eisvogel and beamer; `c13-math` not by rayomd-pdfua, weasyprint,
+libreoffice and libreoffice-tagged; `c15-alerts` only by the three rayomd producers; `d06-slides`
+only by beamer and rayomd; beamer renders only `d06-slides`.
 
 **Validity.** An item is valid when the producer exits 0, `qpdf --check` exits 0 or 3, and the
 whitespace-collapsed `pdftotext -enc UTF-8` output contains both sentinel sentences. Invalid items

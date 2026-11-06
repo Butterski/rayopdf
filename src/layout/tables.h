@@ -11,7 +11,8 @@
 //    the header.
 // 3. Borderless tables: runs of rows that split into the same columns, accepted only with high
 //    confidence (several rows, filled cells, aligned column edges, numeric cells, even row pitch).
-//    A moderately confident region keeps its text and gets an uncertainty comment.
+//    Regions of lesser confidence keep their text, without comment: a false table costs more than a
+//    missed one.
 //
 // Prose in columns (two texty columns) and lists (a column of list markers) are never tables.
 // Cell text is the page's glyphs whose centre lies in the cell, as lines of their own in reading
@@ -32,7 +33,6 @@ enum class TableKind : uint8_t {
     Lattice,     // a grid of vertical and horizontal rulings
     Ruled,       // horizontal rules only; columns from whitespace
     Borderless,  // no rules; rows and columns from text alignment
-    Possible,    // a moderately confident borderless region: no cells, its text stays in the flow
 };
 
 // Hostile-input bounds (roadmap D8): beyond them the candidate is dropped (fail closed).

@@ -16,9 +16,11 @@ namespace {
 constexpr float kMonoShare = 0.8f;   // a code line: at least this share of monospace characters
 constexpr float kHeadingSize = 1.12f; // a heading candidate: at least this times the body size
 // The top heading level is a title (H1) from this times the body size up. Measured first levels:
-// LaTeX \section 1.44, typst 1.40, LibreOffice (pandoc's reference.docx) 1.67, browsers 2.0;
-// second levels: LaTeX \subsection and typst 1.20, LibreOffice 1.33.
+// LaTeX \section 1.44 (1.31 at 11 pt), typst 1.40, LibreOffice (pandoc's reference.docx) 1.67,
+// browsers 2.0; second levels: LaTeX \subsection and typst 1.20 (1.10 at 11 pt), LibreOffice 1.33.
 constexpr float kTitleSize = 1.38f;
+// A top level used once or twice above deeper levels is a title from this times the body size up.
+constexpr float kSmallTitleSize = 1.25f;
 
 struct Info {
     uint32_t page = 0, line = 0;
@@ -84,6 +86,48 @@ uint32_t LastCodePoint(std::string_view s) {
 bool IsTerminal(uint32_t cp) {
     return cp == '.' || cp == '!' || cp == '?' || cp == ':' || cp == ';' || cp == 0x2026 || cp == 0x3002 ||
            cp == 0xFF01 || cp == 0xFF1F;
+}
+
+// A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
+// "TABLE IV"), in any letter case.
+bool IsCaption(std::string_view t) {
+    static const std::string_view kLabels[] = {"figure ", "fig. ", "table ", "chart ", "exhibit ", "graph ", "diagram "};
+    for (const std::string_view label : kLabels) {
+        if (t.size() < label.size() + 1) continue;
+        bool same = true;
+        for (size_t i = 0; i < label.size() && same; ++i) {
+            char c = t[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            same = c == label[i];
+        }
+        if (!same) continue;
+        const char c = t[label.size()];
+        const char d = t.size() > label.size() + 1 ? t[label.size() + 1] : ' ';
+        if (c >= '0' && c <= '9') return true;
+        // "A1", "A.2", "IV", "S3"
+        return c >= 'A' && c <= 'Z' && ((d >= '0' && d <= '9') || d == '.' || d == ':' || d == ' ' || d == 'V' || d == 'I');
+    }
+    return false;
+}
+
+// Display math: a math symbol (Mathematical Alphanumeric Symbols, Mathematical Operators,
+// Supplemental Mathematical Operators, "=") and fewer than three letters of ordinary text.
+// "Heading with ∇ ⋅ E" has words around its math and stays a possible heading.
+bool MostlyMath(std::string_view t) {
+    uint32_t math = 0, letters = 0;
+    size_t at = 0;
+    while (at < t.size()) {
+        const uint32_t cp = FirstCodePoint(t.substr(at));
+        const unsigned char c = static_cast<unsigned char>(t[at]);
+        at += c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+        if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || (cp >= 0x2A00 && cp <= 0x2AFF) ||
+            cp == '=')
+            math++;
+        else if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0x24F) ||
+                 (cp >= 0x370 && cp <= 0x52F) || (cp >= 0x3040 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF))
+            letters++;
+    }
+    return math > 0 && letters < 3;
 }
 
 // Lowercase ASCII letters and digits plus every non-ASCII byte: the outline matching key.
@@ -249,13 +293,14 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
         }
     }
     // Quote bars: thin vertical rules to the left that cover the line (algorithms §6.5). A rule on
-    // the right as well makes the line a table cell, not a quote.
+    // the right as well, however far, makes the line a table cell or the inside of a framed box (a
+    // code listing's frame), not a quote.
     float barX[4];
     int bars = 0;
     bool rightRule = false;
     for (const Shape* s : marks.bars) {
         if (s->y0 > line.vb + 0.2f * line.size || s->y1 < line.vt - 0.2f * line.size) continue;
-        if (s->x0 >= line.u1 - 0.5f && s->x0 - line.u1 <= 40 * line.size) rightRule = true;
+        if (s->x0 >= line.u1 - 0.5f) rightRule = true;
         if (s->x1 > line.u0 + 0.5f || line.u0 - s->x1 > 3 * line.size) continue;
         bool distinct = true;
         for (int b = 0; b < bars; ++b)
@@ -365,14 +410,59 @@ bool EndsInBackLink(const PageData& page, const Line& line) {
 
 constexpr size_t kMaxNoteRefs = 1u << 14;
 constexpr size_t kNoteScan = 64;  // references of one key looked at per note
+constexpr uint64_t kBottomChecks = uint64_t(1) << 22;  // line comparisons AtBottom may make per document
+
+// A page footnote sits below the text of its column: no line under it that it overlaps along the
+// baseline is set larger, except in the page's last row (a running footer or page number left on
+// a single page). Superscript-marked lines higher up are author affiliations or table notes, and
+// stay where they are. Fails closed (no note) once `budget` runs out.
+bool AtBottom(const std::vector<Info>& infos, uint32_t begin, uint32_t end, uint32_t at, uint64_t& budget) {
+    const Info& note = infos[at];
+    if (2 * uint64_t(end - begin) > budget) return false;
+    budget -= 2 * uint64_t(end - begin);
+    const auto under = [&](const Info& o) {
+        return o.dir == note.dir && o.baseline < note.baseline && o.chars > 0 && o.u0 < note.u1 && o.u1 > note.u0;
+    };
+    float lowest = INFINITY;
+    for (uint32_t j = begin; j < end; ++j)
+        if (under(infos[j])) lowest = std::fmin(lowest, infos[j].baseline);
+    for (uint32_t j = begin; j < end; ++j) {
+        const Info& o = infos[j];
+        if (under(o) && o.size > 1.1f * note.size && o.baseline > lowest + 0.5f * o.size) return false;
+    }
+    return true;
+}
+
+constexpr uint64_t kRuleChecks = uint64_t(1) << 22;  // shapes RuleBetween may look at per document
+
+// A horizontal rule (at most 3 points high) between two lines of one page that runs under both
+// of them: the edge of a frame or a separator. Shapes looked at count against `budget`; once it
+// runs out the answer is no.
+bool RuleBetween(const std::vector<PageData>& pages, const BlockLine& a, const BlockLine& b, uint64_t& budget) {
+    if (a.page != b.page) return false;
+    const PageData& page = pages[a.page];
+    if (page.shapes.size() > budget) return false;
+    budget -= page.shapes.size();
+    const Line& upper = page.lines[a.line];
+    const Line& lower = page.lines[b.line];
+    if (upper.dir != 0 || lower.dir != 0) return false;
+    const float left = std::fmin(upper.u0, lower.u0), right = std::fmax(upper.u1, lower.u1);
+    for (const Shape& s : page.shapes) {
+        if (s.y1 - s.y0 > 3 || s.x0 > left + 0.5f || s.x1 < right - 0.5f) continue;
+        const float y = (s.y0 + s.y1) / 2;
+        if (y < upper.vb && y > lower.vt) return true;
+    }
+    return false;
+}
 
 // Footnotes (algorithms §6.9). References are superscript runs inside lines whose text is a note
 // key. A note starts a line with a marker whose key matches an unused reference: a superscript
 // marker any size (LibreOffice sets notes in the body size), or an enumerator ("1.") in a smaller
 // size or before a back link (HTML endnotes), so that body-size numbered lists stay lists. A page
-// footnote's reference sits on its page above it; an enumerated endnote's on an earlier page,
-// and the line before the endnotes is no heading ("References" sections keep their list). Lines
-// of the note's size right below it continue it.
+// footnote's reference sits on its page above it and the note below the text (AtBottom); an
+// enumerated endnote's reference on an earlier page, and the line before the endnotes is no
+// heading ("References" sections keep their list). Lines of the note's size right below it
+// continue it.
 void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, float body, std::vector<NoteRef>& out) {
     struct Ref {
         uint32_t info, page, glyph, count, key;
@@ -393,7 +483,10 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
                 continue;
             }
             const uint32_t end = SuperscriptRun(page, line, k, text);
-            const uint32_t key = NoteKey(text);
+            // A raised number after a math letter (𝑏², 𝑥ⁱ) is an exponent, not a reference.
+            const uint32_t before =
+                FirstCodePoint(page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k - 1]]));
+            const uint32_t key = before >= 0x1D400 && before <= 0x1D7FF ? 0 : NoteKey(text);
             if (key) {
                 byKey[key].push_back(static_cast<uint32_t>(refs.size()));
                 refs.push_back(Ref{i, infos[i].page, page.lineGlyphs[line.first + k], end - k, key, line.baseline,
@@ -409,10 +502,17 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
     uint32_t current = 0;  // the note being continued
     float noteSize = 0, lastBaseline = 0;
     uint32_t notePage = 0;
+    uint32_t pageBegin = 0, pageEnd = 0;  // infos of the current page
+    uint64_t budget = kBottomChecks;
     for (uint32_t i = 0; i < infos.size(); ++i) {
         Info& in = infos[i];
         const PageData& page = pages[in.page];
         const Line& line = page.lines[in.line];
+        if (i >= pageEnd) {
+            pageBegin = i;
+            pageEnd = i + 1;
+            while (pageEnd < infos.size() && infos[pageEnd].page == in.page) ++pageEnd;
+        }
         // A marker? Sizes compare with the reference's line: notes may hold most of a short
         // document's characters, and so define its body size.
         uint32_t key = 0, skip = 0;
@@ -446,12 +546,17 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
                                       !((before.flags & kLineAllBold) && before.chars <= 60 && !before.endsTerminal));
                 }
                 size_t scanned = 0;
+                int bottom = -1;  // AtBottom, worked out once
                 for (uint32_t r : it->second) {
                     if (refs[r].used) continue;
                     if (++scanned > kNoteScan || refs[r].info >= i) break;
                     const Ref& ref = refs[r];
                     if (in.size > 1.05f * ref.size || (enumerated && !backLink && in.size > 0.92f * ref.size)) continue;
-                    const bool samePage = ref.page == in.page && ref.baseline > in.baseline;
+                    bool samePage = ref.page == in.page && ref.baseline > in.baseline;
+                    if (samePage) {
+                        if (bottom < 0) bottom = AtBottom(infos, pageBegin, pageEnd, i, budget) ? 1 : 0;
+                        samePage = bottom == 1;
+                    }
                     const bool endnote = enumerated && ref.page < in.page && endnoteContext;
                     if (samePage || endnote) {
                         match = r;
@@ -558,9 +663,29 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     for (const auto& kv : proseChars.empty() ? sizeChars : proseChars)
         if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey)) bodyKey = kv.first, bodyCount = kv.second;
     const float body = float(bodyKey) / 2;
-    const bool monoDocument = totalChars > 0 && monoChars * 10 > totalChars * 6;
+    // A document typeset in a monospace font: most characters monospace and next to no lines in
+    // another font (code-heavy documents keep their prose in a proportional font).
+    uint64_t proseLineChars = 0;
+    for (const auto& kv : proseChars) proseLineChars += kv.second;
+    const bool monoDocument = totalChars > 0 && monoChars * 10 > totalChars * 6 && proseLineChars * 10 < totalChars;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
     FindNotes(pages, infos, body, out.noteRefs);
+    // A bar beside text set at heading size is an accent rule (slide titles, call-outs), not a
+    // quote, unless the quote goes on in body text next to it ("> ## Title" then its paragraph).
+    for (size_t i = 0; i < infos.size();) {
+        const auto large = [&](size_t k) { return infos[k].size >= kHeadingSize * body; };
+        if (!large(i) || infos[i].quoteBars == 0) {
+            ++i;
+            continue;
+        }
+        size_t end = i + 1;
+        while (end < infos.size() && large(end) && infos[end].page == infos[i].page) ++end;
+        const bool before = i > 0 && infos[i - 1].page == infos[i].page && infos[i - 1].quoteBars > 0;
+        const bool after = end < infos.size() && infos[end].page == infos[i].page && infos[end].quoteBars > 0;
+        if (!before && !after)
+            for (size_t k = i; k < end; ++k) infos[k].quoteBars = 0;
+        i = end;
+    }
 
     // Raw blocks: lines grouped by the paragraph rules (§6.2); a footnote's lines make one block.
     std::vector<RawBlock> raws;
@@ -685,20 +810,29 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer;
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
+        // Captions are set apart like headings but title no section; display math set large (an
+        // integral sign, a fraction's numerator) titles nothing either.
+        const auto caption = [&]() {
+            const PageData& page = pages[first.page];
+            LineText(page, page.lines[first.line], line);
+            return IsCaption(line) || MostlyMath(line);
+        };
         // Slightly larger text (from 7 % up) is a heading only as one or two short unpunctuated lines.
         const bool larger = size >= body * kHeadingSize ||
                             (size >= body * 1.07f && b.count <= 2 && chars <= 80 && unpunctuated);
-        if (shortBlock && larger) {
+        if (shortBlock && larger && !caption()) {
             k.kind = BlockKind::Heading;
             k.styleKey = static_cast<int>(std::lround(size * 2)) * 2 + (b.bold ? 1 : 0);
             continue;
         }
         if (k.kind == BlockKind::Heading) continue;
-        // A bold line of body size: a heading, numbered ("5. Natural dispersal") or not.
+        // A bold line of body size: a heading, numbered ("5. Natural dispersal") or not. It may
+        // ask or introduce ("Procedure:"), but a bold sentence is emphasis.
         const bool enumerated =
             first.marker == Marker::Number || first.marker == Marker::Roman || first.marker == Marker::Letter;
+        const bool titleEnd = unpunctuated || last.lastCp == ':' || last.lastCp == '?';
         if (shortBlock && b.bold && !boldDocument && b.count <= 2 && chars <= 100 && size >= body * 0.95f &&
-            unpunctuated && (!first.listStart() || enumerated)) {
+            titleEnd && (!first.listStart() || enumerated) && !caption()) {
             k.kind = BlockKind::Heading;
             k.boldHeading = true;
             continue;
@@ -768,10 +902,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
     }
     // Never skip a level: the levels in use renumbered 1..n. Then the top level is made absolute:
-    // it is a title (H1) when set clearly larger than the body, and the sections of a title-less
-    // document (H2) when not, or when one style alone heads several sections (Markdown documents
-    // carry one H1). The outline gives depths, not levels: a title-less document's sections are
-    // its top bookmarks too.
+    // it is a title (H1) when set clearly larger than the body, or when it is used once or twice
+    // above deeper levels and still set well above the body (LaTeX at 11 pt sets \section at 1.31
+    // times the body); it is the sections of a title-less document (H2) when smaller, or when one
+    // style alone heads several sections (Markdown documents carry one H1). The outline gives
+    // depths, not levels: a title-less document's sections are its top bookmarks too.
     {
         bool used[8] = {};
         for (size_t r = 0; r < raws.size(); ++r)
@@ -787,7 +922,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             levelOf[r] = map[levelOf[r]];
             if (levelOf[r] == 1) topSize = std::fmax(topSize, kinds[r].size), topCount++;
         }
-        const bool sections = topCount > 0 && (topSize < kTitleSize * body || (next == 1 && topCount >= 2));
+        const bool title = next >= 2 && topCount <= 2 && topSize >= kSmallTitleSize * body;
+        const bool sections =
+            topCount > 0 && !title && (topSize < kTitleSize * body || (next == 1 && topCount >= 2));
         if (sections)
             for (size_t r = 0; r < raws.size(); ++r)
                 if (levelOf[r] > 0) levelOf[r] = std::min(levelOf[r] + 1, 6);
@@ -801,6 +938,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     int itemDepth = -1;
     std::vector<Block> notes;
     std::vector<BlockLine> noteLines;
+    uint64_t ruleBudget = kRuleChecks;
     size_t r = 0;
     for (uint32_t p = 0; p <= pages.size(); ++p) {
         // Blocks of pages before p.
@@ -895,9 +1033,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     continue;
                 }
             }
-            // Code blocks split by blank lines join again.
+            // Code blocks split by blank lines join again, unless a rule between them ends one
+            // framed listing and starts the next.
             if (block.kind == BlockKind::Code && !blocks.empty() && blocks.back().kind == BlockKind::Code &&
-                blocks.back().first + blocks.back().count == block.first) {
+                blocks.back().first + blocks.back().count == block.first &&
+                !RuleBetween(pages, lines[block.first - 1], lines[block.first], ruleBudget)) {
                 blocks.back().count += block.count;
                 ++r;
                 continue;

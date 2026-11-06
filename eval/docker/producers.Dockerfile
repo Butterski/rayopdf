@@ -27,6 +27,18 @@ RUN curl -fsSL -o /tmp/rayomd.tar.gz \
     && rm /tmp/rayomd.tar.gz \
     && ln -s /opt/rayomd-5.3.0-linux-x64-static/rayomd /usr/local/bin/rayomd
 
+# The Eisvogel pandoc LaTeX template (BSD-3-Clause), for the xelatex-eisvogel producer: READoc's
+# GitHub subset was made with pandoc + Eisvogel, so this development producer shows the same layout
+# without opening the holdout.
+RUN curl -fsSL -o /tmp/eisvogel.tar.gz \
+      https://github.com/Wandmalfarbe/pandoc-latex-template/releases/download/v3.5.1/Eisvogel-3.5.1.tar.gz \
+    && echo '321ff753b4017e331575651bf97ba51004650762fe116be97a4c60a68c570181  /tmp/eisvogel.tar.gz' | sha256sum -c - \
+    && mkdir -p /opt/eval/templates \
+    && tar -xzf /tmp/eisvogel.tar.gz -C /tmp Eisvogel-3.5.1/eisvogel.latex Eisvogel-3.5.1/LICENSE \
+    && mv /tmp/Eisvogel-3.5.1/eisvogel.latex /opt/eval/templates/eisvogel.latex \
+    && mv /tmp/Eisvogel-3.5.1/LICENSE /opt/eval/templates/eisvogel-LICENSE \
+    && rm -rf /tmp/eisvogel.tar.gz /tmp/Eisvogel-3.5.1
+
 COPY producers/ /opt/eval/producers/
 COPY census/ /opt/eval/census/
 

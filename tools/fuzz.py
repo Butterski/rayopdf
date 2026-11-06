@@ -10,8 +10,8 @@ committed under tests/fuzz/regressions/<target>/ and `replay` runs every target 
 
 Usage:
   python3 tools/fuzz.py seeds                                   # seed the corpora with real PDFs
-  python3 tools/fuzz.py run --seconds 600 [--targets a,b] [--cpus 0,1,2,4]
-  python3 tools/fuzz.py replay
+  python3 tools/fuzz.py run --seconds 600 [--targets a,b] [--cpus 0,1,2,4] [--dir fuzz]
+  python3 tools/fuzz.py replay [--dir fuzz]
 
 Seeds: the PDFs of the development suites (synthetic corpus without the weasyprint holdout, odl)
 and the first 300 PDFs of the SafeDocs sample, each at most 2 MB, for the targets that read whole
@@ -44,8 +44,9 @@ def targets() -> list[str]:
     return sorted(p.stem for p in (REPO / "tests" / "fuzz").glob("fuzz_*.cpp"))
 
 
-def build() -> None:
-    code = subprocess.run([sys.executable, str(REPO / "tools" / "dev.py"), "build", "--config", "fuzz"]).returncode
+def build(directory: str) -> None:
+    code = subprocess.run([sys.executable, str(REPO / "tools" / "dev.py"), "build", "--config", "fuzz",
+                           "--dir", directory]).returncode
     if code:
         raise SystemExit("fuzz build failed")
 
@@ -90,7 +91,7 @@ def cmd_seeds(args) -> int:
 
 
 def cmd_run(args) -> int:
-    build()
+    build(args.dir)
     names = args.targets.split(",") if args.targets else targets()
     free = args.cpus.split(",")
     queue = list(names)
@@ -103,7 +104,7 @@ def cmd_run(args) -> int:
                 cpu = free.pop(0)
                 for directory in (CORPUS / target, ARTIFACTS / target):
                     directory.mkdir(parents=True, exist_ok=True)
-                argv = [f"build/fuzz/{target}", f"-max_total_time={args.seconds}", "-timeout=10",
+                argv = [f"build/{args.dir}/{target}", f"-max_total_time={args.seconds}", "-timeout=10",
                         "-rss_limit_mb=2048", "-print_final_stats=1",
                         f"-artifact_prefix=build/fuzz-artifacts/{target}/", f"build/fuzz-corpus/{target}"]
                 log = ARTIFACTS / f"{target}.log"
@@ -113,7 +114,8 @@ def cmd_run(args) -> int:
                 if proc.poll() is None:
                     continue
                 output = (ARTIFACTS / f"{target}.log").read_text(errors="replace")
-                stats = {line.split(":")[0].strip(): line.split(":", 1)[1].strip()
+                # "stat::number_of_executed_units: 2213521": the key runs to the last colon.
+                stats = {line.rsplit(":", 1)[0].strip(): line.rsplit(":", 1)[1].strip()
                          for line in output.splitlines() if line.startswith("stat::")}
                 artifacts = sorted(p.name for p in (ARTIFACTS / target).iterdir())
                 results[target] = {"exit": proc.returncode, "seconds": round(time.time() - started),
@@ -130,7 +132,7 @@ def cmd_run(args) -> int:
         for target in running:
             subprocess.run(["docker", "kill", f"rayopdf-fuzz-{target}"], capture_output=True)
         raise
-    summary = REPO / "build" / "fuzz-summary.json"
+    summary = REPO / "build" / f"{args.dir}-summary.json"
     summary.write_text(json.dumps(results, indent=2) + "\n")
     bad = [t for t, r in results.items() if r["exit"] != 0 or r["artifacts"]]
     print(f"{len(results) - len(bad)}/{len(results)} targets clean; summary in {summary.relative_to(REPO)}")
@@ -138,14 +140,14 @@ def cmd_run(args) -> int:
 
 
 def cmd_replay(args) -> int:
-    build()
+    build(args.dir)
     failed = 0
     for target in targets():
         directory = REGRESSIONS / target
         inputs = sorted(p for p in directory.glob("*") if p.is_file()) if directory.is_dir() else []
         if not inputs:
             continue
-        proc = docker([f"build/fuzz/{target}", "-runs=0"] + [str(p.relative_to(REPO)) for p in inputs])
+        proc = docker([f"build/{args.dir}/{target}", "-runs=0"] + [str(p.relative_to(REPO)) for p in inputs])
         output, _ = proc.communicate()
         ok = proc.returncode == 0
         failed += not ok
@@ -165,8 +167,11 @@ def main() -> int:
     p.add_argument("--seconds", type=int, required=True, help="time per target")
     p.add_argument("--targets", help="comma-separated target names (default: all)")
     p.add_argument("--cpus", default=DEFAULT_CPUS, help=f"CPUs to use, one target each (default {DEFAULT_CPUS})")
+    p.add_argument("--dir", default="fuzz", help="build directory under build/ (default: fuzz)")
     p.set_defaults(func=cmd_run)
-    sub.add_parser("replay", help="run every target over tests/fuzz/regressions/").set_defaults(func=cmd_replay)
+    p = sub.add_parser("replay", help="run every target over tests/fuzz/regressions/")
+    p.add_argument("--dir", default="fuzz", help="build directory under build/ (default: fuzz)")
+    p.set_defaults(func=cmd_replay)
     args = parser.parse_args()
     return args.func(args)
 

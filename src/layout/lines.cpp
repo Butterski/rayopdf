@@ -167,6 +167,135 @@ bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direct
     return rtl;
 }
 
+// Whether at least 80 % of the glyphs [from, count) of `line` are monospace (and there are some).
+bool MostlyMono(const PageData& page, const Line& line, uint32_t from) {
+    if (from >= line.count) return false;
+    uint32_t mono = 0;
+    for (uint32_t k = from; k < line.count; ++k)
+        if (page.glyphs[page.lineGlyphs[line.first + k]].flags & kGlyphMonospace) mono++;
+    return mono * 5 >= (line.count - from) * 4;
+}
+
+// A listing's line number: a line that starts with a word of 1 to 5 ASCII digits.
+struct NumberCandidate {
+    uint32_t line = 0;
+    uint32_t value = 0;
+    uint32_t digits = 0;  // glyphs of the number
+    float right = 0, baseline = 0, size = 0;
+    bool code = false;  // monospace text follows it on its baseline
+};
+
+constexpr uint32_t kMaxNumberCandidates = 4096;
+
+// Line numbers of code listings (algorithms §6.4): a column of at least three consecutive integers,
+// right-aligned at a steady pitch, mostly beside monospace text (or a listing of one or two lines
+// numbered from 1, code on each). They are not part of the code: their glyphs are dropped, lines
+// holding only a number go, and lines that start with one start after it, so that the listing
+// keeps its indentation. A numbered table column (prose beside the numbers) or an ordered list
+// ("1.") is no such column.
+void DropLineNumbers(PageData& page) {
+    std::vector<NumberCandidate> cands;
+    for (uint32_t li = 0; li < page.lines.size() && cands.size() < kMaxNumberCandidates; ++li) {
+        const Line& line = page.lines[li];
+        if (line.dir != 0 || line.count == 0) continue;
+        uint32_t k = 0, value = 0;
+        for (; k < line.count && k < 6; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            const std::string_view t = page.GlyphText(g);
+            if (t.size() != 1 || t[0] < '0' || t[0] > '9' || (k > 0 && (g.flags & kGlyphSpaceBefore))) break;
+            value = value * 10 + static_cast<uint32_t>(t[0] - '0');
+        }
+        if (k == 0 || k > 5) continue;
+        if (k < line.count && !(page.glyphs[page.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore)) continue;
+        NumberCandidate c;
+        c.line = li, c.value = value, c.digits = k;
+        c.right = page.glyphs[page.lineGlyphs[line.first + k - 1]].u1;
+        c.baseline = line.baseline, c.size = line.size;
+        c.code = MostlyMono(page, line, k);
+        cands.push_back(c);
+    }
+    if (cands.size() < 3) return;
+
+    // Number-only lines: the nearest line to the right on their baseline is monospace (deeply
+    // indented code starts far from its number).
+    std::vector<uint32_t> byBase;
+    for (uint32_t li = 0; li < page.lines.size(); ++li)
+        if (page.lines[li].dir == 0 && page.lines[li].count > 0) byBase.push_back(li);
+    std::sort(byBase.begin(), byBase.end(),
+              [&](uint32_t a, uint32_t b) { return page.lines[a].baseline < page.lines[b].baseline; });
+    for (NumberCandidate& c : cands) {
+        if (c.code || c.digits != page.lines[c.line].count) continue;
+        auto it = std::lower_bound(byBase.begin(), byBase.end(), c.baseline - 0.3f * c.size,
+                                   [&](uint32_t li, float v) { return page.lines[li].baseline < v; });
+        const Line* nearest = nullptr;
+        for (int scanned = 0; it != byBase.end() && scanned < 64; ++it, ++scanned) {
+            const Line& o = page.lines[*it];
+            if (o.baseline > c.baseline + 0.3f * c.size) break;
+            if (o.u0 > c.right && (!nearest || o.u0 < nearest->u0)) nearest = &o;
+        }
+        c.code = nearest && nearest->u0 - c.right <= 30 * c.size && MostlyMono(page, *nearest, 0);
+    }
+
+    // Runs, top to bottom.
+    std::sort(cands.begin(), cands.end(), [](const NumberCandidate& a, const NumberCandidate& b) {
+        return a.baseline != b.baseline ? a.baseline > b.baseline : a.right < b.right;
+    });
+    std::vector<uint8_t> drop(cands.size(), 0);
+    size_t begin = 0;
+    while (begin < cands.size()) {
+        size_t end = begin + 1;
+        float pitch = 0;
+        while (end < cands.size()) {
+            const NumberCandidate& a = cands[end - 1];
+            const NumberCandidate& b = cands[end];
+            const float step = a.baseline - b.baseline;
+            if (b.value != a.value + 1 || std::fabs(b.right - a.right) > 0.3f * a.size || step <= 0.5f * a.size ||
+                step > 2.5f * a.size || (pitch > 0 && std::fabs(step - pitch) > 0.25f * pitch))
+                break;
+            if (pitch == 0) pitch = step;
+            ++end;
+        }
+        uint32_t code = 0;
+        for (size_t k = begin; k < end; ++k) code += cands[k].code ? 1 : 0;
+        // A short listing (one or two lines) counts from 1 and has code on every line.
+        const size_t n = end - begin;
+        if ((n >= 3 && code >= 2 && 2 * code >= n) || (n <= 2 && cands[begin].value == 1 && code == n))
+            for (size_t k = begin; k < end; ++k) drop[k] = 1;
+        begin = end;
+    }
+
+    bool any = false;
+    for (size_t k = 0; k < cands.size(); ++k) {
+        if (!drop[k]) continue;
+        any = true;
+        Line& line = page.lines[cands[k].line];
+        for (uint32_t d = 0; d < cands[k].digits; ++d) page.glyphs[page.lineGlyphs[line.first + d]].flags |= kGlyphDropped;
+        line.first += cands[k].digits;
+        line.count -= cands[k].digits;
+        line.chars = line.chars > cands[k].digits ? line.chars - cands[k].digits : 0;
+        if (line.count == 0) continue;
+        // The rest of the line: its extent and common style again.
+        uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace;
+        for (uint32_t i = 0; i < line.count; ++i) {
+            Glyph& g = page.glyphs[page.lineGlyphs[line.first + i]];
+            if (i == 0) {
+                g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
+                line.u0 = g.u0, line.vb = g.vb, line.vt = g.vt;
+            }
+            line.u0 = std::fmin(line.u0, g.u0);
+            line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+            all &= g.flags;
+        }
+        line.flags = static_cast<uint16_t>(line.flags & ~(kLineAllBold | kLineAllItalic | kLineAllMono));
+        if (all & kGlyphBold) line.flags |= kLineAllBold;
+        if (all & kGlyphItalic) line.flags |= kLineAllItalic;
+        if (all & kGlyphMonospace) line.flags |= kLineAllMono;
+    }
+    if (!any) return;
+    page.lines.erase(std::remove_if(page.lines.begin(), page.lines.end(), [](const Line& l) { return l.count == 0; }),
+                     page.lines.end());
+}
+
 } // namespace
 
 Marker ParseMarker(std::string_view t, uint32_t& value) {
@@ -513,8 +642,10 @@ void BuildLines(PageData& page) {
     }
 
     // Gutters (Breuel's whitespace columns, algorithms §5.1): a wide gap in a line is a column or
-    // cell boundary when the lines around it have no ink at that place either; a wide space of
-    // justified text has ink above and below it. The line splits there.
+    // cell boundary when the lines around it have no ink at that place either, and text bounds it
+    // on both sides (a line with text left and right of it, or lines left of it and lines right of
+    // it); a wide space of justified text has ink above and below it, or only short lines on one
+    // side. The line splits there.
     std::vector<uint8_t> splitBefore(proto.size(), 0);
     {
         std::vector<uint32_t> byBase(protos.size());
@@ -536,6 +667,7 @@ void BuildLines(PageData& page) {
                 const float c = (a + b) / 2;
                 const float pad = 0.1f * l.size;
                 int blocked = 0, clear = 0, oneSide = 0;
+                bool leftSide = false, rightSide = false;  // some neighbour has text only left / right of it
                 for (int side = 0; side < 2; ++side) {
                     for (size_t o = r;;) {
                         if (side == 0) {
@@ -558,11 +690,15 @@ void BuildLines(PageData& page) {
                             blocked++;
                         else if (left && right)
                             clear++;
-                        else
+                        else {
                             oneSide++;
+                            leftSide = leftSide || left;
+                            rightSide = rightSide || right;
+                        }
                     }
                 }
-                const bool gutter = (clear + oneSide >= 2) && blocked * 8 <= clear + oneSide;
+                const bool bounded = clear >= 1 || (leftSide && rightSide);
+                const bool gutter = bounded && (clear + oneSide >= 2) && blocked * 8 <= clear + oneSide;
                 if (gutter) splitBefore[start] = 1;
             }
         }
@@ -628,6 +764,8 @@ void BuildLines(PageData& page) {
             at = stop;
         }
     }
+
+    DropLineNumbers(page);
 
     // Right-to-left text, once the page's text extent is known: a short line flush with the left
     // edge belongs to a left-to-right paragraph (an RTL sentence in an LTR document keeps its

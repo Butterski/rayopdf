@@ -4,7 +4,7 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.2: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
+Version 0.0.3: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
 code blocks, block quotes, emphasis, links, tables, footnotes and images, right-to-left and CJK
 text included. Scanned pages are marked, not read (no OCR yet); math is written as Unicode text.
 The [roadmap](docs/development/roadmap.md) lists what comes next.
@@ -53,6 +53,8 @@ The source is C++17 with no third-party library: `src/crypt` (Standard security 
   the baselines.
 - [RayoPDF 0.0.2 on the harness](docs/benchmarks/v0.0.2-2026-11-06.md): tables, images,
   footnotes, right-to-left and CJK text.
+- [RayoPDF 0.0.3 on the harness](docs/benchmarks/v0.0.3-2026-11-06.md): odl headings and tables,
+  code listings, the 24-hour fuzz campaign.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation

@@ -521,18 +521,68 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
     return removed;
 }
 
+namespace {
+
+// Figures as obstacles (algorithms §5.1, XY-Cut++ pre-masks figures): an image beside a column
+// keeps the whitespace above and below it from reading as a page-wide gap, so a column wrapped
+// around a figure and its caption is not cut in two. Only images that could be content count,
+// judged on the page alone so that the order is the same whether images are written or not: at
+// least 1 % and under 90 % of the page, with no text over them (text on an image makes it a
+// background).
+constexpr float kObstacleMinShare = 0.01f;
+constexpr float kObstacleMaxShare = 0.9f;
+constexpr uint32_t kMaxObstacles = 64;
+
+void AddObstacles(PageData& page, std::vector<uint32_t>& items) {
+    const float pageArea = page.width * page.height;
+    std::vector<float> sizes;
+    for (uint32_t i : items)
+        if (page.lines[i].count > 0) sizes.push_back(page.lines[i].size);
+    if (sizes.empty()) return;
+    std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
+    const float size = sizes[sizes.size() / 2];
+    uint32_t added = 0;
+    for (const ImageBox& image : page.images) {
+        if (added >= kMaxObstacles) break;
+        const float area = (image.x1 - image.x0) * (image.y1 - image.y0);
+        if (!(area >= kObstacleMinShare * pageArea) || area >= kObstacleMaxShare * pageArea) continue;
+        bool covered = false;
+        for (size_t k = 0; k < items.size() && !covered; ++k) {
+            const Line& l = page.lines[items[k]];
+            const float cu = (l.u0 + l.u1) / 2, cv = (l.vb + l.vt) / 2;
+            covered = l.count > 0 && cu > image.x0 + 1 && cu < image.x1 - 1 && cv > image.y0 + 1 && cv < image.y1 - 1;
+        }
+        if (covered) continue;
+        Line obstacle;
+        obstacle.u0 = image.x0, obstacle.u1 = image.x1, obstacle.vb = image.y0, obstacle.vt = image.y1;
+        obstacle.baseline = image.y0;
+        obstacle.size = size;
+        items.push_back(static_cast<uint32_t>(page.lines.size()));
+        page.lines.push_back(obstacle);
+        added++;
+    }
+}
+
+} // namespace
+
 void OrderLines(PageData& page) {
     page.order.clear();
     Orderer orderer{page, page.order, {}, {}, {}};
     orderer.CollectRules();
     std::vector<uint32_t> items;
+    const size_t lineCount = page.lines.size();
     for (uint8_t dir = 0; dir < 4; ++dir) {
         items.clear();
-        for (uint32_t i = 0; i < page.lines.size(); ++i)
+        for (uint32_t i = 0; i < lineCount; ++i)
             if (page.lines[i].dir == dir && !(page.lines[i].flags & (kLineRemoved | kLineTableCell | kLineImage)))
                 items.push_back(i);
+        if (dir == 0) AddObstacles(page, items);
         if (!items.empty()) orderer.Order(items);
     }
+    // The obstacles leave the order and the page again.
+    page.order.erase(std::remove_if(page.order.begin(), page.order.end(), [&](uint32_t i) { return i >= lineCount; }),
+                     page.order.end());
+    page.lines.resize(lineCount);
     // Images join the text's order without changing it: before the first line read below their
     // top edge that shares their horizontal extent (the text after them in their column, or after
     // a full-width figure), else before the first line read below their top edge anywhere, else

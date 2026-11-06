@@ -22,7 +22,7 @@ namespace RayoPdf::Text {
 enum class FontKind : uint8_t { Type1, MMType1, TrueType, Type3, Type0, Unknown };
 
 struct FontStyle {
-    bool bold = false;       // /FontWeight >= 600, ForceBold, or "Bold"/"Black"/"Heavy"/"Semibold" in the name
+    bool bold = false;       // /FontWeight >= 600, ForceBold, or a bold name ("Bold", "Semibold", "-Medi", "CMBX12")
     bool italic = false;     // the Italic flag, a nonzero /ItalicAngle, or "Italic"/"Oblique" in the name
     bool monospace = false;  // the FixedPitch flag, or a Courier/Mono/Code/Consol name
     bool serif = false;      // the Serif flag

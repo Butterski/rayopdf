@@ -87,6 +87,7 @@
         "rayomd-tech",
         "xelatex",
         "xelatex-2col",
+        "xelatex-eisvogel",
         "beamer"
       ]
     },
@@ -114,6 +115,7 @@
       "exclude": [
         "xelatex",
         "xelatex-2col",
+        "xelatex-eisvogel",
         "typst",
         "chromium",
         "weasyprint",
@@ -165,6 +167,7 @@
         "rayomd-tech",
         "xelatex",
         "xelatex-2col",
+        "xelatex-eisvogel",
         "typst",
         "chromium",
         "weasyprint",

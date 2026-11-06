@@ -183,29 +183,32 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.2 (2026-11-06)
+### Status: 0.0.3 (2026-11-06)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
-step is measured on a working pipeline; 0.0.2 adds tables, images, footnotes, right-to-left and
-CJK text. Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
-[0.0.2](../benchmarks/v0.0.2-2026-11-06.md).
+step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
+CJK text; 0.0.3 closed odl heading and table gaps and READoc's GitHub regression. Harness results:
+[0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
+[0.0.3](../benchmarks/v0.0.3-2026-11-06.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
   tree, `--inspect`); exact recovery of RayoMD PDFs is not. Gates met: page counts (996 of 996),
-  0 crashes and hangs under ASan. Open: 24 h of fuzzing, the `--inspect` timing.
+  0 crashes and hangs under ASan, 24 h of aggregate fuzzing over all 11 targets (the reader's three
+  ran 2.2 h each, clean). Open: the `--inspect` timing.
 - **M2 Text:** the font → Unicode chain including Adobe's CJK collections, words, lines,
   duplicates as bold, ligatures, dehyphenation, uncertainty comments. NID is above the best
-  text-layer tool on the synthetic corpus (0.954 against 0.921); open: odl (0.909 against 0.914),
-  garbage ToUnicode detection.
-- **M3 Layout:** XY cuts with column checks, running headers and footers by repetition and by
-  position, right-to-left lines (UAX #9 without explicit embeddings). Open: olmOCR
-  `multi_column`, `long_tiny_text` and `headers_footers` are below the best measured tool.
-- **M4 Semantics:** headings with absolute levels, lists, code, quotes, emphasis, links,
-  footnotes, image files, Unicode math; construct F1, MHS and heading-level accuracy above every
-  measured tool on the synthetic corpus. Open: odl MHS, image alt text (M6).
+  text-layer tool and docling on the synthetic corpus (0.957) and level with liteparse on odl
+  (0.913 against 0.914). Open: garbage ToUnicode detection.
+- **M3 Layout:** XY cuts with column checks and obstacles, running headers and footers by
+  repetition and by position, right-to-left lines (UAX #9 without explicit embeddings). Open:
+  olmOCR `multi_column`, `long_tiny_text` and `headers_footers` are below the best measured tool.
+- **M4 Semantics:** headings with absolute levels, lists, code (numbered listings included),
+  quotes, emphasis, links, footnotes, image files, Unicode math; construct F1, MHS and NID above
+  every measured tool on the synthetic corpus. Open: odl MHS (0.804 against 0.822), run-in
+  headings, image alt text (M6).
 - **M5 Tables:** ruled, horizontal-rule-only and high-confidence borderless tables, GFM or HTML
-  with spans. Synthetic untagged TEDS 0.949 (gate 0.95); open: odl TEDS 0.645 (gate 0.818).
+  with spans. Synthetic untagged TEDS 0.945 (gate 0.95); odl TEDS 0.722 (gate 0.818).
 - **M6–M8:** not started.
 
 ## Engineering conventions

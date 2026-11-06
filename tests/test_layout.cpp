@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout: the layout and semantic stages on pages built glyph by glyph, then the
-// whole conversion on PDFs built in memory (tests/pdf_builder.h). Exit codes 400-499.
+// whole conversion on PDFs built in memory (tests/pdf_builder.h). Exit codes 400-499 and 700-749.
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -606,6 +606,203 @@ void TestPdfImages() {
     RAYOPDF_CHECK(!Contains(plain, "![") && report.images == 0 && report.imagesSkipped == 0, 490);
 }
 
+void TestPdfBoldFontNames() {
+    // URW's "-Medi" weight (LaTeX's Times-Bold clone) and TeX's "CMBX12" are bold: a body-size line
+    // in them heads a section. "-DemiLight" stays regular.
+    std::string widths = "/FirstChar 32 /LastChar 126 /Widths [";
+    for (int c = 32; c <= 126; ++c) widths += "500 ";
+    widths += "]";
+    const std::string fonts = "/F1 << /Type /Font /Subtype /Type1 /BaseFont /NimbusRomNo9L-Regu " + widths + " >> " +
+                              "/F2 << /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+NimbusRomNo9L-Medi " + widths +
+                              " >> /F3 << /Type /Font /Subtype /Type1 /BaseFont /CMBX12 " + widths + " >> " +
+                              "/F4 << /Type /Font /Subtype /Type1 /BaseFont /NotoSans-DemiLight " + widths + " >>";
+    std::string content = "BT /F2 10 Tf 72 720 Td (B.3 Prompt Engineering) Tj ET\n";
+    content += "BT /F1 10 Tf 72 700 Td (A key research area is the design of prompts for models.) Tj ET\n";
+    content += "BT /F1 10 Tf 72 688 Td (It runs over a second line of plain body text here.) Tj ET\n";
+    content += "BT /F3 10 Tf 72 660 Td (B.4 Instruction Tuning) Tj ET\n";
+    content += "BT /F1 10 Tf 72 640 Td (Instruction tuning adjusts models with formatted data.) Tj ET\n";
+    content += "BT /F4 10 Tf 72 612 Td (A light line) Tj ET\n";
+    content += "BT /F1 10 Tf 72 592 Td (The last paragraph of body text closes the page here.) Tj ET\n";
+    const std::string md = ConvertPdf(Test::OnePage(content, fonts));
+    Show("pdf bold font names", md);
+    RAYOPDF_CHECK(Contains(md, "## B.3 Prompt Engineering\n") && Contains(md, "## B.4 Instruction Tuning\n"), 700);
+    RAYOPDF_CHECK(!Contains(md, "# A light line"), 701);
+}
+
+void TestHeadingCues() {
+    std::vector<PageData> pages{NewPage(1)};
+    // A bold body-size line may end in a colon or a question mark; a bold sentence is emphasis.
+    AddText(pages[0], "Steps for Using the Microscope:", 72, 740, 10, kGlyphBold);
+    AddText(pages[0], "Place the slide on the stage and line it up with the clips here.", 72, 720, 10);
+    AddText(pages[0], "Are Smokers Time Discounters?", 72, 690, 10, kGlyphBold);
+    AddText(pages[0], "Recall the distinction between two kinds of discounting in time.", 72, 670, 10);
+    AddText(pages[0], "This sentence is bold.", 72, 640, 10, kGlyphBold);
+    AddText(pages[0], "Body text after the bold sentence runs on for a while longer.", 72, 620, 10);
+    // A caption set larger than the body is no heading.
+    AddText(pages[0], "Figure 4.5. Breakdown of Fuel", 72, 590, 12);
+    AddText(pages[0], "Body text under the caption runs on for a while longer too.", 72, 570, 10);
+    const std::string md = Run(pages);
+    Show("heading cues", md);
+    RAYOPDF_CHECK(Contains(md, "## Steps for Using the Microscope:\n") &&
+                      Contains(md, "## Are Smokers Time Discounters?\n"),
+                  702);
+    RAYOPDF_CHECK(!Contains(md, "# This sentence is bold."), 703);
+    RAYOPDF_CHECK(!Contains(md, "# Figure") && Contains(md, "Figure 4.5. Breakdown of Fuel"), 704);
+}
+
+Shape Bar(float x, float y0, float y1) {
+    Shape s;
+    s.x0 = x, s.x1 = x + 3, s.y0 = y0, s.y1 = y1;
+    s.kind = ShapeKind::Rect;
+    s.filled = true;
+    return s;
+}
+
+void TestQuoteBarsAndHeadings() {
+    // An accent bar beside a slide title is no quote.
+    std::vector<PageData> slide{NewPage(1)};
+    AddText(slide[0], "Our Purpose Today", 80, 700, 22);
+    slide[0].shapes.push_back(Bar(70, 694, 720));
+    AddText(slide[0], "Body text of the slide runs long enough to set the body size.", 72, 660, 11);
+    AddText(slide[0], "More body text of the slide runs long enough to set the size.", 72, 646, 11);
+    std::string md = Run(slide);
+    Show("quote bars: slide", md);
+    RAYOPDF_CHECK(Contains(md, "# Our Purpose Today\n") && !Contains(md, ">"), 705);
+    // A heading inside a quote whose paragraph goes on beside the same bar stays quoted.
+    std::vector<PageData> quote{NewPage(1)};
+    AddText(quote[0], "Body text before the quote runs long enough to set the body size.", 72, 740, 10);
+    AddText(quote[0], "Quoted Heading", 80, 700, 14);
+    AddText(quote[0], "The quoted paragraph follows the heading inside the same bar.", 80, 680, 10);
+    quote[0].shapes.push_back(Bar(70, 676, 716));
+    md = Run(quote);
+    Show("quote bars: quote", md);
+    RAYOPDF_CHECK(Contains(md, "> ## Quoted Heading\n") || Contains(md, "> # Quoted Heading\n"), 706);
+}
+
+void TestAffiliationNotes() {
+    // Raised digits after author names and before affiliations under them: the affiliations are no
+    // footnotes, since body text follows below them; they stay in place.
+    std::vector<PageData> pages{NewPage(1)};
+    float x = AddText(pages[0], "Ann Author", 200, 740, 10);
+    AddText(pages[0], "1", x, 744, 6);
+    x = AddText(pages[0], "1", 150, 724, 5);
+    AddText(pages[0], "University of Somewhere, Some Town", x, 720, 8);
+    AddText(pages[0], "Abstract text of the paper runs long enough to be the body text.", 72, 690, 10);
+    AddText(pages[0], "It goes on over a second line so that the body size is clear.", 72, 678, 10);
+    const std::string md = Run(pages);
+    Show("affiliation notes", md);
+    RAYOPDF_CHECK(!Contains(md, "[^"), 707);
+    const size_t affiliation = md.find("University of Somewhere"), abstract = md.find("Abstract text");
+    RAYOPDF_CHECK(affiliation != std::string::npos && abstract != std::string::npos && affiliation < abstract, 708);
+}
+
+void TestFigureObstacle() {
+    // A figure on the left with its caption under it, a column of text on the right whose
+    // paragraph gap lies beside the figure: the column is read whole, not cut at the gap.
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    ImageBox figure;
+    figure.x0 = 72, figure.x1 = 250, figure.y0 = 300, figure.y1 = 500;
+    page.images.push_back(figure);
+    const char* first[] = {"First paragraph of the right column, line one.",
+                           "First paragraph of the right column, line two.",
+                           "First paragraph of the right column ends here."};
+    const char* second[] = {"Second paragraph of the right column, line one.",
+                            "Second paragraph of the right column, more text.",
+                            "Second paragraph of the right column, line three.",
+                            "Second paragraph of the right column ends here."};
+    for (int i = 0; i < 3; ++i) AddText(page, first[i], 300, 490.0f - 12 * i, 10);
+    // The second paragraph runs down beside the caption.
+    for (int i = 0; i < 16; ++i) {
+        const char* text = i == 15 ? second[3] : i == 0 ? second[0] : second[1 + i % 2];
+        AddText(page, text, 300, 430.0f - 12 * i, 10);
+    }
+    AddText(page, "Figure 1. The caption under the figure.", 72, 285, 9);
+    AddText(page, "It runs over two lines of small text.", 72, 274, 9);
+    const std::string md = Run(pages);
+    Show("figure obstacle", md);
+    // The caption comes before the column or after it, never between its paragraphs.
+    const size_t caption = md.find("Figure 1."), start = md.find("First paragraph"),
+                 end = md.find("Second paragraph of the right column ends here.");
+    RAYOPDF_CHECK(caption != std::string::npos && end != std::string::npos && (caption < start || caption > end), 709);
+}
+
+void TestNumberedListing() {
+    // A listing with line numbers in the margin (Eisvogel, listings, minted): one code block, the
+    // numbers dropped, the indentation and the blank line kept, the frame's side rules no quote.
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    AddText(page, "Prose before the listing runs long enough to be the body text here.", 72, 740, 10);
+    const char* code[] = {"import json", "", "class Loader:", "    def load(self):", "        return 1"};
+    for (int i = 0; i < 5; ++i) {
+        const float y = 710.0f - 12 * i;
+        AddText(page, std::to_string(i + 1), 82, y, 10);
+        if (code[i][0]) {
+            const char* text = code[i];
+            float x = 98;
+            while (*text == ' ') x += 5, ++text;
+            AddText(page, text, x, y, 10, kGlyphMonospace);
+        }
+        Shape left, right;
+        left.x0 = 70, left.x1 = 70.4f, right.x0 = 526, right.x1 = 526.4f;
+        left.y0 = right.y0 = y - 4, left.y1 = right.y1 = y + 8;
+        left.kind = right.kind = ShapeKind::Rect;
+        left.filled = right.filled = true;
+        page.shapes.push_back(left);
+        page.shapes.push_back(right);
+    }
+    AddText(page, "Prose after the listing runs long enough to be the body text too.", 72, 630, 10);
+    const std::string md = Run(pages);
+    Show("numbered listing", md);
+    RAYOPDF_CHECK(Contains(md, "```\nimport json\n\nclass Loader:\n    def load(self):\n        return 1\n```"), 710);
+    RAYOPDF_CHECK(!Contains(md, ">") && !Contains(md, "|"), 711);
+}
+
+void TestMathIsNoHeading() {
+    // Display math set large is no heading; neither is a raised digit after a math letter a note
+    // reference that a later numbered line could take.
+    std::vector<PageData> pages{NewPage(1), NewPage(2)};
+    AddText(pages[0], "Body text before the formula runs long enough to set the body size.", 72, 740, 10);
+    AddText(pages[0], "\xE2\x88\xAB \xF0\x9D\x91\xA5 \xF0\x9D\x91\x91\xF0\x9D\x91\xA5 =", 200, 710, 16);
+    float x = AddText(pages[0], "The root needs \xF0\x9D\x91\x8F", 72, 680, 10);
+    AddText(pages[0], "2", x, 684, 6);
+    AddText(pages[0], "Body text after the formula runs long enough to set the body size.", 72, 660, 10);
+    AddText(pages[1], "2. Second numbered item", 72, 700, 8);
+    const std::string md = Run(pages);
+    Show("math is no heading", md);
+    RAYOPDF_CHECK(!Contains(md, "# \xE2\x88\xAB"), 712);
+    RAYOPDF_CHECK(!Contains(md, "[^"), 713);
+}
+
+void TestJustifiedLineStaysWhole() {
+    // A justified line with wide word spaces between short lines (a quote's last lines) is one
+    // line, not columns: no line beside it has text on both sides of a gap.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Nested quote.", 97, 332, 10);
+    float x = AddText(pages[0], "Lazy quote continuation starts here", 84, 285, 10);
+    for (const char* word : {"and", "continues", "without", "another", "quote"}) x = AddText(pages[0], word, x + 7, 285, 10);
+    AddText(pages[0], "marker.", 84, 269, 10);
+    AddText(pages[0], "Short line after.", 86, 241, 10);
+    const std::string md = Run(pages);
+    Show("justified line", md);
+    RAYOPDF_CHECK(Contains(md, "starts here and continues without another quote marker."), 714);
+}
+
+void TestSmallTitle() {
+    // LaTeX at 11 pt: \section at 1.31 times the body, used once above \subsection at 1.09 times:
+    // a title (H1) over sections (H2), not sections over subsections.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Document Title", 72, 740, 14.4f, kGlyphBold);
+    AddText(pages[0], "Body text under the title runs long enough to set the body size here.", 72, 710, 11);
+    AddText(pages[0], "Section One", 72, 680, 12, kGlyphBold);
+    AddText(pages[0], "Body text of the first section runs long enough to set the body size.", 72, 655, 11);
+    AddText(pages[0], "Section Two", 72, 625, 12, kGlyphBold);
+    AddText(pages[0], "Body text of the second section runs long enough to set the body size.", 72, 600, 11);
+    const std::string md = Run(pages);
+    Show("small title", md);
+    RAYOPDF_CHECK(md.compare(0, 17, "# Document Title\n") == 0 && Contains(md, "\n## Section One\n"), 715);
+}
+
 } // namespace
 
 int main() {
@@ -638,6 +835,15 @@ int main() {
     TestPdfImages();
     TestSinglePageEdges();
     TestCjkLineJoin();
+    TestPdfBoldFontNames();
+    TestHeadingCues();
+    TestQuoteBarsAndHeadings();
+    TestAffiliationNotes();
+    TestFigureObstacle();
+    TestNumberedListing();
+    TestMathIsNoHeading();
+    TestJustifiedLineStaysWhole();
+    TestSmallTitle();
     std::puts("test_layout: all checks passed");
     return 0;
 }
