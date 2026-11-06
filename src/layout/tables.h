@@ -50,12 +50,14 @@ struct TableContinuation {
     std::vector<float> xs;  // column boundaries, ascending
 };
 
-// Finds the tables of an upright page: fills page.tables and page.tableCells, appends the cell
-// lines and one anchor line per table to page.lines, and flags the lines whose text moved into
-// cells with kLineTableCell. Lines taken for running headers and footers that lie in a table
-// return to the text (kLineRemoved cleared); the result is how many. Runs after BuildLines and
-// RemoveRunningLines, before OrderLines. `continuation` comes from the previous page and is
-// replaced for the next.
+// Finds the tables of a page: fills page.tables and page.tableCells, appends the cell lines and
+// one anchor line per table to page.lines, and flags the lines whose text moved into cells with
+// kLineTableCell. Upright text first; then text of each other baseline direction with lines
+// enough for a table (a landscape table on a portrait page), in that direction's frame (page.h),
+// its cell and anchor lines of that direction. Lines taken for running headers and footers that
+// lie in a table return to the text (kLineRemoved cleared); the result is how many. Runs after
+// BuildLines and RemoveRunningLines, before OrderLines. `continuation` (upright tables only) comes
+// from the previous page and is replaced for the next.
 int DetectTables(PageData& page, TableContinuation& continuation);
 
 // Whether table `table` of page `page` continues the Table block `previous` (whose lines are in

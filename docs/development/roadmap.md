@@ -183,15 +183,16 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.5 (2026-11-06)
+### Status: 0.0.6 (2026-11-06)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
 CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-layer tool on every
-odl metric and on three of olmOCR's four born-digital categories; 0.0.5 completes the CJK CMaps
-and UAX #9. Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
-[0.0.2](../benchmarks/v0.0.2-2026-11-06.md), [0.0.3](../benchmarks/v0.0.3-2026-11-06.md),
-[0.0.4](../benchmarks/v0.0.4-2026-11-06.md), [0.0.5](../benchmarks/v0.0.5-2026-11-06.md).
+odl metric and on three of olmOCR's four born-digital categories; 0.0.5 completed the CJK CMaps
+and UAX #9; 0.0.6 passes the fourth category, `table_tests`. Harness results:
+[0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
+[0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md),
+[0.0.5](../benchmarks/v0.0.5-2026-11-06.md), [0.0.6](../benchmarks/v0.0.6-2026-11-06.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
@@ -206,16 +207,17 @@ and UAX #9. Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
 - **M3 Layout:** XY cuts with column checks, obstacles, bridging lines and Breuel's partial order
   as fallback; running headers and footers by repetition and, on single pages, by position and
   style; right-to-left lines (full UAX #9). odl NID ≥ docling met. Open:
-  olmOCR `multi_column` 0.692, `long_tiny_text` 0.507 and `headers_footers` 0.652 pass every
+  olmOCR `multi_column` 0.692, `long_tiny_text` 0.507 and `headers_footers` 0.653 pass every
   text-layer tool but not docling (0.695, 0.523, 0.898); `xelatex-2col` NID 0.905 (gate 0.95).
 - **M4 Semantics:** headings with absolute levels (run-in headings included), lists, code
   (numbered listings included), quotes, emphasis, links, footnotes, image files, Unicode math.
   Heading-level accuracy 0.975 (gate 0.95) and READoc GitHub `head_teds` above every tool. Open:
   odl MHS 0.8267 against docling's 0.8269, construct F1 0.852 (gate 0.95), READoc arxiv
   `head_teds`, image alt text (M6).
-- **M5 Tables:** ruled, horizontal-rule-only, striped and high-confidence borderless tables, GFM
-  or HTML with spans. Gates met: synthetic untagged TEDS 0.985, odl TEDS 0.837 ≥ liteparse's
-  0.818 (docling 0.879). Open: olmOCR `table_tests` 0.568 against 0.615.
+- **M5 Tables:** ruled, horizontal-rule-only, striped, sideways and high-confidence borderless
+  tables, GFM or HTML with spans. Gates met: synthetic untagged TEDS 0.985, odl TEDS 0.837 ≥
+  liteparse's 0.818 (docling 0.879), olmOCR `table_tests` 0.617 ≥ pymupdf's 0.615. Open: READoc
+  arxiv `table_teds` 0.471 (0.489 at 0.0.3).
 - **M6–M8:** not started.
 
 ## Engineering conventions

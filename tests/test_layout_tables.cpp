@@ -477,6 +477,192 @@ void TestSpanningHeaderLabel() {
     RAYOPDF_CHECK(Contains(md, "<tr><td>Bifidobacterium</td><td>4.79</td><td>5.31</td></tr>"), 586);
 }
 
+// Appends `text` set upwards (baseline direction 1, page.h): in that direction's frame it starts
+// at (u, v); on the page it runs up the line x = -v.
+void AddTurnedText(PageData& page, std::string_view text, float u, float v, float size = 10) {
+    size_t at = 0;
+    uint32_t cp = 0;
+    size_t length = 0;
+    while (Utf8::Decode(text, at, cp, length)) {
+        Glyph g;
+        const float w = 0.5f * size;
+        g.u0 = u, g.u1 = u + w, g.vb = v - 0.2f * size, g.vt = v + 0.8f * size, g.v = v;
+        g.x0 = -g.vt, g.x1 = -g.vb, g.y0 = g.u0, g.y1 = g.u1;
+        g.dir = 1;
+        g.size = size;
+        g.text = static_cast<uint32_t>(page.text.size());
+        page.text.append(text.substr(at, length));
+        g.textLength = static_cast<uint16_t>(length);
+        if (cp == ' ') g.flags |= kGlyphSpace;
+        page.glyphs.push_back(g);
+        u += w;
+        at += length;
+    }
+}
+
+// A box with a rule under its header and none between the body rows: each line of the body,
+// holding text in the first column and numbers, is a row.
+void TestStackedLatticeRows() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 620.0f}) HLine(page, 72, 400, y);
+    for (float x : {72.0f, 150.0f, 250.0f, 400.0f}) VLine(page, x, 620, 700);
+    AddText(page, "Item", 76, 688);
+    AddText(page, "Qty", 154, 688);
+    AddText(page, "Part", 254, 688);
+    const char* const cells[4][3] = {{"Bolt", "2", "31279"}, {"Nut", "4", "40380"}, {"Washer", "1", "80569"}, {"Pin", "3", "80124"}};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, cells[r][c], (c == 0 ? 76.0f : c == 1 ? 154.0f : 254.0f), 670 - 14.0f * float(r));
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("stacked lattice rows", md);
+    RAYOPDF_CHECK(report.tables == 1, 587);
+    RAYOPDF_CHECK(Contains(md, "| Item | Qty | Part |\n| --- | --- | --- |\n| Bolt | 2 | 31279 |\n| Nut | 4 | 40380 |\n"
+                               "| Washer | 1 | 80569 |\n| Pin | 3 | 80124 |"),
+                  588);
+}
+
+// A lattice ruled around a group of columns only: whitespace through every body row parts the
+// group, and its label spans the parts.
+void TestLatticeSubColumns() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 668.0f, 652.0f, 636.0f}) HLine(page, 72, 300, y);
+    for (float x : {72.0f, 150.0f, 300.0f}) VLine(page, x, 636, 700);
+    AddText(page, "Domain", 76, 688);
+    AddText(page, "Results", 170, 688);
+    const char* const names[] = {"Alpha", "Beta", "Gamma"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 672 - 16.0f * float(r);
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(12 + r), 154, y);
+        AddText(page, "0." + std::to_string(51 + r), 230, y);
+    }
+    const std::string md = Run(pages);
+    Show("lattice sub-columns", md);
+    RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Results</th>") && Contains(md, "<tr><td>Beta</td><td>13</td><td>0.52</td></tr>"),
+                  589);
+}
+
+// A box drawn around the body row alone, the header row right above it.
+void TestHeaderAboveBox() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "Action Item", 76, 686);
+    AddText(page, "Who Will Do", 204, 686);
+    AddText(page, "Due Date", 304, 686);
+    HLine(page, 72, 400, 680);
+    HLine(page, 72, 400, 660);
+    for (float x : {72.0f, 200.0f, 300.0f, 400.0f}) VLine(page, x, 660, 680);
+    AddText(page, "Revise list", 76, 666);
+    AddText(page, "Dr. Smith", 204, 666);
+    AddText(page, "August 14", 304, 666);
+    const std::string md = Run(pages);
+    Show("header above box", md);
+    RAYOPDF_CHECK(Contains(md, "| Action Item | Who Will Do | Due Date |\n| --- | --- | --- |\n| Revise list | Dr. Smith | August 14 |"),
+                  590);
+}
+
+// A borderless table in sections: a label reaching into the first gap heads the rows after it,
+// and figures of two columns stand closer than an em in a later row.
+void TestSectionLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float y = AddProse(page, 72, 450, 740, 3) - 10;
+    const auto row = [&](const char* label, const char* a, const char* b, const char* c, const char* d) {
+        AddText(page, label, 72, y);
+        AddText(page, a, 160, y);
+        AddText(page, b, 196, y);
+        AddText(page, c, 240, y);
+        AddText(page, d, 290, y);
+        y -= 14;
+    };
+    row("Q3", "$448", "$427", "7%", "5%");
+    row("9 Months", "$1,298", "$1,263", "5%", "3%");
+    AddText(page, "Adjusted EPS*:", 64, y, 10, kGlyphBold);
+    y -= 14;
+    row("Q3", "0.84", "0.74", "22%", "14%");
+    row("9 Months", "2.44", "2.12", "20%", "15%");
+    AddProse(page, 72, 450, y - 20, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("section labels", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| 9 Months | $1,298 | $1,263 | 5% | 3% |\n"), 591);
+    RAYOPDF_CHECK(Contains(md, "| Adjusted EPS\\*: |  |  |  |  |\n| Q3 | 0.84 | 0.74 | 22% | 14% |"), 592);
+}
+
+// Five name and affiliation pairs are a table, and a header row set further apart above them is
+// its first row; five titles with page numbers beside them are a list of contents, not a table.
+void TestPairsHeaderAndContents() {
+    std::vector<PageData> pages{NewPage(), NewPage(2)};
+    AddText(pages[0], "Name", 72, 704, 10, kGlyphBold);
+    AddText(pages[0], "Affiliation", 240, 704, 10, kGlyphBold);
+    const char* const pairs[5][2] = {{"Mick Heduan", "Transport for London"}, {"Edward Noble", "LB Merton"},
+                                     {"David Kennett", "LB Wandsworth"},      {"Roseline Holt", "Sainsburys"},
+                                     {"Paul Croxon", "LB Croydon"}};
+    for (int r = 0; r < 5; ++r) {
+        AddText(pages[0], pairs[r][0], 72, 682 - 13.0f * float(r));
+        AddText(pages[0], pairs[r][1], 240, 682 - 13.0f * float(r));
+    }
+    const char* const contents[5][2] = {{"Acknowledgments", "v"}, {"About the Authors", "vii"}, {"Introduction", "ix"},
+                                        {"Exploring Data", "xi"},  {"Missing Data", "xiv"}};
+    AddProse(pages[1], 72, 400, 740, 2);
+    for (int r = 0; r < 5; ++r) {
+        AddText(pages[1], contents[r][0], 72, 700 - 13.0f * float(r));
+        AddText(pages[1], contents[r][1], 300, 700 - 13.0f * float(r));
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("pairs header and contents", md);
+    RAYOPDF_CHECK(Contains(md, "| Name | Affiliation |\n| --- | --- |\n| Mick Heduan | Transport for London |"), 593);
+    RAYOPDF_CHECK(report.tables == 1 && !Contains(md, "| Introduction"), 598);
+}
+
+// A lattice with a title row inside its frame: the title and the column labels under it are the
+// header.
+void TestLatticeTitleRow() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 668.0f, 652.0f, 636.0f, 620.0f}) HLine(page, 72, 400, y);
+    VLine(page, 72, 620, 700);
+    VLine(page, 400, 620, 700);
+    for (float x : {250.0f, 320.0f}) VLine(page, x, 620, 684);
+    AddText(page, "1st COURSE YEAR courses", 76, 688);
+    AddText(page, "Learning activity", 76, 672);
+    AddText(page, "Ects", 254, 672);
+    AddText(page, "Sector", 324, 672);
+    const char* const names[] = {"Labour Economics", "Labour Law", "Statistics"};
+    for (int r = 0; r < 3; ++r) {
+        AddText(page, names[r], 76, 656 - 16.0f * float(r));
+        AddText(page, std::to_string(6 + 3 * r), 254, 656 - 16.0f * float(r));
+        AddText(page, "SECS-P/0" + std::to_string(r + 1), 324, 656 - 16.0f * float(r));
+    }
+    const std::string md = Run(pages);
+    Show("lattice title row", md);
+    RAYOPDF_CHECK(Contains(md, "<tr><th>Learning activity</th><th>Ects</th><th>Sector</th></tr>"), 594);
+}
+
+// A table turned on its page (set upwards, as a landscape table on a portrait page) is found in
+// the frame of its text.
+void TestTurnedTable() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float v = -100;
+    AddTurnedText(page, "Results of the survey are summarised below.", 72, v);
+    v -= 24;
+    const char* const names[] = {"Country", "Austria", "Belgium", "Croatia", "Denmark", "Estonia"};
+    for (int r = 0; r < 6; ++r, v -= 14) {
+        AddTurnedText(page, names[r], 72, v);
+        AddTurnedText(page, r == 0 ? "2021" : std::to_string(1200 + 37 * r), 250, v);
+        AddTurnedText(page, r == 0 ? "2022" : std::to_string(1300 + 29 * r), 330, v);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("turned table", md);
+    RAYOPDF_CHECK(report.tables == 1, 596);
+    RAYOPDF_CHECK(Contains(md, "| Country | 2021 | 2022 |\n| --- | --- | --- |\n| Austria | 1237 | 1329 |"), 597);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -505,8 +691,8 @@ int Dump(const char* path, int only) {
         if (std::getenv("RAYOPDF_DUMP_LINES"))
             for (const Line& l : page.lines) {
                 LineText(page, l, text);
-                std::printf("  L %.1f..%.1f base=%.1f sz=%.1f fl=%x | %s\n", l.u0, l.u1, l.baseline, l.size, l.flags,
-                            text.c_str());
+                std::printf("  L %.1f..%.1f base=%.1f sz=%.1f fl=%x d=%d | %s\n", l.u0, l.u1, l.baseline, l.size, l.flags,
+                            l.dir, text.c_str());
             }
         for (const Table& t : page.tables) {
             std::printf(" TABLE kind=%d %dx%d header=%d box=%.1f,%.1f %.1f,%.1f\n", t.kind, t.rows, t.cols, t.headerRows,
@@ -546,6 +732,13 @@ int main(int argc, char** argv) {
     TestStripes();
     TestClosedEmptyColumn();
     TestSpanningHeaderLabel();
+    TestStackedLatticeRows();
+    TestLatticeSubColumns();
+    TestHeaderAboveBox();
+    TestSectionLabels();
+    TestPairsHeaderAndContents();
+    TestLatticeTitleRow();
+    TestTurnedTable();
     std::puts("test_layout_tables: ok");
     return 0;
 }
