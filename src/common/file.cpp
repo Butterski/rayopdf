@@ -107,4 +107,12 @@ bool WriteAll(const std::string& path, std::string_view content) {
     return false;
 }
 
+bool EnsureDirectory(const std::string& path) {
+    if (path.empty()) return false;
+    if (mkdir(path.c_str(), 0777) == 0) return true;
+    if (errno != EEXIST) return false;
+    struct stat info;
+    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+}
+
 } // namespace RayoPdf::File

@@ -9,9 +9,11 @@
 
 #include "common/compiler.h"
 #include "common/utf8.h"
+#include "text/cjk.h"
 #include "text/cmap.h"
 #include "text/program.h"
 #include "text/tables.h"
+#include "text/unicode_text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -44,27 +46,6 @@ bool UsableText(std::string_view text) {
         at += length;
     }
     return true;
-}
-
-// The UTF-8 text of every BMP code point, three bytes apart, for the Unicode-based predefined
-// CMaps whose codes are the text (built once per process, on first use).
-std::string_view BmpText(uint32_t cp) {
-    struct Table {
-        char bytes[0x10000 * 3];
-        uint8_t lengths[0x10000];
-        Table() {
-            std::string one;
-            for (uint32_t c = 0; c < 0x10000; ++c) {
-                one.clear();
-                Utf8::Append(one, c);
-                std::memcpy(bytes + c * 3, one.data(), one.size());
-                lengths[c] = static_cast<uint8_t>(one.size());
-            }
-        }
-    };
-    static const Table* const table = new Table();
-    if (cp >= 0x10000 || (cp >= 0xD800 && cp <= 0xDFFF)) return {};
-    return std::string_view(table->bytes + cp * 3, table->lengths[cp]);
 }
 
 // "ABCDEF+Name" -> "Name" (a subset tag is six uppercase letters and '+').
@@ -240,8 +221,55 @@ struct VerticalRange {
     float advance = 0;  // w1y
 };
 
-// How a Type0 font's codes become CIDs and, for the Unicode-based CMaps, text.
-enum class CMapKind : uint8_t { Identity, Embedded, Ucs2, Utf16, Utf8, Utf32, Other };
+// How a Type0 font's codes become CIDs and, for the Unicode-based CMaps, text. Predefined: a
+// legacy predefined CMap of the generated CJK tables (90ms-RKSJ-H, GBK-EUC-H, ...); Other: a CMap
+// name nothing knows, read with 2-byte codes and no CIDs.
+enum class CMapKind : uint8_t { Identity, Embedded, Predefined, Ucs2, Utf16, Utf8, Utf32, Other };
+
+constexpr uint32_t kNoCodePoint = UINT32_MAX;
+
+// The code point a code of a Unicode-based CMap stands for (kNoCodePoint when the code is not a
+// whole, valid one). `length` 0 means unknown (a ToUnicode entry): taken from the code's value.
+uint32_t UnicodeCode(CMapKind kind, uint32_t code, uint8_t length) {
+    switch (kind) {
+    case CMapKind::Ucs2:
+        return (length == 2 || (length == 0 && code <= 0xFFFF)) ? code : kNoCodePoint;
+    case CMapKind::Utf16:
+        if (length == 2 || (length == 0 && code <= 0xFFFF))
+            return code >= 0xD800 && code <= 0xDFFF ? kNoCodePoint : code;
+        if (length == 4 || length == 0) {
+            const uint32_t high = code >> 16, low = code & 0xFFFF;
+            if (high < 0xD800 || high > 0xDBFF || low < 0xDC00 || low > 0xDFFF) return kNoCodePoint;
+            return 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+        }
+        return kNoCodePoint;
+    case CMapKind::Utf32:
+        return (length == 4 || length == 0) && code <= 0x10FFFF && !(code >= 0xD800 && code <= 0xDFFF) ? code
+                                                                                                       : kNoCodePoint;
+    case CMapKind::Utf8: {
+        // The code bytes are UTF-8: re-read them as such.
+        if (length == 0) length = code > 0xFFFFFF ? 4 : code > 0xFFFF ? 3 : code > 0xFF ? 2 : 1;
+        if (length > 4) return kNoCodePoint;
+        char buffer[4];
+        for (uint8_t i = 0; i < length; ++i) buffer[i] = static_cast<char>(code >> (8 * (length - 1 - i)));
+        size_t used = 0;
+        uint32_t cp = 0;
+        return Utf8::Decode(std::string_view(buffer, length), 0, cp, used) && used == length ? cp : kNoCodePoint;
+    }
+    default:
+        return kNoCodePoint;
+    }
+}
+
+CMapKind KindOfEncoding(Cjk::CMapEncoding encoding) {
+    switch (encoding) {
+    case Cjk::CMapEncoding::Ucs2: return CMapKind::Ucs2;
+    case Cjk::CMapEncoding::Utf16: return CMapKind::Utf16;
+    case Cjk::CMapEncoding::Utf32: return CMapKind::Utf32;
+    case Cjk::CMapEncoding::Utf8: return CMapKind::Utf8;
+    default: return CMapKind::Predefined;
+    }
+}
 
 } // namespace
 
@@ -262,7 +290,10 @@ struct Font::Impl {
 
     // Type0.
     CMapKind cmapKind = CMapKind::Identity;
-    EncodingCMap cmap;                 // Embedded: codespace and CID ranges; Ucs2..Other: codespace only
+    EncodingCMap cmap;                 // Embedded: codespace and CID ranges; Predefined..Other: codespace only
+    int predefined = -1;               // the generated predefined CMap (Cjk::FindPredefined): the
+                                       // encoding itself, or the usecmap of an embedded CMap
+    Cjk::Collection collection = Cjk::Collection::None;  // whose CID -> Unicode applies
     ToUnicodeMap toUnicode;            // entries filtered to usable text
     std::vector<uint16_t> cidToGid;    // empty: CID = glyph id
     std::vector<TextRef> glyphText;    // by glyph id, into `pool` (FontProgram)
@@ -275,7 +306,8 @@ struct Font::Impl {
     bool NextComposite(std::string_view bytes, size_t& at, Code& out) const;
     float WidthOf(uint32_t cid) const;
     float VerticalOf(uint32_t cid) const;
-    bool CidOf(uint32_t code, uint32_t& cid) const;
+    bool CidOf(uint32_t code, uint8_t length, uint32_t& cid) const;
+    bool PredefinedCid(uint32_t code, uint8_t length, uint32_t& cid) const;
     void Composite(uint32_t code, uint8_t length, Code& out) const;
 };
 
@@ -301,7 +333,19 @@ float Font::Impl::VerticalOf(uint32_t cid) const {
     return range ? range->advance : defaultVertical;
 }
 
-bool Font::Impl::CidOf(uint32_t code, uint32_t& cid) const {
+bool Font::Impl::PredefinedCid(uint32_t code, uint8_t length, uint32_t& cid) const {
+    if (predefined < 0) return false;
+    // A Unicode-based font CMap reads its own codes (its predefined CMap may be a borrowed UTF32
+    // one); an embedded CMap's usecmap reads codes its own way.
+    const bool unicodeFont = cmapKind == CMapKind::Ucs2 || cmapKind == CMapKind::Utf16 || cmapKind == CMapKind::Utf8 ||
+                             cmapKind == CMapKind::Utf32;
+    const CMapKind kind = unicodeFont ? cmapKind : KindOfEncoding(Cjk::EncodingOf(predefined));
+    const uint32_t key = kind == CMapKind::Predefined ? code : UnicodeCode(kind, code, length);
+    return key != kNoCodePoint && Cjk::Cid(predefined, key, cid);
+}
+
+bool Font::Impl::CidOf(uint32_t code, uint8_t length, uint32_t& cid) const {
+    cid = 0;
     switch (cmapKind) {
     case CMapKind::Identity:
         cid = code;
@@ -311,11 +355,18 @@ bool Font::Impl::CidOf(uint32_t code, uint32_t& cid) const {
             cid = code;  // only a codespace (or usecmap of an Identity CMap): codes are CIDs
             return true;
         }
-        cmap.Cid(code, cid);
+        if (cmap.Cid(code, cid)) return true;
+        if (PredefinedCid(code, length, cid)) return true;  // the usecmap's mapping
+        cid = 0;
         return true;
+    case CMapKind::Predefined:
+    case CMapKind::Ucs2:
+    case CMapKind::Utf16:
+    case CMapKind::Utf8:
+    case CMapKind::Utf32:
+        return PredefinedCid(code, length, cid);
     default:
-        cid = 0;  // no CMap tables for the predefined CJK CMaps yet: CIDs unknown
-        return false;
+        return false;  // an unknown CMap: CIDs unknown
     }
 }
 
@@ -338,7 +389,7 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
     out.bytes = length;
     out.wordSpace = length == 1 && code == 32;
     uint32_t cid = 0;
-    const bool known = CidOf(code, cid);
+    const bool known = CidOf(code, length, cid);
     out.width = known ? WidthOf(cid) : defaultWidth;
     out.verticalAdvance = vertical ? (known ? VerticalOf(cid) : defaultVertical) : 0;
     if (const UnicodeEntry* entry = toUnicode.Find(code)) {
@@ -346,34 +397,24 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
         out.unicode = toUnicode.Text(*entry);
         return;
     }
-    uint32_t cp = 0;
-    bool text = false;
-    switch (cmapKind) {
-    case CMapKind::Ucs2:
-        cp = code, text = length == 2;
-        break;
-    case CMapKind::Utf16:
-        cp = code, text = length == 2;  // surrogate pairs (4-byte codes) lie outside BmpText
-        break;
-    case CMapKind::Utf32:
-        cp = code, text = length == 4;
-        break;
-    case CMapKind::Utf8: {
-        // The code bytes are UTF-8: re-read them as such.
-        char buffer[4];
-        for (uint8_t i = 0; i < length; ++i) buffer[i] = static_cast<char>(code >> (8 * (length - 1 - i)));
-        size_t used = 0;
-        text = Utf8::Decode(std::string_view(buffer, length), 0, cp, used) && used == length;
-        break;
-    }
-    default:
-        break;
-    }
-    if (text) {
-        const std::string_view bmp = BmpText(cp);
-        if (UsableText(bmp)) {
+    // A Unicode-based CMap: the code is the text (a supplementary-plane one through the
+    // collection, whose table has storage for it).
+    const uint32_t cp = UnicodeCode(cmapKind, code, length);
+    if (cp != kNoCodePoint) {
+        std::string_view text = BmpText(cp);
+        if (text.empty() && known && Cjk::CidToUnicode(collection, cid) == cp) text = Cjk::CidText(collection, cid);
+        if (UsableText(text)) {
             out.source = UnicodeSource::Collection;
-            out.unicode = bmp;
+            out.unicode = text;
+            return;
+        }
+    }
+    // The character collection of the CID (algorithms §3.1 step 3).
+    if (known && collection != Cjk::Collection::None) {
+        const std::string_view text = Cjk::CidText(collection, cid);
+        if (UsableText(text)) {
+            out.source = UnicodeSource::Collection;
+            out.unicode = text;
             return;
         }
     }
@@ -447,14 +488,17 @@ void FilterToUnicode(ToUnicodeMap& map) {
     map.entries.resize(kept);
 }
 
-bool LoadToUnicode(const Document& doc, const PdfValue& dict, ToUnicodeMap& out) {
+// `dropped` (when not null) receives the number of entries FilterToUnicode removed.
+bool LoadToUnicode(const Document& doc, const PdfValue& dict, ToUnicodeMap& out, size_t* dropped = nullptr) {
     const PdfValue& stream = doc.Get(dict, "ToUnicode");
     if (!stream.IsStream()) return false;
     std::string data;
     const StreamStatus status = doc.StreamData(stream, data, kCMapStreamLimit);
     if (status == StreamStatus::Corrupt || status == StreamStatus::NotStream) return false;
     ParseToUnicode(data, out);
+    const size_t parsed = out.entries.size();
     FilterToUnicode(out);
+    if (dropped) *dropped = parsed - out.entries.size();
     return !out.entries.empty();
 }
 
@@ -791,8 +835,8 @@ void UnicodeCodespace(CMapKind kind, Codespace& codespace) {
     }
 }
 
-// A predefined CMap name (§9.7.5.2): Identity-H/V, the Unicode-based Uni*-UCS2/UTF16/UTF8/UTF32,
-// anything else read with 2-byte codes (no CJK CMap tables yet: algorithms §3.4 gap).
+// A predefined CMap name (§9.7.5.2) by its form: Identity-H/V, the Unicode-based
+// Uni*-UCS2/UTF16/UTF8/UTF32; anything else is Other until the generated tables know it.
 CMapKind PredefinedKind(std::string_view name, bool& vertical) {
     vertical = name.size() >= 2 && name.substr(name.size() - 2) == "-V";
     if (name == "Identity-H" || name == "Identity-V") return CMapKind::Identity;
@@ -803,6 +847,30 @@ CMapKind PredefinedKind(std::string_view name, bool& vertical) {
         if (name.find("-UTF32-") != std::string_view::npos) return CMapKind::Utf32;
     }
     return CMapKind::Other;
+}
+
+// A predefined CMap name: its kind and, when the generated tables hold it, its index. A
+// Unicode-based CMap the tables lack (UniJIS2004-UTF16-H, UniJISPro-UCS2-V, ...) borrows its
+// collection's UTF32 CMap for CIDs.
+CMapKind NamedCMap(std::string_view name, int& predefined, bool& vertical) {
+    CMapKind kind = PredefinedKind(name, vertical);
+    predefined = Cjk::FindPredefined(name);
+    if (predefined >= 0) {
+        vertical = Cjk::IsVertical(predefined);
+        return KindOfEncoding(Cjk::EncodingOf(predefined));
+    }
+    if (kind == CMapKind::Ucs2 || kind == CMapKind::Utf16 || kind == CMapKind::Utf8 || kind == CMapKind::Utf32) {
+        static const char* const kPrefixes[4] = {"UniJIS", "UniGB", "UniCNS", "UniKS"};
+        for (const char* prefix : kPrefixes) {
+            const std::string_view p(prefix);
+            if (name.substr(0, p.size()) != p) continue;
+            std::string utf32(prefix);
+            utf32 += vertical ? "-UTF32-V" : "-UTF32-H";
+            predefined = Cjk::FindPredefined(utf32);
+            break;
+        }
+    }
+    return kind;
 }
 
 // /W: [c [w1 w2 ...] cfirst clast w ...] in glyph space (§9.7.4.3).
@@ -884,29 +952,40 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     const PdfValue& encoding = doc.Get(dict, "Encoding");
     bool vertical = false;
     if (encoding.IsName()) {
-        font.cmapKind = PredefinedKind(encoding.Name(), vertical);
+        font.cmapKind = NamedCMap(encoding.Name(), font.predefined, vertical);
     } else if (encoding.IsStream()) {
         std::string data;
         const StreamStatus status = doc.StreamData(encoding, data, kCMapStreamLimit);
         font.cmapKind = CMapKind::Embedded;
         if (status != StreamStatus::Corrupt && status != StreamStatus::NotStream) ParseEncodingCMap(data, font.cmap);
         vertical = font.cmap.wmode == 1 || doc.Get(encoding, "WMode").Int(0) == 1;
-        if (font.cmap.codespace.Empty()) {
-            // A CMap that only names another (usecmap, /UseCMap): that one's reading of codes.
-            std::string_view use = font.cmap.useCMap;
-            const std::string_view useEntry = doc.Get(encoding, "UseCMap").Name();
-            if (use.empty()) use = useEntry;
+        // A CMap based on another (usecmap, /UseCMap): a CMap with no mappings of its own reads
+        // codes as that one does; one with mappings falls back to it for the codes it lacks.
+        std::string_view use = font.cmap.useCMap;
+        if (use.empty()) use = doc.Get(encoding, "UseCMap").Name();
+        if (!use.empty()) {
             bool useVertical = false;
-            const CMapKind used = use.empty() ? CMapKind::Identity : PredefinedKind(use, useVertical);
+            int usePredefined = -1;
+            const CMapKind used = NamedCMap(use, usePredefined, useVertical);
             vertical = vertical || useVertical;
-            if (font.cmap.cids.empty() && font.cmap.notdefs.empty()) font.cmapKind = used;
-            else if (used != CMapKind::Identity) UnicodeCodespace(used, font.cmap.codespace);
+            if (font.cmap.cids.empty() && font.cmap.notdefs.empty()) {
+                font.cmapKind = used;
+                font.predefined = usePredefined;
+            } else if (font.cmap.codespace.Empty() && used != CMapKind::Identity) {
+                font.predefined = usePredefined;
+                if (used == CMapKind::Predefined) Cjk::AddCodespace(usePredefined, font.cmap.codespace);
+                else UnicodeCodespace(used, font.cmap.codespace);
+            } else {
+                font.predefined = usePredefined;
+            }
         }
     } else {
         font.cmapKind = CMapKind::Identity;
     }
-    if (font.cmapKind != CMapKind::Identity && font.cmapKind != CMapKind::Embedded) {
-        UnicodeCodespace(font.cmapKind, font.cmap.codespace);
+    if (font.cmap.codespace.Empty()) {
+        if (font.cmapKind == CMapKind::Predefined) Cjk::AddCodespace(font.predefined, font.cmap.codespace);
+        else if (font.cmapKind != CMapKind::Identity && font.cmapKind != CMapKind::Embedded)
+            UnicodeCodespace(font.cmapKind, font.cmap.codespace);
     }
     font.vertical = vertical;
 
@@ -916,6 +995,13 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
                                   ? doc.Resolve(descendants.Array()[0])
                                   : descendants;
     const std::string_view cidSubtype = doc.Get(cidFont, "Subtype").Name();
+    // The character collection: the predefined CMap's (its CIDs are that collection's), else the
+    // descendant's /CIDSystemInfo.
+    font.collection = Cjk::CollectionOf(font.predefined);
+    if (font.collection == Cjk::Collection::None) {
+        const PdfValue& info = doc.Get(cidFont, "CIDSystemInfo");
+        font.collection = Cjk::CollectionByName(doc.Get(info, "Registry").String(), doc.Get(info, "Ordering").String());
+    }
     const Descriptor desc = ReadDescriptor(doc, doc.Get(cidFont, "FontDescriptor"), font.style);
     if (font.baseName.empty()) font.baseName = BaseNameOf(doc, cidFont);
     Extents(desc, kDefaultAscent, kDefaultDescent, font.ascent, font.descent);
@@ -932,12 +1018,29 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
         ReadVerticalWidths(doc, doc.Get(cidFont, "W2"), font.verticals);
     }
 
-    const bool hasToUnicode = LoadToUnicode(doc, dict, font.toUnicode);
+    size_t droppedToUnicode = 0;
+    const bool hasToUnicode = LoadToUnicode(doc, dict, font.toUnicode, &droppedToUnicode);
     const bool unicodeCMap = font.cmapKind == CMapKind::Ucs2 || font.cmapKind == CMapKind::Utf16 ||
                              font.cmapKind == CMapKind::Utf8 || font.cmapKind == CMapKind::Utf32;
+    // The collection maps codes when their CIDs can be known.
+    const bool cidsKnown = font.cmapKind == CMapKind::Identity || font.cmapKind == CMapKind::Embedded ||
+                           font.cmapKind == CMapKind::Predefined || (unicodeCMap && font.predefined >= 0);
+    const bool collectionMaps = font.collection != Cjk::Collection::None && cidsKnown;
 
-    // The embedded program, only when nothing better maps the codes (algorithms §3.4).
-    if (!hasToUnicode && !unicodeCMap && desc.fontFile) {
+    // The embedded program, only when nothing better maps the codes (algorithms §3.4), or as the
+    // fallback for codes an incomplete ToUnicode lacks (§3.1, §3.6): entries dropped as unusable,
+    // a truncated map, or an Identity font whose /W lists CIDs (the glyphs of a subset) that the
+    // ToUnicode does not map.
+    bool incomplete = hasToUnicode && (droppedToUnicode > 0 || font.toUnicode.truncated);
+    if (hasToUnicode && !incomplete && font.cmapKind == CMapKind::Identity) {
+        for (const WidthRange& range : font.widths) {
+            if (range.low == range.high && range.low != 0 && !font.toUnicode.Find(range.low)) {
+                incomplete = true;
+                break;
+            }
+        }
+    }
+    if (desc.fontFile && ((!hasToUnicode && !unicodeCMap && !collectionMaps) || incomplete)) {
         std::string program;
         if (LoadProgram(doc, desc, program)) {
             std::vector<std::string> glyphText;
@@ -989,14 +1092,14 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
             if (!any) font.glyphText.clear();
         }
     }
-    font.unmappable = !hasToUnicode && !unicodeCMap && font.glyphText.empty();
+    font.unmappable = !hasToUnicode && !unicodeCMap && !collectionMaps && font.glyphText.empty();
 
     // The space: a code whose text is U+0020.
     font.spaceWidth = 0;
     for (const UnicodeEntry& entry : font.toUnicode.entries) {
         if (font.toUnicode.Text(entry) == " ") {
             uint32_t cid = 0;
-            const float w = font.CidOf(entry.code, cid) ? font.WidthOf(cid) : font.defaultWidth;
+            const float w = font.CidOf(entry.code, 0, cid) ? font.WidthOf(cid) : font.defaultWidth;
             if (w > 0) {
                 font.spaceWidth = w;
                 break;
@@ -1019,6 +1122,8 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
         }
         font.spaceWidth = font.WidthOf(cid);
     }
+    // CID 1 is the proportional space of all four Adobe CJK collections.
+    if (font.spaceWidth == 0 && collectionMaps && FindByCid(font.widths, 1u)) font.spaceWidth = font.WidthOf(1);
 }
 
 // The font FontCache gives for anything it cannot read: single bytes as WinAnsi, width 0.5.

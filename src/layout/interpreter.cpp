@@ -48,6 +48,11 @@ Box Intersect(const Box& a, const Box& b) {
     return r;
 }
 
+// An image dimension in pixels from /Width or /Height: 0 when missing or out of range.
+uint32_t Dimension(int64_t value) {
+    return value > 0 && value <= INT32_MAX ? static_cast<uint32_t>(value) : 0;
+}
+
 // The device box of the unit square under `m` (images, §8.9.4).
 Box UnitSquare(const Matrix& m) {
     const double xs[4] = {m.e, m.a + m.e, m.c + m.e, m.a + m.c + m.e};
@@ -199,6 +204,7 @@ private:
     void EndMarked();
     void Paint(bool fill, bool stroke);
     void PathPoint(double x, double y, bool curve);
+    void AddPiece(double x0, double y0, double x1, double y1, bool rect);
     void ReadLinks(int index);
     void NextLine(double tx, double ty) {
         Matrix t;
@@ -238,9 +244,16 @@ private:
     double startX_ = 0, startY_ = 0;  // current subpath start (user space)
     double curX_ = 0, curY_ = 0;      // current point (user space)
     int pendingClip_ = 0;             // W or W* seen: the path clips at the next painting operator
+    // Straight axis-aligned pieces of the current path in device space (table rulings, §6.7).
+    struct PathPiece {
+        double x0, y0, x1, y1;
+        bool rect;  // a whole `re` rectangle
+    };
+    std::vector<PathPiece> pieces_;
 
     std::vector<uint32_t> formStack_;          // object numbers of the forms being run
     std::vector<std::string> formBuffers_;     // decoded form content, one per depth
+    std::string_view opSource_;                // the source of the operator being executed
 };
 
 void Interpreter::Run(int index, bool withLinks) {
@@ -286,7 +299,10 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
     std::vector<PdfValue> operands;
     const size_t stackBase = stack_.size();
     bool error = false;
+    size_t next = lexer.Offset();
     while (lexer.Next(op, operands)) {
+        opSource_ = content.substr(next, lexer.Offset() - next);
+        next = lexer.Offset();
         if (++operators_ > kMaxOperatorsPerPage) {
             budgetHit_ = true;
             break;
@@ -415,9 +431,29 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         DoXObject(resources, operands.back().Name(), depth);
         return true;
     case Op::BI: {
+        // The inline image's source, BI to EI, is kept: Layout re-reads it when it extracts the
+        // image (the lexer's dictionary does not outlive the next operator).
         const Box box = Intersect(UnitSquare(gs_.ctm), pageBox_);
-        if (!box.Empty() && page_.images.size() < kMaxShapesPerPage)
-            page_.images.push_back(ImageBox{float(box.x0), float(box.y0), float(box.x1), float(box.y1)});
+        if (box.Empty() || page_.images.size() >= kMaxShapesPerPage || operands.empty() ||
+            page_.inlineImages.size() + opSource_.size() > kMaxInlineImageBytes)
+            return true;
+        ImageBox image;
+        image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
+        const PdfValue& dictionary = operands.back();
+        const PdfValue* w = dictionary.Find("W");
+        const PdfValue* h = dictionary.Find("H");
+        if (!w) w = dictionary.Find("Width");
+        if (!h) h = dictionary.Find("Height");
+        image.width = w ? Dimension(w->Int()) : 0;
+        image.height = h ? Dimension(h->Int()) : 0;
+        image.resources = resources;
+        image.inlineData = static_cast<uint32_t>(page_.inlineImages.size());
+        image.inlineLength = static_cast<uint32_t>(opSource_.size());
+        uint64_t hash = 1469598103934665603ull;
+        for (unsigned char c : opSource_) hash = (hash ^ c) * 1099511628211ull;
+        image.identity = hash | 1;
+        page_.inlineImages.append(opSource_);
+        page_.images.push_back(image);
         (void)lexer;
         return true;
     }
@@ -434,6 +470,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         const bool axisAligned = (std::fabs(gs_.ctm.b) < 1e-9 && std::fabs(gs_.ctm.c) < 1e-9) ||
                                  (std::fabs(gs_.ctm.a) < 1e-9 && std::fabs(gs_.ctm.d) < 1e-9);
         pathIsRect_ = wasEmpty && axisAligned;
+        if (axisAligned) AddPiece(n[0], n[1], n[0] + n[2], n[1] + n[3], true);
         curX_ = startX_ = n[0];
         curY_ = startY_ = n[1];
         return true;
@@ -449,6 +486,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
     case Op::l:
         if (!Numbers(operands, 2, n)) return false;
         if (pathEmpty_) return false;
+        AddPiece(curX_, curY_, n[0], n[1], false);
         curX_ = n[0];
         curY_ = n[1];
         PathPoint(n[0], n[1], false);
@@ -475,6 +513,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         if (pathSegments_ < 60000) pathSegments_++;
         return true;
     case Op::h:
+        if (!pathEmpty_ && (curX_ != startX_ || curY_ != startY_)) AddPiece(curX_, curY_, startX_, startY_, false);
         curX_ = startX_;
         curY_ = startY_;
         return true;
@@ -517,6 +556,17 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         return true;
     }
     return true;
+}
+
+void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect) {
+    if (pieces_.size() >= kMaxPiecesPerPath) return;
+    const Matrix& m = gs_.ctm;
+    const double ax = x0 * m.a + y0 * m.c + m.e, ay = x0 * m.b + y0 * m.d + m.f;
+    const double bx = x1 * m.a + y1 * m.c + m.e, by = x1 * m.b + y1 * m.d + m.f;
+    if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx) || !std::isfinite(by)) return;
+    // Straight pieces count only when axis-aligned on the page (within a hundredth of a point).
+    if (!rect && std::fabs(ax - bx) > 0.01 && std::fabs(ay - by) > 0.01) return;
+    pieces_.push_back(PathPiece{std::fmin(ax, bx), std::fmin(ay, by), std::fmax(ax, bx), std::fmax(ay, by), rect});
 }
 
 void Interpreter::PathPoint(double x, double y, bool curve) {
@@ -562,10 +612,32 @@ void Interpreter::Paint(bool fill, bool stroke) {
                 page_.shapes.push_back(s);
             }
         }
+        if ((fill || stroke) && !pieces_.empty()) {
+            const double scale = std::sqrt(std::fabs(gs_.ctm.a * gs_.ctm.d - gs_.ctm.b * gs_.ctm.c));
+            const double half = stroke ? std::fmax(gs_.lineWidth * scale, 0.1) / 2 : 0;
+            const uint8_t flags = static_cast<uint8_t>((stroke ? kRulingStroke : 0) | (fill ? kRulingFill : 0));
+            const auto add = [&](double x0, double y0, double x1, double y1) {
+                Box b{x0 - half, y0 - half, x1 + half, y1 + half};
+                b = Intersect(b, gs_.clip);
+                if (!(b.x1 >= b.x0 && b.y1 >= b.y0) || page_.rulings.size() >= kMaxRulingsPerPage) return;
+                page_.rulings.push_back(Ruling{float(b.x0), float(b.y0), float(b.x1), float(b.y1), flags});
+            };
+            for (const PathPiece& p : pieces_) {
+                if (p.rect && stroke) {
+                    add(p.x0, p.y0, p.x1, p.y0);
+                    add(p.x0, p.y1, p.x1, p.y1);
+                    add(p.x0, p.y0, p.x0, p.y1);
+                    add(p.x1, p.y0, p.x1, p.y1);
+                } else {
+                    add(p.x0, p.y0, p.x1, p.y1);
+                }
+            }
+        }
     } else if (pendingClip_) {
         // Clipping to an empty path hides everything after it.
         gs_.clip = Box{0, 0, 0, 0};
     }
+    pieces_.clear();
     pathEmpty_ = true;
     pathCurved_ = false;
     pathSegments_ = 0;
@@ -623,8 +695,16 @@ void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, in
     const PdfValue& subtype = doc_.Get(xobject, "Subtype");
     if (subtype.IsName("Image")) {
         const Box box = Intersect(UnitSquare(gs_.ctm), gs_.clip);
-        if (!box.Empty() && page_.images.size() < kMaxShapesPerPage)
-            page_.images.push_back(ImageBox{float(box.x0), float(box.y0), float(box.x1), float(box.y1)});
+        if (box.Empty() || page_.images.size() >= kMaxShapesPerPage) return;
+        ImageBox image;
+        image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
+        image.xobject = xobject;
+        image.resources = resources;
+        image.width = Dimension(doc_.Get(xobject, "Width").Int());
+        image.height = Dimension(doc_.Get(xobject, "Height").Int());
+        // A stream's data offset names it in the file: every placement of one XObject shares it.
+        image.identity = (static_cast<uint64_t>(xobject.streamOffset) << 1) | 1;
+        page_.images.push_back(image);
         return;
     }
     if (!subtype.IsName("Form")) return;

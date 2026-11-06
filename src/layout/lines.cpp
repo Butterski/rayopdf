@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/lines.h"
 
+#include "common/utf8.h"
+#include "text/bidi.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -96,6 +99,72 @@ bool StartsWithCombiningMark(std::string_view text) {
     if (text.size() < 2) return false;
     const unsigned char a = static_cast<unsigned char>(text[0]), b = static_cast<unsigned char>(text[1]);
     return (a == 0xCC && b >= 0x80) || (a == 0xCD && b <= 0xAF);
+}
+
+struct BidiScratch {
+    std::vector<Text::Bidi::Class> classes;
+    std::vector<uint32_t> visual;  // the line's glyphs in visual order
+    std::vector<uint8_t> breaks;   // word break before visual item k
+    std::vector<uint32_t> order;
+    std::vector<uint8_t> levels;
+};
+
+// Right-to-left text (algorithms §4.4, UAX #9): a PDF places the glyphs of a line in visual order,
+// Markdown needs them in logical order. The line's glyphs are reordered, word breaks found
+// between visual neighbours are carried over (logical neighbours that were not visual neighbours
+// meet at a run boundary: a break), and characters at odd levels are mirrored ("(" for ")").
+// `direction` -1 lets the characters decide the paragraph direction, 0 forces left-to-right.
+// True when the line's paragraph direction is right-to-left.
+bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direction) {
+    if (line.dir != 0) return false;
+    // Only lines with a character from U+0590 up can hold right-to-left text: lead bytes D6-DF
+    // (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary).
+    bool candidate = false;
+    for (uint32_t k = 0; k < line.count && !candidate; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (g.textLength == 0) continue;
+        const unsigned char b = static_cast<unsigned char>(page.text[g.text]);
+        candidate = (b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0;
+    }
+    if (!candidate) return false;
+    s.classes.resize(line.count);
+    s.visual.assign(page.lineGlyphs.begin() + line.first, page.lineGlyphs.begin() + line.first + line.count);
+    s.breaks.resize(line.count);
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[s.visual[k]];
+        uint32_t cp = 0;
+        size_t length = 0;
+        if (!Utf8::Decode(page.GlyphText(g), 0, cp, length)) cp = ' ';
+        s.classes[k] = Text::Bidi::ClassOf(cp);
+        s.breaks[k] = (g.flags & kGlyphSpaceBefore) != 0;
+    }
+    const bool rtl = Text::Bidi::VisualToLogical(s.classes.data(), line.count, s.order, &s.levels, direction);
+    if (s.order.size() != line.count || s.levels.size() != line.count) return false;
+    for (uint32_t j = 0; j < line.count; ++j) {
+        const uint32_t v = s.order[j];
+        page.lineGlyphs[line.first + j] = s.visual[v];
+        Glyph& g = page.glyphs[s.visual[v]];
+        bool space = false;
+        if (j > 0) {
+            const uint32_t a = s.order[j - 1];
+            space = v == a + 1 ? s.breaks[v] != 0 : a == v + 1 ? s.breaks[a] != 0 : true;
+        }
+        g.flags = static_cast<uint16_t>(space ? (g.flags | kGlyphSpaceBefore) : (g.flags & ~kGlyphSpaceBefore));
+        if (!(s.levels[v] & 1) || g.textLength == 0) continue;
+        uint32_t cp = 0;
+        size_t length = 0;
+        const std::string_view text = page.GlyphText(g);
+        if (!Utf8::Decode(text, 0, cp, length)) continue;
+        const uint32_t mirror = Text::Bidi::Mirror(cp);
+        if (mirror == cp || page.text.size() > (size_t(1) << 30)) continue;
+        const std::string rest(text.substr(length));
+        const uint32_t at = static_cast<uint32_t>(page.text.size());
+        Utf8::Append(page.text, mirror);
+        page.text += rest;
+        g.text = at;
+        g.textLength = static_cast<uint16_t>(page.text.size() - at);
+    }
+    return rtl;
 }
 
 } // namespace
@@ -505,6 +574,7 @@ void BuildLines(PageData& page) {
         uint32_t count;
     };
     std::vector<SizeCount> sizes;
+    BidiScratch bidi;
     for (const Proto& p : protos) {
         uint32_t at = p.first;
         const uint32_t end = p.first + p.count;
@@ -557,6 +627,18 @@ void BuildLines(PageData& page) {
             page.lines.push_back(line);
             at = stop;
         }
+    }
+
+    // Right-to-left text, once the page's text extent is known: a short line flush with the left
+    // edge belongs to a left-to-right paragraph (an RTL sentence in an LTR document keeps its
+    // final punctuation on the right), whatever most of its characters are.
+    float left = INFINITY, right = -INFINITY;
+    for (const Line& line : page.lines)
+        if (line.dir == 0) left = std::fmin(left, line.u0), right = std::fmax(right, line.u1);
+    for (Line& line : page.lines) {
+        const float em = std::fmax(line.size, 1.0f);
+        const int direction = line.u0 - left <= em && right - line.u1 >= 3 * em ? 0 : -1;
+        if (ToLogicalOrder(page, line, bidi, direction)) line.flags |= kLineRtl;
     }
 }
 

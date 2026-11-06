@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/markdown_writer.h"
 
+#include "common/utf8.h"
+#include "layout/lines.h"
+#include "layout/tables.h"
+
 #include <algorithm>
 #include <cmath>
 #include <string_view>
@@ -38,10 +42,28 @@ bool StartsLetterOrDigit(std::string_view t) {
     return IsAsciiAlnum(static_cast<char>(c)) || c >= 0xC0;
 }
 
+uint32_t FirstOf(std::string_view t) {
+    uint32_t cp = 0;
+    size_t length = 0;
+    return Utf8::Decode(t, 0, cp, length) ? cp : 0;
+}
+
+uint32_t LastOf(std::string_view t) {
+    size_t i = t.size();
+    while (i > 0 && (static_cast<unsigned char>(t[i - 1]) & 0xC0) == 0x80) --i;
+    return i > 0 ? FirstOf(t.substr(i - 1)) : 0;
+}
+
+// CJK ideographs, kana, Hangul, CJK punctuation and fullwidth forms.
+bool IsCjk(uint32_t cp) {
+    return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+           (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20000 && cp <= 0x3FFFF);
+}
+
 class Writer {
 public:
-    Writer(const std::vector<PageData>& pages, const std::vector<BlockLine>& lines, std::string& out, WriteCounts& counts)
-        : pages_(pages), lines_(lines), out_(out), counts_(counts) {
+    Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts)
+        : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts) {
         // Bold or italic that covers most text is the document's normal face, not emphasis.
         uint64_t total = 0, bold = 0, italic = 0;
         for (const PageData& page : pages) {
@@ -68,6 +90,13 @@ private:
     void CollectWords(const Block& block);
     void StyleWords(bool styles);
     void AppendEscaped(std::string_view text, bool blockStart);
+    // The footnote number of the superscript run starting at `r`, `count` glyphs long; 0 when none.
+    uint32_t NoteNumber(const GlyphRef& r, uint32_t count) const {
+        const auto it = std::lower_bound(noteRefs_.begin(), noteRefs_.end(), r, [](const NoteRef& n, const GlyphRef& g) {
+            return n.page != g.page ? n.page < g.page : n.glyph < g.glyph;
+        });
+        return it != noteRefs_.end() && it->page == r.page && it->glyph == r.glyph && it->count == count ? it->number : 0;
+    }
     std::string_view Text(const GlyphRef& r) const { return pages_[r.page].GlyphText(pages_[r.page].glyphs[r.glyph]); }
     std::string_view Uri(const Word& w) const {
         const PageData& page = pages_[static_cast<size_t>(w.linkPage)];
@@ -80,6 +109,7 @@ private:
 
     const std::vector<PageData>& pages_;
     const std::vector<BlockLine>& lines_;
+    const std::vector<NoteRef>& noteRefs_;
     std::string& out_;
     WriteCounts& counts_;
     bool boldIsBody_ = false;
@@ -110,17 +140,16 @@ void Writer::CollectWords(const Block& block) {
                 Word w;
                 w.first = static_cast<uint32_t>(refs_.size());
                 w.spaceBefore = !words_.empty();
+                // CJK text has no word spaces: a line break between two CJK characters joins them.
+                if (w.spaceBefore && k == ref.skip && IsCjk(FirstOf(text)) && IsCjk(LastOf(Text(refs_.back()))))
+                    w.spaceBefore = false;
                 words_.push_back(w);
             }
             uint8_t script = kScriptNone;
-            // OCR layers fit a size to every word box: their sizes say nothing about scripts.
-            if (g.size < 0.85f * line.size && !(g.flags & kGlyphInvisible)) {
-                const float rise = g.v - line.baseline;
-                if (rise > 0.2f * line.size)
-                    script = kScriptSup;
-                else if (rise < -0.1f * line.size)
-                    script = kScriptSub;
-            }
+            if (IsSuperscript(g, line))
+                script = kScriptSup;
+            else if (IsSubscript(g, line))
+                script = kScriptSub;
             refs_.push_back(GlyphRef{ref.page, gi, script});
             words_.back().count++;
         }
@@ -223,9 +252,11 @@ void Writer::StyleWords(bool styles) {
             bare = text == rest && text.substr(0, 4) == "www.";
             if (!bare && !text.empty() && text.back() == '/') bare = false;
         }
-        const bool autolinkable = text.substr(0, 7) == "http://" || text.substr(0, 8) == "https://" ||
-                                  text.substr(0, 4) == "www." || text.find('@') != std::string_view::npos;
-        if (bare && autolinkable) {
+        // Link text that shows a URL stays text: GFM autolinks it, and the visible URL, broken
+        // over lines or cut short, is what the page says.
+        const bool url = text.substr(0, 7) == "http://" || text.substr(0, 8) == "https://" || text.substr(0, 4) == "www.";
+        const bool autolinkable = url || text.find('@') != std::string_view::npos;
+        if ((bare && autolinkable) || url) {
             for (size_t j = i; j < end; ++j) words_[j].link = -1;
         } else {
             counts_.links++;
@@ -254,6 +285,12 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
                 return;
             }
         }
+    }
+    // A word of underscores only (a form's blank) is neither left- nor right-flanking between
+    // spaces: it opens or closes no emphasis and needs no escapes.
+    if (!blockStart && t.size() >= 2 && t.find_first_not_of('_') == std::string_view::npos) {
+        out_.append(t);
+        return;
     }
     for (size_t i = 0; i < t.size(); ++i) {
         const char c = t[i];
@@ -296,8 +333,8 @@ void Writer::Inline(const Block& block, bool styles) {
     StyleWords(styles);
     uint8_t open = 0;
     int32_t openLinkPage = -1, openLink = -1;
-    // Heading text is inline: "## 1. Installation" opens no list.
-    bool blockStart = block.kind != BlockKind::Heading;
+    // Heading and table cell text is inline: "## 1. Installation" opens no list.
+    bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
     std::string_view openUri;
     const auto closeAll = [&]() {
         if (open & kStyleItalic) out_.push_back('*');
@@ -364,6 +401,23 @@ void Writer::Inline(const Block& block, bool styles) {
             const uint8_t script = refs_[k].script;
             uint32_t runEnd = k + 1;
             while (runEnd < end && refs_[runEnd].script == script) ++runEnd;
+            if (script == kScriptSup && !noteRefs_.empty()) {
+                if (const uint32_t number = NoteNumber(refs_[k], runEnd - k)) {
+                    out_.append("[^");
+                    out_.append(std::to_string(number));
+                    out_.push_back(']');
+                    blockStart = false;
+                    k = runEnd;
+                    continue;
+                }
+            }
+            // An inline image glyph holds its Markdown link.
+            if (pages_[refs_[k].page].glyphs[refs_[k].glyph].flags & kGlyphImage) {
+                out_.append(Text(refs_[k]));
+                blockStart = false;
+                ++k;
+                continue;
+            }
             other_.clear();
             for (uint32_t j = k; j < runEnd; ++j) other_.append(Text(refs_[j]));
             if (script == kScriptSup) out_.append("<sup>");
@@ -461,14 +515,17 @@ void Writer::Code(const Block& block, const std::string& prefix) {
 
 } // namespace
 
-void WriteMarkdown(const std::vector<PageData>& pages, const std::vector<Block>& blocks,
-                   const std::vector<BlockLine>& lines, bool repaired, std::string& out, WriteCounts& counts) {
-    Writer writer(pages, lines, out, counts);
+void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bool repaired, std::string& out,
+                   WriteCounts& counts) {
+    Writer writer(pages, list, out, counts);
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
     int contentColumn[9] = {};
     const Block* previous = nullptr;
     std::string prefix;
-    for (const Block& block : blocks) {
+    std::vector<std::string> cellText;
+    std::vector<TablePart> parts;
+    std::vector<uint32_t> partFirst;
+    for (const Block& block : list.blocks) {
         if (block.kind != BlockKind::Comment && block.count == 0) continue;
         if (!out.empty()) {
             const bool tight = previous && previous->kind == BlockKind::ListItem && block.kind == BlockKind::ListItem &&
@@ -518,6 +575,100 @@ void WriteMarkdown(const std::vector<PageData>& pages, const std::vector<Block>&
             counts.codeBlocks++;
             writer.Code(block, prefix);
             break;
+        case BlockKind::Footnote: {
+            counts.footnotes++;
+            out += "[^";
+            out += std::to_string(block.number);
+            out += "]: ";
+            writer.Inline(block, true);
+            // An HTML endnote's back link (↩, maybe with the text-style selector U+FE0E) is no text.
+            for (const std::string_view link : {"\xE2\x86\xA9\xEF\xB8\x8E", "\xE2\x86\xA9"}) {
+                if (out.size() >= link.size() && out.compare(out.size() - link.size(), link.size(), link) == 0) {
+                    out.resize(out.size() - link.size());
+                    break;
+                }
+            }
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            break;
+        }
+        case BlockKind::Table: {
+            // D6: GFM when no cell spans, else HTML (layout/tables.h). A table broken across pages is
+            // one table from its parts, each its anchor line then its cell lines. GFM cells are inline
+            // Markdown, cut back out of `out` after the writer appends them.
+            parts.clear();
+            partFirst.clear();
+            bool html = false;
+            for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+                const PageData& page = pages[list.lines[bl].page];
+                const Line& line = page.lines[list.lines[bl].line];
+                if (!(line.flags & kLineTableAnchor)) continue;
+                parts.push_back(TablePart{&page, &page.tables[line.first], nullptr});
+                partFirst.push_back(bl);
+                html = html || TableNeedsHtml(page, page.tables[line.first]);
+            }
+            if (parts.empty()) break;
+            if (parts[0].table->kind == static_cast<uint8_t>(TableKind::Possible)) {
+                out += "<!-- rayopdf: possible table not reconstructed -->";
+                break;
+            }
+            counts.tables++;
+            if (html) {
+                WriteHtmlTable(parts, out);
+                break;
+            }
+            size_t total = 0;
+            for (const TablePart& part : parts) total += part.table->cellCount;
+            cellText.resize(total);
+            size_t at = 0;
+            for (size_t p = 0; p < parts.size(); ++p) {
+                const Table& table = *parts[p].table;
+                for (uint32_t c = 0; c < table.cellCount; ++c) {
+                    const TableCell& cell = parts[p].page->tableCells[table.firstCell + c];
+                    std::string& text = cellText[at + c];
+                    text.clear();
+                    if (cell.count == 0) continue;
+                    Block sub;
+                    sub.kind = BlockKind::Table;
+                    sub.first = partFirst[p] + 1 + (cell.first - table.firstLine);
+                    sub.count = cell.count;
+                    const size_t mark = out.size();
+                    writer.Inline(sub, true);
+                    text.assign(out, mark, std::string::npos);
+                    out.resize(mark);
+                }
+                parts[p].cellText = cellText.data() + at;
+                at += table.cellCount;
+            }
+            WriteGfmTable(parts, out);
+            break;
+        }
+        case BlockKind::Image: {
+            const BlockLine& anchor = list.lines[block.first];
+            const PageData& page = pages[anchor.page];
+            const ImageBox& image = page.images[page.lines[anchor.line].first];
+            const std::string_view name = page.ImageName(image);
+            if (image.state != ImageState::Written) {
+                out += "<!-- rayopdf: image on page ";
+                out += std::to_string(block.number);
+                out += " not extracted (";
+                out += name;
+                out += ") -->";
+                break;
+            }
+            out += prefix;
+            out += "![](";
+            const bool angle = name.find_first_of(" ()<>") != std::string_view::npos;
+            if (angle) out.push_back('<');
+            for (char c : name) {
+                if (angle && (c == '<' || c == '>'))
+                    out.append(c == '<' ? "%3C" : "%3E");
+                else
+                    out.push_back(c);
+            }
+            if (angle) out.push_back('>');
+            out.push_back(')');
+            break;
+        }
         }
     }
     if (!out.empty()) out.push_back('\n');

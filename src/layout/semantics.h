@@ -5,7 +5,11 @@
 // and from font-size clusters above the body size (§6.1), list items from glyph bullets, vector
 // bullets, enumerators and task boxes with nesting by marker position (§6.3), code from monospace
 // lines (§6.4), quotes from a left rule (§6.5). Paragraphs continue across columns and pages when
-// the first ends without terminal punctuation and the next starts in lowercase.
+// the first ends without terminal punctuation and the next starts in lowercase. Footnotes (§6.9):
+// a note starts with a marker (a superscript, or an enumerator in a smaller size or ending in a
+// back link) that matches a superscript reference earlier on its page, or anywhere before for
+// endnotes at the end of the document; notes are numbered in document order and written after
+// the last block.
 #pragma once
 
 #include "layout/page.h"
@@ -21,6 +25,10 @@ enum class BlockKind : uint8_t {
     ListItem,
     Code,
     Comment,  // an uncertainty comment; `number` is the page and `level` the CommentKind
+    Footnote, // a footnote definition; `number` is its number
+    Table,    // a table (layout/tables.h): `number` is its index in its page's tables; lines: its anchor
+              // line, then its cell lines in cell order
+    Image,    // an image (layout/images.h): its one line is the anchor; `number` is its page number
 };
 
 enum class CommentKind : uint8_t {
@@ -49,9 +57,24 @@ struct Block {
     float size = 0;         // the size of most of its characters
 };
 
+// A footnote reference: superscript glyphs [glyph, glyph + count) of a line in page `page`'s
+// lineGlyphs order, written as [^number].
+struct NoteRef {
+    uint32_t page = 0;
+    uint32_t glyph = 0;   // index into PageData::glyphs of the first marker glyph
+    uint32_t count = 0;   // marker glyphs
+    uint32_t number = 0;
+};
+
+struct BlockList {
+    std::vector<Block> blocks;
+    std::vector<BlockLine> lines;
+    std::vector<NoteRef> noteRefs;  // sorted by page, then glyph
+};
+
 // Pages carry their lines in reading order (PageData::order). Pages whose text is mostly unmapped
-// are listed in `unmappedPages` (indices into `pages`).
+// are listed in `unmappedPages` (indices into `pages`). `out` is replaced.
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
-                 const std::vector<uint8_t>& unmappedPages, std::vector<Block>& blocks, std::vector<BlockLine>& lines);
+                 const std::vector<uint8_t>& unmappedPages, BlockList& out);
 
 } // namespace RayoPdf::Layout

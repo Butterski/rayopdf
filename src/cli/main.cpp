@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // The rayopdf command line (roadmap D7).
 //
-//   rayopdf --convert IN.pdf OUT.md [--password=PW] [--pages=A-B] [--no-annotations] [--report]
+//   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
+//                                   [--no-annotations] [--report]
 //   rayopdf --inspect IN.pdf [--password=PW]
 //   rayopdf --version | --help
 //
-// OUT.md "-" writes the Markdown to standard output. Exit codes: 0 converted, 2 usage error,
+// OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
+// unless --images says otherwise (none with "-"). Exit codes: 0 converted, 2 usage error,
 // 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
 // 13 unsupported encryption.
 
@@ -21,6 +23,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unistd.h>
+#include <vector>
 
 #ifndef RAYOPDF_VERSION
 #define RAYOPDF_VERSION "0.0.0"
@@ -55,6 +59,8 @@ void PrintUsage(std::FILE* out) {
         "Options:\n"
         "  --password=PW      user or owner password of an encrypted PDF\n"
         "  --pages=A-B        convert pages A to B (1-based; \"A\", \"A-\", \"-B\" also work)\n"
+        "  --images=DIR|none  where image files go (default: OUT-images/ beside OUT.md;\n"
+        "                     none for standard output)\n"
         "  --no-annotations   do not turn link annotations into Markdown links\n"
         "  --report           print one JSON line of conversion counters\n"
         "\n"
@@ -242,6 +248,9 @@ std::string ReportJson(const std::string& input, const Document& document, const
     AppendField(json, "code_blocks", static_cast<uint64_t>(r.codeBlocks));
     AppendField(json, "tables", static_cast<uint64_t>(r.tables));
     AppendField(json, "links", static_cast<uint64_t>(r.links));
+    AppendField(json, "footnotes", static_cast<uint64_t>(r.footnotes));
+    AppendField(json, "images", static_cast<uint64_t>(r.images));
+    AppendField(json, "images_skipped", static_cast<uint64_t>(r.imagesSkipped));
     AppendField(json, "header_footer_lines", static_cast<uint64_t>(r.headerFooterLines));
     AppendField(json, "content_errors", static_cast<uint64_t>(r.contentErrors));
     AppendField(json, "repaired", d.repaired);
@@ -279,6 +288,81 @@ bool StartsWith(std::string_view text, std::string_view prefix) {
     return text.substr(0, prefix.size()) == prefix;
 }
 
+// `path` made absolute against the working directory, with "." and ".." segments resolved
+// lexically (links are written as paths; no file system lookups).
+std::string AbsolutePath(const std::string& path) {
+    std::string full = path;
+    if (path.empty() || path[0] != '/') {
+        char cwd[4096];
+        full = (getcwd(cwd, sizeof cwd) ? std::string(cwd) : std::string(".")) + "/" + path;
+    }
+    std::string out;
+    size_t at = 0;
+    while (at <= full.size()) {
+        size_t next = full.find('/', at);
+        if (next == std::string::npos) next = full.size();
+        const std::string_view part(full.data() + at, next - at);
+        if (part == "..") {
+            const size_t cut = out.rfind('/');
+            out.resize(cut == std::string::npos ? 0 : cut);
+        } else if (!part.empty() && part != ".") {
+            out += '/';
+            out += part;
+        }
+        at = next + 1;
+    }
+    return out.empty() ? "/" : out;
+}
+
+// The directory part of an absolute path ("/a/b" for "/a/b/c.md").
+std::string Parent(const std::string& absolute) {
+    const size_t slash = absolute.rfind('/');
+    return slash == 0 || slash == std::string::npos ? "/" : absolute.substr(0, slash);
+}
+
+// `target` relative to the directory `from` (both absolute), "" when they are the same.
+std::string Relative(const std::string& from, const std::string& target) {
+    std::vector<std::string_view> a, b;
+    for (const std::string* path : {&from, &target}) {
+        std::vector<std::string_view>& parts = path == &from ? a : b;
+        size_t at = 1;
+        while (at < path->size()) {
+            size_t next = path->find('/', at);
+            if (next == std::string::npos) next = path->size();
+            parts.emplace_back(path->data() + at, next - at);
+            at = next + 1;
+        }
+    }
+    size_t common = 0;
+    while (common < a.size() && common < b.size() && a[common] == b[common]) ++common;
+    std::string out;
+    for (size_t i = common; i < a.size(); ++i) out += "../";
+    for (size_t i = common; i < b.size(); ++i) {
+        out += b[i];
+        out += '/';
+    }
+    return out;
+}
+
+// Where images go and how the Markdown links them (D6): by default OUT-images/ beside OUT.md;
+// --images=none or Markdown on standard output: none; --images=DIR: DIR, linked relative to OUT.md.
+void ChooseImageTarget(const std::string& output, const std::string* images, Layout::ConvertOptions& options) {
+    if ((images && *images == "none") || (!images && output == "-")) return;
+    std::string directory;
+    if (images) {
+        directory = *images;
+    } else {
+        directory = output;
+        const size_t slash = directory.rfind('/');
+        const size_t dot = directory.rfind('.');
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash + 1)) directory.resize(dot);
+        directory += "-images";
+    }
+    const std::string from = output == "-" ? AbsolutePath(".") : Parent(AbsolutePath(output));
+    options.imageDirectory = directory;
+    options.imageLinkPrefix = Relative(from, AbsolutePath(directory));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -292,6 +376,8 @@ int main(int argc, char** argv) {
     std::string password;
     Layout::ConvertOptions options;
     bool report = false;
+    std::string images;
+    bool imagesGiven = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -320,6 +406,10 @@ int main(int argc, char** argv) {
             if (!ParsePages(arg.substr(8), options.firstPage, options.lastPage)) {
                 return Usage("invalid page range: ", arg.substr(8));
             }
+        } else if (StartsWith(arg, "--images=")) {
+            images = std::string(arg.substr(9));
+            if (images.empty()) return Usage("--images needs a directory or none");
+            imagesGiven = true;
         } else if (arg == "--no-annotations") {
             options.annotations = false;
         } else if (arg == "--report") {
@@ -329,6 +419,9 @@ int main(int argc, char** argv) {
         }
     }
     if (mode == Mode::Inspect) return Inspect(input, password);
-    if (mode == Mode::Convert) return ConvertFile(input, output, password, options, report);
+    if (mode == Mode::Convert) {
+        ChooseImageTarget(output, imagesGiven ? &images : nullptr, options);
+        return ConvertFile(input, output, password, options, report);
+    }
     return Usage("nothing to do: give --convert or --inspect");
 }

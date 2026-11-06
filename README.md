@@ -4,21 +4,24 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.1, the first converter: born-digital PDFs to GitHub Flavored Markdown with headings,
-paragraphs, lists, code blocks, emphasis and links. Tables, images, footnotes and OCR are not
-written yet; the [roadmap](docs/development/roadmap.md) lists what comes next.
+Version 0.0.2: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
+code blocks, block quotes, emphasis, links, tables, footnotes and images, right-to-left and CJK
+text included. Scanned pages are marked, not read (no OCR yet); math is written as Unicode text.
+The [roadmap](docs/development/roadmap.md) lists what comes next.
 
 ## Usage
 
 ```sh
-rayopdf --convert IN.pdf OUT.md [--password=PW] [--pages=A-B] [--no-annotations] [--report]
+rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
+                                [--no-annotations] [--report]
 rayopdf --inspect IN.pdf          # the document's structure as one JSON object
 ```
 
-`OUT.md` `-` writes to standard output. Text that could not be read is never dropped silently: a
-`<!-- rayopdf: ... -->` comment marks the spot. Exit codes: 0 converted, 2 usage, 3 unreadable
-input, 10 corrupt beyond repair, 11 password required, 12 unwritable output, 13 unsupported
-encryption.
+`OUT.md` `-` writes to standard output. Images go to `OUT-images/` beside `OUT.md` (PNG, or
+the PDF's own JPEG and JPEG 2000 data) unless `--images` says otherwise. Text that could not be
+read is never dropped silently: a `<!-- rayopdf: ... -->` comment marks the spot. Exit codes: 0
+converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12
+unwritable output, 13 unsupported encryption.
 
 ## Building
 
@@ -48,6 +51,8 @@ The source is C++17 with no third-party library: `src/crypt` (Standard security 
 - [Baselines](docs/benchmarks/baselines-2026-11-05.md): the first full harness run.
 - [RayoPDF 0.0.1 on the harness](docs/benchmarks/v0-2026-11-05.md): the first converter against
   the baselines.
+- [RayoPDF 0.0.2 on the harness](docs/benchmarks/v0.0.2-2026-11-06.md): tables, images,
+  footnotes, right-to-left and CJK text.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation

@@ -45,4 +45,8 @@ private:
 // writes to standard output. False when any step fails.
 bool WriteAll(const std::string& path, std::string_view content);
 
+// Creates the directory `path` (one level; its parent must exist) unless a directory is there
+// already. False when it cannot, or when something else has the name.
+bool EnsureDirectory(const std::string& path);
+
 } // namespace RayoPdf::File

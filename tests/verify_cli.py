@@ -23,20 +23,26 @@ from pathlib import Path
 PAD = bytes.fromhex("28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A")
 
 
-def build_pdf(content: bytes, trailer_extra: bytes = b"", encrypt=None) -> bytes:
+def build_pdf(content: bytes, trailer_extra: bytes = b"", encrypt=None, image: bool = False) -> bytes:
     """A one-page PDF showing `content` in Helvetica. `encrypt(num, data)` encrypts the content
-    stream's data when given."""
+    stream's data when given. `image` adds a 64x64 RGB image XObject /Im1 to the resources."""
     data = zlib.compress(content)
     if encrypt:
         data = encrypt(4, data)
+    xobjects = b" /XObject << /Im1 6 0 R >>" if image else b""
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >>"
-        b" /Contents 4 0 R >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >>" + xobjects +
+        b" >> /Contents 4 0 R >>",
         b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(data) + data + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     ]
+    if image:
+        pixels = zlib.compress(bytes((x * 4, y * 4, 128)[c] for y in range(64) for x in range(64) for c in range(3)))
+        objects.append(b"<< /Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB"
+                       b" /BitsPerComponent 8 /Filter /FlateDecode /Length %d >>\nstream\n" % len(pixels) +
+                       pixels + b"\nendstream")
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for i, body in enumerate(objects, 1):
@@ -178,6 +184,25 @@ def main() -> int:
                 f"{r.returncode} {r.stderr!r}")
         odd = c.write("odd.pdf", build_pdf(b"BT ET", b"/Encrypt << /Filter /SomeVendorHandler /V 2 /R 3 >>"))
         c.check("unsupported encryption", c.run("--convert", odd, out).returncode == 13)
+
+        picture = c.write("picture.pdf", build_pdf(
+            b"BT /F1 12 Tf 72 720 Td (A picture) Tj ET q 300 0 0 300 72 300 cm /Im1 Do Q", image=True))
+        r = c.run("--convert", picture, str(work / "picture.md"))
+        text = (work / "picture.md").read_text(encoding="utf-8") if (work / "picture.md").is_file() else ""
+        png = work / "picture-images" / "p1-1.png"
+        c.check("image beside the output", r.returncode == 0 and "![](picture-images/p1-1.png)" in text and
+                png.is_file() and png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", repr(text))
+        (work / "sub").mkdir()
+        r = c.run("--convert", picture, str(work / "sub" / "p.md"), "--images=" + str(work / "imgs"))
+        text = (work / "sub" / "p.md").read_text(encoding="utf-8") if (work / "sub" / "p.md").is_file() else ""
+        c.check("image directory option", r.returncode == 0 and "![](../imgs/p1-1.png)" in text and
+                (work / "imgs" / "p1-1.png").is_file(), repr(text))
+        r = c.run("--convert", picture, str(work / "none.md"), "--images=none")
+        text = (work / "none.md").read_text(encoding="utf-8") if (work / "none.md").is_file() else ""
+        c.check("no images", r.returncode == 0 and "![" not in text and not (work / "none-images").exists(),
+                repr(text))
+        r = c.run("--convert", picture, "-")
+        c.check("no images on standard output", r.returncode == 0 and b"![" not in r.stdout)
 
         print(f"{c.count - len(c.failures)}/{c.count} checks passed")
         return 1 if c.failures else 0

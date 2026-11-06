@@ -26,6 +26,9 @@ constexpr uint32_t kMaxOperatorsPerPage = 4u << 20;
 constexpr uint32_t kMaxGlyphsPerPage = 1u << 19;
 constexpr uint32_t kMaxShapesPerPage = 1u << 16;
 constexpr uint32_t kMaxLinksPerPage = 1u << 14;
+constexpr size_t kMaxInlineImageBytes = size_t(64) << 20;  // inline image sources kept per page
+constexpr uint32_t kMaxRulingsPerPage = 1u << 16;
+constexpr uint32_t kMaxPiecesPerPath = 4096;  // straight axis-aligned pieces kept of one path
 
 // Counters of one page for ConvertReport.
 struct PageStats {

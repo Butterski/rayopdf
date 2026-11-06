@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -350,6 +351,98 @@ struct Orderer {
     }
 };
 
+// Single-page evidence (§5.2), for documents of any length: the outermost row of text at the top
+// or the bottom of a page is a running header, footer or page number when it is set apart from
+// the rest by at least an em of the body size, is no larger than the body, is short, starts with
+// no footnote marker, and either sits in the page's outer margin (kMarginBand) or reads as a page
+// number inside the running band. A second row behind a removed one gets the same test. Pages
+// with fewer than kEdgeMinLines other lines keep everything.
+// The outer 6 % of the page height: Word's headers and footers at 0.5 in sit at about 5 %, LaTeX's
+// page number at 5 %. Body text can start that high too (RayoMD's compact layout at 5 %), hence
+// the gap, size and heading conditions.
+constexpr float kMarginBand = 0.06f;
+constexpr uint32_t kEdgeMinLines = 3;
+constexpr uint32_t kEdgeMaxChars = 150;
+
+int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
+    std::vector<uint32_t> lines;
+    for (uint32_t i = 0; i < page.lines.size(); ++i) {
+        const Line& l = page.lines[i];
+        if (l.dir == 0 && l.count > 0 && !(l.flags & kLineRemoved)) lines.push_back(i);
+    }
+    if (lines.size() < kEdgeMinLines + 1 || body <= 0) return 0;
+    std::sort(lines.begin(), lines.end(), [&](uint32_t a, uint32_t b) {
+        return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
+    });
+    const float h = page.height;
+    int removed = 0;
+    size_t first = 0, last = lines.size();  // the lines not removed: lines[first, last)
+    for (int side = 0; side < 2; ++side) {
+        for (int row = 0; row < 2 && last - first > kEdgeMinLines; ++row) {
+            const Line& edge = page.lines[lines[side == 0 ? first : last - 1]];
+            // The row: lines on the edge line's baseline.
+            size_t count = 0;
+            float inner = side == 0 ? INFINITY : -INFINITY;  // the row's inner edge
+            uint32_t chars = 0;
+            float largest = 0;
+            bool superscript = false;
+            for (size_t k = 0; k < last - first; ++k) {
+                const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
+                if (std::fabs(l.baseline - edge.baseline) > 0.3f * std::fmax(l.size, edge.size)) break;
+                count++;
+                inner = side == 0 ? std::fmin(inner, l.vb) : std::fmax(inner, l.vt);
+                chars += l.chars;
+                largest = std::fmax(largest, l.size);
+                superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
+                // A row starting with a list marker or enumerator ("5. The last note") is content.
+                uint32_t end = 1, value = 0;
+                while (end < l.count && end < 8 && !(page.glyphs[page.lineGlyphs[l.first + end]].flags & kGlyphSpaceBefore))
+                    ++end;
+                if (end < l.count) {
+                    text.clear();
+                    for (uint32_t g = 0; g < end; ++g) text.append(page.GlyphText(page.glyphs[page.lineGlyphs[l.first + g]]));
+                    superscript = superscript || ParseMarker(text, value) != Marker::None;
+                }
+            }
+            if (last - first - count < kEdgeMinLines) break;
+            // The rest's outer edge toward this side.
+            float outer = side == 0 ? -INFINITY : INFINITY;
+            float nextSize = 0;  // the size of the line the gap separates the row from
+            for (size_t k = count; k < last - first; ++k) {
+                const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
+                const float e = side == 0 ? l.vt : l.vb;
+                if (side == 0 ? e > outer : e < outer) outer = e, nextSize = l.size;
+            }
+            const float gap = side == 0 ? inner - outer : outer - inner;
+            const float center = (edge.vb + edge.vt) / 2;
+            const bool margin = side == 0 ? center > h * (1 - kMarginBand) : center < h * kMarginBand;
+            const bool band = side == 0 ? center > h * (1 - kRunningBand) : center < h * kRunningBand;
+            bool number = false;
+            if (count == 1 && band) {
+                LineText(page, edge, text);
+                RunningKey(text, key);
+                number = IsPageNumberKey(key);
+            }
+            // A body-size row above a heading is the document's first paragraph, set high on a page
+            // with narrow margins: a header must be smaller than the body to be told from it.
+            const bool beforeHeading = side == 0 && nextSize >= 1.12f * body && largest > 0.95f * body;
+            const bool qualifies = gap >= body && !superscript && chars <= kEdgeMaxChars &&
+                                   ((number && largest <= 1.3f * body) ||
+                                    (margin && largest <= 1.02f * body && !beforeHeading));
+            if (!qualifies) break;
+            for (size_t k = 0; k < count; ++k) {
+                page.lines[lines[side == 0 ? first + k : last - 1 - k]].flags |= kLineRemoved;
+                removed++;
+            }
+            if (side == 0)
+                first += count;
+            else
+                last -= count;
+        }
+    }
+    return removed;
+}
+
 } // namespace
 
 int RemoveRunningLines(std::vector<PageData>& pages) {
@@ -414,6 +507,17 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
             removed++;
         }
     }
+    // The body size (algorithms §6.1: the most common size by characters) for the edge test.
+    std::unordered_map<int, uint64_t> sizeChars;
+    for (const PageData& page : pages)
+        for (const Line& line : page.lines)
+            if (line.dir == 0) sizeChars[static_cast<int>(std::lround(line.size * 2))] += line.chars;
+    int bodyKey = 0;
+    uint64_t bodyCount = 0;
+    for (const auto& kv : sizeChars)
+        if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey))
+            bodyKey = kv.first, bodyCount = kv.second;
+    for (PageData& page : pages) removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
     return removed;
 }
 
@@ -425,8 +529,36 @@ void OrderLines(PageData& page) {
     for (uint8_t dir = 0; dir < 4; ++dir) {
         items.clear();
         for (uint32_t i = 0; i < page.lines.size(); ++i)
-            if (page.lines[i].dir == dir && !(page.lines[i].flags & kLineRemoved)) items.push_back(i);
+            if (page.lines[i].dir == dir && !(page.lines[i].flags & (kLineRemoved | kLineTableCell | kLineImage)))
+                items.push_back(i);
         if (!items.empty()) orderer.Order(items);
+    }
+    // Images join the text's order without changing it: before the first line read below their
+    // top edge that shares their horizontal extent (the text after them in their column, or after
+    // a full-width figure), else before the first line read below their top edge anywhere, else
+    // at the end.
+    for (uint32_t i = 0; i < page.lines.size(); ++i) {
+        const Line& image = page.lines[i];
+        if (!(image.flags & kLineImage)) continue;
+        size_t at = SIZE_MAX, below = SIZE_MAX;
+        for (size_t k = 0; k < page.order.size(); ++k) {
+            const Line& l = page.lines[page.order[k]];
+            if (l.dir != 0 || (l.flags & kLineImage) || l.vt > image.vt) continue;
+            if (below == SIZE_MAX) below = k;
+            if (l.u1 > image.u0 && l.u0 < image.u1) {
+                at = k;
+                break;
+            }
+        }
+        if (at == SIZE_MAX) at = below != SIZE_MAX ? below : page.order.size();
+        // Images placed before the same line stay top to bottom.
+        while (at > 0 && (page.lines[page.order[at - 1]].flags & kLineImage) &&
+               page.lines[page.order[at - 1]].vt < image.vt)
+            --at;
+        while (at < page.order.size() && (page.lines[page.order[at]].flags & kLineImage) &&
+               page.lines[page.order[at]].vt >= image.vt)
+            ++at;
+        page.order.insert(page.order.begin() + static_cast<std::ptrdiff_t>(at), i);
     }
 }
 

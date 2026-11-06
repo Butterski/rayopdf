@@ -1,0 +1,1178 @@
+// SPDX-License-Identifier: Apache-2.0
+// Image XObjects and inline images to file bytes (image.h). Choices the header leaves open:
+// - /ImageMask stencils come out as opaque gray: black where the stencil paints, white elsewhere
+//   (the fill colour is the content stream's, unknown here; black on white reads in any viewer).
+// - A data stream shorter than the image keeps the rows present: the height shrinks to them (a
+//   last partial row is completed with zero bytes), so memory follows the data that exists; no
+//   complete or partial row at all is Corrupt.
+// - 16-bit samples are rounded to 8 bits; CMYK becomes RGB by the naive formula
+//   R = 255 (1 - C)(1 - K); CalGray and CalRGB are taken as DeviceGray and DeviceRGB; Lab goes
+//   through XYZ to sRGB with its white point mapped onto D65 by scaling.
+// - Separation and DeviceN: a tint transform of type 0 (sampled, one input) or 2 (exponential),
+//   or an array of them, is evaluated into the alternate space. Otherwise colorants named Cyan,
+//   Magenta, Yellow and Black are composed as CMYK, and anything else is gray from the summed
+//   tint (1 is black).
+// - Soft masks (/SMask) and stencil masks (/Mask stream) of another size are resampled to the
+//   image's by nearest neighbour; a mask that cannot be decoded is dropped and the image written
+//   opaque. /Matte is ignored. Alpha that is opaque everywhere is left out of the PNG.
+// - DCT and JPX data are written as stored (from the JPEG SOI marker / JP2 signature on), their
+//   masks dropped; a raw JPEG 2000 codestream gets a minimal JP2 wrapper so that it is a .jp2.
+#include "image/image.h"
+
+#include "pdf/filters.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+namespace RayoPdf::Image {
+namespace {
+
+constexpr int kMaxComponents = 32;        // DeviceN colorants (ISO 32000-1 Annex C)
+constexpr int kMaxSpaceDepth = 8;          // named colour spaces, bases and alternates
+constexpr uint32_t kMaxDimension = 0x7FFFFFFFu;
+constexpr uint32_t kMaxFunctionSamples = 1u << 16;  // sampled function: samples x outputs
+constexpr size_t kMaxFilters = 8;
+constexpr size_t kPassThroughLimit = Document::kDefaultStreamLimit;
+
+// ---------------------------------------------------------------- arithmetic
+
+inline double Clamp01(double x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+inline uint8_t To8(double x) { return static_cast<uint8_t>(Clamp01(x) * 255 + 0.5); }
+
+// x^n for x >= 0 without libm (roadmap D1): the integer part of n by squaring, the fraction by
+// its first 24 binary digits, each a repeated square root of x.
+double Power(double x, double n) {
+    if (!(x > 0)) return n == 0 ? 1 : 0;
+    if (n < 0) return 1 / Power(x, -n);
+    if (n > 1024) n = 1024;
+    uint32_t whole = static_cast<uint32_t>(n);
+    double fraction = n - whole;
+    double result = 1;
+    double square = x;
+    for (; whole > 0; whole >>= 1) {
+        if (whole & 1) result *= square;
+        square *= square;
+    }
+    double root = x;
+    for (int bit = 0; bit < 24 && fraction > 0; bit++) {
+        root = std::sqrt(root);
+        fraction *= 2;
+        if (fraction >= 1) {
+            result *= root;
+            fraction -= 1;
+        }
+    }
+    return result;
+}
+
+// Linear light 0..1 in 4096 steps to sRGB-encoded 8 bits (IEC 61966-2-1).
+constexpr int kGammaSteps = 4096;
+const uint8_t* SrgbTable() {
+    static const std::vector<uint8_t> table = [] {
+        std::vector<uint8_t> t(kGammaSteps + 1);
+        for (int i = 0; i <= kGammaSteps; i++) {
+            const double x = static_cast<double>(i) / kGammaSteps;
+            t[static_cast<size_t>(i)] = To8(x <= 0.0031308 ? 12.92 * x : 1.055 * Power(x, 1 / 2.4) - 0.055);
+        }
+        return t;
+    }();
+    return table.data();
+}
+
+inline uint8_t EncodeSrgb(double linear) {
+    return SrgbTable()[static_cast<int>(Clamp01(linear) * kGammaSteps + 0.5)];
+}
+
+// ---------------------------------------------------------------- functions
+
+// One part of a tint transform: a type 0 (sampled) or type 2 (exponential) function of one input
+// (ISO 32000-1 section 7.10.2-7.10.3).
+struct FunctionPart {
+    int type = 2;
+    int outputs = 0;
+    double domain[2] = {0, 1};
+    bool hasRange = false;
+    double range[2 * kMaxComponents] = {};
+    // type 2
+    double c0[kMaxComponents] = {};
+    double c1[kMaxComponents] = {};
+    double exponent = 1;
+    // type 0: `size` samples of `outputs` decoded values each
+    uint32_t size = 0;
+    double encode[2] = {0, 0};
+    std::vector<float> samples;
+};
+
+void Evaluate(const FunctionPart& f, double x, double* out) {
+    x = std::fmin(std::fmax(x, f.domain[0]), f.domain[1]);
+    if (f.type == 2) {
+        const double t = Power(x, f.exponent);
+        for (int j = 0; j < f.outputs; j++) out[j] = f.c0[j] + t * (f.c1[j] - f.c0[j]);
+    } else {
+        const double span = f.domain[1] - f.domain[0];
+        double e = span > 0 ? f.encode[0] + (x - f.domain[0]) * (f.encode[1] - f.encode[0]) / span : f.encode[0];
+        e = std::fmin(std::fmax(e, 0.0), static_cast<double>(f.size - 1));
+        const uint32_t i0 = static_cast<uint32_t>(e);
+        const uint32_t i1 = i0 + 1 < f.size ? i0 + 1 : i0;
+        const double t = e - i0;
+        const size_t m = static_cast<size_t>(f.outputs);
+        for (size_t j = 0; j < m; j++) {
+            const double a = f.samples[i0 * m + j];
+            const double b = f.samples[i1 * m + j];
+            out[j] = a + t * (b - a);
+        }
+    }
+    if (f.hasRange) {
+        for (int j = 0; j < f.outputs; j++) out[j] = std::fmin(std::fmax(out[j], f.range[2 * j]), f.range[2 * j + 1]);
+    }
+}
+
+// Numbers of an array into `out`; false unless it holds exactly `count` of them.
+bool Numbers(const Document& doc, const PdfValue& value, double* out, size_t count) {
+    const PdfValue& array = doc.Resolve(value);
+    if (!array.IsArray() || array.Array().size() != count) return false;
+    for (size_t i = 0; i < count; i++) {
+        if (!doc.Number(array.Array()[i], out[i])) return false;
+    }
+    return true;
+}
+
+// The numbers of an array of even length 2..2 * kMaxComponents; their count, 0 for anything else.
+size_t NumberPairs(const Document& doc, const PdfValue& value, double* out) {
+    const PdfValue& array = doc.Resolve(value);
+    const size_t n = array.Array().size();
+    if (n == 0 || n % 2 != 0 || n > 2 * kMaxComponents) return 0;
+    return Numbers(doc, array, out, n) ? n : 0;
+}
+
+bool ParseFunctionPart(const Document& doc, const PdfValue& value, FunctionPart& f) {
+    const PdfValue& dict = doc.Resolve(value);
+    if (!dict.IsDict()) return false;
+    double domain[2];
+    if (!Numbers(doc, doc.Get(dict, "Domain"), domain, 2) || !(domain[0] <= domain[1])) return false;
+    f.domain[0] = domain[0];
+    f.domain[1] = domain[1];
+    const size_t rangeCount = NumberPairs(doc, doc.Get(dict, "Range"), f.range);
+    f.hasRange = rangeCount > 0;
+    const int64_t type = doc.Get(dict, "FunctionType").Int(-1);
+    if (type == 2) {
+        f.type = 2;
+        const PdfValue& c0 = doc.Get(dict, "C0");
+        const PdfValue& c1 = doc.Get(dict, "C1");
+        const size_t n = c0.IsNull() ? (c1.IsNull() ? 1 : c1.Array().size()) : c0.Array().size();
+        if (n == 0 || n > kMaxComponents) return false;
+        f.outputs = static_cast<int>(n);
+        if (c0.IsNull()) std::fill(f.c0, f.c0 + n, 0.0);
+        else if (!Numbers(doc, c0, f.c0, n)) return false;
+        if (c1.IsNull()) std::fill(f.c1, f.c1 + n, 1.0);
+        else if (!Numbers(doc, c1, f.c1, n)) return false;
+        if (!doc.Number(doc.Get(dict, "N"), f.exponent)) return false;
+        if (f.hasRange && rangeCount != 2 * n) f.hasRange = false;
+        // A fractional exponent is defined for non-negative inputs only.
+        if (f.exponent != std::floor(f.exponent) && f.domain[0] < 0) f.domain[0] = 0;
+        if (f.domain[0] > f.domain[1]) return false;
+        return true;
+    }
+    if (type != 0 || !dict.IsStream() || rangeCount == 0) return false;
+    f.type = 0;
+    f.outputs = static_cast<int>(rangeCount / 2);
+    double size = 0;
+    const PdfValue& sizes = doc.Get(dict, "Size");
+    if (!Numbers(doc, sizes, &size, 1) || !(size >= 1) || size > kMaxFunctionSamples) return false;
+    f.size = static_cast<uint32_t>(size);
+    const int64_t bps = doc.Get(dict, "BitsPerSample").Int(0);
+    if (bps != 1 && bps != 2 && bps != 4 && bps != 8 && bps != 12 && bps != 16 && bps != 24 && bps != 32) return false;
+    const uint64_t count = uint64_t(f.size) * static_cast<uint64_t>(f.outputs);
+    if (count > kMaxFunctionSamples) return false;
+    if (!Numbers(doc, doc.Get(dict, "Encode"), f.encode, 2)) {
+        f.encode[0] = 0;
+        f.encode[1] = f.size - 1.0;
+    }
+    double decode[2 * kMaxComponents];
+    if (NumberPairs(doc, doc.Get(dict, "Decode"), decode) != rangeCount) std::copy(f.range, f.range + rangeCount, decode);
+    std::string data;
+    const size_t bytes = static_cast<size_t>((count * static_cast<uint64_t>(bps) + 7) / 8);
+    const StreamStatus status = doc.StreamData(dict, data, bytes);
+    if (status == StreamStatus::Corrupt || status == StreamStatus::NotStream || status == StreamStatus::Unsupported ||
+        data.size() < bytes) {
+        return false;
+    }
+    f.samples.resize(static_cast<size_t>(count));
+    const double maxSample = static_cast<double>((uint64_t(1) << bps) - 1);
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
+    uint64_t bit = 0;
+    for (size_t i = 0; i < f.samples.size(); i++, bit += static_cast<uint64_t>(bps)) {
+        uint64_t sample = 0;
+        for (int64_t k = 0; k < bps; k++) {
+            const uint64_t at = bit + static_cast<uint64_t>(k);
+            sample = sample << 1 | ((in[at >> 3] >> (7 - (at & 7))) & 1);
+        }
+        const size_t j = i % static_cast<size_t>(f.outputs);
+        f.samples[i] = static_cast<float>(decode[2 * j] + sample * (decode[2 * j + 1] - decode[2 * j]) / maxSample);
+    }
+    return true;
+}
+
+// A tint transform of one input: one function, or an array of one-output functions. False for
+// anything else (type 3 and 4 functions included).
+bool ParseTint(const Document& doc, const PdfValue& value, std::vector<FunctionPart>& parts, int& outputs) {
+    parts.clear();
+    outputs = 0;
+    const PdfValue& resolved = doc.Resolve(value);
+    const PdfValue* items = &resolved;
+    size_t count = 1;
+    if (resolved.IsArray()) {
+        items = resolved.Array().begin();
+        count = resolved.Array().size();
+        if (count == 0 || count > kMaxComponents) return false;
+    }
+    parts.resize(count);
+    for (size_t i = 0; i < count; i++) {
+        if (!ParseFunctionPart(doc, items[i], parts[i])) return false;
+        if (count > 1 && parts[i].outputs != 1) return false;
+        outputs += parts[i].outputs;
+    }
+    return outputs <= kMaxComponents;
+}
+
+// ---------------------------------------------------------------- colour spaces
+
+enum class Family : uint8_t {
+    Gray,
+    Rgb,
+    Cmyk,
+    Lab,
+    Indexed,
+    Separation,  // Separation and DeviceN
+};
+
+struct Space {
+    Family family = Family::Gray;
+    int components = 1;  // per sample
+    int channels = 1;    // of the output: 1 gray or 3 RGB
+    double range[4] = {-100, 100, -100, 100};  // Lab a* and b*
+    // Indexed
+    int hival = 0;
+    std::vector<uint8_t> palette;  // (hival + 1) * channels
+    // Separation and DeviceN: the tint transform into `alt`, when usable; else `process` maps
+    // each colorant to C, M, Y or K (-1 for none), when every colorant is one of them.
+    std::vector<FunctionPart> tint;
+    std::unique_ptr<Space> alt;
+    bool useProcess = false;
+    int8_t process[kMaxComponents] = {};
+};
+
+void Convert(const Space& space, const double* v, uint8_t* out);
+
+void ConvertLab(const Space& space, const double* v, uint8_t* out) {
+    const double l = std::fmin(std::fmax(v[0], 0.0), 100.0);
+    const double a = std::fmin(std::fmax(v[1], space.range[0]), space.range[1]);
+    const double b = std::fmin(std::fmax(v[2], space.range[2]), space.range[3]);
+    const double fy = (l + 16) / 116;
+    const double f[3] = {fy + a / 500, fy, fy - b / 200};
+    double xyz[3];
+    constexpr double kD65[3] = {0.95047, 1.0, 1.08883};
+    for (int i = 0; i < 3; i++) {
+        const double t = f[i];
+        xyz[i] = kD65[i] * (t > 6.0 / 29 ? t * t * t : 3 * (6.0 / 29) * (6.0 / 29) * (t - 4.0 / 29));
+    }
+    out[0] = EncodeSrgb(3.2404542 * xyz[0] - 1.5371385 * xyz[1] - 0.4985314 * xyz[2]);
+    out[1] = EncodeSrgb(-0.9692660 * xyz[0] + 1.8760108 * xyz[1] + 0.0415560 * xyz[2]);
+    out[2] = EncodeSrgb(0.0556434 * xyz[0] - 0.2040259 * xyz[1] + 1.0572252 * xyz[2]);
+}
+
+void ConvertCmyk(double c, double m, double y, double k, uint8_t* out) {
+    const double white = 1 - Clamp01(k);
+    out[0] = To8((1 - Clamp01(c)) * white);
+    out[1] = To8((1 - Clamp01(m)) * white);
+    out[2] = To8((1 - Clamp01(y)) * white);
+}
+
+// `v` holds one value per component in the space's own range (an index for Indexed).
+void Convert(const Space& space, const double* v, uint8_t* out) {
+    switch (space.family) {
+    case Family::Gray: out[0] = To8(v[0]); return;
+    case Family::Rgb:
+        out[0] = To8(v[0]);
+        out[1] = To8(v[1]);
+        out[2] = To8(v[2]);
+        return;
+    case Family::Cmyk: ConvertCmyk(v[0], v[1], v[2], v[3], out); return;
+    case Family::Lab: ConvertLab(space, v, out); return;
+    case Family::Indexed: {
+        const double index = std::fmin(std::fmax(std::floor(v[0] + 0.5), 0.0), static_cast<double>(space.hival));
+        const size_t at = static_cast<size_t>(index) * static_cast<size_t>(space.channels);
+        std::memcpy(out, space.palette.data() + at, static_cast<size_t>(space.channels));
+        return;
+    }
+    case Family::Separation: break;
+    }
+    if (space.alt) {
+        double alt[kMaxComponents];
+        int at = 0;
+        for (const FunctionPart& part : space.tint) {
+            Evaluate(part, v[0], alt + at);
+            at += part.outputs;
+        }
+        Convert(*space.alt, alt, out);
+        return;
+    }
+    if (space.useProcess) {
+        double cmyk[4] = {0, 0, 0, 0};
+        for (int i = 0; i < space.components; i++) {
+            if (space.process[i] >= 0) cmyk[space.process[i]] = std::fmax(cmyk[space.process[i]], Clamp01(v[i]));
+        }
+        ConvertCmyk(cmyk[0], cmyk[1], cmyk[2], cmyk[3], out);
+        return;
+    }
+    double sum = 0;
+    for (int i = 0; i < space.components; i++) sum += Clamp01(v[i]);
+    out[0] = To8(1 - std::fmin(sum, 1.0));
+}
+
+struct SpaceContext {
+    const Document& doc;
+    const PdfValue& resources;
+    bool inlineImage;
+};
+
+Status ParseSpace(const SpaceContext& ctx, const PdfValue& value, int depth, Space& out);
+
+void SetDevice(Space& out, Family family) {
+    out.family = family;
+    out.components = family == Family::Gray ? 1 : family == Family::Cmyk ? 4 : 3;
+    out.channels = family == Family::Gray ? 1 : 3;
+}
+
+Status ParseNamedSpace(const SpaceContext& ctx, std::string_view name, int depth, Space& out) {
+    if (name == "DeviceGray" || name == "CalGray" || (ctx.inlineImage && name == "G")) {
+        SetDevice(out, Family::Gray);
+        return Status::Ok;
+    }
+    if (name == "DeviceRGB" || name == "CalRGB" || (ctx.inlineImage && name == "RGB")) {
+        SetDevice(out, Family::Rgb);
+        return Status::Ok;
+    }
+    if (name == "DeviceCMYK" || (ctx.inlineImage && name == "CMYK")) {
+        SetDevice(out, Family::Cmyk);
+        return Status::Ok;
+    }
+    if (name == "Pattern") return Status::Unsupported;
+    const PdfValue& named = ctx.doc.Get(ctx.doc.Get(ctx.resources, "ColorSpace"), name);
+    if (named.IsNull()) return Status::Corrupt;
+    return ParseSpace(ctx, named, depth + 1, out);
+}
+
+Status ParseIndexed(const SpaceContext& ctx, PdfSpan<PdfValue> items, int depth, Space& out) {
+    if (items.size() < 4) return Status::Corrupt;
+    Space base;
+    const Status status = ParseSpace(ctx, items[1], depth + 1, base);
+    if (status != Status::Ok) return status;
+    if (base.family == Family::Indexed) return Status::Corrupt;
+    const int64_t hival = ctx.doc.Resolve(items[2]).Int(-1);
+    if (hival < 0) return Status::Corrupt;
+    out.family = Family::Indexed;
+    out.components = 1;
+    out.hival = static_cast<int>(std::min<int64_t>(hival, 255));
+    out.channels = base.channels;
+    const size_t baseN = static_cast<size_t>(base.components);
+    const size_t needed = static_cast<size_t>(out.hival + 1) * baseN;
+    std::string stored;
+    std::string_view lookup;
+    const PdfValue& table = ctx.doc.Resolve(items[3]);
+    if (table.IsString()) {
+        lookup = table.String();
+    } else if (table.IsStream()) {
+        const StreamStatus s = ctx.doc.StreamData(table, stored, needed);
+        if (s == StreamStatus::Corrupt || s == StreamStatus::NotStream || s == StreamStatus::Unsupported) {
+            return Status::Corrupt;
+        }
+        lookup = stored;
+    } else {
+        return Status::Corrupt;
+    }
+    if (lookup.empty()) return Status::Corrupt;
+    // A short table leaves the entries past it black (zero components), as viewers do.
+    out.palette.assign(static_cast<size_t>(out.hival + 1) * static_cast<size_t>(out.channels), 0);
+    for (size_t i = 0; i <= static_cast<size_t>(out.hival); i++) {
+        double v[kMaxComponents];
+        for (size_t j = 0; j < baseN; j++) {
+            const size_t at = i * baseN + j;
+            const double byte = at < lookup.size() ? static_cast<uint8_t>(lookup[at]) : 0;
+            if (base.family == Family::Lab) {
+                v[j] = j == 0 ? byte * 100 / 255 : base.range[2 * (j - 1)] + byte * (base.range[2 * j - 1] - base.range[2 * (j - 1)]) / 255;
+            } else {
+                v[j] = byte / 255;
+            }
+        }
+        Convert(base, v, out.palette.data() + i * static_cast<size_t>(out.channels));
+    }
+    return Status::Ok;
+}
+
+int ProcessColorant(std::string_view name) {
+    if (name == "Cyan") return 0;
+    if (name == "Magenta") return 1;
+    if (name == "Yellow") return 2;
+    if (name == "Black") return 3;
+    if (name == "None") return -1;
+    return -2;
+}
+
+Status ParseSeparation(const SpaceContext& ctx, PdfSpan<PdfValue> items, bool deviceN, int depth, Space& out) {
+    if (items.size() < 4) return Status::Corrupt;
+    out.family = Family::Separation;
+    out.channels = 1;
+    const PdfValue& names = ctx.doc.Resolve(items[1]);
+    const PdfValue* nameItems = &names;
+    size_t n = 1;
+    if (deviceN) {
+        n = names.Array().size();
+        nameItems = names.Array().begin();
+        if (n == 0) return Status::Corrupt;
+        if (n > kMaxComponents) return Status::Unsupported;
+    }
+    out.components = static_cast<int>(n);
+    if (n == 1) {
+        auto alt = std::make_unique<Space>();
+        int outputs = 0;
+        if (ParseSpace(ctx, items[2], depth + 1, *alt) == Status::Ok && alt->family != Family::Indexed &&
+            alt->family != Family::Separation && ParseTint(ctx.doc, items[3], out.tint, outputs) &&
+            outputs == alt->components) {
+            out.channels = alt->channels;
+            out.alt = std::move(alt);
+            return Status::Ok;
+        }
+        out.tint.clear();
+    }
+    bool process = true;
+    bool colour = false;
+    for (size_t i = 0; i < n; i++) {
+        const int p = ProcessColorant(ctx.doc.Resolve(nameItems[i]).Name());
+        if (p == -2) process = false;
+        out.process[i] = static_cast<int8_t>(p < 0 ? -1 : p);
+        if (p >= 0 && p < 3) colour = true;
+    }
+    // Black alone composes to the gray the summed tint gives.
+    if (process && colour) {
+        out.useProcess = true;
+        out.channels = 3;
+    }
+    return Status::Ok;
+}
+
+Status ParseSpace(const SpaceContext& ctx, const PdfValue& value, int depth, Space& out) {
+    if (depth > kMaxSpaceDepth) return Status::Corrupt;
+    const PdfValue& cs = ctx.doc.Resolve(value);
+    if (cs.IsName()) return ParseNamedSpace(ctx, cs.Name(), depth, out);
+    if (!cs.IsArray() || cs.Array().empty()) return Status::Corrupt;
+    const PdfSpan<PdfValue> items = cs.Array();
+    const std::string_view family = ctx.doc.Resolve(items[0]).Name();
+    if (items.size() == 1) return ParseNamedSpace(ctx, family, depth, out);
+    if (family == "CalGray") {
+        SetDevice(out, Family::Gray);
+        return Status::Ok;
+    }
+    if (family == "CalRGB") {
+        SetDevice(out, Family::Rgb);
+        return Status::Ok;
+    }
+    if (family == "Lab") {
+        SetDevice(out, Family::Lab);
+        double range[4];
+        if (Numbers(ctx.doc, ctx.doc.Get(items[1], "Range"), range, 4) && range[0] <= range[1] && range[2] <= range[3]) {
+            std::copy(range, range + 4, out.range);
+        }
+        return Status::Ok;
+    }
+    if (family == "ICCBased") {
+        const PdfValue& stream = ctx.doc.Resolve(items[1]);
+        const int64_t n = ctx.doc.Get(stream, "N").Int(0);
+        const PdfValue& alternate = ctx.doc.Get(stream, "Alternate");
+        if (!alternate.IsNull()) {
+            Space alt;
+            if (ParseSpace(ctx, alternate, depth + 1, alt) == Status::Ok && alt.components == n &&
+                alt.family != Family::Indexed && alt.family != Family::Separation) {
+                out = std::move(alt);
+                return Status::Ok;
+            }
+        }
+        if (n == 1) SetDevice(out, Family::Gray);
+        else if (n == 3) SetDevice(out, Family::Rgb);
+        else if (n == 4) SetDevice(out, Family::Cmyk);
+        else return Status::Unsupported;
+        return Status::Ok;
+    }
+    if (family == "Indexed" || (ctx.inlineImage && family == "I")) return ParseIndexed(ctx, items, depth, out);
+    if (family == "Separation") return ParseSeparation(ctx, items, false, depth, out);
+    if (family == "DeviceN") return ParseSeparation(ctx, items, true, depth, out);
+    if (family == "Pattern") return Status::Unsupported;
+    if (family == "DeviceGray" || family == "DeviceRGB" || family == "DeviceCMYK" || family == "G" || family == "RGB" ||
+        family == "CMYK") {
+        return ParseNamedSpace(ctx, family, depth, out);
+    }
+    return Status::Unsupported;
+}
+
+// ---------------------------------------------------------------- image data
+
+// Where an image's dictionary and data come from: an XObject stream, or an inline image.
+struct Source {
+    const Document& doc;
+    const PdfValue& dict;
+    const PdfValue& resources;
+    bool inlineImage = false;
+    std::string_view inlineData;
+
+    // Entry `full`, or for an inline image its abbreviation `brief`.
+    const PdfValue& Entry(std::string_view full, std::string_view brief) const {
+        const PdfValue& v = doc.Get(dict, full);
+        if (!v.IsNull() || !inlineImage || brief.empty()) return v;
+        return doc.Get(dict, brief);
+    }
+};
+
+// The first filter of /Filter that is not decoded on the way to the image's samples (an image
+// filter, Brotli or an unknown name); Kind::Flate when there is none.
+Filters::Kind StopFilter(const Source& src) {
+    const PdfValue& filter = src.Entry("Filter", "F");
+    const PdfValue* items = &filter;
+    size_t n = filter.IsName() ? 1 : 0;
+    if (filter.IsArray()) {
+        items = filter.Array().begin();
+        n = filter.Array().size();
+    }
+    for (size_t i = 0; i < n; i++) {
+        const Filters::Kind kind = Filters::KindOf(src.doc.Resolve(items[i]).Name());
+        switch (kind) {
+        case Filters::Kind::Flate:
+        case Filters::Kind::Lzw:
+        case Filters::Kind::Ascii85:
+        case Filters::Kind::AsciiHex:
+        case Filters::Kind::RunLength:
+        case Filters::Kind::Crypt: continue;
+        default: return kind;
+        }
+    }
+    return Filters::Kind::Flate;
+}
+
+// An inline image's data run through its general-purpose filters (up to the first image filter),
+// at most `limit` bytes.
+StreamStatus InlineData(const Source& src, std::string& out, size_t limit) {
+    const PdfValue& filter = src.Entry("Filter", "F");
+    const PdfValue& parms = src.Entry("DecodeParms", "DP");
+    const PdfValue* items = &filter;
+    size_t n = filter.IsName() ? 1 : 0;
+    if (filter.IsArray()) {
+        items = filter.Array().begin();
+        n = filter.Array().size();
+    }
+    if (n > kMaxFilters) return StreamStatus::Unsupported;
+    std::string scratch;
+    std::string_view data = src.inlineData;
+    bool decoded = false;
+    StreamStatus status = StreamStatus::Ok;
+    for (size_t i = 0; i < n; i++) {
+        const Filters::Kind kind = Filters::KindOf(src.doc.Resolve(items[i]).Name());
+        if (kind == Filters::Kind::Crypt) continue;
+        if (kind != Filters::Kind::Flate && kind != Filters::Kind::Lzw && kind != Filters::Kind::Ascii85 &&
+            kind != Filters::Kind::AsciiHex && kind != Filters::Kind::RunLength) {
+            status = StreamStatus::Unsupported;
+            break;
+        }
+        const PdfValue& p = parms.IsArray() ? (i < parms.Array().size() ? src.doc.Resolve(parms.Array()[i]) : parms)
+                                            : parms;
+        Filters::Params params;
+        if (p.IsDict()) {
+            const auto number = [&](std::string_view key, int fallback) {
+                const int64_t x = src.doc.Get(p, key).Int(fallback);
+                return x < -1000000000 || x > 1000000000 ? fallback : static_cast<int>(x);
+            };
+            params.predictor = number("Predictor", 1);
+            params.colors = number("Colors", 1);
+            params.bitsPerComponent = number("BitsPerComponent", 8);
+            params.columns = number("Columns", 1);
+            params.earlyChange = number("EarlyChange", 1);
+        }
+        const StreamStatus step = Filters::Decode(kind, params, data, scratch, limit);
+        if (step == StreamStatus::Corrupt) {
+            out.clear();
+            return StreamStatus::Corrupt;
+        }
+        out.swap(scratch);
+        data = out;
+        decoded = true;
+        if (step != StreamStatus::Ok) status = step;
+        if (step == StreamStatus::TooLarge) return status;
+    }
+    if (!decoded) out.assign(data.data(), std::min(data.size(), limit));
+    return status;
+}
+
+StreamStatus ReadData(const Source& src, std::string& out, size_t limit) {
+    if (src.inlineImage) return InlineData(src, out, limit);
+    return src.doc.StreamData(src.dict, out, limit);
+}
+
+bool Usable(StreamStatus status, const std::string& data) {
+    return status != StreamStatus::Corrupt && status != StreamStatus::NotStream && !data.empty();
+}
+
+uint32_t Be16(const uint8_t* p) { return static_cast<uint32_t>(p[0]) << 8 | p[1]; }
+uint32_t Be32(const uint8_t* p) { return static_cast<uint32_t>(p[0]) << 24 | static_cast<uint32_t>(p[1]) << 16 | Be16(p + 2); }
+
+void PutBe32(std::string& out, uint32_t v) {
+    out.push_back(static_cast<char>(v >> 24));
+    out.push_back(static_cast<char>(v >> 16));
+    out.push_back(static_cast<char>(v >> 8));
+    out.push_back(static_cast<char>(v));
+}
+
+// The size in a JPEG's first SOF marker segment; false when there is none in the data.
+bool JpegSize(std::string_view jpeg, uint32_t& width, uint32_t& height) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(jpeg.data());
+    size_t at = 2;
+    while (at + 4 <= jpeg.size()) {
+        if (p[at] != 0xFF) return false;
+        const uint8_t marker = p[at + 1];
+        if (marker == 0xFF) {
+            at++;
+            continue;
+        }
+        if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+            at += 2;
+            continue;
+        }
+        const size_t length = Be16(p + at + 2);
+        const bool sof = marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+        if (sof) {
+            if (at + 9 > jpeg.size()) return false;
+            height = Be16(p + at + 5);
+            width = Be16(p + at + 7);
+            return true;
+        }
+        if (length < 2 || marker == 0xDA || marker == 0xD9) return false;
+        at += 2 + length;
+    }
+    return false;
+}
+
+Status PassJpeg(std::string_view data, uint32_t width, uint32_t height, Encoded& out) {
+    // Writers occasionally put bytes before the SOI marker; viewers skip them, a file must not
+    // start with them.
+    const size_t soi = data.substr(0, 1024).find("\xFF\xD8");
+    if (soi == std::string_view::npos) return Status::Corrupt;
+    data.remove_prefix(soi);
+    uint32_t w = 0, h = 0;
+    if (JpegSize(data, w, h) && w > 0 && h > 0) {
+        width = w;
+        height = h;
+    }
+    out.bytes.assign(data.data(), data.size());
+    out.extension = "jpg";
+    out.width = width;
+    out.height = height;
+    return Status::Ok;
+}
+
+// A JP2 file (ISO/IEC 15444-1 Annex I) as stored, or a raw codestream wrapped in the boxes a .jp2
+// needs: signature, file type, header (image header, bit depths when they differ, colour) and the
+// codestream.
+Status PassJpx(std::string_view data, uint32_t width, uint32_t height, Encoded& out) {
+    static constexpr char kSignature[12] = {0, 0, 0, 12, 'j', 'P', ' ', ' ', '\r', '\n', '\x87', '\n'};
+    out.extension = "jp2";
+    out.width = width;
+    out.height = height;
+    if (data.size() >= 12 && std::memcmp(data.data(), kSignature, 12) == 0) {
+        out.bytes.assign(data.data(), data.size());
+        return Status::Ok;
+    }
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(data.data());
+    // SOC, then SIZ: Lsiz Rsiz Xsiz Ysiz XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz, then per
+    // component Ssiz XRsiz YRsiz.
+    if (data.size() < 42 || Be16(p) != 0xFF4F || Be16(p + 2) != 0xFF51) return Status::Corrupt;
+    const uint32_t xsiz = Be32(p + 8), ysiz = Be32(p + 12), xo = Be32(p + 16), yo = Be32(p + 20);
+    const uint32_t components = Be16(p + 40);
+    if (xsiz <= xo || ysiz <= yo || components == 0 || components > 16384 || data.size() < 42 + 3 * size_t(components)) {
+        return Status::Corrupt;
+    }
+    out.width = xsiz - xo;
+    out.height = ysiz - yo;
+    bool same = true;
+    for (uint32_t c = 1; c < components; c++) same = same && p[42 + 3 * c] == p[42];
+    out.bytes.assign(kSignature, sizeof kSignature);
+    out.bytes.append("\0\0\0\x14" "ftypjp2 \0\0\0\0jp2 ", 20);
+    const uint32_t bpcc = same ? 0 : 8 + components;
+    PutBe32(out.bytes, 8 + 22 + bpcc + 15);
+    out.bytes += "jp2h";
+    PutBe32(out.bytes, 22);
+    out.bytes += "ihdr";
+    PutBe32(out.bytes, out.height);
+    PutBe32(out.bytes, out.width);
+    out.bytes.push_back(static_cast<char>(components >> 8));
+    out.bytes.push_back(static_cast<char>(components));
+    out.bytes.push_back(static_cast<char>(same ? p[42] : 0xFF));
+    out.bytes.append("\x07\0\0", 3);  // wavelet compression, colour space known, no IPR
+    if (!same) {
+        PutBe32(out.bytes, bpcc);
+        out.bytes += "bpcc";
+        for (uint32_t c = 0; c < components; c++) out.bytes.push_back(static_cast<char>(p[42 + 3 * c]));
+    }
+    PutBe32(out.bytes, 15);
+    out.bytes += "colr";
+    out.bytes.append("\x01\0\0", 3);  // enumerated colour space
+    PutBe32(out.bytes, components == 4 ? 12 : components < 3 ? 17 : 16);  // CMYK, gray, sRGB
+    PutBe32(out.bytes, static_cast<uint32_t>(std::min<size_t>(data.size() + 8, 0xFFFFFFFFu)));
+    out.bytes += "jp2c";
+    out.bytes.append(data.data(), data.size());
+    return Status::Ok;
+}
+
+// ---------------------------------------------------------------- samples to pixels
+
+// Decoded pixels, rows top to bottom. A string, so that samples already in pixel form are taken
+// over without a copy.
+struct Pixels {
+    std::string data;
+    uint32_t width = 0;
+    uint32_t height = 0;  // rows present (at most the declared height)
+    uint32_t declaredHeight = 0;
+    int channels = 1;
+
+    uint8_t* Bytes() { return reinterpret_cast<uint8_t*>(&data[0]); }
+    const uint8_t* Bytes() const { return reinterpret_cast<const uint8_t*>(data.data()); }
+};
+
+struct Layout {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    int bpc = 8;
+    int components = 1;
+    size_t rowBytes = 0;
+};
+
+// Width, height and the bits per component of `src`; Corrupt, TooLarge or Ok.
+Status ReadLayout(const Source& src, bool mask, int components, uint64_t maxPixels, Layout& out) {
+    const int64_t w = src.Entry("Width", "W").Int(0);
+    const int64_t h = src.Entry("Height", "H").Int(0);
+    if (w <= 0 || h <= 0 || w > kMaxDimension || h > kMaxDimension) return Status::Corrupt;
+    if (uint64_t(w) * uint64_t(h) > maxPixels) return Status::TooLarge;
+    int64_t bpc = mask ? 1 : src.Entry("BitsPerComponent", "BPC").Int(0);
+    if (bpc != 1 && bpc != 2 && bpc != 4 && bpc != 8 && bpc != 16) return Status::Corrupt;
+    out.width = static_cast<uint32_t>(w);
+    out.height = static_cast<uint32_t>(h);
+    out.bpc = static_cast<int>(bpc);
+    out.components = components;
+    const uint64_t rowBits = uint64_t(w) * static_cast<uint64_t>(components) * static_cast<uint64_t>(bpc);
+    const uint64_t rowBytes = (rowBits + 7) / 8;
+    // The samples come through the document's stream limit whole or not at all.
+    if (rowBytes > Document::kDefaultStreamLimit / uint64_t(h)) return Status::TooLarge;
+    out.rowBytes = static_cast<size_t>(rowBytes);
+    return Status::Ok;
+}
+
+// The samples of `layout` as whole rows: those the data holds, the last partial one completed
+// with zeros; Corrupt for none. `rows` is how many.
+Status ReadSamples(const Source& src, const Layout& layout, std::string& data, uint32_t& rows) {
+    const size_t expected = layout.rowBytes * layout.height;
+    // Slack past the samples, so that data a little longer than needed is no limit hit.
+    const StreamStatus read = ReadData(src, data, expected + 4096);
+    if (read == StreamStatus::Unsupported) return Status::Unsupported;
+    if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+    const uint64_t present = (uint64_t(data.size()) + layout.rowBytes - 1) / layout.rowBytes;
+    rows = static_cast<uint32_t>(std::min<uint64_t>(present, layout.height));
+    data.resize(size_t(rows) * layout.rowBytes, '\0');
+    return Status::Ok;
+}
+
+// The samples of one row as codes of at most 8 bits: 16-bit samples rounded to 8.
+void UnpackRow(const uint8_t* row, size_t samples, int bpc, uint8_t* codes) {
+    switch (bpc) {
+    case 8: std::memcpy(codes, row, samples); return;
+    case 16:
+        for (size_t i = 0; i < samples; i++) codes[i] = static_cast<uint8_t>((Be16(row + 2 * i) * 255 + 32767) / 65535);
+        return;
+    default: {
+        const unsigned mask = (1u << bpc) - 1;
+        const size_t perByte = static_cast<size_t>(8 / bpc);
+        for (size_t i = 0; i < samples; i++) {
+            const unsigned shift = static_cast<unsigned>(8 - bpc * static_cast<int>(i % perByte + 1));
+            codes[i] = static_cast<uint8_t>((row[i / perByte] >> shift) & mask);
+        }
+        return;
+    }
+    }
+}
+
+// The value of each code of each component under /Decode (or the space's default decode).
+struct DecodeMap {
+    int codeBits = 8;
+    double low[kMaxComponents];
+    double high[kMaxComponents];
+    bool identity = true;  // [0 1] per component of a [0, 1] space, 8 bits
+
+    double Value(int component, unsigned code) const {
+        const double maxCode = static_cast<double>((1u << codeBits) - 1);
+        return low[component] + code * (high[component] - low[component]) / maxCode;
+    }
+};
+
+void MakeDecodeMap(const Source& src, const Space& space, int bpc, DecodeMap& map) {
+    map.codeBits = bpc > 8 ? 8 : bpc;
+    const int n = space.components;
+    for (int i = 0; i < n; i++) {
+        map.low[i] = 0;
+        map.high[i] = 1;
+    }
+    if (space.family == Family::Lab) {
+        map.high[0] = 100;
+        map.low[1] = space.range[0];
+        map.high[1] = space.range[1];
+        map.low[2] = space.range[2];
+        map.high[2] = space.range[3];
+    } else if (space.family == Family::Indexed) {
+        map.high[0] = static_cast<double>((1u << map.codeBits) - 1);
+    }
+    double decode[2 * kMaxComponents];
+    if (NumberPairs(src.doc, src.Entry("Decode", "D"), decode) == static_cast<size_t>(2 * n)) {
+        for (int i = 0; i < n; i++) {
+            map.low[i] = decode[2 * i];
+            map.high[i] = decode[2 * i + 1];
+        }
+        // A 16-bit Indexed image's /Decode is in 16-bit index units; its codes are 8-bit.
+        if (space.family == Family::Indexed && bpc == 16) {
+            map.low[0] /= 257;
+            map.high[0] /= 257;
+        }
+    }
+    map.identity = map.codeBits == 8 && (space.family == Family::Gray || space.family == Family::Rgb);
+    for (int i = 0; i < n && map.identity; i++) map.identity = map.low[i] == 0 && map.high[i] == 1;
+}
+
+// `data` (whole rows of `layout`, `rows` of them) to pixels of `space`; `data` may be taken over.
+void ConvertPixels(const Layout& layout, uint32_t rows, std::string& data, const Space& space, const DecodeMap& map,
+                   Pixels& out) {
+    const size_t width = layout.width;
+    const size_t n = static_cast<size_t>(space.components);
+    const size_t ch = static_cast<size_t>(space.channels);
+    out.width = layout.width;
+    out.height = rows;
+    out.declaredHeight = layout.height;
+    out.channels = space.channels;
+    if (map.identity && layout.bpc == 8) {
+        out.data.swap(data);
+        return;
+    }
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
+    out.data.resize(width * ch * rows);
+    std::vector<uint8_t> codes(width * n);
+    const size_t codeCount = size_t(1) << map.codeBits;
+    if (n == 1) {
+        // Every code's colour once.
+        std::vector<uint8_t> lut(codeCount * ch);
+        for (size_t code = 0; code < codeCount; code++) {
+            const double v = map.Value(0, static_cast<unsigned>(code));
+            Convert(space, &v, lut.data() + code * ch);
+        }
+        for (uint32_t y = 0; y < rows; y++) {
+            UnpackRow(in + size_t(y) * layout.rowBytes, width, layout.bpc, codes.data());
+            uint8_t* target = out.Bytes() + size_t(y) * width * ch;
+            if (ch == 1) {
+                for (size_t x = 0; x < width; x++) target[x] = lut[codes[x]];
+            } else {
+                for (size_t x = 0; x < width; x++) std::memcpy(target + 3 * x, lut.data() + 3 * codes[x], 3);
+            }
+        }
+        return;
+    }
+    if (space.family == Family::Rgb || space.family == Family::Cmyk) {
+        // Per component, each code's 8-bit value.
+        std::vector<uint8_t> lut(n * codeCount);
+        for (size_t c = 0; c < n; c++) {
+            for (size_t code = 0; code < codeCount; code++) {
+                lut[c * codeCount + code] = To8(map.Value(static_cast<int>(c), static_cast<unsigned>(code)));
+            }
+        }
+        for (uint32_t y = 0; y < rows; y++) {
+            UnpackRow(in + size_t(y) * layout.rowBytes, width * n, layout.bpc, codes.data());
+            uint8_t* target = out.Bytes() + size_t(y) * width * 3;
+            const uint8_t* code = codes.data();
+            if (n == 3) {
+                for (size_t x = 0; x < width; x++, code += 3, target += 3) {
+                    target[0] = lut[code[0]];
+                    target[1] = lut[codeCount + code[1]];
+                    target[2] = lut[2 * codeCount + code[2]];
+                }
+            } else {
+                for (size_t x = 0; x < width; x++, code += 4, target += 3) {
+                    const unsigned white = 255u - lut[3 * codeCount + code[3]];
+                    target[0] = static_cast<uint8_t>(((255u - lut[code[0]]) * white + 127) / 255);
+                    target[1] = static_cast<uint8_t>(((255u - lut[codeCount + code[1]]) * white + 127) / 255);
+                    target[2] = static_cast<uint8_t>(((255u - lut[2 * codeCount + code[2]]) * white + 127) / 255);
+                }
+            }
+        }
+        return;
+    }
+    // Lab, DeviceN: per pixel, a run of equal samples converted once.
+    std::vector<double> values(n * codeCount);
+    for (size_t c = 0; c < n; c++) {
+        for (size_t code = 0; code < codeCount; code++) {
+            values[c * codeCount + code] = map.Value(static_cast<int>(c), static_cast<unsigned>(code));
+        }
+    }
+    std::vector<uint8_t> last(n, 0);
+    uint8_t lastPixel[3] = {0, 0, 0};
+    bool haveLast = false;
+    for (uint32_t y = 0; y < rows; y++) {
+        UnpackRow(in + size_t(y) * layout.rowBytes, width * n, layout.bpc, codes.data());
+        uint8_t* target = out.Bytes() + size_t(y) * width * ch;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* code = codes.data() + x * n;
+            if (!haveLast || std::memcmp(code, last.data(), n) != 0) {
+                double v[kMaxComponents];
+                for (size_t c = 0; c < n; c++) v[c] = values[c * codeCount + code[c]];
+                Convert(space, v, lastPixel);
+                std::memcpy(last.data(), code, n);
+                haveLast = true;
+            }
+            std::memcpy(target + x * ch, lastPixel, ch);
+        }
+    }
+}
+
+// A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere.
+Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out) {
+    if (StopFilter(src) != Filters::Kind::Flate) return Status::Unsupported;
+    Layout layout;
+    Status status = ReadLayout(src, true, 1, maxPixels, layout);
+    if (status != Status::Ok) return status;
+    std::string data;
+    uint32_t rows = 0;
+    if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
+    // /Decode [0 1] (the default): 0 paints. [1 0]: 1 paints.
+    double decode[2];
+    const bool inverted = Numbers(src.doc, src.Entry("Decode", "D"), decode, 2) && decode[0] > decode[1];
+    const uint8_t painted = inverted ? 1 : 0;
+    out.width = layout.width;
+    out.height = rows;
+    out.declaredHeight = layout.height;
+    out.channels = 1;
+    out.data.resize(size_t(layout.width) * rows);
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
+    for (uint32_t y = 0; y < rows; y++) {
+        const uint8_t* row = in + size_t(y) * layout.rowBytes;
+        uint8_t* target = out.Bytes() + size_t(y) * layout.width;
+        for (uint32_t x = 0; x < layout.width; x++) {
+            const uint8_t bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
+            target[x] = bit == painted ? 0 : 255;
+        }
+    }
+    return Status::Ok;
+}
+
+// Alpha from a /Mask colour key (ISO 32000-1 8.9.6.4): 0 where every sample as stored (before
+// /Decode) lies in its component's range, else 255. Left empty without such a /Mask array.
+void ColourKeyAlpha(const Source& src, const Layout& layout, uint32_t rows, const std::string& data,
+                    std::vector<uint8_t>& alpha) {
+    const PdfValue& mask = src.doc.Get(src.dict, "Mask");
+    const size_t n = static_cast<size_t>(layout.components);
+    double key[2 * kMaxComponents];
+    if (!mask.IsArray() || NumberPairs(src.doc, mask, key) != 2 * n) return;
+    const size_t width = layout.width;
+    alpha.assign(width * rows, 255);
+    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
+    const unsigned sampleMask = layout.bpc == 16 ? 0xFFFFu : (1u << layout.bpc) - 1;
+    for (uint32_t y = 0; y < rows; y++) {
+        const uint8_t* row = in + size_t(y) * layout.rowBytes;
+        for (size_t x = 0; x < width; x++) {
+            bool inside = true;
+            for (size_t c = 0; c < n && inside; c++) {
+                const size_t i = x * n + c;
+                unsigned sample;
+                if (layout.bpc == 16) {
+                    sample = Be16(row + 2 * i);
+                } else if (layout.bpc == 8) {
+                    sample = row[i];
+                } else {
+                    const size_t bit = i * static_cast<size_t>(layout.bpc);
+                    sample = (row[bit >> 3] >> (8 - static_cast<size_t>(layout.bpc) - (bit & 7))) & sampleMask;
+                }
+                inside = sample >= key[2 * c] && sample <= key[2 * c + 1];
+            }
+            if (inside) alpha[size_t(y) * width + x] = 0;
+        }
+    }
+}
+
+// The pixels of a sampled image (no stencil): colour space, samples, /Decode. With `keyAlpha`,
+// a /Mask colour key fills it when the image has one. A soft mask (`softMask`) without
+// /ColorSpace is DeviceGray, the only space it may have.
+Status DecodeSampled(const Source& src, uint64_t maxPixels, bool softMask, Pixels& out,
+                     std::vector<uint8_t>* keyAlpha) {
+    if (StopFilter(src) != Filters::Kind::Flate) return Status::Unsupported;
+    Space space;
+    const SpaceContext ctx{src.doc, src.resources, src.inlineImage};
+    const PdfValue& csValue = src.Entry("ColorSpace", "CS");
+    Status status = Status::Ok;
+    if (csValue.IsNull()) {
+        if (!softMask) return Status::Corrupt;
+        SetDevice(space, Family::Gray);
+    } else if ((status = ParseSpace(ctx, csValue, 0, space)) != Status::Ok) {
+        return status;
+    }
+    Layout layout;
+    if ((status = ReadLayout(src, false, space.components, maxPixels, layout)) != Status::Ok) return status;
+    std::string data;
+    uint32_t rows = 0;
+    if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
+    if (keyAlpha) ColourKeyAlpha(src, layout, rows, data, *keyAlpha);
+    DecodeMap map;
+    MakeDecodeMap(src, space, layout.bpc, map);
+    ConvertPixels(layout, rows, data, space, map, out);
+    return Status::Ok;
+}
+
+// `mask` (gray) resampled to width x rows by nearest neighbour into `alpha`; `invert` for a
+// stencil, whose 0 (painted) is opaque.
+void ResampleAlpha(const Pixels& mask, uint32_t width, uint32_t rows, uint32_t declaredHeight, bool invert,
+                   std::vector<uint8_t>& alpha) {
+    alpha.resize(size_t(width) * rows);
+    std::vector<uint32_t> columns(width);
+    for (uint32_t x = 0; x < width; x++) columns[x] = static_cast<uint32_t>(uint64_t(x) * mask.width / width);
+    const size_t ch = static_cast<size_t>(mask.channels);
+    for (uint32_t y = 0; y < rows; y++) {
+        const uint32_t my = static_cast<uint32_t>(uint64_t(y) * mask.declaredHeight / declaredHeight);
+        uint8_t* target = alpha.data() + size_t(y) * width;
+        if (my >= mask.height) {  // rows the mask's data lacks: opaque
+            std::fill(target, target + width, uint8_t(255));
+            continue;
+        }
+        const uint8_t* row = mask.Bytes() + size_t(my) * mask.width * ch;
+        for (uint32_t x = 0; x < width; x++) {
+            const uint8_t v = row[size_t(columns[x]) * ch];
+            target[x] = invert ? static_cast<uint8_t>(255 - v) : v;
+        }
+    }
+}
+
+// The soft or stencil mask of `src` as alpha for `image`; false when there is none or it cannot
+// be decoded.
+bool MaskAlpha(const Source& src, const Pixels& image, uint64_t maxPixels, std::vector<uint8_t>& alpha) {
+    if (src.inlineImage) return false;  // inline images have neither (ISO 32000-1 Table 93)
+    const PdfValue& smask = src.doc.Get(src.dict, "SMask");
+    if (smask.IsStream()) {
+        const Source maskSrc{src.doc, smask, src.resources, false, {}};
+        Pixels mask;
+        if (DecodeSampled(maskSrc, maxPixels, true, mask, nullptr) == Status::Ok) {
+            if (mask.channels == 3) {  // not the DeviceGray it must be: its luminance
+                uint8_t* bytes = mask.Bytes();
+                for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
+                    const uint8_t* p = bytes + 3 * i;
+                    bytes[i] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
+                }
+                mask.channels = 1;
+            }
+            ResampleAlpha(mask, image.width, image.height, image.declaredHeight, false, alpha);
+            return true;
+        }
+        return false;
+    }
+    const PdfValue& stencil = src.doc.Get(src.dict, "Mask");
+    if (stencil.IsStream()) {
+        const Source maskSrc{src.doc, stencil, src.resources, false, {}};
+        Pixels mask;
+        if (DecodeStencil(maskSrc, maxPixels, mask) != Status::Ok) return false;
+        ResampleAlpha(mask, image.width, image.height, image.declaredHeight, true, alpha);
+        return true;
+    }
+    return false;
+}
+
+Status WritePng(const Pixels& image, const std::vector<uint8_t>* alpha, Encoded& out) {
+    const size_t count = size_t(image.width) * image.height;
+    bool opaque = true;
+    if (alpha) {
+        for (size_t i = 0; i < count && opaque; i++) opaque = (*alpha)[i] == 255;
+    }
+    out.extension = "png";
+    out.width = image.width;
+    out.height = image.height;
+    bool ok;
+    if (opaque) {
+        ok = EncodePng(image.Bytes(), image.width, image.height, image.channels, out.bytes);
+    } else {
+        const size_t ch = static_cast<size_t>(image.channels);
+        std::vector<uint8_t> rgba(count * (ch + 1));
+        for (size_t i = 0; i < count; i++) {
+            std::memcpy(rgba.data() + i * (ch + 1), image.Bytes() + i * ch, ch);
+            rgba[i * (ch + 1) + ch] = (*alpha)[i];
+        }
+        ok = EncodePng(rgba.data(), image.width, image.height, image.channels + 1, out.bytes);
+    }
+    return ok ? Status::Ok : Status::TooLarge;
+}
+
+Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
+    out = Encoded();
+    const Filters::Kind stop = StopFilter(src);
+    const bool stencil = src.Entry("ImageMask", "IM").Bool(false);
+    if (stop == Filters::Kind::Dct || stop == Filters::Kind::Jpx) {
+        const int64_t w = src.Entry("Width", "W").Int(0);
+        const int64_t h = src.Entry("Height", "H").Int(0);
+        const uint32_t width = w > 0 && w <= kMaxDimension ? static_cast<uint32_t>(w) : 0;
+        const uint32_t height = h > 0 && h <= kMaxDimension ? static_cast<uint32_t>(h) : 0;
+        std::string data;
+        const StreamStatus read = ReadData(src, data, kPassThroughLimit);
+        if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+        // The data must be whole: a JPEG or JPEG 2000 file cut at the limit is no file.
+        if (read == StreamStatus::TooLarge) return Status::TooLarge;
+        const Status status = stop == Filters::Kind::Dct ? PassJpeg(data, width, height, out)
+                                                         : PassJpx(data, width, height, out);
+        if (status == Status::Ok && uint64_t(out.width) * out.height > maxPixels) {
+            out = Encoded();
+            return Status::TooLarge;
+        }
+        if (status != Status::Ok) out = Encoded();
+        return status;
+    }
+    if (stop != Filters::Kind::Flate) return Status::Unsupported;
+
+    Pixels image;
+    if (stencil) {
+        const Status status = DecodeStencil(src, maxPixels, image);
+        if (status != Status::Ok) return status;
+        return WritePng(image, nullptr, out);
+    }
+    std::vector<uint8_t> alpha;
+    const Status status = DecodeSampled(src, maxPixels, false, image, &alpha);
+    if (status != Status::Ok) return status;
+    std::vector<uint8_t> masked;
+    if (MaskAlpha(src, image, maxPixels, masked)) return WritePng(image, &masked, out);
+    return WritePng(image, alpha.empty() ? nullptr : &alpha, out);
+}
+
+} // namespace
+
+Status EncodeXObject(const Document& document, const PdfValue& image, const PdfValue& resources, Encoded& out,
+                     uint64_t maxPixels) {
+    out = Encoded();
+    const PdfValue& stream = document.Resolve(image);
+    if (!stream.IsStream()) return Status::Corrupt;
+    const Source src{document, stream, document.Resolve(resources), false, {}};
+    return Encode(src, out, maxPixels);
+}
+
+Status EncodeInline(const Document& document, const PdfValue& dictionary, std::string_view data,
+                    const PdfValue& resources, Encoded& out, uint64_t maxPixels) {
+    out = Encoded();
+    if (!dictionary.IsDict()) return Status::Corrupt;
+    const Source src{document, dictionary, document.Resolve(resources), true, data};
+    return Encode(src, out, maxPixels);
+}
+
+} // namespace RayoPdf::Image

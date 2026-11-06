@@ -36,7 +36,11 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
     report.pages = static_cast<int>(pages.size());
     std::vector<OutlineEntry> outline;
     ReadOutline(document, outline);
-    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report);
+    ImageOutput images;
+    images.document = &document;
+    images.directory = options.imageDirectory;
+    images.linkPrefix = options.imageLinkPrefix;
+    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images);
 }
 
 } // namespace RayoPdf::Layout

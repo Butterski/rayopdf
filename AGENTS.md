@@ -44,8 +44,9 @@ pdf, text, layout, cli), its tests under `tests/`, the evaluation harness under 
 
 10. Build and test only through `tools/dev.py`, which runs the compilers in the
     `rayopdf-build:1` image. Every change keeps `python3 tools/dev.py test --config asan` passing
-    and a fresh build free of compiler warnings. Each module's core tests live in
-    `tests/test_<module>.cpp`, every check with its own exit code in the module's range (crypt
-    100–199, pdf 200–299, text 300–399, layout 400–499); `tests/verify_cli.py` checks the built
-    binary. Every parser of untrusted input has a libFuzzer target in `tests/fuzz/`. Tests build
-    the PDFs they read in memory.
+    and a fresh build free of compiler warnings. Core tests live in
+    `tests/test_<module>[_<part>].cpp`, every check with its own code in the range `tests/check.h`
+    lists; `tests/verify_cli.py` checks the built binary. Every parser of untrusted input has a
+    libFuzzer target `tests/fuzz/fuzz_<module>_<name>.cpp` (`tools/fuzz.py` runs them); a fixed
+    finding's minimized input goes to `tests/fuzz/regressions/<target>/`. Tests build the PDFs they
+    read in memory.

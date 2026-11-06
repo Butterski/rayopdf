@@ -17,6 +17,11 @@ struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
     bool annotations = true;   // link annotations become Markdown links
+    // Images (D6): each image worth keeping is written to `imageDirectory` (created when the first
+    // image is written) as p<page>-<n>.<ext> and referenced as ![alt](imageLinkPrefix + that name).
+    // An empty `imageDirectory` writes no image files and no image references.
+    std::string imageDirectory;
+    std::string imageLinkPrefix;
 };
 
 // Counters of one conversion: `--report` prints them as one JSON line.
@@ -33,6 +38,9 @@ struct ConvertReport {
     int codeBlocks = 0;
     int tables = 0;
     int links = 0;
+    int footnotes = 0;               // footnote definitions written
+    int images = 0;                  // image files written
+    int imagesSkipped = 0;           // images not written (undecodable, too small, decoration)
     int headerFooterLines = 0;       // repeated page headers, footers and page numbers removed
     int contentErrors = 0;           // content streams that could not be fully read or interpreted
 };

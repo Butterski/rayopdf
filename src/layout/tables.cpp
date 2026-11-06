@@ -1,0 +1,1405 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "layout/tables.h"
+
+#include "layout/lines.h"
+
+#include <algorithm>
+#include <cmath>
+#include <string_view>
+
+namespace RayoPdf::Layout {
+namespace {
+
+// Ruling geometry in points (pdfplumber's defaults are 3 pt, algorithms §6.7).
+constexpr float kSnap = 2.5f;      // parallel edges this close are one edge
+constexpr float kJoin = 3.0f;      // collinear pieces with gaps up to this join
+constexpr float kMinEdge = 3.0f;   // shorter pieces are not rulings
+constexpr float kMaxThick = 4.0f;  // thicker painted pieces are areas, not rulings
+constexpr float kTouch = 3.0f;     // edges touch within this distance
+constexpr float kMinRule = 30.0f;  // a horizontal rule of a partially ruled table is at least this long
+constexpr int kMaxStacks = 64;     // rule stacks examined per page
+constexpr int kMaxBins = 4096;     // whitespace histogram resolution limit
+
+struct Edge {
+    float pos = 0, a = 0, b = 0;  // horizontal: y = pos, x in [a, b]; vertical: x = pos, y in [a, b]
+    int32_t comp = -1;            // connected component of the lattice pass
+};
+
+// A word: glyphs of one line between word breaks, with its box.
+struct TWord {
+    float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    float base = 0, size = 0;
+    uint32_t line = 0, k0 = 0, k1 = 0;  // glyphs line.first + [k0, k1)
+    bool mono = false;                  // its line is all monospace (code)
+    bool removed = false;               // its line was taken for a running header or footer
+};
+
+// A row of words (one baseline cluster), words[first, first + count) of a row list, left to right.
+struct Row {
+    uint32_t first = 0, count = 0;
+    float base = 0, top = 0, bottom = 0, x0 = 0, x1 = 0, size = 0;
+    float prose = 0;    // the largest size of its words not set in monospace (0: all code)
+    uint32_t mono = 0;  // words set in monospace
+};
+
+// A row's text size: of its prose, code cells being set smaller.
+float TextSize(const Row& r) { return r.prose > 0 ? r.prose : r.size; }
+
+// A row of the size `em` (a row of code only fits any).
+bool SizeFits(const Row& r, float em) { return r.prose == 0 || std::fabs(r.prose - em) <= 0.15f * em; }
+
+// A whitespace gap that separates columns.
+struct Gap {
+    float a = 0, b = 0;
+};
+
+struct Span {
+    uint16_t r = 0, c = 0, rs = 1, cs = 1;
+};
+
+// A table before its cells are filled.
+struct Grid {
+    TableKind kind = TableKind::Lattice;
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    std::vector<float> xs;    // column boundaries, ascending (cols + 1)
+    std::vector<float> ys;    // row boundaries, descending (rows + 1)
+    std::vector<uint8_t> vb;  // rows x (cols + 1): the vertical boundary at xs[c] exists in row r
+    std::vector<uint8_t> hb;  // (rows + 1) x cols: the horizontal boundary at ys[r] exists over column c
+    uint16_t headerRows = 0;
+    std::vector<int32_t> owner;  // rows x cols: the cell of each minimal cell
+    std::vector<Span> cells;     // row-major by top-left corner
+    float size = 0;              // median text size
+    int Rows() const { return static_cast<int>(ys.size()) - 1; }
+    int Cols() const { return static_cast<int>(xs.size()) - 1; }
+};
+
+bool Overlaps(const Grid& g, float x0, float y0, float x1, float y1) {
+    return x0 < g.x1 && x1 > g.x0 && y0 < g.y1 && y1 > g.y0;
+}
+
+// Joins parallel edges within kSnap and collinear pieces within kJoin; drops short ones.
+void MergeEdges(std::vector<Edge>& edges) {
+    std::sort(edges.begin(), edges.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
+    std::vector<Edge> out;
+    size_t i = 0;
+    while (i < edges.size()) {
+        size_t j = i + 1;
+        while (j < edges.size() && edges[j].pos - edges[i].pos <= kSnap) ++j;
+        // The cluster's position: that of its longest piece.
+        float pos = edges[i].pos, longest = -1;
+        for (size_t k = i; k < j; ++k)
+            if (edges[k].b - edges[k].a > longest) longest = edges[k].b - edges[k].a, pos = edges[k].pos;
+        std::sort(edges.begin() + static_cast<std::ptrdiff_t>(i), edges.begin() + static_cast<std::ptrdiff_t>(j),
+                  [](const Edge& p, const Edge& q) { return p.a < q.a; });
+        Edge cur = edges[i];
+        cur.pos = pos;
+        for (size_t k = i + 1; k < j; ++k) {
+            if (edges[k].a <= cur.b + kJoin) {
+                cur.b = std::fmax(cur.b, edges[k].b);
+            } else {
+                if (cur.b - cur.a >= kMinEdge) out.push_back(cur);
+                cur = edges[k];
+                cur.pos = pos;
+            }
+        }
+        if (cur.b - cur.a >= kMinEdge) out.push_back(cur);
+        i = j;
+    }
+    edges.swap(out);
+}
+
+void CollectEdges(const PageData& page, std::vector<Edge>& h, std::vector<Edge>& v) {
+    h.clear();
+    v.clear();
+    const float pageArea = page.width * page.height;
+    for (const Ruling& r : page.rulings) {
+        const float w = r.x1 - r.x0, t = r.y1 - r.y0;
+        if (!(w >= 0) || !(t >= 0) || !std::isfinite(w) || !std::isfinite(t)) continue;
+        if (t <= kMaxThick && w >= kMinEdge && w > t) {
+            h.push_back(Edge{(r.y0 + r.y1) / 2, r.x0, r.x1, -1});
+        } else if (w <= kMaxThick && t >= kMinEdge && t > w) {
+            v.push_back(Edge{(r.x0 + r.x1) / 2, r.y0, r.y1, -1});
+        } else if (w > kMaxThick && t > kMaxThick && (r.flags & kRulingFill) && !(r.flags & kRulingStroke) &&
+                   w * t < 0.5f * pageArea) {
+            // A filled area (a cell or row background): its sides.
+            h.push_back(Edge{r.y0, r.x0, r.x1, -1});
+            h.push_back(Edge{r.y1, r.x0, r.x1, -1});
+            v.push_back(Edge{r.x0, r.y0, r.y1, -1});
+            v.push_back(Edge{r.x1, r.y0, r.y1, -1});
+        }
+    }
+    MergeEdges(h);
+    MergeEdges(v);
+}
+
+int32_t Find(std::vector<int32_t>& parent, int32_t x) {
+    while (parent[static_cast<size_t>(x)] != x) {
+        parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+        x = parent[static_cast<size_t>(x)];
+    }
+    return x;
+}
+
+// Positions within kSnap are one (sorted ascending first).
+void Cluster(std::vector<float>& p) {
+    std::sort(p.begin(), p.end());
+    size_t kept = 0;
+    for (size_t i = 0; i < p.size(); ++i)
+        if (kept == 0 || p[i] - p[kept - 1] > kSnap) p[kept++] = p[i];
+    p.resize(kept);
+}
+
+// Cells from the boundary maps: a cell grows right while its right boundary is missing, then down
+// while the boundary below it is missing over its whole width.
+void ComputeSpans(Grid& g) {
+    const int rows = g.Rows(), cols = g.Cols();
+    g.owner.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
+    g.cells.clear();
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+            if (g.owner[static_cast<size_t>(r * cols + c)] >= 0) continue;
+            int cs = 1;
+            while (c + cs < cols && !g.vb[static_cast<size_t>(r * (cols + 1) + c + cs)] &&
+                   g.owner[static_cast<size_t>(r * cols + c + cs)] < 0)
+                ++cs;
+            int rs = 1;
+            while (r + rs < rows) {
+                bool open = true;
+                for (int k = c; k < c + cs && open; ++k)
+                    open = !g.hb[static_cast<size_t>((r + rs) * cols + k)] && g.owner[static_cast<size_t>((r + rs) * cols + k)] < 0;
+                if (!open) break;
+                ++rs;
+            }
+            const int32_t id = static_cast<int32_t>(g.cells.size());
+            for (int rr = r; rr < r + rs; ++rr)
+                for (int cc = c; cc < c + cs; ++cc) g.owner[static_cast<size_t>(rr * cols + cc)] = id;
+            g.cells.push_back(Span{static_cast<uint16_t>(r), static_cast<uint16_t>(c), static_cast<uint16_t>(rs),
+                                   static_cast<uint16_t>(cs)});
+        }
+    }
+}
+
+// The minimal cell of point (x, y), or false outside the grid.
+bool Locate(const Grid& g, float x, float y, int& r, int& c) {
+    if (x < g.xs.front() || x > g.xs.back() || y > g.ys.front() || y < g.ys.back()) return false;
+    c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), x) - g.xs.begin()) - 1;
+    c = std::min(std::max(c, 0), g.Cols() - 1);
+    r = static_cast<int>(std::upper_bound(g.ys.begin(), g.ys.end(), y, std::greater<float>()) - g.ys.begin()) - 1;
+    r = std::min(std::max(r, 0), g.Rows() - 1);
+    return true;
+}
+
+// A numeric cell: digits, and few letters (units, currency, percent and signs aside).
+bool Numeric(std::string_view t) {
+    int digits = 0, letters = 0;
+    for (char c : t) {
+        if (c >= '0' && c <= '9') digits++;
+        else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) letters++;
+    }
+    return digits > 0 && letters * 2 <= digits;
+}
+
+class Detector {
+public:
+    Detector(PageData& page, TableContinuation& continuation) : page_(page), continuation_(continuation) {}
+    int Run();  // the running header and footer lines taken back into tables
+
+private:
+    void CollectWords();
+    void Lattices();
+    void RuleStacks();
+    void Continue();
+    void Borderless();
+    void BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords);
+    bool Columns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                 float xa, float xb, float minGap, std::vector<Gap>& gaps);
+    bool Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+               const std::vector<Gap>& gaps, float em, bool closed = true);
+    bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                  const std::vector<Gap>& gaps);
+    void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                  const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb);
+    bool Free(float x0, float y0, float x1, float y1) const;
+    bool Validate(Grid& g);
+    void Commit();
+    void MarkUsed(const Grid& g);
+    std::string_view WordText(const TWord& w, std::string& scratch) const;
+    bool MathWord(const TWord& w) const;
+
+    PageData& page_;
+    TableContinuation& continuation_;  // in: from the previous page; out: for the next
+    std::vector<TWord> words_;    // by baseline descending, then x
+    std::vector<Edge> h_, v_;
+    std::vector<Edge> rules_;     // horizontal edges left for partially ruled tables
+    std::vector<Grid> grids_;
+    std::vector<uint8_t> wordUsed_;  // inside an accepted grid
+    float bodySize_ = 10;
+    int restored_ = 0;
+};
+
+void Detector::CollectWords() {
+    words_.clear();
+    std::vector<float> sizes;
+    for (uint32_t li = 0; li < page_.lines.size(); ++li) {
+        const Line& line = page_.lines[li];
+        // Lines taken for running headers and footers count too: a table's numbers in the page's
+        // margin bands look like page numbers (they return to the text inside a table).
+        if (line.dir != 0 || line.count == 0 || (line.flags & (kLineTableCell | kLineTableAnchor))) continue;
+        uint32_t k = 0;
+        while (k < line.count) {
+            TWord w;
+            w.line = li;
+            w.k0 = k;
+            w.base = line.baseline;
+            w.size = line.size;
+            w.x0 = INFINITY, w.x1 = -INFINITY, w.y0 = INFINITY, w.y1 = -INFINITY;
+            do {
+                const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + k]];
+                w.x0 = std::fmin(w.x0, g.x0), w.x1 = std::fmax(w.x1, g.x1);
+                w.y0 = std::fmin(w.y0, g.y0), w.y1 = std::fmax(w.y1, g.y1);
+                ++k;
+            } while (k < line.count && !(page_.glyphs[page_.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore));
+            w.k1 = k;
+            w.mono = (line.flags & kLineAllMono) != 0;
+            w.removed = (line.flags & kLineRemoved) != 0;
+            words_.push_back(w);
+        }
+        if (sizes.size() < 4096) sizes.push_back(line.size);
+    }
+    std::sort(words_.begin(), words_.end(), [](const TWord& a, const TWord& b) {
+        if (a.base != b.base) return a.base > b.base;
+        return a.x0 < b.x0;
+    });
+    wordUsed_.assign(words_.size(), 0);
+    if (!sizes.empty()) {
+        std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
+        bodySize_ = std::fmax(1.0f, sizes[sizes.size() / 2]);
+    }
+}
+
+std::string_view Detector::WordText(const TWord& w, std::string& scratch) const {
+    scratch.clear();
+    const Line& line = page_.lines[w.line];
+    for (uint32_t k = w.k0; k < w.k1; ++k) scratch.append(page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]]));
+    return scratch;
+}
+
+// A word of displayed math: a few glyphs, each an italic letter, a digit or an operator, with an
+// italic letter or an operator among them (digits alone are a table's numbers).
+bool Detector::MathWord(const TWord& w) const {
+    if (w.k1 - w.k0 > 4) return false;
+    // − ± × · ∑ ∫ √ ≤ ≥ → ∞ ∂ ∇ (U+2212 U+00B1 U+00D7 U+00B7 U+2211 U+222B U+221A U+2264 U+2265
+    // U+2192 U+221E U+2202 U+2207).
+    static const char* const kOperators[] = {"\xE2\x88\x92", "\xC2\xB1", "\xC3\x97", "\xC2\xB7", "\xE2\x88\x91",
+                                             "\xE2\x88\xAB", "\xE2\x88\x9A", "\xE2\x89\xA4", "\xE2\x89\xA5",
+                                             "\xE2\x86\x92", "\xE2\x88\x9E", "\xE2\x88\x82", "\xE2\x88\x87"};
+    const Line& line = page_.lines[w.line];
+    bool math = false;
+    for (uint32_t k = w.k0; k < w.k1; ++k) {
+        const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + k]];
+        const std::string_view t = page_.GlyphText(g);
+        if (g.flags & kGlyphItalic) {
+            math = true;
+            continue;
+        }
+        if (t.size() == 1 && t[0] >= '0' && t[0] <= '9') continue;
+        bool op = t.size() == 1 && std::string_view("=+-/<>*").find(t[0]) != std::string_view::npos;
+        for (const char* o : kOperators) op = op || t == o;
+        if (!op) return false;
+        math = true;
+    }
+    return math;
+}
+
+bool Detector::Free(float x0, float y0, float x1, float y1) const {
+    for (const Grid& g : grids_)
+        if (Overlaps(g, x0, y0, x1, y1)) return false;
+    return true;
+}
+
+// Rows of the words whose centre lies in [xa, xb] with a baseline in [ylo, yhi], top first.
+// Words of accepted grids are left out.
+void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords) {
+    rows.clear();
+    rowWords.clear();
+    // words_ is sorted by baseline descending: the first word at or below yhi.
+    auto it = std::lower_bound(words_.begin(), words_.end(), yhi,
+                               [](const TWord& w, float y) { return w.base > y; });
+    for (size_t i = static_cast<size_t>(it - words_.begin()); i < words_.size(); ++i) {
+        const TWord& w = words_[i];
+        if (w.base < ylo) break;
+        if (wordUsed_[i]) continue;
+        const float cx = (w.x0 + w.x1) / 2;
+        if (cx < xa || cx > xb) continue;
+        if (!rows.empty() && rows.back().base - w.base <= 0.35f * std::fmax(rows.back().size, w.size)) {
+            Row& r = rows.back();
+            r.count++;
+            r.top = std::fmax(r.top, w.y1), r.bottom = std::fmin(r.bottom, w.y0);
+            r.x0 = std::fmin(r.x0, w.x0), r.x1 = std::fmax(r.x1, w.x1);
+            r.size = std::fmax(r.size, w.size);
+            if (w.mono) r.mono++;
+            else r.prose = std::fmax(r.prose, w.size);
+        } else {
+            Row r;
+            r.first = static_cast<uint32_t>(rowWords.size());
+            r.count = 1;
+            r.base = w.base, r.top = w.y1, r.bottom = w.y0, r.x0 = w.x0, r.x1 = w.x1, r.size = w.size;
+            r.mono = w.mono ? 1 : 0;
+            r.prose = w.mono ? 0 : w.size;
+            rows.push_back(r);
+        }
+        rowWords.push_back(static_cast<uint32_t>(i));
+    }
+    // Words of a row left to right (rows may gather words of several lines).
+    for (const Row& r : rows)
+        std::sort(rowWords.begin() + r.first, rowWords.begin() + r.first + r.count,
+                  [&](uint32_t a, uint32_t b) { return words_[a].x0 < words_[b].x0; });
+}
+
+// Columns of rows [rowBegin, rowEnd): gaps at least `minGap` wide where no row has ink, between the
+// leftmost and rightmost ink in [xa, xb]. True with at least one gap.
+bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                       size_t rowEnd, float xa, float xb, float minGap, std::vector<Gap>& gaps) {
+    gaps.clear();
+    if (rowEnd <= rowBegin || !(xb > xa) || !std::isfinite(xb - xa)) return false;
+    const float bin = std::fmax(0.5f, (xb - xa) / kMaxBins);
+    const int n = std::min(kMaxBins, static_cast<int>((xb - xa) / bin) + 1);
+    std::vector<int> diff(static_cast<size_t>(n) + 1, 0);
+    const auto binOf = [&](float x) {
+        const float t = (x - xa) / bin;  // compared before conversion: x may be far off or not finite
+        if (!(t > 0)) return 0;
+        if (t >= float(n - 1)) return n - 1;
+        return static_cast<int>(t);
+    };
+    for (size_t r = rowBegin; r < rowEnd; ++r)
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            diff[static_cast<size_t>(binOf(w.x0))]++;
+            diff[static_cast<size_t>(binOf(w.x1)) + 1]--;
+        }
+    int first = -1, last = -1, run = 0, cover = 0;
+    for (int i = 0; i < n; ++i) {
+        cover += diff[static_cast<size_t>(i)];
+        if (cover > 0) {
+            if (first < 0) first = i;
+            if (last >= 0 && run > 0 && float(run) * bin >= minGap)
+                gaps.push_back(Gap{xa + float(i - run) * bin, xa + float(i) * bin});
+            last = i;
+            run = 0;
+        } else if (first >= 0) {
+            ++run;
+        }
+    }
+    (void)last;
+    return !gaps.empty();
+}
+
+// The column of x for gaps.
+int ColumnOf(const std::vector<Gap>& gaps, float x) {
+    int c = 0;
+    while (c < static_cast<int>(gaps.size()) && x > (gaps[static_cast<size_t>(c)].a + gaps[static_cast<size_t>(c)].b) / 2) ++c;
+    return c;
+}
+
+// Every gap of `old` still has a gap of `now` over it: the rows added split the same way.
+bool KeepsGaps(const std::vector<Gap>& old, const std::vector<Gap>& now) {
+    for (const Gap& o : old) {
+        bool kept = false;
+        for (const Gap& n : now) kept = kept || (n.a < o.b && n.b > o.a);
+        if (!kept) return false;
+    }
+    return true;
+}
+
+// Running text set in columns is not a table (Breuel's gutters, as in reading order). A column is
+// running text when its lines mostly fill a wide column with several words each, or when most of
+// its lines start in lowercase (sentences continued from the line above; table cells start with a
+// capital, a digit or a symbol, wrapped cells aside). Two such columns make prose.
+bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                     size_t rowEnd, const std::vector<Gap>& gaps, float em, bool closed) {
+    int sentenceColumns = 0;
+    const int cols = static_cast<int>(gaps.size()) + 1;
+    int texty = 0;
+    std::vector<float> widths;
+    std::string scratch;
+    for (int c = 0; c < cols; ++c) {
+        float lo = INFINITY, hi = -INFINITY;
+        widths.clear();
+        uint32_t wordsIn = 0, lower = 0;
+        for (size_t r = rowBegin; r < rowEnd; ++r) {
+            float a = INFINITY, b = -INFINITY;
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                if (ColumnOf(gaps, (w.x0 + w.x1) / 2) != c) continue;
+                if (!(b > a)) {
+                    const std::string_view t = WordText(w, scratch);
+                    if (!t.empty() && t[0] >= 'a' && t[0] <= 'z') lower++;
+                }
+                a = std::fmin(a, w.x0), b = std::fmax(b, w.x1);
+                wordsIn++;
+            }
+            if (b > a) {
+                widths.push_back(b - a);
+                lo = std::fmin(lo, a), hi = std::fmax(hi, b);
+            }
+        }
+        if (widths.size() < 2 || !(hi > lo)) continue;
+        std::nth_element(widths.begin(), widths.begin() + static_cast<std::ptrdiff_t>(widths.size() / 2), widths.end());
+        const float median = widths[widths.size() / 2];
+        const float wordsPerLine = float(wordsIn) / float(widths.size());
+        const bool filling = hi - lo >= 12 * em && median >= 0.65f * (hi - lo) && wordsPerLine >= 5;
+        const bool sentences = widths.size() >= 3 && hi - lo >= 6 * em && wordsPerLine >= 2 && 2 * lower >= widths.size();
+        if (filling || sentences) texty++;
+        // Without rules closing it, one column of sentences (most lines continuing one) already
+        // marks text beside prose (headings or a margin to its left); wrapped cells start half
+        // their lines in lowercase at most.
+        if (sentences && 10 * lower >= 7 * widths.size()) sentenceColumns++;
+    }
+    return texty >= 2 || (!closed && sentenceColumns >= 1);
+}
+
+// A first column of list markers (bullets, enumerators) is a list, not a table.
+bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                        size_t rowEnd, const std::vector<Gap>& gaps) {
+    int markers = 0, filled = 0;
+    std::string scratch;
+    for (size_t r = rowBegin; r < rowEnd; ++r) {
+        if (rows[r].count == 0) continue;
+        const TWord& w = words_[rowWords[rows[r].first]];
+        if (ColumnOf(gaps, (w.x0 + w.x1) / 2) != 0) continue;
+        filled++;
+        uint32_t value = 0;
+        const Marker m = ParseMarker(WordText(w, scratch), value);
+        if (m != Marker::None) markers++;
+    }
+    return filled > 0 && markers * 2 > filled;
+}
+
+// A grid from text rows and whitespace gaps: row boundaries halfway between rows, column boundaries
+// in the middle of the gaps; words crossing a column boundary make that row's cells span it. A row
+// whose first cell is empty and whose other cells continue cells above that run to their column's
+// right edge is the wrapped text of the row above (multi-line cells).
+void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                        size_t rowEnd, const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa,
+                        float xb) {
+    if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) return;
+    const int cols = static_cast<int>(gaps.size()) + 1;
+    if (rowEnd <= rowBegin || cols < 2 || cols > kMaxTableCols) return;
+    Grid g;
+    g.kind = kind;
+    float left = INFINITY, right = -INFINITY;
+    for (size_t r = rowBegin; r < rowEnd; ++r) left = std::fmin(left, rows[r].x0), right = std::fmax(right, rows[r].x1);
+    left = std::fmax(left, xa) - 1, right = std::fmin(std::fmax(right, left + 2), xb) + 1;
+    g.xs.push_back(left);
+    for (const Gap& gap : gaps) g.xs.push_back((gap.a + gap.b) / 2);
+    g.xs.push_back(right);
+
+    std::vector<float> colLeft(static_cast<size_t>(cols), INFINITY), colRight(static_cast<size_t>(cols), -INFINITY);
+    for (size_t r = rowBegin; r < rowEnd; ++r)
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+            colLeft[c] = std::fmin(colLeft[c], w.x0), colRight[c] = std::fmax(colRight[c], w.x1);
+        }
+    // Rows of multi-line cells. Where the whitespace between lines is of two kinds, the wider parts
+    // rows and the narrower the lines of one cell (cell padding; cells set to the middle), except
+    // that lines between wide gaps that all fill the same cells are rows of their own. Otherwise a
+    // line continues the row above when its first cell is empty and its other cells continue cells
+    // above that reach their column's right edge (wrapped text in cells set to the top).
+    std::vector<size_t> starts{rowBegin};
+    const size_t n = rowEnd - rowBegin;
+    std::vector<uint64_t> mask(n, 0);
+    for (size_t r = rowBegin; r < rowEnd; ++r)
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            mask[r - rowBegin] |= uint64_t(1) << ColumnOf(gaps, (w.x0 + w.x1) / 2);
+        }
+    // Lines closer than a line pitch are cells of one row set to the middle at different heights.
+    const auto offset = [&](size_t r) {
+        return rows[r - 1].base - rows[r].base < 0.85f * std::fmax(rows[r - 1].size, rows[r].size);
+    };
+    const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[r - 1].bottom - rows[r].top; };
+    float narrow = INFINITY;
+    for (size_t r = rowBegin + 1; r < rowEnd; ++r)
+        if (!offset(r)) narrow = std::fmin(narrow, gapAbove(r));
+    const float wide = narrow + std::fmax(2.0f, 0.25f * rows[rowBegin].size);
+    size_t wideGaps = 0;
+    for (size_t r = rowBegin + 1; r < rowEnd; ++r) wideGaps += gapAbove(r) >= wide;
+    if (n >= 3 && wideGaps >= 2 && wideGaps + 1 < n) {
+        size_t band = rowBegin;
+        const auto close = [&](size_t bandEnd) {
+            bool same = bandEnd - band > 1;
+            for (size_t q = band + 1; q < bandEnd && same; ++q) same = mask[q - rowBegin] == mask[band - rowBegin];
+            int filled = 0;
+            for (uint64_t m = mask[band - rowBegin]; m; m &= m - 1) filled++;
+            if (same && filled >= 2)
+                for (size_t q = band + 1; q < bandEnd; ++q) starts.push_back(q);
+        };
+        for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
+            if (gapAbove(r) < wide && r - rowBegin != headerRows) continue;
+            close(r);
+            starts.push_back(r);
+            band = r;
+        }
+        close(rowEnd);
+    } else {
+        std::vector<float> above(static_cast<size_t>(cols)), here(static_cast<size_t>(cols));
+        const auto rights = [&](size_t r, std::vector<float>& out) {
+            std::fill(out.begin(), out.end(), -INFINITY);
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+                out[c] = std::fmax(out[c], w.x1);
+            }
+        };
+        rights(rowBegin, above);
+        for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
+            rights(r, here);
+            bool wrapped = here[0] == -INFINITY && r - rowBegin != headerRows;
+            for (size_t c = 1; c < static_cast<size_t>(cols) && wrapped; ++c)
+                if (here[c] > -INFINITY && !(above[c] >= colLeft[c] + 0.7f * (colRight[c] - colLeft[c]))) wrapped = false;
+            if (!wrapped) starts.push_back(r);
+            above.swap(here);
+        }
+    }
+    const int nrows = static_cast<int>(starts.size());
+    if (nrows > kMaxTableRows) return;
+    g.headerRows = 0;
+    for (size_t s : starts)
+        if (s < rowBegin + headerRows) g.headerRows++;
+    // Boundaries halfway between groups: a group spans its lines' extents (cells set to the middle
+    // put lines of a later baseline above an earlier one's bottom).
+    const auto extent = [&](size_t s, float& top, float& bottom) {
+        const size_t end = s + 1 < starts.size() ? starts[s + 1] : rowEnd;
+        top = -INFINITY, bottom = INFINITY;
+        for (size_t r = starts[s]; r < end; ++r) top = std::fmax(top, rows[r].top), bottom = std::fmin(bottom, rows[r].bottom);
+    };
+    float top = 0, bottom = 0, previousBottom = 0;
+    extent(0, top, bottom);
+    g.ys.push_back(top + 1);
+    previousBottom = bottom;
+    for (size_t s = 1; s < starts.size(); ++s) {
+        extent(s, top, bottom);
+        g.ys.push_back((previousBottom + top) / 2);
+        previousBottom = bottom;
+    }
+    g.ys.push_back(previousBottom - 1);
+    for (size_t i = 1; i < g.ys.size(); ++i)
+        if (!(g.ys[i] < g.ys[i - 1])) return;  // overlapping rows: not a grid
+    g.x0 = g.xs.front(), g.x1 = g.xs.back(), g.y0 = g.ys.back(), g.y1 = g.ys.front();
+    g.vb.assign(static_cast<size_t>(nrows) * static_cast<size_t>(cols + 1), 1);
+    g.hb.assign(static_cast<size_t>(nrows + 1) * static_cast<size_t>(cols), 1);
+    int group = -1;
+    for (size_t r = rowBegin; r < rowEnd; ++r) {
+        if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            for (int c = 1; c < cols; ++c) {
+                const float x = g.xs[static_cast<size_t>(c)];
+                if (w.x0 < x - 0.5f && w.x1 > x + 0.5f) g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
+            }
+        }
+    }
+    MarkUsed(g);
+    grids_.push_back(std::move(g));
+}
+
+void Detector::Lattices() {
+    if (h_.size() > kMaxTableEdges || v_.size() > kMaxTableEdges) return;
+    const size_t nh = h_.size(), nv = v_.size();
+    std::vector<int32_t> parent(nh + nv);
+    for (size_t i = 0; i < parent.size(); ++i) parent[i] = static_cast<int32_t>(i);
+    // v_ is sorted by x: the verticals within a horizontal's reach are a range.
+    for (size_t i = 0; i < nh; ++i) {
+        const Edge& e = h_[i];
+        auto it = std::lower_bound(v_.begin(), v_.end(), e.a - kTouch, [](const Edge& q, float x) { return q.pos < x; });
+        for (; it != v_.end() && it->pos <= e.b + kTouch; ++it) {
+            if (e.pos < it->a - kTouch || e.pos > it->b + kTouch) continue;
+            const int32_t a = Find(parent, static_cast<int32_t>(i));
+            const int32_t b = Find(parent, static_cast<int32_t>(nh + static_cast<size_t>(it - v_.begin())));
+            if (a != b) parent[static_cast<size_t>(a)] = b;
+        }
+    }
+    std::vector<int32_t> roots;
+    for (size_t i = 0; i < nh + nv; ++i) {
+        const int32_t r = Find(parent, static_cast<int32_t>(i));
+        (i < nh ? h_[i] : v_[i - nh]).comp = r;
+        if (r == static_cast<int32_t>(i)) roots.push_back(r);
+    }
+    std::vector<uint8_t> hUsed(nh, 0);
+    for (int32_t root : roots) {
+        if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) break;
+        Grid g;
+        g.kind = TableKind::Lattice;
+        g.x0 = INFINITY, g.y0 = INFINITY, g.x1 = -INFINITY, g.y1 = -INFINITY;
+        int hs = 0, vs = 0;
+        for (const Edge& e : h_)
+            if (e.comp == root) {
+                hs++;
+                g.ys.push_back(e.pos);
+                g.x0 = std::fmin(g.x0, e.a), g.x1 = std::fmax(g.x1, e.b);
+                g.y0 = std::fmin(g.y0, e.pos), g.y1 = std::fmax(g.y1, e.pos);
+            }
+        for (const Edge& e : v_)
+            if (e.comp == root) {
+                vs++;
+                g.xs.push_back(e.pos);
+                g.x0 = std::fmin(g.x0, e.pos), g.x1 = std::fmax(g.x1, e.pos);
+                g.y0 = std::fmin(g.y0, e.a), g.y1 = std::fmax(g.y1, e.b);
+            }
+        if (hs < 2 || vs < 2) continue;
+        g.xs.push_back(g.x0), g.xs.push_back(g.x1);
+        g.ys.push_back(g.y0), g.ys.push_back(g.y1);
+        Cluster(g.xs);
+        Cluster(g.ys);
+        std::reverse(g.ys.begin(), g.ys.end());
+        const int rows = g.Rows(), cols = g.Cols();
+        if (rows < 1 || cols < 1 || rows > kMaxTableRows || cols > kMaxTableCols) continue;
+        if (!Free(g.x0, g.y0, g.x1, g.y1)) continue;
+        g.vb.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols + 1), 0);
+        g.hb.assign(static_cast<size_t>(rows + 1) * static_cast<size_t>(cols), 0);
+        for (const Edge& e : v_) {
+            if (e.comp != root) continue;
+            int c = 0;
+            while (c <= cols && std::fabs(g.xs[static_cast<size_t>(c)] - e.pos) > kSnap) ++c;
+            if (c > cols) continue;
+            for (int r = 0; r < rows; ++r) {
+                const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
+                const float overlap = std::fmin(top, e.b) - std::fmax(bottom, e.a);
+                if (overlap >= 0.5f * (top - bottom)) g.vb[static_cast<size_t>(r * (cols + 1) + c)] = 1;
+            }
+        }
+        for (const Edge& e : h_) {
+            if (e.comp != root) continue;
+            int r = 0;
+            while (r <= rows && std::fabs(g.ys[static_cast<size_t>(r)] - e.pos) > kSnap) ++r;
+            if (r > rows) continue;
+            for (int c = 0; c < cols; ++c) {
+                const float left = g.xs[static_cast<size_t>(c)], right = g.xs[static_cast<size_t>(c + 1)];
+                const float overlap = std::fmin(right, e.b) - std::fmax(left, e.a);
+                if (overlap >= 0.5f * (right - left)) g.hb[static_cast<size_t>(r * cols + c)] = 1;
+            }
+        }
+        ComputeSpans(g);
+        // Rows that are one cell across, in most of the grid: verticals only frame the table (or
+        // a header): its columns come from whitespace instead.
+        int wholeRows = 0;
+        for (const Span& s : g.cells)
+            if (s.cs == cols) wholeRows += s.rs;
+        if (cols < 2 || rows < 2 || wholeRows * 2 > rows) continue;
+        if (!Validate(g)) continue;
+        for (size_t i = 0; i < nh; ++i)
+            if (h_[i].comp == root) hUsed[i] = 1;
+        MarkUsed(g);
+        grids_.push_back(std::move(g));
+    }
+    for (size_t i = 0; i < nh; ++i)
+        if (!hUsed[i] && h_[i].b - h_[i].a >= kMinRule) rules_.push_back(h_[i]);
+}
+
+// A lattice holds a table when text fills enough of its cells and does not run across its rulings
+// (charts and page frames do not qualify).
+bool Detector::Validate(Grid& g) {
+    const int cols = g.Cols();
+    std::vector<uint32_t> filled(g.cells.size(), 0);  // words per cell
+    uint32_t inside = 0, crossing = 0;
+    std::vector<float> sizes;
+    auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
+    for (; it != words_.end() && it->base >= g.y0; ++it) {
+        const TWord& w = *it;
+        const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+        int r = 0, c = 0;
+        if (!Locate(g, cx, cy, r, c)) continue;
+        inside++;
+        if (sizes.size() < 1024) sizes.push_back(w.size);
+        filled[static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)])]++;
+        for (int k = 1; k < cols; ++k) {
+            const float x = g.xs[static_cast<size_t>(k)];
+            if (g.vb[static_cast<size_t>(r * (cols + 1) + k)] && w.x0 < x - 1 && w.x1 > x + 1) crossing++;
+        }
+    }
+    uint32_t nonEmpty = 0, most = 0;
+    for (uint32_t f : filled) nonEmpty += f > 0, most = std::max(most, f);
+    if (inside == 0 || nonEmpty < 2) return false;
+    if (float(nonEmpty) < 0.3f * float(g.cells.size())) return false;
+    if (float(crossing) > 0.1f * float(inside)) return false;
+    // Boxes of a page layout (a magazine's frames) hold whole articles; table cells hold a few words.
+    if (most > 80 || inside > 25 * nonEmpty) return false;
+    // Two rows with two filled cells at least: boxes drawn around a quote or a code block are no
+    // table.
+    std::vector<uint16_t> perRow(static_cast<size_t>(g.Rows()), 0);
+    for (size_t c = 0; c < g.cells.size(); ++c)
+        if (filled[c]) perRow[g.cells[c].r]++;
+    int fullRows = 0;
+    for (uint16_t n : perRow) fullRows += n >= 2;
+    if (fullRows < 2) return false;
+    std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
+    g.size = sizes[sizes.size() / 2];
+    return true;
+}
+
+// Partially ruled tables: stacks of horizontal rules of one width; rows between and around them
+// that split into the same columns.
+void Detector::RuleStacks() {
+    if (rules_.empty() || rules_.size() > kMaxTableEdges) return;
+    std::sort(rules_.begin(), rules_.end(), [](const Edge& a, const Edge& b) { return a.pos > b.pos; });
+    struct Stack {
+        float a, b;
+        std::vector<float> ys;
+    };
+    std::vector<Stack> stacks;
+    for (const Edge& e : rules_) {
+        // Rules of one table share their ends (booktabs, CSS borders, word processor borders).
+        const float tol = 2.5f;
+        Stack* into = nullptr;
+        for (Stack& s : stacks)
+            if (std::fabs(s.a - e.a) <= tol && std::fabs(s.b - e.b) <= tol) {
+                into = &s;
+                break;
+            }
+        if (into) {
+            into->ys.push_back(e.pos);
+        } else if (stacks.size() < static_cast<size_t>(kMaxStacks)) {
+            stacks.push_back(Stack{e.a, e.b, {e.pos}});
+        }
+    }
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    std::vector<Gap> gaps, trial;
+    for (const Stack& s : stacks) {
+        const float xa = s.a - 2, xb = s.b + 2;
+        // Bands between consecutive rules: tabular ones (rows that split into columns) form tables.
+        size_t i = 0;
+        while (i < s.ys.size()) {
+            // The longest run of rules from i whose bands are tabular, or thin and empty (double
+            // rules); a taller empty band holds something else (a heading out of the rules' width).
+            size_t j = i;
+            float em = bodySize_;
+            while (j + 1 < s.ys.size()) {
+                BuildRows(xa, xb, s.ys[j + 1], s.ys[j], rows, rowWords);
+                if (rows.empty()) {
+                    if (s.ys[j] - s.ys[j + 1] > 2 * em) break;
+                } else {
+                    // Rows of one size, evenly set: a heading or a paragraph gap inside means the
+                    // band is no table body.
+                    em = TextSize(rows[0]);
+                    bool even = true;
+                    for (size_t q = 1; q < rows.size() && even; ++q)
+                        even = SizeFits(rows[q], em) && rows[q - 1].bottom - rows[q].top < 1.6f * em;
+                    if (!even || !Columns(rows, rowWords, 0, rows.size(), xa, xb, std::fmax(3.0f, 0.5f * em), gaps)) break;
+                }
+                ++j;
+            }
+            // Rows from rule i down to rule j. A run of one or two rules (a header rule; top and
+            // mid rules of a table that continues on the next page) has no closing rule: rows below
+            // it belong while they keep its columns; above a single rule (a header rule, or the
+            // closing rule of a continued table), rows above it too.
+            const float top = s.ys[i], bottom = s.ys[j];
+            const bool single = i == j;
+            const bool open = j - i <= 1;
+            float yhi = top, ylo = bottom;
+            {
+                const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
+                ylo = open ? std::fmax(below, bottom - 80 * em) : bottom;
+                if (single) yhi = std::fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
+            }
+            BuildRows(xa, xb, ylo, yhi, rows, rowWords);
+            // Core rows: between the rules.
+            size_t coreBegin = rows.size(), coreEnd = 0;
+            for (size_t r = 0; r < rows.size(); ++r)
+                if (rows[r].base < top && rows[r].base > bottom) coreBegin = std::min(coreBegin, r), coreEnd = r + 1;
+            size_t begin, end;
+            if (coreEnd > coreBegin) {
+                begin = coreBegin, end = coreEnd;
+            } else {
+                // No rows between: start at the rows nearest the rule(s).
+                size_t firstBelow = 0;
+                while (firstBelow < rows.size() && rows[firstBelow].base > bottom) ++firstBelow;
+                begin = firstBelow, end = firstBelow;
+                if (single && firstBelow > 0 && rows[firstBelow - 1].bottom - top < 2.0f * em) begin = firstBelow - 1;
+                if (firstBelow < rows.size() && bottom - rows[firstBelow].top < 2.0f * em) end = firstBelow + 1;
+            }
+            if (end <= begin) {
+                i = j + 1;
+                continue;
+            }
+            // The text size of the rows under the rule; a header row above it shares it.
+            em = TextSize(rows[end - 1]);
+            // Rows wholly of running headers or footers (a rule under a page header) join no table
+            // from the outside.
+            const auto running = [&](size_t q) {
+                for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
+                    if (!words_[rowWords[k]].removed) return false;
+                return true;
+            };
+            if (begin + 1 < end && coreEnd <= coreBegin && (!SizeFits(rows[begin], em) || running(begin))) ++begin;
+            // Under a rule, columns may stand as close as half an em (word processors' narrow cell
+            // margins): twice a word space, and every row has to agree.
+            const float minGap = std::fmax(3.0f, 0.5f * em);
+            const auto pitchOk = [&](size_t a, size_t b) {
+                // Rows a above b are close enough to belong to one table.
+                return rows[a].bottom - rows[b].top < 1.6f * std::fmax(rows[a].size, rows[b].size);
+            };
+            const auto extend = [&](size_t& from, size_t& to, bool down) {
+                for (;;) {
+                    const size_t next = down ? to : from - 1;
+                    if (down ? to >= rows.size() : from == 0) return;
+                    if (down ? !pitchOk(to - 1, next) : !pitchOk(next, from)) return;
+                    if (!SizeFits(rows[next], em) || running(next)) return;
+                    const size_t nb = down ? from : next, ne = down ? to + 1 : to;
+                    if (!Columns(rows, rowWords, nb, ne, xa, xb, minGap, trial)) return;
+                    // Every gap still there (gaps of fewer than three rows may be chance word spaces
+                    // that close), and the new row in two columns at least; or, below, one cell set
+                    // as close as the closest rows so far (a row of empty cells).
+                    if (to - from >= 3 && !KeepsGaps(gaps, trial)) return;
+                    int occupied = 0, lastCol = -1;
+                    for (uint32_t k = rows[next].first; k < rows[next].first + rows[next].count; ++k) {
+                        const TWord& w = words_[rowWords[k]];
+                        const int c = ColumnOf(trial, (w.x0 + w.x1) / 2);
+                        if (c != lastCol) occupied++, lastCol = c;
+                    }
+                    if (occupied < 2) {
+                        if (!down || to - from < 2) return;
+                        float closest = INFINITY;
+                        for (size_t q = from + 1; q < to; ++q) closest = std::fmin(closest, rows[q - 1].bottom - rows[q].top);
+                        if (rows[to - 1].bottom - rows[next].top > closest + 0.15f * em) return;
+                    }
+                    gaps = trial;
+                    if (down) to = ne;
+                    else from = next;
+                }
+            };
+            Columns(rows, rowWords, begin, end, xa, xb, minGap, gaps);
+            if (open) extend(begin, end, true);
+            if (single) extend(begin, end, false);
+            const auto multiCell = [&]() {
+                // Rows with two cells filled at least: most rows, two at least.
+                size_t n = 0;
+                for (size_t q = begin; q < end; ++q) {
+                    int occupied = 0, lastCol = -1;
+                    for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+                        const TWord& w = words_[rowWords[k]];
+                        const int c = ColumnOf(gaps, (w.x0 + w.x1) / 2);
+                        if (c != lastCol) occupied++, lastCol = c;
+                    }
+                    n += occupied >= 2;
+                }
+                return n >= 2 && 2 * n >= end - begin;
+            };
+            const auto code = [&]() {
+                // Mostly monospace: aligned code, not a table; mostly math symbols and italic
+                // letters: a fraction bar over displayed math.
+                size_t mono = 0, math = 0, all = 0;
+                for (size_t q = begin; q < end; ++q) {
+                    mono += rows[q].mono, all += rows[q].count;
+                    for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) math += MathWord(words_[rowWords[k]]);
+                }
+                return 2 * mono > all || 10 * math >= 4 * all;
+            };
+            // A single rule closes nothing: its table needs three rows at least.
+            if (end - begin >= (single ? 3u : 2u) && Columns(rows, rowWords, begin, end, xa, xb, minGap, gaps) &&
+                multiCell() && !code() &&
+                !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps)) {
+                // Header: the rows above the second rule of the run; above a single rule, the rows
+                // above it when they are few and rows follow below it.
+                uint16_t header = 0;
+                if (!single) {
+                    for (size_t r = begin; r < end && rows[r].base > s.ys[i + 1]; ++r) header++;
+                } else if (rows[end - 1].base < top) {
+                    for (size_t r = begin; r < end && rows[r].base > top; ++r) header++;
+                    if (header > 3) header = 0;
+                }
+                if (header == end - begin) header = 0;
+                float y0 = rows[end - 1].bottom, y1 = rows[begin].top;
+                if (Free(xa, y0, xb, y1)) TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb);
+            }
+            i = j + 1;
+        }
+    }
+}
+
+// A table continued from the previous page: the rows at the top of this page (below running
+// headers) that keep its columns, every word inside one column and two columns filled at least.
+void Detector::Continue() {
+    if (!continuation_.valid || continuation_.xs.size() < 3) return;
+    const std::vector<float>& xs = continuation_.xs;
+    const float xa = continuation_.x0 - 2, xb = continuation_.x1 + 2;
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    BuildRows(xa, xb, -INFINITY, INFINITY, rows, rowWords);
+    const auto removedRow = [&](size_t q) {
+        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
+            if (!words_[rowWords[k]].removed) return false;
+        return true;
+    };
+    size_t r = 0;
+    while (r < rows.size() && removedRow(r)) ++r;
+    if (r >= rows.size()) return;
+    // Nothing above it anywhere on the page but running headers (a table here took nothing).
+    for (size_t i = 0; i < words_.size() && words_[i].base > rows[r].base + 0.35f * rows[r].size; ++i)
+        if (!words_[i].removed) return;
+    std::vector<Gap> gaps;
+    for (size_t c = 1; c + 1 < xs.size(); ++c) gaps.push_back(Gap{xs[c], xs[c]});
+    const auto fits = [&](size_t q) {
+        // Every word inside one column, two columns filled, and cells apart by more than a word
+        // space (a short line of prose can fall into two columns).
+        int occupied = 0, last = -1;
+        float right = -INFINITY;
+        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            if (w.x0 < xa || w.x1 > xb) return false;
+            for (size_t c = 1; c + 1 < xs.size(); ++c)
+                if (w.x0 < xs[c] - 1 && w.x1 > xs[c] + 1) return false;
+            const int col = ColumnOf(gaps, (w.x0 + w.x1) / 2);
+            if (col != last) {
+                if (last >= 0 && w.x0 - right < 0.5f * w.size) return false;
+                occupied++, last = col;
+            }
+            right = std::fmax(right, w.x1);
+        }
+        return occupied >= 2;
+    };
+    size_t e = r;
+    while (e < rows.size() && fits(e) &&
+           (e == r || rows[e - 1].bottom - rows[e].top < 1.6f * std::fmax(rows[e - 1].size, rows[e].size)))
+        ++e;
+    if (e > r && Free(xa, rows[e - 1].bottom, xb, rows[r].top))
+        TextGrid(rows, rowWords, r, e, gaps, TableKind::Ruled, 0, xa, xb);
+}
+
+void Detector::MarkUsed(const Grid& g) {
+    auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
+    for (size_t i = static_cast<size_t>(it - words_.begin()); i < words_.size() && words_[i].base >= g.y0 - 20; ++i) {
+        const TWord& w = words_[i];
+        const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+        if (cx >= g.x0 && cx <= g.x1 && cy >= g.y0 && cy <= g.y1) wordUsed_[i] = 1;
+    }
+}
+
+// Borderless tables: runs of rows that split into the same columns, kept only when confident.
+// Confidence comes from Camelot-style stream evidence (algorithms §6.7): several rows, filled cells,
+// column edges aligned left, right or centred, numeric cells, an even row pitch.
+void Detector::Borderless() {
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    BuildRows(-INFINITY, INFINITY, -INFINITY, INFINITY, rows, rowWords);
+    if (rows.size() < 3 || rows.size() > 4000) return;
+    // Rows that split at a wide gap (at least an em: wider than any word space) and hold no code.
+    std::vector<uint8_t> split(rows.size(), 0);
+    for (size_t r = 0; r < rows.size(); ++r) {
+        int segments = 1;
+        bool mono = false;
+        float right = -INFINITY;
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            mono = mono || w.mono;
+            if (right > -INFINITY && w.x0 - right >= rows[r].size) segments++;
+            right = std::fmax(right, w.x1);
+        }
+        split[r] = segments >= 2 && !mono;
+    }
+    std::vector<Gap> gaps, trial;
+    std::string scratch, cellText;
+    std::vector<float> lefts, rights, centres, pitches;
+    size_t r = 0;
+    while (r < rows.size() && grids_.size() < static_cast<size_t>(kMaxTablesPerPage)) {
+        if (!split[r]) {
+            ++r;
+            continue;
+        }
+        const float em = rows[r].size;
+        const float minGap = std::fmax(4.0f, 1.0f * em);
+        float xa = rows[r].x0 - 1, xb = rows[r].x1 + 1;
+        Columns(rows, rowWords, r, r + 1, xa, xb, minGap, gaps);
+        size_t e = r + 1;
+        while (e < rows.size() && split[e] && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
+               std::fabs(rows[e].size - em) <= 0.2f * em) {
+            const float na = std::fmin(xa, rows[e].x0 - 1), nb = std::fmax(xb, rows[e].x1 + 1);
+            if (!Columns(rows, rowWords, r, e + 1, na, nb, minGap, trial) || !KeepsGaps(gaps, trial)) break;
+            gaps = trial;
+            xa = na, xb = nb;
+            ++e;
+        }
+        const size_t begin = r;
+        r = e;
+        const int n = static_cast<int>(e - begin), m = static_cast<int>(gaps.size()) + 1;
+        if (n < 3 || m < 2 || m > kMaxTableCols) continue;
+        if (Texty(rows, rowWords, begin, e, gaps, em, false) || ListLike(rows, rowWords, begin, e, gaps)) continue;
+        // Cells: filled, numeric; column edges.
+        int filled = 0, numeric = 0, aligned = 0, cellWords = 0;
+        for (int c = 0; c < m; ++c) {
+            lefts.clear(), rights.clear(), centres.clear();
+            for (size_t q = begin; q < e; ++q) {
+                float a = INFINITY, b = -INFINITY;
+                cellText.clear();
+                for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+                    const TWord& w = words_[rowWords[k]];
+                    if (ColumnOf(gaps, (w.x0 + w.x1) / 2) != c) continue;
+                    a = std::fmin(a, w.x0), b = std::fmax(b, w.x1);
+                    cellText += WordText(w, scratch);
+                    cellWords++;
+                }
+                if (!(b > a)) continue;
+                filled++;
+                if (Numeric(cellText)) numeric++;
+                lefts.push_back(a), rights.push_back(b), centres.push_back((a + b) / 2);
+            }
+            const auto agree = [](std::vector<float>& v, float tol) {
+                if (v.size() < 2) return false;
+                std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2), v.end());
+                const float median = v[v.size() / 2];
+                size_t near = 0;
+                for (float x : v) near += std::fabs(x - median) <= tol;
+                return near * 5 >= v.size() * 4;
+            };
+            if (agree(lefts, 2) || agree(rights, 2) || agree(centres, 3)) aligned++;
+        }
+        pitches.clear();
+        for (size_t q = begin + 1; q < e; ++q) pitches.push_back(rows[q - 1].base - rows[q].base);
+        float mean = 0, var = 0;
+        for (float p : pitches) mean += p;
+        mean /= float(pitches.size());
+        for (float p : pitches) var += (p - mean) * (p - mean);
+        const float cv = mean > 0 ? std::sqrt(var / float(pitches.size())) / mean : 1;
+        const float fill = float(filled) / float(n * m);
+        const float numericShare = filled ? float(numeric) / float(filled) : 0;
+        // Short cells: running text has several words to a line.
+        const float wordsPerCell = filled ? float(cellWords) / float(filled) : 0;
+        const bool high = fill >= 0.75f && aligned == m && cv <= 0.2f && wordsPerCell <= 4 &&
+                          (m >= 3 ? numericShare >= 0.2f || n >= 4 : numericShare >= 0.3f);
+        const bool moderate = !high && fill >= 0.5f && aligned >= m - 1 && cv <= 0.35f && wordsPerCell <= 3 &&
+                              numericShare >= 0.2f;
+        const float y0 = rows[e - 1].bottom, y1 = rows[begin].top;
+        if (!Free(xa, y0, xb, y1)) continue;
+        if (high) {
+            TextGrid(rows, rowWords, begin, e, gaps, TableKind::Borderless, 0, xa, xb);
+        } else if (moderate) {
+            Grid g;
+            g.kind = TableKind::Possible;
+            g.x0 = xa, g.x1 = xb, g.y0 = y0, g.y1 = y1;
+            g.size = em;
+            grids_.push_back(std::move(g));
+        }
+    }
+}
+
+void Detector::Commit() {
+    // The continuation for the next page: the lowest table, when no text follows it on this page
+    // but running footers.
+    continuation_.valid = false;
+    const Grid* lowest = nullptr;
+    for (const Grid& g : grids_)
+        if (g.kind != TableKind::Possible && (!lowest || g.y0 < lowest->y0)) lowest = &g;
+    if (lowest) {
+        bool last = true;
+        for (size_t i = 0; i < words_.size() && last; ++i)
+            if (!words_[i].removed && !wordUsed_[i] && words_[i].base < lowest->y0) last = false;
+        if (last) {
+            continuation_.valid = true;
+            continuation_.x0 = lowest->x0, continuation_.x1 = lowest->x1;
+            continuation_.xs = lowest->xs;
+        }
+    }
+    if (grids_.empty()) return;
+    for (Grid& g : grids_)
+        if (g.cells.empty() && g.kind != TableKind::Possible) ComputeSpans(g);
+    // Which grid and cell each glyph of each line falls in; lines mostly inside a grid move there.
+    struct Piece {
+        uint32_t grid, cell, line;
+        float base, x0;
+        uint32_t first, count;  // pieceGlyphs[first, first + count)
+    };
+    std::vector<Piece> pieces;
+    std::vector<uint32_t> pieceGlyphs;
+    std::vector<int32_t> glyphCell;  // per glyph of the current line: grid * 65536 + cell, or -1
+    const uint32_t lineCount = static_cast<uint32_t>(page_.lines.size());
+    for (uint32_t li = 0; li < lineCount; ++li) {
+        const Line& line = page_.lines[li];
+        if (line.dir != 0 || line.count == 0 || (line.flags & (kLineTableCell | kLineTableAnchor))) continue;
+        bool near = false;
+        for (const Grid& g : grids_)
+            if (g.kind != TableKind::Possible && Overlaps(g, line.u0, line.vb, line.u1, line.vt)) near = true;
+        if (!near) continue;
+        glyphCell.assign(line.count, -1);
+        uint32_t in = 0;
+        for (uint32_t k = 0; k < line.count; ++k) {
+            const Glyph& gl = page_.glyphs[page_.lineGlyphs[line.first + k]];
+            const float cx = (gl.x0 + gl.x1) / 2, cy = (gl.y0 + gl.y1) / 2;
+            for (uint32_t gi = 0; gi < grids_.size(); ++gi) {
+                const Grid& g = grids_[gi];
+                int r = 0, c = 0;
+                if (g.kind == TableKind::Possible || !Locate(g, cx, cy, r, c)) continue;
+                glyphCell[k] = static_cast<int32_t>(gi * 65536u + static_cast<uint32_t>(g.owner[static_cast<size_t>(r * g.Cols() + c)]));
+                in++;
+                break;
+            }
+        }
+        if (in * 2 < line.count) continue;
+        // Glyphs outside every cell follow their neighbour.
+        for (uint32_t k = 1; k < line.count; ++k)
+            if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k - 1];
+        for (uint32_t k = line.count - 1; k-- > 0;)
+            if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k + 1];
+        if (line.flags & kLineRemoved) restored_++;
+        page_.lines[li].flags = static_cast<uint16_t>((page_.lines[li].flags | kLineTableCell) & ~kLineRemoved);
+        uint32_t k = 0;
+        while (k < line.count) {
+            const int32_t id = glyphCell[k];
+            Piece p;
+            p.grid = static_cast<uint32_t>(id) / 65536u;
+            p.cell = static_cast<uint32_t>(id) % 65536u;
+            p.line = li;
+            p.base = line.baseline;
+            p.first = static_cast<uint32_t>(pieceGlyphs.size());
+            p.x0 = page_.glyphs[page_.lineGlyphs[line.first + k]].x0;
+            while (k < line.count && glyphCell[k] == id) {
+                pieceGlyphs.push_back(page_.lineGlyphs[line.first + k]);
+                ++k;
+            }
+            p.count = static_cast<uint32_t>(pieceGlyphs.size()) - p.first;
+            pieces.push_back(p);
+        }
+    }
+    std::sort(pieces.begin(), pieces.end(), [](const Piece& a, const Piece& b) {
+        if (a.grid != b.grid) return a.grid < b.grid;
+        if (a.cell != b.cell) return a.cell < b.cell;
+        if (a.base != b.base) return a.base > b.base;
+        return a.x0 < b.x0;
+    });
+    size_t at = 0;
+    for (uint32_t gi = 0; gi < grids_.size(); ++gi) {
+        const Grid& g = grids_[gi];
+        Table t;
+        t.x0 = g.x0, t.y0 = g.y0, t.x1 = g.x1, t.y1 = g.y1;
+        t.rows = static_cast<uint16_t>(std::max(0, g.Rows()));
+        t.cols = static_cast<uint16_t>(std::max(0, g.Cols()));
+        t.headerRows = g.headerRows;
+        t.kind = static_cast<uint8_t>(g.kind);
+        t.firstCell = static_cast<uint32_t>(page_.tableCells.size());
+        t.cellCount = static_cast<uint32_t>(g.cells.size());
+        t.firstLine = static_cast<uint32_t>(page_.lines.size());
+        float size = g.size;
+        for (uint32_t ci = 0; ci < g.cells.size(); ++ci) {
+            TableCell cell;
+            cell.row = g.cells[ci].r, cell.col = g.cells[ci].c, cell.rowSpan = g.cells[ci].rs, cell.colSpan = g.cells[ci].cs;
+            cell.first = static_cast<uint32_t>(page_.lines.size());
+            while (at < pieces.size() && pieces[at].grid == gi && pieces[at].cell == ci) {
+                const Piece& p = pieces[at++];
+                const Line& src = page_.lines[p.line];
+                Line l;
+                l.baseline = src.baseline;
+                l.size = src.size;
+                l.dir = 0;
+                l.first = static_cast<uint32_t>(page_.lineGlyphs.size());
+                l.count = p.count;
+                l.u0 = INFINITY, l.u1 = -INFINITY, l.vb = INFINITY, l.vt = -INFINITY;
+                uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace;
+                for (uint32_t k = 0; k < p.count; ++k) {
+                    const uint32_t gi2 = pieceGlyphs[p.first + k];
+                    const Glyph& gl = page_.glyphs[gi2];
+                    page_.lineGlyphs.push_back(gi2);
+                    l.u0 = std::fmin(l.u0, gl.u0), l.u1 = std::fmax(l.u1, gl.u1);
+                    l.vb = std::fmin(l.vb, gl.vb), l.vt = std::fmax(l.vt, gl.vt);
+                    all &= gl.flags;
+                }
+                l.chars = p.count;
+                l.flags = static_cast<uint16_t>(kLineTableCell | (src.flags & (kLineArtifact | kLineInvisible)));
+                if (all & kGlyphBold) l.flags |= kLineAllBold;
+                if (all & kGlyphItalic) l.flags |= kLineAllItalic;
+                if (all & kGlyphMonospace) l.flags |= kLineAllMono;
+                if (size <= 0) size = l.size;
+                page_.lines.push_back(l);
+            }
+            cell.count = static_cast<uint32_t>(page_.lines.size()) - cell.first;
+            page_.tableCells.push_back(cell);
+        }
+        while (at < pieces.size() && pieces[at].grid == gi) ++at;  // cells past the grid (none)
+        t.lineCount = static_cast<uint32_t>(page_.lines.size()) - t.firstLine;
+        Line anchor;
+        anchor.u0 = t.x0, anchor.u1 = t.x1, anchor.vb = t.y0, anchor.vt = t.y1;
+        anchor.size = size > 0 ? size : bodySize_;
+        anchor.baseline = t.y1 - anchor.size;
+        if (g.kind == TableKind::Possible) {
+            // Its text stays in the flow: the anchor (the comment) is a sliver just above it.
+            anchor.vb = t.y1 + 0.2f, anchor.vt = t.y1 + 0.5f, anchor.baseline = t.y1 + 0.2f;
+        } else if (t.lineCount == 0) {
+            // No text after all: nothing to write.
+            page_.tableCells.resize(t.firstCell);
+            continue;
+        }
+        anchor.first = static_cast<uint32_t>(page_.tables.size());
+        anchor.count = 0;
+        anchor.flags = kLineTableAnchor;
+        page_.tables.push_back(t);
+        page_.lines.push_back(anchor);
+    }
+}
+
+int Detector::Run() {
+    CollectWords();
+    if (words_.empty()) {
+        continuation_.valid = false;
+        return 0;
+    }
+    CollectEdges(page_, h_, v_);
+    Lattices();
+    RuleStacks();
+    Continue();
+    Borderless();
+    Commit();
+    return restored_;
+}
+
+void AppendHtmlEscaped(std::string_view t, std::string& out) {
+    for (char c : t) {
+        switch (c) {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        default: out.push_back(c); break;
+        }
+    }
+}
+
+// A cell's plain text: its lines joined by spaces, a line-end hyphen before a lowercase letter
+// joining the halves of the word.
+void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::string& scratch) {
+    out.clear();
+    for (uint32_t l = c.first; l < c.first + c.count; ++l) {
+        LineText(page, page.lines[l], scratch);
+        if (l > c.first) {
+            const unsigned char n0 = scratch.empty() ? 0 : static_cast<unsigned char>(scratch[0]);
+            if (out.size() >= 2 && out.back() == '-' && n0 >= 'a' && n0 <= 'z' &&
+                static_cast<unsigned char>(out[out.size() - 2]) >= 'a')
+                out.pop_back();
+            else
+                out.push_back(' ');
+        }
+        out += scratch;
+    }
+}
+
+// How many leading rows of `part` repeat the header of `head` (a header repeated on each page).
+uint16_t RepeatedHeader(const TablePart& head, const TablePart& part) {
+    const uint16_t n = std::max<uint16_t>(1, head.table->headerRows);
+    if (part.table->rows <= n || head.table->rows < n || part.table->cols != head.table->cols) return 0;
+    std::string a, b, scratch;
+    for (uint32_t i = 0; i < head.table->cellCount; ++i) {
+        const TableCell& hc = head.page->tableCells[head.table->firstCell + i];
+        if (hc.row >= n) break;
+        if (i >= part.table->cellCount) return 0;
+        const TableCell& pc = part.page->tableCells[part.table->firstCell + i];
+        if (pc.row != hc.row || pc.col != hc.col || pc.colSpan != hc.colSpan || pc.rowSpan != hc.rowSpan) return 0;
+        CellPlain(*head.page, hc, a, scratch);
+        CellPlain(*part.page, pc, b, scratch);
+        if (a != b) return 0;
+    }
+    return n;
+}
+
+} // namespace
+
+int DetectTables(PageData& page, TableContinuation& continuation) {
+    if (page.lines.empty()) {
+        continuation.valid = false;
+        return 0;
+    }
+    Detector detector(page, continuation);
+    return detector.Run();
+}
+
+bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockLine>& lines, const Block& previous,
+                    uint32_t page, uint32_t table) {
+    if (page == 0 || page >= pages.size() || table >= pages[page].tables.size()) return false;
+    const Table& next = pages[page].tables[table];
+    for (uint32_t i = previous.first + previous.count; i-- > previous.first;) {
+        const BlockLine& bl = lines[i];
+        const Line& line = pages[bl.page].lines[bl.line];
+        if (!(line.flags & kLineTableAnchor)) continue;
+        const Table& last = pages[bl.page].tables[line.first];
+        const uint8_t possible = static_cast<uint8_t>(TableKind::Possible);
+        return bl.page + 1 == page && last.kind != possible && next.kind != possible && last.cols == next.cols;
+    }
+    return false;
+}
+
+bool TableNeedsHtml(const PageData& page, const Table& table) {
+    for (uint32_t i = 0; i < table.cellCount; ++i) {
+        const TableCell& c = page.tableCells[table.firstCell + i];
+        if (c.rowSpan > 1 || c.colSpan > 1) return true;
+    }
+    return false;
+}
+
+void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
+    if (parts.empty()) return;
+    const uint16_t cols = parts[0].table->cols;
+    bool first = true;
+    for (size_t p = 0; p < parts.size(); ++p) {
+        const TablePart& part = parts[p];
+        const Table& table = *part.table;
+        const uint16_t skip = p > 0 ? RepeatedHeader(parts[0], part) : 0;
+        uint32_t i = 0;
+        for (uint16_t r = 0; r < table.rows; ++r) {
+            const bool write = r >= skip;
+            if (write) {
+                if (!first) out.push_back('\n');
+                out += "|";
+            }
+            for (uint16_t c = 0; c < cols; ++c) {
+                if (write) out.push_back(' ');
+                if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
+                    part.page->tableCells[table.firstCell + i].col == c) {
+                    if (write)
+                        for (char ch : std::string_view(part.cellText[i])) {
+                            if (ch == '|') out.push_back('\\');
+                            out.push_back(ch == '\n' ? ' ' : ch);
+                        }
+                    ++i;
+                }
+                if (write) out += " |";
+            }
+            if (write && first) {
+                out += "\n|";
+                for (uint16_t c = 0; c < cols; ++c) out += " --- |";
+                first = false;
+            }
+        }
+    }
+}
+
+void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out) {
+    if (parts.empty()) return;
+    const uint16_t header = std::max<uint16_t>(1, parts[0].table->headerRows);
+    std::string text, scratch;
+    out += "<table>";
+    for (size_t p = 0; p < parts.size(); ++p) {
+        const PageData& page = *parts[p].page;
+        const Table& table = *parts[p].table;
+        const uint16_t skip = p > 0 ? RepeatedHeader(parts[0], parts[p]) : 0;
+        uint32_t i = 0;
+        for (uint16_t r = 0; r < table.rows; ++r) {
+            const bool write = r >= skip;
+            const char* tag = p == 0 && r < header ? "th" : "td";
+            if (write) out += "\n<tr>";
+            while (i < table.cellCount && page.tableCells[table.firstCell + i].row == r) {
+                const TableCell& c = page.tableCells[table.firstCell + i++];
+                if (!write) continue;
+                out.push_back('<');
+                out += tag;
+                if (c.colSpan > 1) out += " colspan=\"" + std::to_string(c.colSpan) + "\"";
+                if (c.rowSpan > 1) out += " rowspan=\"" + std::to_string(c.rowSpan) + "\"";
+                out.push_back('>');
+                CellPlain(page, c, text, scratch);
+                AppendHtmlEscaped(text, out);
+                out += "</";
+                out += tag;
+                out.push_back('>');
+            }
+            if (write) out += "</tr>";
+        }
+    }
+    out += "\n</table>";
+}
+
+} // namespace RayoPdf::Layout

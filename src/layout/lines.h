@@ -29,6 +29,16 @@ void BuildLines(PageData& page);
 // The text of a line with word breaks as single spaces, from its glyph `skip` on.
 void LineText(const PageData& page, const Line& line, std::string& out, uint32_t skip = 0);
 
+// A superscript of `line`: a visible glyph smaller than the line's size and raised above its
+// baseline (the writer's <sup>, and footnote references). OCR layers fit a size to every word
+// box, so their sizes say nothing about scripts.
+inline bool IsSuperscript(const Glyph& g, const Line& line) {
+    return g.size < 0.85f * line.size && !(g.flags & kGlyphInvisible) && g.v - line.baseline > 0.2f * line.size;
+}
+inline bool IsSubscript(const Glyph& g, const Line& line) {
+    return g.size < 0.85f * line.size && !(g.flags & kGlyphInvisible) && g.v - line.baseline < -0.1f * line.size;
+}
+
 // A list marker (algorithms §6.3): a bullet glyph, an enumerator (1. 1) (1) a) (a) i. iv)), or a
 // task box (☐ ☑ ☒).
 enum class Marker : uint8_t { None, Bullet, Number, Letter, Roman, TaskOpen, TaskDone };

@@ -2,6 +2,7 @@
 #include "layout/semantics.h"
 
 #include "layout/lines.h"
+#include "layout/tables.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +15,10 @@ namespace {
 
 constexpr float kMonoShare = 0.8f;   // a code line: at least this share of monospace characters
 constexpr float kHeadingSize = 1.12f; // a heading candidate: at least this times the body size
+// The top heading level is a title (H1) from this times the body size up. Measured first levels:
+// LaTeX \section 1.44, typst 1.40, LibreOffice (pandoc's reference.docx) 1.67, browsers 2.0;
+// second levels: LaTeX \subsection and typst 1.20, LibreOffice 1.33.
+constexpr float kTitleSize = 1.38f;
 
 struct Info {
     uint32_t page = 0, line = 0;
@@ -35,6 +40,9 @@ struct Info {
     bool hasLetter = false;
     bool rowPeer = false;    // another line of its style shares its baseline (a table row)
     bool numbering = false;  // only a section or item number ("1.5.", "IV", "(3)")
+    uint32_t note = 0;       // the number of the footnote the line starts or continues
+    bool noteStart = false;
+    uint32_t noteSkip = 0;   // marker glyphs of a note's first line
     bool listStart() const { return marker != Marker::None; }
 };
 
@@ -197,6 +205,14 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
                                                     : std::string_view());
         info.startsLower = IsLower(cpFirst);
     }
+    if (line.flags & kLineRtl) {
+        // Right-to-left paragraphs align, indent and hang their markers on the right: the
+        // paragraph and list rules read them in a mirrored frame.
+        info.u0 = -line.u1, info.u1 = -line.u0;
+        info.markerU0 = -line.u1;
+        info.textU0 = info.skip < line.count ? -page.glyphs[page.lineGlyphs[line.first + info.skip]].u1 : -line.u0;
+        return;
+    }
     if (line.dir != 0) return;
     // Vector marks left of the line (algorithms §6.3: small filled shapes are bullets; RayoMD draws
     // bullets and task boxes as paths).
@@ -256,6 +272,7 @@ struct RawBlock {
     float right = 0;
     bool mono = false;
     bool bold = false;
+    uint32_t note = 0;  // a footnote's lines
 };
 
 bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next) {
@@ -266,6 +283,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
         return true;
     if (next.listStart()) return false;
     if ((next.flags ^ last.flags) & kLineTable) return false;
+    if ((next.flags | last.flags) & kLineAnchor) return false;
     if (next.quoteBars != last.quoteBars) return false;
     const float em = std::fmax(last.size, next.size);
     // A size change starts a block, except in an OCR layer whose sizes are fitted word boxes.
@@ -299,12 +317,184 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     return true;
 }
 
+// The key of a footnote marker: its number (1-999), or 1000 + 8 * symbol + repeats for * † ‡ § ¶
+// written up to three times; 0 for anything else.
+uint32_t NoteKey(std::string_view t) {
+    if (t.empty() || t.size() > 9) return 0;
+    if (t[0] >= '1' && t[0] <= '9') {
+        if (t.size() > 3) return 0;
+        uint32_t value = 0;
+        for (char c : t) {
+            if (c < '0' || c > '9') return 0;
+            value = value * 10 + static_cast<uint32_t>(c - '0');
+        }
+        return value;
+    }
+    static const std::string_view kSymbols[] = {"*", "\xE2\x80\xA0", "\xE2\x80\xA1", "\xC2\xA7", "\xC2\xB6"};
+    for (uint32_t s = 0; s < 5; ++s) {
+        const std::string_view symbol = kSymbols[s];
+        uint32_t repeats = 0;
+        size_t at = 0;
+        while (at < t.size() && t.substr(at, symbol.size()) == symbol) at += symbol.size(), ++repeats;
+        if (repeats > 0 && repeats <= 3 && at == t.size()) return 1000 + 8 * s + repeats;
+    }
+    return 0;
+}
+
+// Superscript glyphs [k, end) of `line` from `k` (at most 8), their text in `text`.
+uint32_t SuperscriptRun(const PageData& page, const Line& line, uint32_t k, std::string& text) {
+    text.clear();
+    uint32_t end = k;
+    while (end < line.count && end - k < 8) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + end]];
+        if (!IsSuperscript(g, line) || (end > k && (g.flags & kGlyphSpaceBefore))) break;
+        text.append(page.GlyphText(g));
+        ++end;
+    }
+    return end;
+}
+
+// The line ends in a back link to its reference (↩, as HTML endnotes carry).
+bool EndsInBackLink(const PageData& page, const Line& line) {
+    for (uint32_t k = line.count; k-- > 0 && k + 3 > line.count;) {
+        const std::string_view t = page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]]);
+        if (t.substr(0, 3) == "\xE2\x86\xA9") return true;  // U+21A9
+    }
+    return false;
+}
+
+constexpr size_t kMaxNoteRefs = 1u << 14;
+constexpr size_t kNoteScan = 64;  // references of one key looked at per note
+
+// Footnotes (algorithms §6.9). References are superscript runs inside lines whose text is a note
+// key. A note starts a line with a marker whose key matches an unused reference: a superscript
+// marker any size (LibreOffice sets notes in the body size), or an enumerator ("1.") in a smaller
+// size or before a back link (HTML endnotes), so that body-size numbered lists stay lists. A page
+// footnote's reference sits on its page above it; an enumerated endnote's on an earlier page,
+// and the line before the endnotes is no heading ("References" sections keep their list). Lines
+// of the note's size right below it continue it.
+void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, float body, std::vector<NoteRef>& out) {
+    struct Ref {
+        uint32_t info, page, glyph, count, key;
+        float baseline, size;  // of the reference's line
+        bool used;
+    };
+    std::vector<Ref> refs;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> byKey;
+    std::string text;
+    for (uint32_t i = 0; i < infos.size() && refs.size() < kMaxNoteRefs; ++i) {
+        const PageData& page = pages[infos[i].page];
+        const Line& line = page.lines[infos[i].line];
+        uint32_t k = 0;
+        while (k < line.count && IsSuperscript(page.glyphs[page.lineGlyphs[line.first + k]], line)) ++k;
+        while (k < line.count && refs.size() < kMaxNoteRefs) {
+            if (!IsSuperscript(page.glyphs[page.lineGlyphs[line.first + k]], line)) {
+                ++k;
+                continue;
+            }
+            const uint32_t end = SuperscriptRun(page, line, k, text);
+            const uint32_t key = NoteKey(text);
+            if (key) {
+                byKey[key].push_back(static_cast<uint32_t>(refs.size()));
+                refs.push_back(Ref{i, infos[i].page, page.lineGlyphs[line.first + k], end - k, key, line.baseline,
+                                   line.size, false});
+            }
+            k = end;
+            while (k < line.count && IsSuperscript(page.glyphs[page.lineGlyphs[line.first + k]], line)) ++k;
+        }
+    }
+    if (refs.empty()) return;
+
+    uint32_t number = 0;
+    uint32_t current = 0;  // the note being continued
+    float noteSize = 0, lastBaseline = 0;
+    uint32_t notePage = 0;
+    for (uint32_t i = 0; i < infos.size(); ++i) {
+        Info& in = infos[i];
+        const PageData& page = pages[in.page];
+        const Line& line = page.lines[in.line];
+        // A marker? Sizes compare with the reference's line: notes may hold most of a short
+        // document's characters, and so define its body size.
+        uint32_t key = 0, skip = 0;
+        bool enumerated = false, backLink = false;
+        if (line.count >= 2) {
+            const uint32_t end = SuperscriptRun(page, line, 0, text);
+            if (end > 0 && end < line.count) {
+                key = NoteKey(text);
+                skip = end;
+            } else if (in.marker == Marker::Number && in.skip < line.count && in.value >= 1 && in.value <= 999) {
+                key = in.value;
+                skip = in.skip;
+                enumerated = true;
+                // The back link ends the note's last line.
+                for (uint32_t j = i; j < infos.size() && j < i + 8 && !backLink; ++j) {
+                    if (j > i && (infos[j].listStart() || infos[j].page != in.page)) break;
+                    backLink = EndsInBackLink(pages[infos[j].page], pages[infos[j].page].lines[infos[j].line]);
+                }
+            }
+        }
+        uint32_t match = UINT32_MAX;
+        if (key) {
+            auto it = byKey.find(key);
+            if (it != byKey.end()) {
+                // Endnotes need a non-heading line before them.
+                bool endnoteContext = false;
+                if (enumerated && i > 0) {
+                    const Info& before = infos[i - 1];
+                    endnoteContext = before.note != 0 ||
+                                     (before.size < kHeadingSize * body &&
+                                      !((before.flags & kLineAllBold) && before.chars <= 60 && !before.endsTerminal));
+                }
+                size_t scanned = 0;
+                for (uint32_t r : it->second) {
+                    if (refs[r].used) continue;
+                    if (++scanned > kNoteScan || refs[r].info >= i) break;
+                    const Ref& ref = refs[r];
+                    if (in.size > 1.05f * ref.size || (enumerated && !backLink && in.size > 0.92f * ref.size)) continue;
+                    const bool samePage = ref.page == in.page && ref.baseline > in.baseline;
+                    const bool endnote = enumerated && ref.page < in.page && endnoteContext;
+                    if (samePage || endnote) {
+                        match = r;
+                        break;
+                    }
+                }
+            }
+        }
+        if (match != UINT32_MAX) {
+            Ref& r = refs[match];
+            r.used = true;
+            out.push_back(NoteRef{r.page, r.glyph, r.count, ++number});
+            in.note = number;
+            in.noteStart = true;
+            in.noteSkip = skip;
+            current = number;
+            noteSize = in.size;
+            lastBaseline = in.baseline;
+            notePage = in.page;
+            continue;
+        }
+        if (current && line.count > 0 && in.page == notePage && !in.listStart() &&
+            std::fabs(in.size - noteSize) <= 0.15f * noteSize &&
+            in.baseline < lastBaseline && lastBaseline - in.baseline <= 2.4f * noteSize) {
+            in.note = current;
+            lastBaseline = in.baseline;
+            continue;
+        }
+        current = 0;
+    }
+    std::sort(out.begin(), out.end(), [](const NoteRef& a, const NoteRef& b) {
+        return a.page != b.page ? a.page < b.page : a.glyph < b.glyph;
+    });
+}
 } // namespace
 
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
-                 const std::vector<uint8_t>& unmappedPages, std::vector<Block>& blocks, std::vector<BlockLine>& lines) {
+                 const std::vector<uint8_t>& unmappedPages, BlockList& out) {
+    std::vector<Block>& blocks = out.blocks;
+    std::vector<BlockLine>& lines = out.lines;
     blocks.clear();
     lines.clear();
+    out.noteRefs.clear();
 
     // Line facts in reading order.
     std::vector<Info> infos;
@@ -317,6 +507,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const size_t pageFirst = infos.size();
         for (uint32_t li : page.order) {
             infos.emplace_back();
+            const Line& tl = page.lines[li];
+            if (tl.flags & kLineAnchor) {
+                // A table (layout/tables.h) or an image (layout/images.h): no glyphs, only its
+                // place and box.
+                Info& t = infos.back();
+                t.page = p, t.line = li, t.dir = tl.dir, t.flags = tl.flags;
+                t.u0 = tl.u0, t.u1 = tl.u1, t.vb = tl.vb, t.vt = tl.vt, t.baseline = tl.baseline, t.size = tl.size;
+                t.markerU0 = t.textU0 = tl.u0;
+                t.endsTerminal = true;
+                continue;
+            }
             LineInfo(page, p, li, marks, infos.back(), scratch);
         }
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
@@ -334,6 +535,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 if (a.dir != b.dir || std::fabs(a.size - b.size) > 0.03f * a.size) continue;
                 if (a.chars > 60 || b.chars > 60 || a.numbering || b.numbering) continue;
                 if (((a.flags ^ b.flags) & kLineAllBold) || !(b.u0 > a.u1 || b.u1 < a.u0)) continue;
+                if ((a.flags | b.flags) & kLineAnchor) continue;
                 a.rowPeer = b.rowPeer = true;
             }
         }
@@ -358,8 +560,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     const float body = float(bodyKey) / 2;
     const bool monoDocument = totalChars > 0 && monoChars * 10 > totalChars * 6;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
+    FindNotes(pages, infos, body, out.noteRefs);
 
-    // Raw blocks: lines grouped by the paragraph rules (§6.2).
+    // Raw blocks: lines grouped by the paragraph rules (§6.2); a footnote's lines make one block.
     std::vector<RawBlock> raws;
     for (uint32_t i = 0; i < infos.size(); ++i) {
         const Info& in = infos[i];
@@ -367,7 +570,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             RawBlock& b = raws.back();
             const Info& first = infos[b.first];
             const Info& last = infos[b.first + b.count - 1];
-            if (b.first + b.count == i && Continues(b, first, last, in)) {
+            if (b.note != 0 || in.note != 0) {
+                if (b.note == in.note && !in.noteStart && b.first + b.count == i) {
+                    b.count++;
+                    continue;
+                }
+            } else if (b.first + b.count == i && Continues(b, first, last, in)) {
                 if (b.count == 1) {
                     b.pitch = last.baseline - in.baseline;
                     b.bodyU0 = in.u0;
@@ -386,6 +594,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         b.right = in.u1;
         b.mono = in.mono >= kMonoShare && !monoDocument;
         b.bold = (in.flags & kLineAllBold) != 0;
+        b.note = in.note;
         raws.push_back(b);
     }
 
@@ -403,8 +612,10 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     struct Classified {
         BlockKind kind = BlockKind::Paragraph;
         int level = 0;      // outline level, or 0
-        int styleKey = -1;  // heading style: size key * 2 + bold
+        int styleKey = -1;  // heading style above body size: size key * 2 + bold
         bool boldHeading = false;
+        bool bold = false;
+        float size = 0;     // the size of most of its characters
         uint32_t chars = 0;
     };
     std::vector<Classified> kinds(raws.size());
@@ -423,7 +634,21 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (infos[i].chars > sizeVotes) size = infos[i].size, sizeVotes = infos[i].chars;
         }
         k.chars = chars;
-        // Cells of a ruled table stay text (tables are written as such in a later milestone).
+        k.size = size;
+        k.bold = b.bold;
+        if (b.note != 0) {
+            k.kind = BlockKind::Footnote;
+            continue;
+        }
+        if (first.flags & kLineImage) {
+            k.kind = BlockKind::Image;
+            continue;
+        }
+        // Lines of a ruled grid read row by row stay text; a detected table is a block of its own.
+        if (first.flags & kLineTableAnchor) {
+            k.kind = BlockKind::Table;
+            continue;
+        }
         if (first.flags & kLineTable) continue;
         if (b.mono && !monoDocument) {
             k.kind = BlockKind::Code;
@@ -495,27 +720,58 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
     }
 
-    // Heading levels: style keys ranked by size (bold first), below them bold body-size lines;
-    // outline levels where the outline matched (§6.1).
+    // Heading levels (§6.1). Outline levels where the outline matched; a heading the outline
+    // missed takes the level of the last matched heading of its style, else sits one below the
+    // last matched heading. Without the outline: style keys ranked by size (bold first), below
+    // them bold body-size lines.
     std::vector<int> styleKeys;
     for (const Classified& k : kinds)
         if (k.kind == BlockKind::Heading && k.styleKey >= 0 && k.level == 0) styleKeys.push_back(k.styleKey);
     std::sort(styleKeys.begin(), styleKeys.end(), std::greater<int>());
     styleKeys.erase(std::unique(styleKeys.begin(), styleKeys.end()), styleKeys.end());
     std::vector<int> levelOf(raws.size(), 0);
-    for (size_t r = 0; r < raws.size(); ++r) {
-        const Classified& k = kinds[r];
-        if (k.kind != BlockKind::Heading) continue;
-        if (k.level > 0) {
-            levelOf[r] = k.level;
-        } else if (k.styleKey >= 0) {
-            const int rank = static_cast<int>(std::find(styleKeys.begin(), styleKeys.end(), k.styleKey) - styleKeys.begin());
-            levelOf[r] = std::min(rank + 1, 6);
-        } else {
-            levelOf[r] = std::min(static_cast<int>(styleKeys.size()) + 1, 6);
+    {
+        const auto anyStyle = [](const Classified& k) {
+            return static_cast<int>(std::lround(k.size * 2)) * 2 + (k.bold ? 1 : 0);
+        };
+        std::unordered_map<int, int> matchedLevel;  // style -> level of its last outline-matched heading
+        int lastLevel = 0;
+        float lastSize = 0;
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const Classified& k = kinds[r];
+            if (k.kind != BlockKind::Heading) continue;
+            if (k.level > 0) {
+                levelOf[r] = k.level;
+                matchedLevel[anyStyle(k)] = k.level;
+                lastLevel = k.level;
+                lastSize = k.size;
+                continue;
+            }
+            if (lastLevel > 0) {
+                const auto it = matchedLevel.find(anyStyle(k));
+                if (it != matchedLevel.end()) {
+                    levelOf[r] = it->second;
+                    continue;
+                }
+                if (k.size <= lastSize * 1.02f) {
+                    levelOf[r] = std::min(lastLevel + 1, 6);
+                    continue;
+                }
+            }
+            if (k.styleKey >= 0) {
+                const int rank =
+                    static_cast<int>(std::find(styleKeys.begin(), styleKeys.end(), k.styleKey) - styleKeys.begin());
+                levelOf[r] = std::min(rank + 1, 6);
+            } else {
+                levelOf[r] = std::min(static_cast<int>(styleKeys.size()) + 1, 6);
+            }
         }
     }
-    // Never skip a level: the levels in use renumbered 1..n.
+    // Never skip a level: the levels in use renumbered 1..n. Then the top level is made absolute:
+    // it is a title (H1) when set clearly larger than the body, and the sections of a title-less
+    // document (H2) when not, or when one style alone heads several sections (Markdown documents
+    // carry one H1). The outline gives depths, not levels: a title-less document's sections are
+    // its top bookmarks too.
     {
         bool used[8] = {};
         for (size_t r = 0; r < raws.size(); ++r)
@@ -524,21 +780,47 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         int next = 0;
         for (int l = 1; l <= 6; ++l)
             if (used[l]) map[l] = ++next;
-        for (size_t r = 0; r < raws.size(); ++r)
-            if (levelOf[r] > 0) levelOf[r] = map[levelOf[r]];
+        float topSize = 0;
+        int topCount = 0;
+        for (size_t r = 0; r < raws.size(); ++r) {
+            if (levelOf[r] <= 0) continue;
+            levelOf[r] = map[levelOf[r]];
+            if (levelOf[r] == 1) topSize = std::fmax(topSize, kinds[r].size), topCount++;
+        }
+        const bool sections = topCount > 0 && (topSize < kTitleSize * body || (next == 1 && topCount >= 2));
+        if (sections)
+            for (size_t r = 0; r < raws.size(); ++r)
+                if (levelOf[r] > 0) levelOf[r] = std::min(levelOf[r] + 1, 6);
     }
 
-    // Blocks in order, with list nesting, paragraphs inside list items, comments per page.
+    // Blocks in order, with list nesting, paragraphs inside list items, comments per page; footnote
+    // definitions after the last block.
     std::vector<float> markerStack;
     float itemTextU0 = 0;
     uint32_t itemPage = UINT32_MAX;
     int itemDepth = -1;
+    std::vector<Block> notes;
+    std::vector<BlockLine> noteLines;
     size_t r = 0;
     for (uint32_t p = 0; p <= pages.size(); ++p) {
         // Blocks of pages before p.
         while (r < raws.size() && infos[raws[r].first].page < p) {
             const RawBlock& b = raws[r];
             const Info& first = infos[b.first];
+            if (kinds[r].kind == BlockKind::Footnote) {
+                Block note;
+                note.kind = BlockKind::Footnote;
+                note.number = first.note;
+                note.first = static_cast<uint32_t>(noteLines.size());
+                note.count = b.count;
+                note.size = first.size;
+                for (uint32_t i = b.first; i < b.first + b.count; ++i)
+                    noteLines.push_back(BlockLine{infos[i].page, infos[i].line, 0});
+                noteLines[note.first].skip = first.noteSkip;
+                notes.push_back(note);
+                ++r;
+                continue;
+            }
             Block block;
             block.kind = kinds[r].kind;
             block.level = static_cast<uint8_t>(levelOf[r]);
@@ -552,6 +834,16 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 bl.line = infos[i].line;
                 bl.skip = 0;
                 lines.push_back(bl);
+            }
+            if (block.kind == BlockKind::Image) block.number = static_cast<uint32_t>(pages[first.page].number);
+            if (block.kind == BlockKind::Table) {
+                // After the anchor line, the table's cell lines (cell order).
+                const PageData& tp = pages[first.page];
+                block.number = tp.lines[first.line].first;
+                const Table& t = tp.tables[block.number];
+                for (uint32_t l = t.firstLine; l < t.firstLine + t.lineCount; ++l)
+                    lines.push_back(BlockLine{first.page, l, 0});
+                block.count += t.lineCount;
             }
             const float em = first.size;
             if (block.kind == BlockKind::ListItem) {
@@ -589,8 +881,10 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 const BlockLine& pl = lines[prev.first + prev.count - 1];
                 const Info* prevLast = nullptr;
                 // Find the Info of the previous block's last line: it is the one just before b.first
-                // unless a comment intervened.
-                if (b.first > 0) prevLast = &infos[b.first - 1];
+                // unless a comment or footnotes intervened.
+                uint32_t before = b.first;
+                while (before > 0 && infos[before - 1].note != 0) --before;
+                if (before > 0) prevLast = &infos[before - 1];
                 if ((prev.kind == BlockKind::Paragraph || prev.kind == BlockKind::ListItem) && prevLast &&
                     prevLast->page == pl.page && prevLast->line == pl.line && !prevLast->endsTerminal &&
                     first.startsLower && std::fabs(prevLast->size - first.size) <= 0.1f * em &&
@@ -608,20 +902,35 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 ++r;
                 continue;
             }
+            // A table broken across pages: its part here continues the table ending the page before.
+            if (block.kind == BlockKind::Table && !blocks.empty() && blocks.back().kind == BlockKind::Table &&
+                blocks.back().first + blocks.back().count == block.first &&
+                TableContinues(pages, lines, blocks.back(), first.page, block.number)) {
+                blocks.back().count += block.count;
+                ++r;
+                continue;
+            }
             blocks.push_back(block);
             ++r;
         }
         if (p == pages.size()) break;
         // Comments open the page they are about.
         const PageData& page = pages[p];
-        if (page.order.empty() || (p < unmappedPages.size() && unmappedPages[p])) {
+        const bool noText = !page.HasText();
+        if (noText || (p < unmappedPages.size() && unmappedPages[p])) {
             Block c;
             c.kind = BlockKind::Comment;
-            c.level = static_cast<uint8_t>(page.order.empty() ? CommentKind::NoText : CommentKind::Unmapped);
+            c.level = static_cast<uint8_t>(noText ? CommentKind::NoText : CommentKind::Unmapped);
             c.number = static_cast<uint32_t>(page.number);
             c.first = static_cast<uint32_t>(lines.size());
             blocks.push_back(c);
         }
+    }
+    const uint32_t base = static_cast<uint32_t>(lines.size());
+    lines.insert(lines.end(), noteLines.begin(), noteLines.end());
+    for (Block& note : notes) {
+        note.first += base;
+        blocks.push_back(note);
     }
 }
 

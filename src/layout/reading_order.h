@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Page layout (algorithms §5, roadmap D4 step 5): running headers, footers and page numbers
-// removed across pages first (§5.2), then each page's lines put in reading order by recursive
-// XY cuts in the manner of XY-Cut++ (§5.1): lines that span a column gutter are masked as
-// cross-layout separators that cut the page into horizontal bands, and inside a band a vertical
-// cut wins when the whitespace it follows separates columns of running text (Breuel's gutter
-// criterion), otherwise rows are read top to bottom and each row left to right.
+// removed first (§5.2), by repetition across pages and, on any page, by position and style (an
+// outermost row set apart in the margin, or a page number), then each page's lines put in
+// reading order by recursive XY cuts in the manner of XY-Cut++ (§5.1): lines that span a column
+// gutter are masked as cross-layout separators that cut the page into horizontal bands, and
+// inside a band a vertical cut wins when the whitespace it follows separates columns of running
+// text (Breuel's gutter criterion), otherwise rows are read top to bottom and each row left to
+// right. Images join that order afterwards, without changing it.
 #pragma once
 
 #include "layout/page.h"

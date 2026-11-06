@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 using namespace RayoPdf;
@@ -479,6 +480,17 @@ void TestEmbeddedPrograms() {
                                   "dup 65 /Omega put dup 66 /f_l put readonly def\ncurrentfile eexec\n";
         const int t1 = b.AddStream("/Length1 " + std::to_string(clear.size()) + " /Length2 0 /Length3 0", clear);
         f += " /F4 << /Type /Font /Subtype /Type1 /BaseFont /T1 /FontDescriptor << /Flags 4 /FontFile " + Ref(t1) + " >> >>";
+        // Type0 fonts whose ToUnicode lacks a code: one the /W lists, one mapped to U+FFFD.
+        const int partial = b.AddStream("", "1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+                                            "1 beginbfchar <0001> <005A> endbfchar");
+        const int broken = b.AddStream("", "1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+                                           "2 beginbfchar <0001> <005A> <0002> <FFFD> endbfchar");
+        for (const auto& [name, toUnicode, widths] :
+             {std::tuple<const char*, int, const char*>{"F5", partial, " /W [1 [500 600]]"}, {"F6", broken, ""}}) {
+            f += std::string(" /") + name + " << /Type /Font /Subtype /Type0 /BaseFont /Sub /Encoding /Identity-H"
+                 " /ToUnicode " + Ref(toUnicode) + " /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Sub"
+                 " /CIDToGIDMap /Identity" + widths + " /FontDescriptor << /Flags 4 /FontFile2 " + Ref(cid) + " >> >>] >>";
+        }
         return f;
     }, 395);
 
@@ -491,6 +503,14 @@ void TestEmbeddedPrograms() {
     RAYOPDF_CHECK(codes[0].unicode == "A" && codes[1].unicode == "\xE2\x80\xA2" && codes[0].source == UnicodeSource::FontProgram, 399);
     codes = Codes(l.Get("F4"), "AB");
     RAYOPDF_CHECK(codes[0].unicode == "\xE2\x84\xA6" && codes[1].unicode == "fl", 319);
+    // A ToUnicode that lacks a code: the program fills it (§3.1); the mapped code keeps ToUnicode.
+    codes = Codes(l.Get("F5"), "\x00\x01\x00\x02"sv);
+    RAYOPDF_CHECK(codes[0].unicode == "Z" && codes[0].source == UnicodeSource::ToUnicode, 333);
+    RAYOPDF_CHECK(codes[1].unicode == "I" && codes[1].source == UnicodeSource::FontProgram, 334);
+    RAYOPDF_CHECK(Near(codes[1].width, 0.6), 343);
+    codes = Codes(l.Get("F6"), "\x00\x01\x00\x02"sv);
+    RAYOPDF_CHECK(codes[0].unicode == "Z" && codes[1].unicode == "I", 342);
+    RAYOPDF_CHECK(codes[1].source == UnicodeSource::FontProgram, 344);
 }
 
 } // namespace

@@ -46,12 +46,13 @@ function(rayopdf_flags target)
 endfunction()
 
 # One static library per module directory src/<module>/ (every .cpp in it). Dependencies:
-# common <- crypt <- pdf <- text <- layout <- the command line.
-set(RAYOPDF_MODULES common crypt pdf text layout)
+# common <- crypt <- pdf <- text, image <- layout <- the command line.
+set(RAYOPDF_MODULES common crypt pdf text image layout)
 set(RAYOPDF_DEPENDS_crypt common)
 set(RAYOPDF_DEPENDS_pdf crypt common)
 set(RAYOPDF_DEPENDS_text pdf)
-set(RAYOPDF_DEPENDS_layout text)
+set(RAYOPDF_DEPENDS_image pdf)
+set(RAYOPDF_DEPENDS_layout text image)
 foreach(module ${RAYOPDF_MODULES})
     file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/${module}/*.cpp")
     if(sources)
@@ -87,16 +88,20 @@ endif()
 
 if(RAYOPDF_TESTS)
     enable_testing()
-    # Core tests: one executable per module, tests/test_<module>.cpp, linked to its module. Every
-    # check fails with an exit code of its own: crypt 100-199, pdf 200-299, text 300-399,
-    # layout 400-499; tests/verify_cli.py checks the built command line.
-    foreach(module crypt pdf text layout)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_${module}.cpp" AND TARGET rayopdf_${module})
-            add_executable(test_${module} tests/test_${module}.cpp)
-            target_link_libraries(test_${module} PRIVATE rayopdf_${module})
-            target_include_directories(test_${module} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-            rayopdf_flags(test_${module})
-            add_test(NAME ${module} COMMAND test_${module})
+    # Core tests: one executable per file tests/test_<module>[_<part>].cpp, linked to its module.
+    # Every check fails with a code of its own (tests/check.h lists the ranges);
+    # tests/verify_cli.py checks the built command line.
+    file(GLOB test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp")
+    foreach(source ${test_sources})
+        get_filename_component(name ${source} NAME_WE)
+        string(REGEX REPLACE "^test_([a-z]+).*$" "\\1" module ${name})
+        if(TARGET rayopdf_${module})
+            add_executable(${name} ${source})
+            target_link_libraries(${name} PRIVATE rayopdf_${module})
+            target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+            rayopdf_flags(${name})
+            string(REGEX REPLACE "^test_" "" test_name ${name})
+            add_test(NAME ${test_name} COMMAND ${name})
         endif()
     endforeach()
     find_package(Python3 COMPONENTS Interpreter)

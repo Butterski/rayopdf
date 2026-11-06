@@ -15,6 +15,14 @@ This repository includes third-party material:
   src/core/encodings.js, metrics.js, standard_fonts.js, cff_parser.js (CFFStandardStrings),
   charsets.js, string_utils.js (PDFStringTranslateTable) and fonts_utils.js
   (MacStandardGlyphOrdering).
+- src/text/bidi_data.cpp holds data generated from the Unicode Character Database 16.0.0
+  (extracted/DerivedBidiClass.txt, BidiMirroring.txt), https://www.unicode.org/Public/16.0.0/ucd/,
+  Copyright 1991-2026 Unicode, Inc., under the Unicode License v3. See
+  third_party/licenses/unicode.txt.
+- src/text/cjk_data.cpp holds data generated from Adobe's CMap resources (cid2code.txt and CMaps
+  of Adobe-Japan1-7, -GB1-6, -CNS1-7, -Korea1-2), https://github.com/adobe-type-tools/cmap-resources
+  commit f5cf3bc, Copyright 1990-2023 Adobe, licensed under the BSD 3-Clause License. See
+  third_party/licenses/cmap-resources.txt.
 - eval/fixtures/md/d01-tester.md is derived from RayoMD's tester.md
   (Apache-2.0, https://github.com/Butterski/rayomd, commit ef106ca).
 - eval/fixtures/md/d05-book-chapter.md holds chapters I and II of "Alice's Adventures in
