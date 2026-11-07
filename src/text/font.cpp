@@ -184,6 +184,59 @@ std::string_view EncodingName(Tables::Encoding encoding, uint32_t code) {
     return index == Tables::kNoName ? std::string_view() : Tables::GlyphName(index);
 }
 
+// The glyph-name text (GlyphNameToUnicode) of each code of a base encoding, and whether it is
+// usable: the same for every font of that encoding, so it is made once per process (per encoding
+// and name rule, on first use) instead of resolving the 256 names again for every font.
+struct EncodingTexts {
+    std::string pool;
+    uint32_t offset[256] = {};
+    uint16_t length[256] = {};
+    bool named[256] = {};   // the code has a name and GlyphNameToUnicode gave it text
+    bool usable[256] = {};  // and UsableText accepts that text
+    std::string_view Text(int code) const { return std::string_view(pool.data() + offset[code], length[code]); }
+};
+
+EncodingTexts MakeEncodingTexts(Tables::Encoding encoding, bool zapf) {
+    EncodingTexts out;
+    std::string text;
+    for (int c = 0; c < 256; ++c) {
+        const std::string_view name = EncodingName(encoding, static_cast<uint32_t>(c));
+        text.clear();
+        if (name.empty() || !GlyphNameToUnicode(name, zapf, text)) continue;
+        out.named[c] = true;
+        out.usable[c] = UsableText(text);
+        out.offset[c] = static_cast<uint32_t>(out.pool.size());
+        out.length[c] = static_cast<uint16_t>(text.size());
+        out.pool += text;
+    }
+    return out;
+}
+
+template <int kEncoding, bool kZapf>
+const EncodingTexts& CachedEncodingTexts() {
+    static const EncodingTexts texts = MakeEncodingTexts(static_cast<Tables::Encoding>(kEncoding), kZapf);
+    return texts;
+}
+
+template <bool kZapf>
+const EncodingTexts& EncodingTextsFor(Tables::Encoding encoding) {
+    static_assert(Tables::kEncodingCount == 7, "one case per encoding");
+    switch (encoding) {
+    case Tables::Encoding::Standard: return CachedEncodingTexts<0, kZapf>();
+    case Tables::Encoding::MacRoman: return CachedEncodingTexts<1, kZapf>();
+    case Tables::Encoding::WinAnsi: return CachedEncodingTexts<2, kZapf>();
+    case Tables::Encoding::MacExpert: return CachedEncodingTexts<3, kZapf>();
+    case Tables::Encoding::Symbol: return CachedEncodingTexts<4, kZapf>();
+    case Tables::Encoding::ZapfDingbats: return CachedEncodingTexts<5, kZapf>();
+    case Tables::Encoding::CffExpert: break;
+    }
+    return CachedEncodingTexts<6, kZapf>();
+}
+
+const EncodingTexts& EncodingTextsFor(Tables::Encoding encoding, bool zapf) {
+    return zapf ? EncodingTextsFor<true>(encoding) : EncodingTextsFor<false>(encoding);
+}
+
 // The standard 14 font whose metrics stand in for a font without /Widths: by name or alias, else
 // by family words in the name (Courier/Mono, Times/Serif, Symbol, Dingbats, else Helvetica) with
 // the style's bold/italic variant.
@@ -729,6 +782,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     // Glyph names of the 256 codes and where each came from (§9.6.6).
     std::string_view names[256];
     UnicodeSource nameSource[256];
+    bool fromBase[256] = {};  // names[c] is the base encoding's
     for (auto& s : nameSource) s = UnicodeSource::Encoding;
     const PdfValue& encoding = doc.Get(dict, "Encoding");
     Tables::Encoding base = Tables::Encoding::Standard;
@@ -791,6 +845,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
             nameSource[c] = UnicodeSource::FontProgram;
         } else if (hasBase) {
             names[c] = EncodingName(base, static_cast<uint32_t>(c));
+            fromBase[c] = true;
         }
     }
     // /Differences: [code /name /name ... code /name ...]
@@ -807,6 +862,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
                 if (v.Name() != ".notdef") {
                     names[code] = v.Name();
                     nameSource[code] = UnicodeSource::Encoding;
+                    fromBase[code] = false;
                     ++differences;
                 }
                 ++code;
@@ -824,6 +880,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     // Unicode per code, first source wins (algorithms §3.1); an untrustworthy ToUnicode comes last.
     bool needProgram = false;
     std::string text, repaired;
+    const EncodingTexts* baseTexts = hasBase && !builtin ? &EncodingTextsFor(base, zapf) : nullptr;
     for (int c = 0; c < 256; ++c) {
         if (hasToUnicode && !toUnicodeUntrusted) {
             if (const UnicodeEntry* entry = toUnicode.Find(static_cast<uint32_t>(c))) {
@@ -831,12 +888,25 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
                 continue;
             }
         }
-        text.clear();
-        if (!names[c].empty() && GlyphNameToUnicode(names[c], zapf, text)) {
-            if (Repair::RepairText(text, repairContext, repaired)) text = repaired;
-            if (UsableText(text)) {
-                SetSlot(font, static_cast<uint8_t>(c), text, nameSource[c]);
-                continue;
+        if (fromBase[c]) {
+            // The base encoding's name: its text and usability made once per process.
+            if (baseTexts->named[c]) {
+                std::string_view named = baseTexts->Text(c);
+                bool usable = baseTexts->usable[c];
+                if (Repair::RepairText(named, repairContext, repaired)) named = repaired, usable = UsableText(named);
+                if (usable) {
+                    SetSlot(font, static_cast<uint8_t>(c), named, nameSource[c]);
+                    continue;
+                }
+            }
+        } else {
+            text.clear();
+            if (!names[c].empty() && GlyphNameToUnicode(names[c], zapf, text)) {
+                if (Repair::RepairText(text, repairContext, repaired)) text = repaired;
+                if (UsableText(text)) {
+                    SetSlot(font, static_cast<uint8_t>(c), text, nameSource[c]);
+                    continue;
+                }
             }
         }
         font.slots[c].source = UnicodeSource::None;
@@ -907,16 +977,15 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     }
 
     // Guess: the code as WinAnsi (Latin-1 for the printable range), never for controls.
+    const EncodingTexts& winAnsi = EncodingTextsFor(Tables::Encoding::WinAnsi, false);
     size_t mapped = 0;
     for (int c = 0; c < 256; ++c) {
         if (font.slots[c].source != UnicodeSource::None) {
             ++mapped;
             continue;
         }
-        text.clear();
-        const std::string_view name = EncodingName(Tables::Encoding::WinAnsi, static_cast<uint32_t>(c));
-        if (!name.empty() && GlyphNameToUnicode(name, text) && UsableText(text)) {
-            SetSlot(font, static_cast<uint8_t>(c), text, UnicodeSource::Guess);
+        if (winAnsi.named[c] && winAnsi.usable[c]) {
+            SetSlot(font, static_cast<uint8_t>(c), winAnsi.Text(c), UnicodeSource::Guess);
         }
     }
     // Unmappable (algorithms §3.6): no ToUnicode and nothing better than a guess, or /Differences
@@ -1336,13 +1405,11 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
 // The font FontCache gives for anything it cannot read: single bytes as WinAnsi, width 0.5.
 void LoadFallback(Font::Impl& font) {
     font.kind = FontKind::Unknown;
-    std::string text;
+    const EncodingTexts& winAnsi = EncodingTextsFor(Tables::Encoding::WinAnsi, false);
     for (int c = 0; c < 256; ++c) {
         font.slots[c].width = static_cast<float>(kUnknownWidth);
-        text.clear();
-        const std::string_view name = EncodingName(Tables::Encoding::WinAnsi, static_cast<uint32_t>(c));
-        if (!name.empty() && GlyphNameToUnicode(name, text) && UsableText(text)) {
-            SetSlot(font, static_cast<uint8_t>(c), text, UnicodeSource::Guess);
+        if (winAnsi.named[c] && winAnsi.usable[c]) {
+            SetSlot(font, static_cast<uint8_t>(c), winAnsi.Text(c), UnicodeSource::Guess);
         }
     }
     font.unmappable = true;
