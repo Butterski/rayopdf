@@ -184,6 +184,14 @@ struct MarkedContent {
     uint8_t previousStream = 0;
 };
 
+// What a shown string's glyphs take from its font: extents (defaults when the font has none),
+// writing mode and the style's glyph flags.
+struct GlyphFont {
+    double ascent = 0, descent = 0;
+    bool vertical = false;
+    uint16_t flags = 0;
+};
+
 class Interpreter {
 public:
     Interpreter(const Document& document, Text::FontCache& fonts, PageData& page, PageStats& stats)
@@ -197,7 +205,7 @@ private:
                  ContentLexer& lexer);
     bool ShowString(std::string_view bytes);
     bool ShowArray(const PdfValue& array);
-    void EmitGlyph(const Text::Code& code, const Matrix& trm, double advance);
+    void EmitGlyph(const Text::Code& code, const Matrix& trm, double width, const GlyphFont& face);
     bool SetFont(const PdfValue& resources, std::string_view name, double size);
     void SetFontEntry(const PdfValue& entry, double size);
     void ApplyExtGState(const PdfValue& resources, std::string_view name);
@@ -895,6 +903,17 @@ bool Interpreter::ShowArray(const PdfValue& array) {
 // Appends the UTF-8 text of one code to the page text, normalized: presentation-form ligatures
 // expanded (algorithms §4.4). Returns the flags the text implies.
 uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
+    // One ASCII character, most glyphs: what the loop below does with it.
+    if (unicode.size() == 1 && static_cast<unsigned char>(unicode[0]) < 0x80) {
+        const char c = unicode[0];
+        if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) {
+            out.push_back(' ');
+            return kGlyphSpace;
+        }
+        if (c < 0x20 || c == 0x7F) return kGlyphSpace;
+        out.push_back(c);
+        return 0;
+    }
     uint16_t flags = 0;
     size_t at = 0;
     uint32_t cp = 0;
@@ -930,7 +949,18 @@ uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
 bool Interpreter::ShowString(std::string_view bytes) {
     const Text::Font* font = gs_.font;
     if (!font) return false;
-    const bool vertical = font->Vertical();
+    // What every glyph of the string takes from its font, read once.
+    GlyphFont face;
+    face.vertical = font->Vertical();
+    face.ascent = font->Ascent();
+    face.descent = font->Descent();
+    if (!(face.ascent > face.descent)) face.ascent = 0.8, face.descent = -0.2;
+    const Text::FontStyle& style = font->Style();
+    if (style.bold) face.flags |= kGlyphBold;
+    if (style.italic) face.flags |= kGlyphItalic;
+    if (style.monospace) face.flags |= kGlyphMonospace;
+    if (style.symbolic) face.flags |= kGlyphSymbolic;
+    const bool vertical = face.vertical;
     const double tfs = gs_.fontSize;
     const double th = gs_.hScale;
     Matrix tm = Multiply(textMatrix_, gs_.ctm);
@@ -951,7 +981,7 @@ bool Interpreter::ShowString(std::string_view bytes) {
         } else {
             advance = (code.width * tfs + gs_.charSpace + (code.wordSpace ? gs_.wordSpace : 0)) * th;
         }
-        EmitGlyph(code, trm, code.width);
+        EmitGlyph(code, trm, code.width, face);
         if (budgetHit_) return true;
         if (!std::isfinite(advance)) advance = 0;
         if (vertical) {
@@ -969,7 +999,7 @@ bool Interpreter::ShowString(std::string_view bytes) {
     return true;
 }
 
-void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double width) {
+void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double width, const GlyphFont& face) {
     stats_.glyphs++;
     if (code.source == Text::UnicodeSource::None) stats_.unmapped++;
     if (code.source == Text::UnicodeSource::Guess) stats_.guessed++;
@@ -977,7 +1007,6 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
         budgetHit_ = true;
         return;
     }
-    const Text::Font& font = *gs_.font;
     const double size = std::sqrt(trm.c * trm.c + trm.d * trm.d);
     const double runLength = std::sqrt(trm.a * trm.a + trm.b * trm.b);
     if (!std::isfinite(size) || !std::isfinite(runLength) || !std::isfinite(trm.e) || !std::isfinite(trm.f)) return;
@@ -991,10 +1020,8 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     else
         g.dir = by > 0 ? 1 : 3;
 
-    double ascent = font.Ascent(), descent = font.Descent();
-    if (!(ascent > descent)) ascent = 0.8, descent = -0.2;
-    double x0 = 0, x1 = width, y0 = descent, y1 = ascent;
-    if (font.Vertical()) {
+    double x0 = 0, x1 = width, y0 = face.descent, y1 = face.ascent;
+    if (face.vertical) {
         x0 = -0.5, x1 = 0.5, y0 = code.verticalAdvance < 0 ? code.verticalAdvance : -1, y1 = 0;
     }
     double dx[4], dy[4];
@@ -1005,14 +1032,32 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     }
     double bx0 = dx[0], bx1 = dx[0], by0 = dy[0], by1 = dy[0];
     double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
-    for (int i = 0; i < 4; ++i) {
-        bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
-        by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
-        double u, v;
-        ToFrame(g.dir, dx[i], dy[i], u, v);
-        if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
-        fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
-        fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
+    const bool ordered = dx[0] == dx[0] && dx[1] == dx[1] && dx[2] == dx[2] && dx[3] == dx[3] && dy[0] == dy[0] &&
+                         dy[1] == dy[1] && dy[2] == dy[2] && dy[3] == dy[3];
+    if (RAYOPDF_LIKELY(ordered)) {
+        // No NaN: Fmin/Fmax are plain comparisons, each keeping the later of equal values. The
+        // frame's coordinates are the device ones permuted and negated (ToFrame), so their extremes
+        // are the device extremes, negated where the axis is: the same corner, the same value.
+        for (int i = 1; i < 4; ++i) {
+            bx0 = bx0 < dx[i] ? bx0 : dx[i], bx1 = bx1 > dx[i] ? bx1 : dx[i];
+            by0 = by0 < dy[i] ? by0 : dy[i], by1 = by1 > dy[i] ? by1 : dy[i];
+        }
+        switch (g.dir) {
+        case 1: fu0 = by0, fu1 = by1, fv0 = -bx1, fv1 = -bx0; break;
+        case 2: fu0 = -bx1, fu1 = -bx0, fv0 = -by1, fv1 = -by0; break;
+        case 3: fu0 = -by1, fu1 = -by0, fv0 = bx0, fv1 = bx1; break;
+        default: fu0 = bx0, fu1 = bx1, fv0 = by0, fv1 = by1; break;
+        }
+    } else {
+        for (int i = 0; i < 4; ++i) {
+            bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
+            by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
+            double u, v;
+            ToFrame(g.dir, dx[i], dy[i], u, v);
+            if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
+            fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
+            fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
+        }
     }
     double ou, ov;
     ToFrame(g.dir, trm.e, trm.f, ou, ov);
@@ -1023,12 +1068,8 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     g.mcid = mcid_;
     g.mcStream = mcStream_;
 
-    const Text::FontStyle& style = font.Style();
-    uint16_t flags = 0;
-    if (style.bold || gs_.render == 2) flags |= kGlyphBold;
-    if (style.italic) flags |= kGlyphItalic;
-    if (style.monospace) flags |= kGlyphMonospace;
-    if (style.symbolic) flags |= kGlyphSymbolic;
+    uint16_t flags = face.flags;
+    if (gs_.render == 2) flags |= kGlyphBold;
     // A sheared text matrix is a synthetic oblique (algorithms §6.6).
     if (runLength > 1e-9 && size > 1e-9) {
         const double cosine = (trm.a * trm.c + trm.b * trm.d) / (runLength * size);
