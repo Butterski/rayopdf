@@ -15,7 +15,6 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 using namespace RayoPdf;
@@ -574,10 +573,10 @@ void TestPdfImages() {
     std::unique_ptr<Document> doc;
     RAYOPDF_CHECK(Document::Open(pdf, "", doc) == OpenStatus::Ok, 483);
     ConvertOptions options;
-    // A fresh directory under /tmp, so the test leaves nothing in the working directory.
-    char directory[] = "/tmp/rayopdf-test-layout-XXXXXX";
-    RAYOPDF_CHECK(mkdtemp(directory) != nullptr, 498);
-    options.imageDirectory = std::string(directory) + "/images";
+    // A fresh temporary directory, so the test leaves nothing in the working directory.
+    std::string directory;
+    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-layout-", directory), 498);
+    options.imageDirectory = directory + "/images";
     options.imageLinkPrefix = "media/";
     std::string md;
     ConvertReport report;
@@ -593,13 +592,16 @@ void TestPdfImages() {
     RAYOPDF_CHECK(Contains(md, "<!-- rayopdf: page 3 has no extractable text -->\n\n![](media/p1-1.png)"), 487);
     // Logo (2 placements), icon and JBIG2 image skipped; photo and inline image written.
     RAYOPDF_CHECK(report.images == 2 && report.imagesSkipped == 4 && report.pagesWithoutText == 1, 488);
-    File::InputFile file;
-    RAYOPDF_CHECK(file.Open(options.imageDirectory + "/p1-1.png", 1u << 20) == File::ReadStatus::Ok &&
-                      file.Bytes().substr(0, 4) == "\x89PNG",
-                  489);
-    for (const char* name : {"/p1-1.png", "/p2-1.png"}) unlink((options.imageDirectory + name).c_str());
-    rmdir(options.imageDirectory.c_str());
-    rmdir(directory);
+    {
+        // Scoped: Windows removes no mapped file.
+        File::InputFile file;
+        RAYOPDF_CHECK(file.Open(options.imageDirectory + "/p1-1.png", 1u << 20) == File::ReadStatus::Ok &&
+                          file.Bytes().substr(0, 4) == "\x89PNG",
+                      489);
+    }
+    for (const char* name : {"/p1-1.png", "/p2-1.png"}) File::RemoveFile(options.imageDirectory + name);
+    File::RemoveEmptyDirectory(options.imageDirectory);
+    File::RemoveEmptyDirectory(directory);
     // No directory: no files and no references.
     std::string plain;
     Convert(*doc, ConvertOptions(), plain, report);
@@ -891,6 +893,158 @@ void TestMonospaceDocument() {
                   722);
 }
 
+Shape Box(float x0, float y0, float x1, float y1, ShapeKind kind, bool filled) {
+    Shape s;
+    s.x0 = x0, s.y0 = y0, s.x1 = x1, s.y1 = y1;
+    s.kind = kind;
+    s.filled = filled;
+    s.stroked = !filled;
+    return s;
+}
+
+void TestInlineStyles() {
+    // A rule through the middle of a word strikes it; styles nest; punctuation set upright stays
+    // outside a span; an italic letter alone is math, the pronoun "I" emphasis.
+    std::vector<PageData> pages{NewPage(1)};
+    float x = AddText(pages[0], "Some text with ", 72, 700, 10);
+    const float x2 = AddText(pages[0], "deleted", x, 700, 10);
+    AddText(pages[0], " words in it here.", x2, 700, 10);
+    pages[0].shapes.push_back(Box(x, 702.8f, x2, 703.3f, ShapeKind::Line, false));
+    x = AddText(pages[0], "Nesting: ", 72, 660, 10);
+    x = AddText(pages[0], "strong ", x, 660, 10, kGlyphBold);
+    x = AddText(pages[0], "inner", x, 660, 10, kGlyphBold | kGlyphItalic);
+    x = AddText(pages[0], " text", x, 660, 10, kGlyphBold);
+    AddText(pages[0], ", and plain words after it.", x, 660, 10);
+    x = AddText(pages[0], "Let a page contain ", 72, 620, 10);
+    x = AddText(pages[0], "n", x, 620, 10, kGlyphItalic);
+    x = AddText(pages[0], " blocks, as ", x, 620, 10);
+    x = AddText(pages[0], "I", x, 620, 10, kGlyphItalic);
+    AddText(pages[0], " said before.", x, 620, 10);
+    const std::string md = Run(pages);
+    Show("inline styles", md);
+    RAYOPDF_CHECK(Contains(md, "with ~~deleted~~ words"), 723);
+    RAYOPDF_CHECK(Contains(md, "Nesting: **strong *inner* text**, and"), 724);
+    // A URL broken over two lines under its link annotation is written whole.
+    std::vector<PageData> url{NewPage(1)};
+    const float u1 = AddText(url[0], "See https://example.com/do", 72, 700, 10);
+    const float u2 = AddText(url[0], "cs/page for the details of this.", 72, 688, 10);
+    for (int line = 0; line < 2; ++line) {
+        LinkArea a;
+        a.x0 = line == 0 ? 92 : 72, a.x1 = line == 0 ? u1 : u2 - 120, a.y0 = 698 - 12.0f * line, a.y1 = 708 - 12.0f * line;
+        a.uri = static_cast<uint32_t>(url[0].text.size());
+        url[0].text += "https://example.com/docs/page";
+        a.uriLength = 29;
+        url[0].links.push_back(a);
+    }
+    const std::string linked = Run(url);
+    Show("broken url", linked);
+    RAYOPDF_CHECK(Contains(linked, "See https://example.com/docs/page for"), 732);
+    RAYOPDF_CHECK(Contains(md, "contain n blocks, as *I* said"), 725);
+}
+
+void TestAlertAndListings() {
+    // A quote bar beside a lone "Note" and its text: a GitHub alert.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "A paragraph before the alert box.", 54, 650, 10);
+    AddText(pages[0], "Note", 68, 615, 10, kGlyphBold);
+    AddText(pages[0], "Useful information for readers here.", 68, 600, 10);
+    pages[0].shapes.push_back(Box(54, 592, 57, 627, ShapeKind::Rect, true));
+    std::string md = Run(pages);
+    Show("alert", md);
+    RAYOPDF_CHECK(Contains(md, "> [!NOTE]\n> Useful information for readers here."), 726);
+    // Two listings 1.5 lines apart are two code blocks; a blank line inside one is a whole line.
+    std::vector<PageData> code{NewPage(1)};
+    AddText(code[0], "Two listings follow here.", 72, 720, 10);
+    AddText(code[0], "a1 = 1", 72, 700, 10, kGlyphMonospace, 0.6f);
+    AddText(code[0], "a2 = 2", 72, 688, 10, kGlyphMonospace, 0.6f);
+    AddText(code[0], "a3 = 3", 72, 664, 10, kGlyphMonospace, 0.6f);
+    AddText(code[0], "b1 = 4", 72, 646, 10, kGlyphMonospace, 0.6f);
+    AddText(code[0], "b2 = 5", 72, 634, 10, kGlyphMonospace, 0.6f);
+    AddText(code[0], "A closing paragraph after both listings.", 72, 610, 10);
+    md = Run(code);
+    Show("listings", md);
+    RAYOPDF_CHECK(Contains(md, "```\na1 = 1\na2 = 2\n\na3 = 3\n```\n\n```\nb1 = 4\nb2 = 5\n```"), 727);
+    // The dots of a dotted rule beside lines are no bullets.
+    std::vector<PageData> dots{NewPage(1)};
+    for (int i = 0; i < 4; ++i)
+        AddText(dots[0], "Reference entry line number " + std::to_string(i) + " here.", 80, 700 - 10.0f * i, 7.5f);
+    for (int i = 0; i < 10; ++i)
+        dots[0].shapes.push_back(Box(70, 668 + 4.0f * i, 71, 669 + 4.0f * i, ShapeKind::Other, true));
+    md = Run(dots);
+    Show("dotted rule", md);
+    RAYOPDF_CHECK(!Contains(md, "- ") && Contains(md, "number 0 here."), 728);
+}
+
+void TestTitleBlockAndRtlStop() {
+    // A two-line centred title joins; the author line centred under it is no heading.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Pinching Systems:", 221, 720, 20);
+    AddText(pages[0], "Curse?", 276, 696, 20);
+    AddText(pages[0], "Jane Roe", 282, 664, 12);
+    AddText(pages[0], "1 Introduction", 72, 630, 12, kGlyphBold);
+    for (int i = 0; i < 5; ++i)
+        AddText(pages[0], "Body text of the paper runs across the whole column here.", 72, 610 - 12.0f * i, 10);
+    std::string md = Run(pages);
+    Show("title block", md);
+    RAYOPDF_CHECK(Contains(md, "# Pinching Systems: Curse?\n\nJane Roe\n\n"), 729);
+    RAYOPDF_CHECK(Contains(md, "# 1 Introduction"), 730);
+    // A full stop after a right-to-left word in a left-to-right line touches the word.
+    std::vector<PageData> rtl{NewPage(1)};
+    const float x = AddText(rtl[0], "\xD8\xA8\xD8\xA7\xD8\xAA\xD9\x83", 72, 700, 10);  // visual order of كتاب
+    AddText(rtl[0], ".", x, 700, 10);
+    AddText(rtl[0], "A long left-to-right line that sets the right edge of the text block.", 72, 680, 10);
+    md = Run(rtl);
+    Show("rtl stop", md);
+    RAYOPDF_CHECK(Contains(md, "\xD9\x83\xD8\xAA\xD8\xA7\xD8\xA8."), 731);
+}
+
+void TestLinksMathAndNumbering() {
+    // A link annotation over "reference," leaves the comma after the link.
+    std::vector<PageData> pages{NewPage(1)};
+    const float x = AddText(pages[0], "See the full ", 72, 700, 10);
+    const float x2 = AddText(pages[0], "reference,", x, 700, 10);
+    AddText(pages[0], " and more text after it.", x2, 700, 10);
+    LinkArea a;
+    a.x0 = x - 1, a.x1 = x2 + 1, a.y0 = 697, a.y1 = 709;
+    a.uri = static_cast<uint32_t>(pages[0].text.size());
+    pages[0].text += "https://x.org/";
+    a.uriLength = 14;
+    pages[0].links.push_back(a);
+    // Mathematical alphanumerics in a fixed-pitch math font are no code.
+    float m = AddText(pages[0], "The relation ", 72, 670, 10);
+    m = AddText(pages[0], "\xF0\x9D\x90\xB8=\xF0\x9D\x91\x9A\xF0\x9D\x91\x90", m, 670, 10, kGlyphMonospace);
+    AddText(pages[0], " holds for every body at rest.", m, 670, 10);
+    std::string md = Run(pages);
+    Show("link punctuation and math", md);
+    RAYOPDF_CHECK(Contains(md, "full [reference](https://x.org/), and"), 733);
+    RAYOPDF_CHECK(!Contains(md, "`"), 734);
+    // Section numbers split one heading style into levels; "Abstract" sits with the sections.
+    std::vector<PageData> paper{NewPage(1)};
+    const char* heads[] = {"Abstract", "4 Results", "4.1 Setup", "4.1.1 Details", "5 Discussion"};
+    AddText(paper[0], "A Paper Title", 72, 740, 20);
+    for (int i = 0; i < 5; ++i) {
+        AddText(paper[0], heads[i], 72, 700 - 60.0f * i, i == 0 ? 10 : 12, kGlyphBold);
+        AddText(paper[0], "Body text of this part runs long enough to set the body size of the page.", 72,
+                680 - 60.0f * i, 10);
+        AddText(paper[0], "It goes on over a second line of body text in the same paragraph here.", 72,
+                668 - 60.0f * i, 10);
+    }
+    md = Run(paper);
+    Show("numbered levels", md);
+    RAYOPDF_CHECK(Contains(md, "## Abstract") && Contains(md, "## 4 Results") && Contains(md, "### 4.1 Setup") &&
+                      Contains(md, "#### 4.1.1 Details") && Contains(md, "## 5 Discussion"),
+                  735);
+    // A document set bold throughout keeps its "Table of Contents" title.
+    std::vector<PageData> toc{NewPage(1)};
+    AddText(toc[0], "Table of Contents", 72, 720, 12, kGlyphBold);
+    for (int i = 0; i < 8; ++i)
+        AddText(toc[0], "Laboratory exercise number " + std::to_string(i) + " ........................ " + std::to_string(3 * i + 3),
+                72, 690 - 20.0f * i, 12, kGlyphBold);
+    md = Run(toc);
+    Show("bold contents", md);
+    RAYOPDF_CHECK(Contains(md, "# Table of Contents\n"), 736);
+}
+
 } // namespace
 
 int main() {
@@ -936,6 +1090,10 @@ int main() {
     TestContentsAndChapterNumbers();
     TestWrappedListingLine();
     TestVerbatimEnumerators();
+    TestInlineStyles();
+    TestAlertAndListings();
+    TestLinksMathAndNumbering();
+    TestTitleBlockAndRtlStop();
     TestMonospaceDocument();
     std::puts("test_layout: all checks passed");
     return 0;

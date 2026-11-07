@@ -180,6 +180,7 @@ struct MarkedContent {
     bool hasActualText = false;
     bool artifact = false;
     int32_t previousMcid = -1;
+    uint8_t previousStream = 0;
 };
 
 class Interpreter {
@@ -202,6 +203,7 @@ private:
     void DoXObject(const PdfValue& resources, std::string_view name, int depth);
     void BeginMarked(std::string_view tag, const PdfValue* properties, const PdfValue& resources);
     void EndMarked();
+    uint8_t MarkStream();
     void Paint(bool fill, bool stroke);
     void PathPoint(double x, double y, bool curve);
     void AddPiece(double x0, double y0, double x1, double y1, bool rect);
@@ -233,6 +235,7 @@ private:
     uint32_t markedOverflow_ = 0;
     int artifactDepth_ = 0;
     int32_t mcid_ = -1;
+    uint8_t mcStream_ = 0;  // Glyph::mcStream of mcid_
 
     // Current path, in device space.
     Box pathBox_;
@@ -447,6 +450,8 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         image.width = w ? Dimension(w->Int()) : 0;
         image.height = h ? Dimension(h->Int()) : 0;
         image.resources = resources;
+        image.mcid = mcid_;
+        image.mcStream = mcStream_;
         image.inlineData = static_cast<uint32_t>(page_.inlineImages.size());
         image.inlineLength = static_cast<uint32_t>(opSource_.size());
         uint64_t hash = 1469598103934665603ull;
@@ -700,6 +705,8 @@ void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, in
         image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
         image.xobject = xobject;
         image.resources = resources;
+        image.mcid = mcid_;
+        image.mcStream = mcStream_;
         image.width = Dimension(doc_.Get(xobject, "Width").Int());
         image.height = Dimension(doc_.Get(xobject, "Height").Int());
         // A stream's data offset names it in the file: every placement of one XObject shares it.
@@ -764,6 +771,7 @@ void Interpreter::BeginMarked(std::string_view tag, const PdfValue* properties, 
     MarkedContent mc;
     mc.firstGlyph = static_cast<uint32_t>(page_.glyphs.size());
     mc.previousMcid = mcid_;
+    mc.previousStream = mcStream_;
     mc.artifact = tag == "Artifact";
     if (mc.artifact) artifactDepth_++;
     if (properties) {
@@ -774,15 +782,48 @@ void Interpreter::BeginMarked(std::string_view tag, const PdfValue* properties, 
             if (actual.IsString() && page_.text.size() < (size_t(1) << 30)) {
                 mc.actualText = static_cast<uint32_t>(page_.text.size());
                 AppendTextString(actual.String().substr(0, 4096), page_.text);
+                // Control characters are no text (as font text, text/font.cpp UsableText): C0 and
+                // C1 controls leave, whitespace controls become spaces.
+                size_t kept = mc.actualText;
+                for (size_t i = mc.actualText; i < page_.text.size(); ++i) {
+                    const unsigned char c = static_cast<unsigned char>(page_.text[i]);
+                    if (c == 0xC2 && i + 1 < page_.text.size() && static_cast<unsigned char>(page_.text[i + 1]) < 0xA0) {
+                        ++i;  // U+0080..U+009F
+                        continue;
+                    }
+                    if (c < 0x20 || c == 0x7F) {
+                        if (c >= 0x09 && c <= 0x0D) page_.text[kept++] = ' ';
+                        continue;
+                    }
+                    page_.text[kept++] = page_.text[i];
+                }
+                page_.text.resize(kept);
                 mc.actualLength = static_cast<uint32_t>(page_.text.size() - mc.actualText);
                 mc.hasActualText = true;
             }
+            // An MCID counts in the stream that holds it (§14.7.4.2): the page's content, or a Form
+            // XObject's (a marked-content reference with /Stm names it).
             const PdfValue& mcid = doc_.Get(*dict, "MCID");
-            if (mcid.type == PdfValue::Type::Int && mcid.integer >= 0 && mcid.integer < INT32_MAX)
-                mcid_ = static_cast<int32_t>(mcid.integer);
+            if (mcid.type == PdfValue::Type::Int && mcid.integer >= 0 && mcid.integer < INT32_MAX) {
+                const uint8_t stream = MarkStream();
+                mcid_ = stream == kNoMarkStream ? -1 : static_cast<int32_t>(mcid.integer);
+                mcStream_ = stream == kNoMarkStream ? 0 : stream;
+            }
         }
     }
     marked_.push_back(mc);
+}
+
+uint8_t Interpreter::MarkStream() {
+    if (formStack_.empty()) return 0;
+    // A form that is no indirect object cannot be named by a marked-content reference.
+    const uint32_t num = formStack_.back();
+    if (num == 0) return kNoMarkStream;
+    for (size_t i = 0; i < page_.markStreams.size(); ++i)
+        if (page_.markStreams[i] == num) return static_cast<uint8_t>(i + 1);
+    if (page_.markStreams.size() >= kMaxMarkStreams) return kNoMarkStream;
+    page_.markStreams.push_back(num);
+    return static_cast<uint8_t>(page_.markStreams.size());
 }
 
 void Interpreter::EndMarked() {
@@ -794,6 +835,7 @@ void Interpreter::EndMarked() {
     const MarkedContent mc = marked_.back();
     marked_.pop_back();
     mcid_ = mc.previousMcid;
+    mcStream_ = mc.previousStream;
     if (mc.artifact && artifactDepth_ > 0) artifactDepth_--;
     if (!mc.hasActualText) return;
     // ActualText replaces the enclosed glyphs (§14.9.4): the first visible one carries the text and
@@ -978,6 +1020,7 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     g.size = float(size);
     g.font = gs_.fontId;
     g.mcid = mcid_;
+    g.mcStream = mcStream_;
 
     const Text::FontStyle& style = font.Style();
     uint16_t flags = 0;

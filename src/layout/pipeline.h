@@ -12,6 +12,8 @@
 
 namespace RayoPdf::Layout {
 
+struct Structure;
+
 // Per page: whether most of its text came from unmapped or guessed codes.
 struct PageTextQuality {
     uint64_t glyphs = 0;
@@ -21,10 +23,12 @@ struct PageTextQuality {
 // Lines, header/footer removal, images, reading order, semantics and the writer over `pages`
 // (each with its glyphs, shapes and links filled). Appends to `markdown`; adds to the counters of
 // `report` that these stages own (pagesWithoutText, hiddenGlyphs, headings, paragraphs, listItems,
-// codeBlocks, tables, links, footnotes, images, imagesSkipped, headerFooterLines, contentErrors
-// from the pages). `images` null (tests) places no images.
+// codeBlocks, tables, links, footnotes, images, imagesSkipped, imagesMaskDropped,
+// headerFooterLines, contentErrors
+// from the pages, structure). `images` null (tests) places no images; `structure` (ReadStructure),
+// when it passes the checks, decides blocks and order instead of the geometry.
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
-                  const ImageOutput* images = nullptr);
+                  const ImageOutput* images = nullptr, const Structure* structure = nullptr);
 
 } // namespace RayoPdf::Layout

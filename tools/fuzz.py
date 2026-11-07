@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Fuzz RayoPDF's parsers with libFuzzer inside the rayopdf-build:1 image.
+"""Fuzz RayoPDF's parsers with libFuzzer inside the rayopdf-build:2 image.
 
 Every target tests/fuzz/fuzz_<module>_<name>.cpp is built with Clang, ASan and UBSan
 (`tools/dev.py build --config fuzz`). `run` fuzzes the targets side by side, one CPU each, and
@@ -30,7 +30,7 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-IMAGE = "rayopdf-build:1"
+IMAGE = "rayopdf-build:2"
 CORPUS = REPO / "build" / "fuzz-corpus"
 ARTIFACTS = REPO / "build" / "fuzz-artifacts"
 REGRESSIONS = REPO / "tests" / "fuzz" / "regressions"

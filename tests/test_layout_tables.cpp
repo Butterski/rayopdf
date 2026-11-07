@@ -663,6 +663,101 @@ void TestTurnedTable() {
     RAYOPDF_CHECK(Contains(md, "| Country | 2021 | 2022 |\n| --- | --- | --- |\n| Austria | 1237 | 1329 |"), 597);
 }
 
+// A chart's frame drawn as a grid, its axis ticks in one cell: no table.
+void TestChartFrame() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 600.0f, 580.0f}) HLine(page, 72, 400, y);
+    for (float x : {72.0f, 110.0f, 400.0f}) VLine(page, x, 580, 700);
+    const char* const ticks[] = {"0.8", "0.6", "0.4", "0.2"};
+    for (int r = 0; r < 4; ++r) AddText(page, ticks[r], 80, 688 - 24.0f * float(r));
+    AddText(page, "Gauss", 200, 650);
+    AddText(page, "Radau", 200, 630);
+    AddText(page, "x", 80, 586);
+    AddText(page, "0 2 4 6 8 10", 150, 586);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("chart frame", md);
+    RAYOPDF_CHECK(report.tables == 0, 850);
+}
+
+// A form to fill in: a header row and rows labelled in the first column, the rest empty, in a grid
+// ruled both ways.
+void TestFormGrid() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (int r = 0; r <= 5; ++r) HLine(page, 72, 450, 700 - 24.0f * float(r));
+    for (float x : {72.0f, 200.0f, 320.0f, 450.0f}) VLine(page, x, 580, 700);
+    AddText(page, "Mitosis", 204, 684);
+    AddText(page, "Meiosis", 324, 684);
+    const char* const labels[] = {"chromosomes", "replications", "divisions", "purpose"};
+    for (int r = 0; r < 4; ++r) AddText(page, labels[r], 76, 660 - 24.0f * float(r));
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("form grid", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "|  | Mitosis | Meiosis |\n| --- | --- | --- |\n| chromosomes |  |  |"), 851);
+}
+
+// Header labels centred over narrow columns of figures, wider than the figures: the body keeps its
+// columns and each label heads the column nearest it.
+void TestWideHeaderLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float y = AddProse(page, 72, 450, 740, 2) - 20;
+    AddText(page, "Saccharometer", 90, y, 10, kGlyphBold);
+    AddText(page, "DI Water", 190, y, 10, kGlyphBold);
+    AddText(page, "Yeast Suspension", 300, y, 10, kGlyphBold);
+    for (int r = 0; r < 4; ++r) {
+        y -= 16;
+        AddText(page, std::to_string(r + 1), 74, y);
+        AddText(page, std::to_string(2 * r + 2) + " ml", 200, y);
+        AddText(page, std::to_string(r + 6) + " ml", 330, y);
+    }
+    AddProse(page, 72, 450, y - 30, 2);
+    const std::string md = Run(pages);
+    Show("wide header labels", md);
+    RAYOPDF_CHECK(Contains(md, "| Saccharometer | DI Water | Yeast Suspension |\n| --- | --- | --- |\n| 1 | 2 ml | 6 ml |"), 852);
+}
+
+// A top and a bottom rule only, labels over groups of columns: the rows without numbers above the
+// figures are the header, and the figures' own columns part the body.
+void TestRuledGroupHeader() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 712);
+    AddText(page, "Instruction", 180, 702);
+    AddText(page, "Properties", 76, 690);
+    AddText(page, "Alpaca", 160, 690);
+    AddText(page, "Orca", 210, 690);
+    AddText(page, "Math", 260, 690);
+    const char* const names[] = {"Samples", "Used", "Open"};
+    const char* const values[3][3] = {{"52K", "2.91M", "126K"}, {"52K", "100K", "52K"}, {"1", "1", "0"}};
+    for (int r = 0; r < 3; ++r) {
+        AddText(page, names[r], 76, 676 - 14.0f * float(r));
+        for (int c = 0; c < 3; ++c) AddText(page, values[r][c], 160 + 50.0f * float(c), 676 - 14.0f * float(r));
+    }
+    HLine(page, 72, 400, 640);
+    const std::string md = Run(pages);
+    Show("ruled group header", md);
+    RAYOPDF_CHECK(Contains(md, "<td>Samples</td><td>52K</td><td>2.91M</td><td>126K</td>"), 853);
+}
+
+// The last rows of a ruled table set below its last rule, keeping its columns, belong to it.
+void TestRowsBelowLattice() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f}) HLine(page, 72, 400, y);
+    for (float x : {72.0f, 200.0f, 300.0f, 400.0f}) VLine(page, x, 660, 700);
+    const char* const cells[4][3] = {{"Cambodia", "7.5%", "1,272"}, {"Indonesia", "9.4%", "9,651"}, {"Thailand", "-0.9%", "8,067"},
+                                     {"Viet Nam", "11.5%", "17,200"}};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, cells[r][c], (c == 0 ? 76.0f : c == 1 ? 204.0f : 304.0f), 686 - 20.0f * float(r));
+    AddProse(page, 72, 400, 590, 2);
+    const std::string md = Run(pages);
+    Show("rows below lattice", md);
+    RAYOPDF_CHECK(Contains(md, "| Indonesia | 9.4% | 9,651 |\n| Thailand | -0.9% | 8,067 |\n| Viet Nam | 11.5% | 17,200 |"), 854);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -739,6 +834,11 @@ int main(int argc, char** argv) {
     TestPairsHeaderAndContents();
     TestLatticeTitleRow();
     TestTurnedTable();
+    TestChartFrame();
+    TestFormGrid();
+    TestWideHeaderLabels();
+    TestRuledGroupHeader();
+    TestRowsBelowLattice();
     std::puts("test_layout_tables: ok");
     return 0;
 }

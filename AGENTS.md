@@ -43,7 +43,7 @@ pdf, text, layout, cli), its tests under `tests/`, the evaluation harness under 
 9. Engine code follows `docs/development/roadmap.md` § Engineering conventions.
 
 10. Build and test only through `tools/dev.py`, which runs the compilers in the
-    `rayopdf-build:1` image. Every change keeps `python3 tools/dev.py test --config asan` passing
+    `rayopdf-build:2` image. Every change keeps `python3 tools/dev.py test --config asan` passing
     and a fresh build free of compiler warnings. Core tests live in
     `tests/test_<module>[_<part>].cpp`, every check with its own code in the range `tests/check.h`
     lists; `tests/verify_cli.py` checks the built binary. Every parser of untrusted input has a

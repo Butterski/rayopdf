@@ -12,11 +12,16 @@
 namespace RayoPdf::Layout {
 namespace {
 
+// Inline styles, each written with its delimiter. Code spans hold no other markup, so a code span
+// is always the innermost one open.
 enum : uint8_t {
     kStyleBold = 1,
     kStyleItalic = 2,
     kStyleCode = 4,
+    kStyleStrike = 8,
 };
+constexpr int kStyleCount = 4;
+constexpr std::string_view kDelimiters[kStyleCount] = {"**", "*", "`", "~~"};
 
 enum : uint8_t { kScriptNone = 0, kScriptSup = 1, kScriptSub = 2 };
 
@@ -29,23 +34,26 @@ struct GlyphRef {
 struct Word {
     uint32_t first = 0, count = 0;  // GlyphRefs
     bool spaceBefore = false;
-    uint8_t style = 0;
     int32_t linkPage = -1;          // the link annotation over the word
     int32_t link = -1;
+    uint32_t linkTrim = 0;          // glyphs ending the word that follow its link
 };
 
 bool IsAsciiAlnum(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
-
-bool StartsLetterOrDigit(std::string_view t) {
-    if (t.empty()) return false;
-    const unsigned char c = static_cast<unsigned char>(t[0]);
-    return IsAsciiAlnum(static_cast<char>(c)) || c >= 0xC0;
-}
 
 uint32_t FirstOf(std::string_view t) {
     uint32_t cp = 0;
     size_t length = 0;
     return Utf8::Decode(t, 0, cp, length) ? cp : 0;
+}
+
+// A letter or digit: ASCII ones and every code point from U+00C0 up outside the symbol,
+// punctuation, private-use and fullwidth-punctuation blocks ("…" and "—" are punctuation).
+bool IsLetterOrDigit(uint32_t cp) {
+    if (cp < 0x80) return IsAsciiAlnum(static_cast<char>(cp));
+    return cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x2000 && cp <= 0x2BFF) && !(cp >= 0x3000 && cp <= 0x303F) &&
+           !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0xFE00 && cp <= 0xFE0F) && !(cp >= 0xFF00 && cp <= 0xFF20) &&
+           cp != 0xFFFD;
 }
 
 uint32_t LastOf(std::string_view t) {
@@ -90,6 +98,9 @@ public:
 private:
     void CollectWords(const Block& block);
     void StyleWords(bool styles);
+    // Opens and closes delimiters so that exactly the styles `target` are open, nested properly;
+    // `at` is the glyph they apply from (styles that run longer open first, outside).
+    void SetStyle(uint8_t target, uint32_t at);
     void AppendEscaped(std::string_view text, bool blockStart);
     // The footnote number of the superscript run starting at `r`, `count` glyphs long; 0 when none.
     uint32_t NoteNumber(const GlyphRef& r, uint32_t count) const {
@@ -103,9 +114,15 @@ private:
         const PageData& page = pages_[static_cast<size_t>(w.linkPage)];
         return page.LinkUri(page.links[static_cast<size_t>(w.link)]);
     }
+    // Words of one link: under the same annotation, or under annotations with the same target,
+    // unless a comma or semicolon ends the first word: two links to one place ("[a](u),
+    // [a](u)"), not a link drawn word by word or wrapped over lines.
     bool SameLink(const Word& a, const Word& b) const {
         if (a.link < 0 || b.link < 0) return a.link == b.link;
-        return Uri(a) == Uri(b);
+        if (a.linkPage == b.linkPage && a.link == b.link) return true;
+        if (Uri(a) != Uri(b)) return false;
+        const std::string_view end = Text(refs_[a.first + a.count - 1]);
+        return !(end.size() == 1 && (end[0] == ',' || end[0] == ';'));
     }
 
     const std::vector<PageData>& pages_;
@@ -118,6 +135,12 @@ private:
     bool monoIsBody_ = false;  // the document is typeset in a monospace font (BlockList::monoDocument)
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
+    std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
+    std::vector<uint32_t> wordOf_;   // per GlyphRef: its word
+    std::vector<uint32_t> runEnd_;   // per style and GlyphRef: where the style's run from it ends
+    std::vector<int32_t> before_, after_;  // per GlyphRef: the nearest letter glyph before / after it
+    uint8_t stack_[kStyleCount] = {};  // open styles, outermost first
+    int depth_ = 0;
     std::string plain_;
     std::string other_;
 };
@@ -195,28 +218,14 @@ void Writer::CollectWords(const Block& block) {
 
 void Writer::StyleWords(bool styles) {
     for (Word& w : words_) {
-        w.style = 0;
         w.link = -1;
         w.linkPage = -1;
+        w.linkTrim = 0;
         if (!styles) continue;
-        uint32_t considered = 0, bold = 0, italic = 0, mono = 0;
         float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
             const Glyph& g = pages_[refs_[k].page].glyphs[refs_[k].glyph];
             x0 = std::fmin(x0, g.x0), y0 = std::fmin(y0, g.y0), x1 = std::fmax(x1, g.x1), y1 = std::fmax(y1, g.y1);
-            if (!StartsLetterOrDigit(Text(refs_[k]))) continue;
-            considered++;
-            if (g.flags & kGlyphBold) bold++;
-            if (g.flags & kGlyphItalic) italic++;
-            if (g.flags & kGlyphMonospace) mono++;
-        }
-        if (considered > 0) {
-            if (mono == considered && !monoIsBody_) {
-                w.style = kStyleCode;
-            } else {
-                if (bold == considered && !boldIsBody_) w.style |= kStyleBold;
-                if (italic == considered && !italicIsBody_) w.style |= kStyleItalic;
-            }
         }
         // A link annotation over the word's centre (algorithms §6.8).
         const uint32_t page = refs_[w.first].page;
@@ -238,7 +247,7 @@ void Writer::StyleWords(bool styles) {
             continue;
         }
         size_t end = i + 1;
-        while (end < words_.size() && SameLink(words_[i], words_[end])) ++end;
+        while (end < words_.size() && SameLink(words_[end - 1], words_[end])) ++end;
         plain_.clear();
         for (size_t j = i; j < end; ++j) {
             if (j > i && words_[j].spaceBefore) plain_.push_back(' ');
@@ -259,11 +268,183 @@ void Writer::StyleWords(bool styles) {
         const bool url = text.substr(0, 7) == "http://" || text.substr(0, 8) == "https://" || text.substr(0, 4) == "www.";
         const bool autolinkable = url || text.find('@') != std::string_view::npos;
         if ((bare && autolinkable) || url) {
+            // A URL broken over lines is one word again when its pieces spell the link's target.
+            if (url && plain_.find(' ') != std::string::npos) {
+                other_.clear();
+                for (char c : plain_)
+                    if (c != ' ') other_.push_back(c);
+                std::string_view target = uri;
+                if (!target.empty() && target.back() == '/' && (other_.empty() || other_.back() != '/')) target.remove_suffix(1);
+                if (other_ == target)
+                    for (size_t j = i + 1; j < end; ++j) words_[j].spaceBefore = false;
+            }
             for (size_t j = i; j < end; ++j) words_[j].link = -1;
         } else {
             counts_.links++;
+            // Clause punctuation ending the link's last word follows the link: an annotation drawn
+            // over whole words takes in "reference," with its comma. A full stop stays: a linked
+            // reference entry ends with its own.
+            Word& last = words_[end - 1];
+            const bool opened = text.find('(') != std::string_view::npos;
+            while (last.linkTrim + 1 < last.count) {
+                const std::string_view t = Text(refs_[last.first + last.count - 1 - last.linkTrim]);
+                if (t.size() != 1 || std::string_view(",;:").find(t[0]) == std::string_view::npos) {
+                    if (!(t == ")" && !opened)) break;
+                }
+                last.linkTrim++;
+            }
         }
         i = end;
+    }
+    // Styles per glyph (algorithms §6.6). Letters and digits carry their own; a code span is
+    // monospace text, and bold, italic and strike-through in it follow the text around it too (a
+    // code font may have no bold face). Punctuation and symbols set in a style keep it only next
+    // to letters that have it: between two such letters, or attached to one ("**Note:**", but
+    // "**bold**," and "*a*, ***b***").
+    const uint32_t n = static_cast<uint32_t>(refs_.size());
+    styles_.assign(n, 0);
+    if (!styles || n == 0) return;
+    constexpr uint8_t kLetter = 0x80;  // a letter or digit, while the styles are worked out
+    constexpr uint8_t kStyles = kStyleBold | kStyleItalic | kStyleCode | kStyleStrike;
+    wordOf_.resize(n);
+    for (uint32_t i = 0; i < words_.size(); ++i)
+        for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) wordOf_[k] = i;
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint16_t f = pages_[refs_[k].page].glyphs[refs_[k].glyph].flags;
+        if (f & kGlyphImage) continue;
+        const uint32_t cp = FirstOf(Text(refs_[k]));
+        uint8_t s = IsLetterOrDigit(cp) ? kLetter : 0;
+        // Mathematical alphanumerics (𝑥, 𝐸) are math whatever the font's pitch: no code.
+        if ((f & kGlyphMonospace) && !monoIsBody_ && !(cp >= 0x1D400 && cp <= 0x1D7FF)) s |= kStyleCode;
+        if ((f & kGlyphBold) && !boldIsBody_) s |= kStyleBold;
+        if ((f & kGlyphItalic) && !italicIsBody_) s |= kStyleItalic;
+        if (f & kGlyphStrike) s |= kStyleStrike;
+        styles_[k] = s;
+    }
+    // Math set in an italic text font is no emphasis: an italic word of one letter (but the
+    // pronoun "I"), of up to three letters with a bracket ("T(n)"), with an operator ("x+y",
+    // "z=x−iy") or with a raised or lowered letter ("P<sub>x</sub>"), or a word mixing italic and
+    // upright letters with a bracket, an operator or a script ("O(nlogn)"), unless it belongs to
+    // a longer italic phrase.
+    constexpr uint8_t kUpright = 0, kPhrase = 1, kMath = 2;
+    const auto kindOf = [&](size_t i) -> uint8_t {
+        const Word& w = words_[i];
+        uint32_t letters = 0, italic = 0, brackets = 0, ops = 0, scripts = 0;
+        bool pronoun = false;
+        for (uint32_t k = w.first; k < w.first + w.count; ++k) {
+            const std::string_view t = Text(refs_[k]);
+            const uint32_t cp = FirstOf(t);
+            if ((styles_[k] & kLetter) && !(cp >= '0' && cp <= '9')) {
+                letters++;
+                if (styles_[k] & kStyleItalic) italic++;
+                if (refs_[k].script != kScriptNone) scripts++;  // a raised or lowered letter: an index
+                pronoun = t == "I";
+            } else if (cp == '(' || cp == ')') {
+                brackets++;
+            } else if (cp == '=' || cp == '+' || cp == '<' || cp == '>' || cp == '^' || cp == '|' || cp == 0x2212 ||
+                       (cp >= 0x2200 && cp <= 0x22FF)) {
+                ops++;
+            }
+        }
+        if (italic == 0) return kUpright;
+        if (italic < letters) return brackets + ops > 0 || scripts > 0 ? kMath : kUpright;
+        const bool math = (letters == 1 && !pronoun) || scripts > 0 || ops > 0 || (letters <= 3 && brackets > 0);
+        return math ? kMath : kPhrase;
+    };
+    {
+        uint8_t prev = kUpright, here = words_.empty() ? kUpright : kindOf(0), next = kUpright;
+        for (size_t i = 0; i < words_.size(); ++i) {
+            next = i + 1 < words_.size() ? kindOf(i + 1) : kUpright;
+            if (here == kMath && prev != kPhrase && next != kPhrase)
+                for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k)
+                    styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleItalic);
+            prev = here;
+            here = next;
+        }
+    }
+    // The nearest letters around each glyph: any letter, and letters outside code ("firm" ones).
+    before_.resize(2 * size_t(n));
+    after_.resize(2 * size_t(n));
+    {
+        int32_t any = -1, firm = -1;
+        for (uint32_t k = 0; k < n; ++k) {
+            before_[k] = any, before_[n + k] = firm;
+            if (styles_[k] & kLetter) any = static_cast<int32_t>(k);
+            if ((styles_[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
+        }
+        any = firm = -1;
+        for (uint32_t k = n; k-- > 0;) {
+            after_[k] = any, after_[n + k] = firm;
+            if (styles_[k] & kLetter) any = static_cast<int32_t>(k);
+            if ((styles_[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
+        }
+    }
+    const auto at = [&](int32_t k) { return k >= 0 ? static_cast<uint8_t>(styles_[static_cast<uint32_t>(k)]) : uint8_t(0); };
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint8_t s = styles_[k];
+        if ((s & (kLetter | kStyleCode)) == kLetter) continue;  // firm letters keep their own
+        uint8_t result = 0;
+        bool code = (s & kStyleCode) != 0;
+        if (code && !(s & kLetter)) {
+            // A monospace mark is code beside code: in a code word or between code words.
+            const int32_t b = before_[k], a = after_[k];
+            const bool word = (b >= 0 && wordOf_[uint32_t(b)] == wordOf_[k] && (at(b) & kStyleCode)) ||
+                              (a >= 0 && wordOf_[uint32_t(a)] == wordOf_[k] && (at(a) & kStyleCode));
+            code = word || (at(b) & at(a) & kStyleCode) != 0;
+        }
+        if (code) result |= kStyleCode;
+        const int32_t fb = before_[n + k], fa = after_[n + k];
+        const uint8_t enclosed = at(fb) & at(fa) & (kStyleBold | kStyleItalic | kStyleStrike);
+        if (code) {
+            result |= enclosed | (s & (kStyleBold | kStyleItalic | kStyleStrike));
+        } else {
+            // Inside a word ("Alice’s") a mark between two letters of a style takes it whatever
+            // its own face; elsewhere it keeps a style it is set in next to letters that have it.
+            const bool sameB = fb >= 0 && wordOf_[uint32_t(fb)] == wordOf_[k];
+            const bool sameA = fa >= 0 && wordOf_[uint32_t(fa)] == wordOf_[k];
+            const uint8_t attached = static_cast<uint8_t>((sameB ? at(fb) : 0) | (sameA ? at(fa) : 0));
+            result |= ((sameB && sameA ? enclosed : 0) | (s & (enclosed | attached))) &
+                      (kStyleBold | kStyleItalic | kStyleStrike);
+        }
+        styles_[k] = static_cast<uint8_t>(result | (s & kLetter));
+    }
+    for (uint32_t k = 0; k < n; ++k) styles_[k] &= kStyles;
+    // Where each style's run from each glyph ends: styles that run longer open first.
+    runEnd_.resize(kStyleCount * size_t(n));
+    for (int s = 0; s < kStyleCount; ++s) {
+        uint32_t* end = runEnd_.data() + size_t(s) * n;
+        const uint8_t bit = static_cast<uint8_t>(1u << s);
+        for (uint32_t k = n; k-- > 0;)
+            end[k] = !(styles_[k] & bit) ? k : k + 1 < n && (styles_[k + 1] & bit) ? end[k + 1] : k + 1;
+    }
+}
+
+void Writer::SetStyle(uint8_t target, uint32_t at) {
+    int keep = 0;
+    uint8_t kept = 0;
+    while (keep < depth_ && (target & stack_[keep])) kept |= stack_[keep++];
+    // A code span holds no markup: a style to open inside it closes it first.
+    if ((target & ~kept) != 0 && keep > 0 && stack_[keep - 1] == kStyleCode) {
+        --keep;
+        kept = static_cast<uint8_t>(kept & ~kStyleCode);
+    }
+    while (depth_ > keep) {
+        const uint8_t bit = stack_[--depth_];
+        out_.append(kDelimiters[bit == kStyleBold ? 0 : bit == kStyleItalic ? 1 : bit == kStyleCode ? 2 : 3]);
+    }
+    uint8_t missing = static_cast<uint8_t>(target & ~kept);
+    const size_t n = refs_.size();
+    while (missing != 0 && depth_ < kStyleCount) {
+        int best = 2;  // code last
+        uint32_t bestEnd = 0;
+        for (int s = 0; s < kStyleCount; ++s) {
+            if (s == 2 || !(missing & (1u << s))) continue;
+            const uint32_t end = runEnd_[size_t(s) * n + at];
+            if (best == 2 || end > bestEnd) best = s, bestEnd = end;
+        }
+        out_.append(kDelimiters[best]);
+        stack_[depth_++] = static_cast<uint8_t>(1u << best);
+        missing = static_cast<uint8_t>(missing & ~(1u << best));
     }
 }
 
@@ -333,106 +514,104 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
 void Writer::Inline(const Block& block, bool styles) {
     CollectWords(block);
     StyleWords(styles);
-    uint8_t open = 0;
-    int32_t openLinkPage = -1, openLink = -1;
+    depth_ = 0;
+    int32_t openLink = -1;
     // Heading and table cell text is inline: "## 1. Installation" opens no list.
     bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
     std::string_view openUri;
-    const auto closeAll = [&]() {
-        if (open & kStyleItalic) out_.push_back('*');
-        if (open & kStyleBold) out_.append("**");
-        if (open & kStyleCode) out_.push_back('`');
-        open = 0;
-        if (openLink >= 0) {
-            out_.append("](");
-            const bool angle = openUri.find_first_of(" ()<>") != std::string_view::npos;
-            if (angle) out_.push_back('<');
-            for (char c : openUri) {
-                if (angle && (c == '<' || c == '>'))
-                    out_.append(c == '<' ? "%3C" : "%3E");
-                else
-                    out_.push_back(c);
-            }
-            if (angle) out_.push_back('>');
-            out_.push_back(')');
-            openLink = -1;
-            openLinkPage = -1;
+    const auto closeLink = [&]() {
+        SetStyle(0, 0);
+        if (openLink < 0) return;
+        out_.append("](");
+        const bool angle = openUri.find_first_of(" ()<>") != std::string_view::npos;
+        if (angle) out_.push_back('<');
+        for (char c : openUri) {
+            if (angle && (c == '<' || c == '>'))
+                out_.append(c == '<' ? "%3C" : "%3E");
+            else
+                out_.push_back(c);
         }
+        if (angle) out_.push_back('>');
+        out_.push_back(')');
+        openLink = -1;
+    };
+    const auto open = [&]() {
+        uint8_t set = 0;
+        for (int d = 0; d < depth_; ++d) set |= stack_[d];
+        return set;
     };
     for (size_t i = 0; i < words_.size(); ++i) {
         const Word& w = words_[i];
-        const bool linkChanges = openLink >= 0 ? (w.link < 0 || Uri(w) != openUri) : w.link >= 0;
-        if (w.style != open || linkChanges) {
-            // Emphasis closes before the space so that its delimiters stay flanking.
-            if (linkChanges) {
-                closeAll();
-            } else {
-                if (open & kStyleItalic) out_.push_back('*');
-                if (open & kStyleBold) out_.append("**");
-                if (open & kStyleCode) out_.push_back('`');
-                open = 0;
-            }
+        const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words_[i - 1], w)) : w.link >= 0;
+        if (linkChanges) {
+            closeLink();
+        } else if (w.spaceBefore) {
+            // Styles that do not go on past the space close before it, so that delimiters stay
+            // flanking.
+            SetStyle(static_cast<uint8_t>(open() & styles_[w.first]), w.first);
         }
         if (w.spaceBefore) out_.push_back(' ');
         if (w.link >= 0 && openLink < 0) {
             out_.push_back('[');
             openLink = w.link;
-            openLinkPage = w.linkPage;
             openUri = Uri(w);
             blockStart = false;
         }
-        if (w.style != open) {
-            if (w.style & kStyleCode) out_.push_back('`');
-            if (w.style & kStyleBold) out_.append("**");
-            if (w.style & kStyleItalic) out_.push_back('*');
-            open = w.style;
-            blockStart = false;
-        }
-        if (open & kStyleCode) {
-            // Code spans hold their text as is; a backtick inside cannot be written in a single-backtick
-            // span, so it becomes an apostrophe-like grave accent outside ASCII.
-            for (uint32_t k = w.first; k < w.first + w.count; ++k) {
-                for (char c : Text(refs_[k])) out_.push_back(c == '`' ? '\'' : c);
-            }
-            continue;
-        }
-        // The word in script runs.
+        // The word in runs of one script and one style; the link closes before punctuation that
+        // follows it.
         uint32_t k = w.first;
         const uint32_t end = w.first + w.count;
+        const uint32_t trimAt = openLink >= 0 && w.linkTrim > 0 ? end - w.linkTrim : end;
         while (k < end) {
+            if (k == trimAt && openLink >= 0) closeLink();
+            const uint32_t stop = k < trimAt ? trimAt : end;
             const uint8_t script = refs_[k].script;
-            uint32_t runEnd = k + 1;
-            while (runEnd < end && refs_[runEnd].script == script) ++runEnd;
-            if (script == kScriptSup && !noteRefs_.empty()) {
-                if (const uint32_t number = NoteNumber(refs_[k], runEnd - k)) {
+            if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs_[k - 1].script != kScriptSup)) {
+                uint32_t supEnd = k + 1;
+                while (supEnd < end && refs_[supEnd].script == kScriptSup) ++supEnd;
+                if (const uint32_t number = NoteNumber(refs_[k], supEnd - k)) {
+                    SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                     out_.append("[^");
                     out_.append(std::to_string(number));
                     out_.push_back(']');
                     blockStart = false;
-                    k = runEnd;
+                    k = supEnd;
                     continue;
                 }
             }
             // An inline image glyph holds its Markdown link.
             if (pages_[refs_[k].page].glyphs[refs_[k].glyph].flags & kGlyphImage) {
+                SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                 out_.append(Text(refs_[k]));
                 blockStart = false;
                 ++k;
                 continue;
             }
-            other_.clear();
-            for (uint32_t j = k; j < runEnd; ++j) other_.append(Text(refs_[j]));
-            if (script == kScriptSup) out_.append("<sup>");
-            if (script == kScriptSub) out_.append("<sub>");
-            AppendEscaped(other_, blockStart && script == kScriptNone);
-            if (script == kScriptSup) out_.append("</sup>");
-            if (script == kScriptSub) out_.append("</sub>");
+            uint32_t runEnd = k + 1;
+            while (runEnd < stop && refs_[runEnd].script == script && styles_[runEnd] == styles_[k] &&
+                   !(pages_[refs_[runEnd].page].glyphs[refs_[runEnd].glyph].flags & kGlyphImage))
+                ++runEnd;
+            SetStyle(styles_[k], k);
+            if (depth_ > 0) blockStart = false;
+            if (styles_[k] & kStyleCode) {
+                // Code spans hold their text as is; a backtick inside cannot be written in a
+                // single-backtick span, so it becomes an apostrophe.
+                for (uint32_t j = k; j < runEnd; ++j)
+                    for (char c : Text(refs_[j])) out_.push_back(c == '`' ? '\'' : c);
+            } else {
+                other_.clear();
+                for (uint32_t j = k; j < runEnd; ++j) other_.append(Text(refs_[j]));
+                if (script == kScriptSup) out_.append("<sup>");
+                if (script == kScriptSub) out_.append("<sub>");
+                AppendEscaped(other_, blockStart && script == kScriptNone);
+                if (script == kScriptSup) out_.append("</sup>");
+                if (script == kScriptSub) out_.append("</sub>");
+            }
             blockStart = false;
             k = runEnd;
         }
     }
-    closeAll();
-    (void)openLinkPage;
+    closeLink();
     // No trailing spaces.
     while (!out_.empty() && out_.back() == ' ') out_.pop_back();
 }
@@ -549,11 +728,35 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
         if (!out.empty()) {
             const bool tight = previous && previous->kind == BlockKind::ListItem && block.kind == BlockKind::ListItem &&
                                previous->quote == block.quote;
-            out += tight ? "\n" : "\n\n";
+            // Blocks of one block quote stay in it: the blank line between them is quoted too. An
+            // alert starts a quote of its own.
+            const bool quoted = [&]() {
+                for (const Block* b : {previous, &block})
+                    if (!b || b->quote == 0 || b->kind == BlockKind::Table || b->kind == BlockKind::Comment ||
+                        b->kind == BlockKind::Footnote)
+                        return false;
+                return block.alert == 0;
+            }();
+            if (tight) {
+                out += "\n";
+            } else if (quoted) {
+                out += "\n>";
+                for (int q = 1; q < std::min(previous->quote, block.quote); ++q) out += " >";
+                out += "\n";
+            } else {
+                out += "\n\n";
+            }
         }
         previous = &block;
         prefix.clear();
         for (int q = 0; q < block.quote; ++q) prefix += "> ";
+        if (block.alert != 0 && block.quote > 0) {
+            static const char* const kAlerts[] = {"NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"};
+            out += prefix;
+            out += "[!";
+            out += kAlerts[std::min<int>(block.alert, 5) - 1];
+            out += "]\n";
+        }
         switch (block.kind) {
         case BlockKind::Comment:
             out += "<!-- rayopdf: page ";
@@ -671,7 +874,15 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 break;
             }
             out += prefix;
-            out += "![](";
+            out += "![";
+            // Alternate text (a tagged figure's /Alt) on one line, with what would end the link
+            // text or start other markup escaped.
+            for (const char c : page.ImageAlt(image)) {
+                if (c == '\\' || c == '[' || c == ']' || c == '*' || c == '_' || c == '`' || c == '<' || c == '&')
+                    out.push_back('\\');
+                out.push_back(static_cast<unsigned char>(c) < 0x20 ? ' ' : c);
+            }
+            out += "](";
             const bool angle = name.find_first_of(" ()<>") != std::string_view::npos;
             if (angle) out.push_back('<');
             for (char c : name) {

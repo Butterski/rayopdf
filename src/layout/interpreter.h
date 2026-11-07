@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // The content-stream interpreter (algorithms §2, roadmap D4 step 2): one page's content and the
 // Form XObjects it draws, read into the page model of page.h. Text positions follow ISO 32000-1
-// §9.4.4 (algorithms §2.3); marked content follows §14.6 (ActualText replaces the glyphs it
-// encloses, Artifact spans are flagged, MCIDs kept); paths become shapes for rulings, quote bars and
-// vector bullets.
+// §9.4.4 (algorithms §2.3); marked content follows §14.6 (ActualText, without control characters,
+// replaces the glyphs it encloses, Artifact spans are flagged, MCIDs kept on glyphs and images with
+// the stream they count in, the page's or a Form XObject's); paths become shapes for rulings, quote
+// bars and vector bullets.
 //
 // Hostile input: q/Q nesting is capped at kMaxStateDepth, Form XObjects at kMaxFormDepth with a
 // cycle check, and every page has an operator and a glyph budget. A broken operand skips its
@@ -29,6 +30,10 @@ constexpr uint32_t kMaxLinksPerPage = 1u << 14;
 constexpr size_t kMaxInlineImageBytes = size_t(64) << 20;  // inline image sources kept per page
 constexpr uint32_t kMaxRulingsPerPage = 1u << 16;
 constexpr uint32_t kMaxPiecesPerPath = 4096;  // straight axis-aligned pieces kept of one path
+// Forms with marked content of their own per page (PageData::markStreams); MCIDs in further forms
+// are dropped (-1).
+constexpr size_t kMaxMarkStreams = 254;
+constexpr uint8_t kNoMarkStream = 255;
 
 // Counters of one page for ConvertReport.
 struct PageStats {

@@ -2,28 +2,41 @@
 // The rayopdf command line (roadmap D7).
 //
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-//                                   [--no-annotations] [--report]
+//                                   [--no-annotations] [--no-structure] [--report]
+//   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
+//                                        [--workers=N] [--images=none] [--password=PW] ...
+//   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --inspect IN.pdf [--password=PW]
 //   rayopdf --version | --help
 //
 // OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
 // unless --images says otherwise (none with "-"). Exit codes: 0 converted, 2 usage error,
 // 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
-// 13 unsupported encryption.
+// 13 unsupported encryption. A batch exits with the code of its last failed document in input
+// order. The batch modes' records and files never depend on the number of workers: documents are
+// converted independently and records are written in input order.
 
+#include "common/batch.h"
 #include "common/file.h"
+#include "common/serve.h"
 #include "layout/convert.h"
 #include "pdf/document.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
-#include <unistd.h>
+#include <thread>
 #include <vector>
 
 #ifndef RAYOPDF_VERSION
@@ -46,6 +59,15 @@ enum Exit : int {
 
 // Inputs larger than this are refused (exit 3): far beyond any document a converter meets.
 constexpr uint64_t kMaxInputBytes = uint64_t(4) << 30;
+// A batch folder tree: at most this deep below the input folder, and at most this many PDFs.
+constexpr int kMaxFolderDepth = 64;
+constexpr size_t kMaxBatchFiles = size_t(1) << 20;
+
+#ifdef _WIN32
+constexpr bool kWindows = true;
+#else
+constexpr bool kWindows = false;
+#endif
 
 void PrintUsage(std::FILE* out) {
     std::fputs(
@@ -53,6 +75,10 @@ void PrintUsage(std::FILE* out) {
         "\n"
         "Usage:\n"
         "  rayopdf --convert IN.pdf OUT.md [options]   convert (OUT.md \"-\" is standard output)\n"
+        "  rayopdf --batch IN-FOLDER OUT-FOLDER [options] [batch options]\n"
+        "                                               convert every *.pdf of a folder to OUT-FOLDER\n"
+        "  rayopdf --serve --json [options] [--workers=N]\n"
+        "                                               answer JSON requests, one a line (protocol 1)\n"
         "  rayopdf --inspect IN.pdf [--password=PW]     print the document's structure as JSON\n"
         "  rayopdf --version | --help\n"
         "\n"
@@ -60,9 +86,22 @@ void PrintUsage(std::FILE* out) {
         "  --password=PW      user or owner password of an encrypted PDF\n"
         "  --pages=A-B        convert pages A to B (1-based; \"A\", \"A-\", \"-B\" also work)\n"
         "  --images=DIR|none  where image files go (default: OUT-images/ beside OUT.md;\n"
-        "                     none for standard output)\n"
+        "                     none for standard output; only none in the batch modes)\n"
         "  --no-annotations   do not turn link annotations into Markdown links\n"
-        "  --report           print one JSON line of conversion counters\n"
+        "  --no-structure     ignore the structure tree of a tagged PDF (layout analysis only)\n"
+        "  --report           print one JSON record of the document (its counters)\n"
+        "\n"
+        "Batch options:\n"
+        "  --recursive        subfolders too (not hidden ones), mirrored under OUT-FOLDER\n"
+        "  --skip-unchanged   keep Markdown files at least as new as their PDF\n"
+        "  --report[=FILE]    one JSON record a document, in input order (standard output\n"
+        "                     without FILE)\n"
+        "  --workers=N        documents converted at once, 1 to 64 (default: one a CPU, at most\n"
+        "                     6; --serve: 1); never changes the output\n"
+        "\n"
+        "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
+        "(\"output\" left out: the answer carries the Markdown) and answers each with its record,\n"
+        "in request order, after a first line {\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it.\n"
         "\n"
         "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
         "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
@@ -73,6 +112,14 @@ int Usage(const char* message, std::string_view detail = {}) {
     std::fprintf(stderr, "rayopdf: %s%.*s\n", message, static_cast<int>(detail.size()), detail.data());
     std::fputs("Try 'rayopdf --help'.\n", stderr);
     return kExitUsage;
+}
+
+void PrintError(const std::string& message) {
+    File::WriteStandardError("rayopdf: " + message + "\n");
+}
+
+bool StartsWith(std::string_view text, std::string_view prefix) {
+    return text.substr(0, prefix.size()) == prefix;
 }
 
 // A positive page number; false for anything else.
@@ -106,26 +153,139 @@ bool ParsePages(std::string_view text, int& first, int& last) {
     return last == 0 || first <= last;
 }
 
-void AppendJsonString(std::string& out, std::string_view text) {
-    out.push_back('"');
-    for (unsigned char c : text) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (c < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof buf, "\\u%04x", c);
-                    out += buf;
-                } else {
-                    out.push_back(static_cast<char>(c));
-                }
+// The flags of one conversion: those of --convert, a batch's for each document, and a serve
+// session's with each request's `args` over them.
+struct DocumentOptions {
+    std::string password;
+    Layout::ConvertOptions convert;  // pages and annotations; ChooseImageTarget sets the images
+    std::string images;
+    bool imagesGiven = false;
+};
+
+enum class FlagStatus { Taken, Unknown, Invalid };
+
+// One flag of a conversion into `options`; Invalid with `error` for a known flag with a bad value.
+FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std::string& error) {
+    if (StartsWith(arg, "--password=")) {
+        options.password = std::string(arg.substr(11));
+    } else if (StartsWith(arg, "--pages=")) {
+        if (!ParsePages(arg.substr(8), options.convert.firstPage, options.convert.lastPage)) {
+            error = "invalid page range: " + std::string(arg.substr(8));
+            return FlagStatus::Invalid;
+        }
+    } else if (StartsWith(arg, "--images=")) {
+        options.images = std::string(arg.substr(9));
+        if (options.images.empty()) {
+            error = "--images needs a directory or none";
+            return FlagStatus::Invalid;
+        }
+        options.imagesGiven = true;
+    } else if (arg == "--no-annotations") {
+        options.convert.annotations = false;
+    } else if (arg == "--no-structure") {
+        options.convert.structure = false;
+    } else {
+        return FlagStatus::Unknown;
+    }
+    return FlagStatus::Taken;
+}
+
+// The directory part of an absolute path ("/a/b" for "/a/b/c.md", "C:/" for "C:/c.md").
+std::string Parent(const std::string& absolute) {
+    const size_t root = absolute.size() >= 3 && absolute[1] == ':' && absolute[2] == '/' ? 3 : 1;
+    const size_t slash = absolute.rfind('/');
+    return slash == std::string::npos || slash < root ? absolute.substr(0, root) : absolute.substr(0, slash);
+}
+
+bool SamePart(std::string_view a, std::string_view b) {
+    if (!kWindows) return a == b;
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return true;
+}
+
+// `target` relative to the directory `from` (both absolute, '/'-separated), "" when they are the
+// same, with a trailing '/'. On another root (a Windows drive) `target` itself.
+std::string Relative(const std::string& from, const std::string& target) {
+    std::vector<std::string_view> a, b;
+    for (const std::string* path : {&from, &target}) {
+        std::vector<std::string_view>& parts = path == &from ? a : b;
+        size_t at = 0;
+        while (at < path->size()) {
+            size_t next = path->find('/', at);
+            if (next == std::string::npos) next = path->size();
+            if (next > at) parts.emplace_back(path->data() + at, next - at);
+            at = next + 1;
         }
     }
-    out.push_back('"');
+    const bool rooted = !from.empty() && from[0] == '/';
+    if (rooted != (!target.empty() && target[0] == '/') ||
+        (!rooted && (a.empty() || b.empty() || !SamePart(a[0], b[0])))) {
+        return target.back() == '/' ? target : target + "/";
+    }
+    size_t common = 0;
+    while (common < a.size() && common < b.size() && SamePart(a[common], b[common])) ++common;
+    std::string out;
+    for (size_t i = common; i < a.size(); ++i) out += "../";
+    for (size_t i = common; i < b.size(); ++i) {
+        out += b[i];
+        out += '/';
+    }
+    return out;
+}
+
+// Where images go and how the Markdown links them (D6): by default OUT-images/ beside OUT.md;
+// --images=none or Markdown on standard output (or in a serve answer, `output` empty): none;
+// --images=DIR: DIR, linked relative to OUT.md (to the working directory for "-" and "").
+void ChooseImageTarget(const std::string& output, const DocumentOptions& document, Layout::ConvertOptions& options) {
+    options.imageDirectory.clear();
+    options.imageLinkPrefix.clear();
+    const bool inline_ = output.empty() || output == "-";
+    if ((document.imagesGiven && document.images == "none") || (!document.imagesGiven && inline_)) return;
+    std::string directory;
+    if (document.imagesGiven) {
+        directory = document.images;
+    } else {
+        directory = output;
+        const size_t slash = directory.find_last_of(kWindows ? "/\\" : "/");
+        const size_t dot = directory.rfind('.');
+        if (dot != std::string::npos && (slash == std::string::npos || dot > slash + 1)) directory.resize(dot);
+        directory += "-images";
+    }
+    const std::string from = inline_ ? File::AbsolutePath(".") : Parent(File::AbsolutePath(output));
+    options.imageDirectory = directory;
+    options.imageLinkPrefix = Relative(from, File::AbsolutePath(directory));
+}
+
+// Reads the input; an exit code other than kExitOk, with `error`, when it cannot.
+int ReadInput(const std::string& path, File::InputFile& file, std::string& error) {
+    switch (file.Open(path, kMaxInputBytes)) {
+        case File::ReadStatus::Ok: return kExitOk;
+        case File::ReadStatus::NotFound: error = "cannot open " + path; break;
+        case File::ReadStatus::NotRegular: error = path + " is not a regular file"; break;
+        case File::ReadStatus::TooLarge: error = path + " is too large"; break;
+        case File::ReadStatus::Failed: error = "cannot read " + path; break;
+    }
+    return kExitUnreadable;
+}
+
+int OpenDocument(const std::string& path, std::string_view bytes, std::string_view password,
+                 std::unique_ptr<Document>& document, std::string& error) {
+    switch (Document::Open(bytes, password, document)) {
+        case OpenStatus::Ok: return kExitOk;
+        case OpenStatus::NotPdf: error = path + " is not a PDF file"; return kExitCorrupt;
+        case OpenStatus::Corrupt: error = path + " is corrupt beyond repair"; return kExitCorrupt;
+        case OpenStatus::TooLarge: error = path + " exceeds a document limit"; return kExitCorrupt;
+        case OpenStatus::PasswordRequired: error = path + " needs a password (--password=PW)"; return kExitPassword;
+        case OpenStatus::Unsupported: break;
+    }
+    error = path + " uses an unsupported encryption";
+    return kExitUnsupported;
 }
 
 void AppendField(std::string& out, const char* key, uint64_t value) {
@@ -147,55 +307,19 @@ void AppendField(std::string& out, const char* key, std::string_view value) {
     out += '"';
     out += key;
     out += "\":";
-    AppendJsonString(out, value);
-}
-
-// Reads the input; an exit code other than kExitOk when it cannot.
-int ReadInput(const std::string& path, File::InputFile& file) {
-    switch (file.Open(path, kMaxInputBytes)) {
-        case File::ReadStatus::Ok: return kExitOk;
-        case File::ReadStatus::NotFound:
-            std::fprintf(stderr, "rayopdf: cannot open %s\n", path.c_str());
-            return kExitUnreadable;
-        case File::ReadStatus::NotRegular:
-            std::fprintf(stderr, "rayopdf: %s is not a regular file\n", path.c_str());
-            return kExitUnreadable;
-        case File::ReadStatus::TooLarge:
-            std::fprintf(stderr, "rayopdf: %s is too large\n", path.c_str());
-            return kExitUnreadable;
-        case File::ReadStatus::Failed: break;
-    }
-    std::fprintf(stderr, "rayopdf: cannot read %s\n", path.c_str());
-    return kExitUnreadable;
-}
-
-int OpenDocument(const std::string& path, std::string_view bytes, std::string_view password,
-                 std::unique_ptr<Document>& document) {
-    switch (Document::Open(bytes, password, document)) {
-        case OpenStatus::Ok: return kExitOk;
-        case OpenStatus::NotPdf:
-            std::fprintf(stderr, "rayopdf: %s is not a PDF file\n", path.c_str());
-            return kExitCorrupt;
-        case OpenStatus::Corrupt:
-            std::fprintf(stderr, "rayopdf: %s is corrupt beyond repair\n", path.c_str());
-            return kExitCorrupt;
-        case OpenStatus::TooLarge:
-            std::fprintf(stderr, "rayopdf: %s exceeds a document limit\n", path.c_str());
-            return kExitCorrupt;
-        case OpenStatus::PasswordRequired:
-            std::fprintf(stderr, "rayopdf: %s needs a password (--password=PW)\n", path.c_str());
-            return kExitPassword;
-        case OpenStatus::Unsupported: break;
-    }
-    std::fprintf(stderr, "rayopdf: %s uses an unsupported encryption\n", path.c_str());
-    return kExitUnsupported;
+    Batch::AppendJsonString(out, value);
 }
 
 int Inspect(const std::string& input, std::string_view password) {
     File::InputFile file;
-    if (const int code = ReadInput(input, file)) return code;
+    std::string error;
     std::unique_ptr<Document> document;
-    if (const int code = OpenDocument(input, file.Bytes(), password, document)) return code;
+    int code = ReadInput(input, file, error);
+    if (code == kExitOk) code = OpenDocument(input, file.Bytes(), password, document, error);
+    if (code != kExitOk) {
+        PrintError(error);
+        return code;
+    }
 
     const DocumentReport& report = document->Report();
     std::string json = "{";
@@ -234,155 +358,428 @@ int Inspect(const std::string& input, std::string_view password) {
     return kExitOk;
 }
 
-std::string ReportJson(const std::string& input, const Document& document, const Layout::ConvertReport& r) {
-    const DocumentReport& d = document.Report();
-    std::string json = "{";
-    AppendField(json, "file", std::string_view(input));
-    AppendField(json, "pages", static_cast<uint64_t>(r.pages));
-    AppendField(json, "pages_without_text", static_cast<uint64_t>(r.pagesWithoutText));
-    AppendField(json, "glyphs", r.glyphs);
-    AppendField(json, "unmapped_glyphs", r.unmappedGlyphs);
-    AppendField(json, "guessed_glyphs", r.guessedGlyphs);
-    AppendField(json, "hidden_glyphs", r.hiddenGlyphs);
-    AppendField(json, "headings", static_cast<uint64_t>(r.headings));
-    AppendField(json, "paragraphs", static_cast<uint64_t>(r.paragraphs));
-    AppendField(json, "list_items", static_cast<uint64_t>(r.listItems));
-    AppendField(json, "code_blocks", static_cast<uint64_t>(r.codeBlocks));
-    AppendField(json, "tables", static_cast<uint64_t>(r.tables));
-    AppendField(json, "links", static_cast<uint64_t>(r.links));
-    AppendField(json, "footnotes", static_cast<uint64_t>(r.footnotes));
-    AppendField(json, "images", static_cast<uint64_t>(r.images));
-    AppendField(json, "images_skipped", static_cast<uint64_t>(r.imagesSkipped));
-    AppendField(json, "header_footer_lines", static_cast<uint64_t>(r.headerFooterLines));
-    AppendField(json, "content_errors", static_cast<uint64_t>(r.contentErrors));
-    AppendField(json, "repaired", d.repaired);
-    AppendField(json, "encrypted", d.encrypted);
-    AppendField(json, "broken_objects", static_cast<uint64_t>(d.brokenObjects));
-    AppendField(json, "salvaged_streams", static_cast<uint64_t>(d.salvagedStreams));
-    AppendField(json, "failed_streams", static_cast<uint64_t>(d.failedStreams));
-    AppendField(json, "limit_hits", static_cast<uint64_t>(d.limitHits));
-    json += "}\n";
-    return json;
+// The record's counters after "ms": the conversion's and the reader's.
+void AppendCounters(std::string& out, const Layout::ConvertReport& r, const DocumentReport& d) {
+    out += ",";
+    AppendField(out, "pages_without_text", static_cast<uint64_t>(r.pagesWithoutText));
+    AppendField(out, "glyphs", r.glyphs);
+    AppendField(out, "unmapped_glyphs", r.unmappedGlyphs);
+    AppendField(out, "guessed_glyphs", r.guessedGlyphs);
+    AppendField(out, "hidden_glyphs", r.hiddenGlyphs);
+    AppendField(out, "headings", static_cast<uint64_t>(r.headings));
+    AppendField(out, "paragraphs", static_cast<uint64_t>(r.paragraphs));
+    AppendField(out, "list_items", static_cast<uint64_t>(r.listItems));
+    AppendField(out, "code_blocks", static_cast<uint64_t>(r.codeBlocks));
+    AppendField(out, "tables", static_cast<uint64_t>(r.tables));
+    AppendField(out, "links", static_cast<uint64_t>(r.links));
+    AppendField(out, "footnotes", static_cast<uint64_t>(r.footnotes));
+    AppendField(out, "images", static_cast<uint64_t>(r.images));
+    AppendField(out, "images_skipped", static_cast<uint64_t>(r.imagesSkipped));
+    AppendField(out, "images_mask_dropped", static_cast<uint64_t>(r.imagesMaskDropped));
+    AppendField(out, "header_footer_lines", static_cast<uint64_t>(r.headerFooterLines));
+    AppendField(out, "content_errors", static_cast<uint64_t>(r.contentErrors));
+    AppendField(out, "structure", std::string_view(Layout::StructureUseName(r.structure)));
+    AppendField(out, "structure_elements", static_cast<uint64_t>(r.structureElements));
+    AppendField(out, "repaired", d.repaired);
+    AppendField(out, "encrypted", d.encrypted);
+    AppendField(out, "broken_objects", static_cast<uint64_t>(d.brokenObjects));
+    AppendField(out, "salvaged_streams", static_cast<uint64_t>(d.salvagedStreams));
+    AppendField(out, "failed_streams", static_cast<uint64_t>(d.failedStreams));
+    AppendField(out, "limit_hits", static_cast<uint64_t>(d.limitHits));
 }
 
-int ConvertFile(const std::string& input, const std::string& output, std::string_view password,
-                const Layout::ConvertOptions& options, bool report) {
+using Clock = std::chrono::steady_clock;
+
+double MillisecondsSince(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+// Converts `input` into `markdown` and writes it to `output` ("-": standard output; "": not
+// written, the caller takes `markdown`). `record` gets the outcome: code, error, pages, bytes and,
+// when `counters`, the counters (ms is the caller's).
+void ConvertDocument(const std::string& input, const std::string& output, std::string_view password,
+                     const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
+                     bool counters) {
     File::InputFile file;
-    if (const int code = ReadInput(input, file)) return code;
     std::unique_ptr<Document> document;
-    if (const int code = OpenDocument(input, file.Bytes(), password, document)) return code;
+    int code = ReadInput(input, file, record.error);
+    if (code == kExitOk) code = OpenDocument(input, file.Bytes(), password, document, record.error);
+    if (code != kExitOk) {
+        record.status = "error";
+        record.code = code;
+        return;
+    }
+    Layout::ConvertReport report;
+    Layout::Convert(*document, options, markdown, report);
+    if (!output.empty() && !File::WriteAll(output, markdown)) {
+        record.status = "error";
+        record.code = kExitUnwritable;
+        record.error = "cannot write " + output;
+        return;
+    }
+    record.pages = static_cast<uint64_t>(report.pages);
+    record.bytes = markdown.size();
+    if (counters) AppendCounters(record.counters, report, document->Report());
+}
 
+int ConvertFile(const std::string& input, const std::string& output, const DocumentOptions& document,
+                const Layout::ConvertOptions& options, bool report) {
+    const Clock::time_point start = report ? Clock::now() : Clock::time_point();
     std::string markdown;
-    Layout::ConvertReport counters;
-    Layout::Convert(*document, options, markdown, counters);
-    if (!File::WriteAll(output, markdown)) {
-        std::fprintf(stderr, "rayopdf: cannot write %s\n", output.c_str());
-        return kExitUnwritable;
-    }
+    Batch::Record record;
+    ConvertDocument(input, output, document.password, options, markdown, record, report);
+    if (record.code != kExitOk) PrintError(record.error);
     if (report) {
-        const std::string json = ReportJson(input, *document, counters);
-        std::fwrite(json.data(), 1, json.size(), output == "-" ? stderr : stdout);
-    }
-    return kExitOk;
-}
-
-bool StartsWith(std::string_view text, std::string_view prefix) {
-    return text.substr(0, prefix.size()) == prefix;
-}
-
-// `path` made absolute against the working directory, with "." and ".." segments resolved
-// lexically (links are written as paths; no file system lookups).
-std::string AbsolutePath(const std::string& path) {
-    std::string full = path;
-    if (path.empty() || path[0] != '/') {
-        char cwd[4096];
-        full = (getcwd(cwd, sizeof cwd) ? std::string(cwd) : std::string(".")) + "/" + path;
-    }
-    std::string out;
-    size_t at = 0;
-    while (at <= full.size()) {
-        size_t next = full.find('/', at);
-        if (next == std::string::npos) next = full.size();
-        const std::string_view part(full.data() + at, next - at);
-        if (part == "..") {
-            const size_t cut = out.rfind('/');
-            out.resize(cut == std::string::npos ? 0 : cut);
-        } else if (!part.empty() && part != ".") {
-            out += '/';
-            out += part;
-        }
-        at = next + 1;
-    }
-    return out.empty() ? "/" : out;
-}
-
-// The directory part of an absolute path ("/a/b" for "/a/b/c.md").
-std::string Parent(const std::string& absolute) {
-    const size_t slash = absolute.rfind('/');
-    return slash == 0 || slash == std::string::npos ? "/" : absolute.substr(0, slash);
-}
-
-// `target` relative to the directory `from` (both absolute), "" when they are the same.
-std::string Relative(const std::string& from, const std::string& target) {
-    std::vector<std::string_view> a, b;
-    for (const std::string* path : {&from, &target}) {
-        std::vector<std::string_view>& parts = path == &from ? a : b;
-        size_t at = 1;
-        while (at < path->size()) {
-            size_t next = path->find('/', at);
-            if (next == std::string::npos) next = path->size();
-            parts.emplace_back(path->data() + at, next - at);
-            at = next + 1;
+        record.input = input;
+        record.output = output;
+        record.milliseconds = MillisecondsSince(start);
+        std::string line;
+        Batch::AppendRecord(line, record);
+        if (output == "-") {
+            File::WriteStandardError(line);
+        } else {
+            File::WriteStandardOutput(line);
         }
     }
-    size_t common = 0;
-    while (common < a.size() && common < b.size() && a[common] == b[common]) ++common;
-    std::string out;
-    for (size_t i = common; i < a.size(); ++i) out += "../";
-    for (size_t i = common; i < b.size(); ++i) {
-        out += b[i];
-        out += '/';
-    }
+    return record.code;
+}
+
+// Flags of the batch modes.
+struct BatchOptions {
+    bool recursive = false;
+    bool skipUnchanged = false;
+    bool report = false;
+    std::string reportPath = "-";
+    unsigned workers = 0;  // 0: automatic
+    bool workersGiven = false;
+};
+
+std::string Join(const std::string& folder, std::string_view name) {
+    std::string out = folder;
+    if (!out.empty() && out.back() != '/' && !(kWindows && out.back() == '\\')) out += '/';
+    out += name;
     return out;
 }
 
-// Where images go and how the Markdown links them (D6): by default OUT-images/ beside OUT.md;
-// --images=none or Markdown on standard output: none; --images=DIR: DIR, linked relative to OUT.md.
-void ChooseImageTarget(const std::string& output, const std::string* images, Layout::ConvertOptions& options) {
-    if ((images && *images == "none") || (!images && output == "-")) return;
-    std::string directory;
-    if (images) {
-        directory = *images;
-    } else {
-        directory = output;
-        const size_t slash = directory.rfind('/');
-        const size_t dot = directory.rfind('.');
-        if (dot != std::string::npos && (slash == std::string::npos || dot > slash + 1)) directory.resize(dot);
-        directory += "-images";
+bool IsPdfName(std::string_view name) {
+    if (name.size() < 5) return false;
+    const std::string_view extension = name.substr(name.size() - 4);
+    return extension[0] == '.' && (extension[1] | 0x20) == 'p' && (extension[2] | 0x20) == 'd' &&
+           (extension[3] | 0x20) == 'f';
+}
+
+std::string Lowered(std::string text) {
+    for (char& c : text) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     }
-    const std::string from = output == "-" ? AbsolutePath(".") : Parent(AbsolutePath(output));
-    options.imageDirectory = directory;
-    options.imageLinkPrefix = Relative(from, AbsolutePath(directory));
+    return text;
+}
+
+struct BatchJob {
+    std::string input;
+    std::string output;
+    uint64_t modified = 0;
+    Batch::Record record;
+};
+
+// The PDFs below `folder` as paths relative to it ('/'-separated), sorted by their UTF-8 bytes:
+// with `recursive`, subfolders too, except hidden ones and links to folders. False, with `error`,
+// when a folder cannot be read or the tree is too large.
+bool CollectPdfs(const std::string& folder, bool recursive, std::vector<std::string>& files, std::string& error) {
+    std::vector<std::pair<std::string, int>> pending{{std::string(), 0}};
+    std::vector<File::DirectoryEntry> entries;
+    while (!pending.empty()) {
+        const std::string relative = pending.back().first;
+        const int depth = pending.back().second;
+        pending.pop_back();
+        const std::string path = relative.empty() ? folder : Join(folder, relative);
+        if (!File::ListDirectory(path, entries)) {
+            error = "cannot read the folder " + path;
+            return false;
+        }
+        for (const File::DirectoryEntry& entry : entries) {
+            const std::string name = relative.empty() ? entry.name : relative + "/" + entry.name;
+            if (entry.type == File::FileType::Directory) {
+                if (recursive && !entry.link && entry.name[0] != '.' && depth < kMaxFolderDepth) {
+                    pending.emplace_back(name, depth + 1);
+                }
+            } else if (entry.type == File::FileType::Regular && IsPdfName(entry.name)) {
+                if (files.size() == kMaxBatchFiles) {
+                    error = "more than " + std::to_string(kMaxBatchFiles) + " PDF files below " + folder;
+                    return false;
+                }
+                files.push_back(name);
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return true;
+}
+
+void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOptions& batch, std::string& markdown) {
+    const Clock::time_point start = Clock::now();
+    Batch::Record& record = job.record;
+    record.input = job.input;
+    record.output = job.output;
+    if (record.code != kExitOk) return;  // refused before the workers started
+    if (batch.skipUnchanged) {
+        File::FileInfo in, out;
+        if (File::StatusOf(job.input, in) && File::StatusOf(job.output, out) && out.type == File::FileType::Regular &&
+            out.modified >= in.modified) {
+            record.status = "skipped";
+            record.bytes = out.size;
+            return;
+        }
+    }
+    Layout::ConvertOptions options = document.convert;
+    ChooseImageTarget(job.output, document, options);
+    ConvertDocument(job.input, job.output, document.password, options, markdown, record, true);
+    record.milliseconds = MillisecondsSince(start);
+}
+
+int RunBatch(const std::string& inputFolder, const std::string& outputFolder, const DocumentOptions& document,
+             const BatchOptions& batch) {
+    File::FileInfo info;
+    if (!File::StatusOf(inputFolder, info) || info.type != File::FileType::Directory) {
+        PrintError("the input folder is not a readable directory: " + inputFolder);
+        return kExitUnreadable;
+    }
+    if (!File::EnsureDirectory(outputFolder)) {
+        PrintError("cannot create the output folder " + outputFolder);
+        return kExitUnwritable;
+    }
+    std::vector<std::string> files;
+    std::string error;
+    if (!CollectPdfs(inputFolder, batch.recursive, files, error)) {
+        PrintError(error);
+        return kExitUnreadable;
+    }
+
+    // Jobs in input order. Output subfolders are made here, before the workers start, and two
+    // inputs whose Markdown would be the same file (a.pdf, a.PDF) leave the second refused.
+    std::vector<BatchJob> jobs(files.size());
+    std::set<std::string> outputs;
+    std::set<std::string> folders;
+    for (size_t i = 0; i < files.size(); ++i) {
+        BatchJob& job = jobs[i];
+        const std::string& relative = files[i];
+        job.input = Join(inputFolder, relative);
+        job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) + ".md";
+        if (!outputs.insert(kWindows ? Lowered(job.output) : job.output).second) {
+            job.record.status = "error";
+            job.record.code = kExitUnwritable;
+            job.record.error = "another input has the same output " + job.output;
+            continue;
+        }
+        for (size_t slash = relative.find('/'); slash != std::string::npos; slash = relative.find('/', slash + 1)) {
+            const std::string folder = Join(outputFolder, std::string_view(relative).substr(0, slash));
+            if (!folders.insert(folder).second) continue;
+            if (!File::EnsureDirectory(folder)) {
+                job.record.status = "error";
+                job.record.code = kExitUnwritable;
+                job.record.error = "cannot create the output folder " + folder;
+                break;
+            }
+        }
+    }
+
+    Batch::OrderedOutput report;
+    if (batch.report && !report.Open(batch.reportPath, false)) {
+        PrintError("cannot create the report file " + batch.reportPath);
+        return kExitUnwritable;
+    }
+    const unsigned workers = Batch::WorkerCount(batch.workers, jobs.size());
+    // A Markdown buffer per worker, reused from document to document.
+    std::vector<std::string> buffers(workers);
+    Batch::RunJobs(jobs.size(), workers, [&](unsigned worker, size_t index) {
+        BatchDocument(jobs[index], document, batch, buffers[worker]);
+        if (report.IsOpen()) {
+            std::string line;
+            Batch::AppendRecord(line, jobs[index].record);
+            report.Put(index, std::move(line));
+        }
+    });
+    const bool reported = !batch.report || report.Close();
+
+    size_t failures = 0;
+    int last = kExitOk;
+    for (const BatchJob& job : jobs) {
+        if (job.record.code == kExitOk) continue;
+        ++failures;
+        last = job.record.code;
+        PrintError(job.record.error);
+    }
+    if (!reported) PrintError("cannot write the report file " + batch.reportPath);
+    if (failures != 0) {
+        PrintError("the batch failed for " + std::to_string(failures) + " of " + std::to_string(jobs.size()) +
+                   " file(s)");
+        return last;
+    }
+    return reported ? kExitOk : kExitUnwritable;
+}
+
+// One serve request into `record`: the session's flags with the request's `args` over them.
+void ServeRequest(const Serve::Request& request, const DocumentOptions& session, std::string& markdown,
+                  Batch::Record& record) {
+    const Clock::time_point start = Clock::now();
+    record.input = request.input;
+    record.output = request.hasOutput ? request.output : std::string("-");
+    DocumentOptions document = session;
+    for (const std::string& arg : request.args) {
+        std::string error;
+        const FlagStatus status = ParseDocumentFlag(arg, document, error);
+        if (status == FlagStatus::Taken) continue;
+        record.status = "error";
+        record.code = kExitUsage;
+        record.error = status == FlagStatus::Invalid ? error : "not a flag of a serve request: " + arg;
+        return;
+    }
+    Layout::ConvertOptions options = document.convert;
+    ChooseImageTarget(request.hasOutput ? request.output : std::string(), document, options);
+    ConvertDocument(request.input, request.hasOutput ? request.output : std::string(), document.password, options,
+                    markdown, record, true);
+    if (record.code == kExitOk && !request.hasOutput) {
+        record.hasMarkdown = true;
+        record.markdown = markdown;
+    }
+    record.milliseconds = MillisecondsSince(start);
+}
+
+std::string ServeError(const std::string& id, const std::string& error) {
+    Batch::Record record;
+    record.id = id;
+    record.status = "error";
+    record.code = kExitUsage;
+    record.error = error;
+    std::string line;
+    Batch::AppendRecord(line, record);
+    return line;
+}
+
+size_t ReadStandardInput(void*, char* buffer, size_t size) {
+    return File::ReadStandardInput(buffer, size);
+}
+
+// Requests waiting for a serve worker, at most `capacity`; the reader waits while it is full.
+struct ServeQueue {
+    struct Task {
+        size_t index;
+        Serve::Request request;
+    };
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::deque<Task> tasks;
+    size_t capacity = 1;
+    bool closed = false;
+};
+
+// --serve --json: protocol 1, one JSON request a line and one record a request, in request order.
+// Standard output carries the protocol only.
+int RunServe(const DocumentOptions& session, unsigned workers) {
+    const std::string hello = "{\"rayopdf\":\"" RAYOPDF_VERSION "\",\"protocol\":" + std::to_string(Serve::kProtocol) +
+                              "}\n";
+    if (!File::WriteStandardOutput(hello)) return kExitUnwritable;
+    Batch::OrderedOutput answers;
+    answers.Open("-", true);
+
+    ServeQueue queue;
+    queue.capacity = size_t(2) * workers;
+    std::vector<std::thread> threads;
+    const auto work = [&] {
+        std::string markdown;
+        for (;;) {
+            ServeQueue::Task task;
+            {
+                std::unique_lock<std::mutex> lock(queue.mutex);
+                queue.changed.wait(lock, [&] { return queue.closed || !queue.tasks.empty(); });
+                if (queue.tasks.empty()) return;
+                task = std::move(queue.tasks.front());
+                queue.tasks.pop_front();
+            }
+            queue.changed.notify_all();
+            Batch::Record record;
+            record.id = task.request.id;
+            ServeRequest(task.request, session, markdown, record);
+            std::string line;
+            Batch::AppendRecord(line, record);
+            answers.Put(task.index, std::move(line));
+        }
+    };
+    if (workers > 1) {
+        threads.reserve(workers);
+        for (unsigned i = 0; i < workers; ++i) threads.emplace_back(work);
+    }
+
+    Serve::LineReader lines(ReadStandardInput, nullptr);
+    Serve::Request request;
+    std::string line;
+    std::string error;
+    std::string markdown;
+    size_t index = 0;
+    while (answers.Healthy()) {
+        const Serve::LineReader::Status status = lines.Next(line, Serve::kMaxRequestBytes);
+        if (status == Serve::LineReader::Status::End) break;
+        if (status == Serve::LineReader::Status::TooLong) {
+            answers.Put(index++, ServeError(std::string(),
+                                            "request line exceeds " + std::to_string(Serve::kMaxRequestBytes) + " bytes"));
+            continue;
+        }
+        const size_t first = line.find_first_not_of(" \t");
+        if (first == std::string::npos) continue;
+        if (line.size() < 16) {
+            const size_t last = line.find_last_not_of(" \t");
+            const std::string_view word(line.data() + first, last + 1 - first);
+            if (word == "quit" || word == "exit") break;
+        }
+        if (!Serve::ParseRequest(line, request, error)) {
+            answers.Put(index++, ServeError(request.id, error));
+            continue;
+        }
+        if (workers <= 1) {
+            Batch::Record record;
+            record.id = request.id;
+            ServeRequest(request, session, markdown, record);
+            std::string answer;
+            Batch::AppendRecord(answer, record);
+            answers.Put(index++, std::move(answer));
+            continue;
+        }
+        {
+            std::unique_lock<std::mutex> lock(queue.mutex);
+            queue.changed.wait(lock, [&] { return queue.tasks.size() < queue.capacity; });
+            queue.tasks.push_back({index++, std::move(request)});
+        }
+        queue.changed.notify_all();
+    }
+    {
+        std::lock_guard<std::mutex> lock(queue.mutex);
+        queue.closed = true;
+    }
+    queue.changed.notify_all();
+    for (std::thread& thread : threads) thread.join();
+    return answers.Close() ? kExitOk : kExitUnwritable;
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
+    const std::vector<std::string> args = File::Arguments(argc, argv);
+    if (args.size() < 2) {
         PrintUsage(stderr);
         return kExitUsage;
     }
-    enum class Mode { None, Convert, Inspect } mode = Mode::None;
+    enum class Mode { None, Convert, Inspect, Batch, Serve } mode = Mode::None;
     std::string input;
     std::string output;
-    std::string password;
-    Layout::ConvertOptions options;
+    DocumentOptions document;
+    BatchOptions batch;
     bool report = false;
-    std::string images;
-    bool imagesGiven = false;
+    bool json = false;
+    const char* kModes = "only one of --convert, --batch, --serve and --inspect";
 
-    for (int i = 1; i < argc; ++i) {
-        const std::string_view arg = argv[i];
+    for (size_t i = 1; i < args.size(); ++i) {
+        const std::string_view arg = args[i];
+        std::string error;
         if (arg == "--help" || arg == "-h") {
             PrintUsage(stdout);
             return kExitOk;
@@ -392,38 +789,77 @@ int main(int argc, char** argv) {
             return kExitOk;
         }
         if (arg == "--convert") {
-            if (mode != Mode::None) return Usage("only one of --convert and --inspect");
-            if (i + 2 >= argc) return Usage("--convert needs IN.pdf and OUT.md");
+            if (mode != Mode::None) return Usage(kModes);
+            if (i + 2 >= args.size()) return Usage("--convert needs IN.pdf and OUT.md");
             mode = Mode::Convert;
-            input = argv[++i];
-            output = argv[++i];
+            input = args[++i];
+            output = args[++i];
+        } else if (arg == "--batch") {
+            if (mode != Mode::None) return Usage(kModes);
+            if (i + 2 >= args.size()) return Usage("--batch needs IN-FOLDER and OUT-FOLDER");
+            mode = Mode::Batch;
+            input = args[++i];
+            output = args[++i];
+        } else if (arg == "--serve") {
+            if (mode != Mode::None) return Usage(kModes);
+            mode = Mode::Serve;
+        } else if (arg == "--json") {
+            json = true;
         } else if (arg == "--inspect") {
-            if (mode != Mode::None) return Usage("only one of --convert and --inspect");
-            if (i + 1 >= argc) return Usage("--inspect needs IN.pdf");
+            if (mode != Mode::None) return Usage(kModes);
+            if (i + 1 >= args.size()) return Usage("--inspect needs IN.pdf");
             mode = Mode::Inspect;
-            input = argv[++i];
-        } else if (StartsWith(arg, "--password=")) {
-            password = std::string(arg.substr(11));
-        } else if (StartsWith(arg, "--pages=")) {
-            if (!ParsePages(arg.substr(8), options.firstPage, options.lastPage)) {
-                return Usage("invalid page range: ", arg.substr(8));
-            }
-        } else if (StartsWith(arg, "--images=")) {
-            images = std::string(arg.substr(9));
-            if (images.empty()) return Usage("--images needs a directory or none");
-            imagesGiven = true;
-        } else if (arg == "--no-annotations") {
-            options.annotations = false;
+            input = args[++i];
         } else if (arg == "--report") {
             report = true;
+        } else if (StartsWith(arg, "--report=")) {
+            report = true;
+            batch.reportPath = std::string(arg.substr(9));
+            if (batch.reportPath.empty()) return Usage("--report= needs a file name, or - for standard output");
+        } else if (StartsWith(arg, "--workers=")) {
+            int count = 0;
+            if (!ParsePage(arg.substr(10), count) || count > static_cast<int>(Batch::kMaxWorkers)) {
+                return Usage("--workers must be between 1 and 64: ", arg.substr(10));
+            }
+            batch.workers = static_cast<unsigned>(count);
+            batch.workersGiven = true;
+        } else if (arg == "--recursive") {
+            batch.recursive = true;
+        } else if (arg == "--skip-unchanged") {
+            batch.skipUnchanged = true;
         } else {
-            return Usage("unknown argument: ", arg);
+            switch (ParseDocumentFlag(arg, document, error)) {
+                case FlagStatus::Taken: break;
+                case FlagStatus::Invalid: return Usage(error.c_str());
+                case FlagStatus::Unknown: return Usage("unknown argument: ", arg);
+            }
         }
     }
-    if (mode == Mode::Inspect) return Inspect(input, password);
-    if (mode == Mode::Convert) {
-        ChooseImageTarget(output, imagesGiven ? &images : nullptr, options);
-        return ConvertFile(input, output, password, options, report);
+    if (json && mode != Mode::Serve) return Usage("--json goes with --serve");
+    if (mode != Mode::Batch && (batch.recursive || batch.skipUnchanged || batch.reportPath != "-")) {
+        return Usage("--recursive, --skip-unchanged and --report=FILE apply to --batch");
     }
-    return Usage("nothing to do: give --convert or --inspect");
+    if (mode != Mode::Batch && mode != Mode::Serve && batch.workersGiven) {
+        return Usage("--workers applies to --batch and --serve");
+    }
+    if ((mode == Mode::Batch || mode == Mode::Serve) && document.imagesGiven && document.images != "none") {
+        return Usage("--images=DIR applies to one document: --batch and --serve take --images=none");
+    }
+    switch (mode) {
+        case Mode::Inspect: return Inspect(input, document.password);
+        case Mode::Convert: {
+            Layout::ConvertOptions options = document.convert;
+            ChooseImageTarget(output, document, options);
+            return ConvertFile(input, output, document, options, report);
+        }
+        case Mode::Batch:
+            batch.report = report;
+            return RunBatch(input, output, document, batch);
+        case Mode::Serve:
+            if (!json) return Usage("--serve needs --json");
+            if (report) return Usage("--serve --json takes no --report: its answers are the records");
+            return RunServe(document, batch.workersGiven ? batch.workers : 1);
+        case Mode::None: break;
+    }
+    return Usage("nothing to do: give --convert, --batch, --serve --json or --inspect");
 }

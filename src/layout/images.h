@@ -23,9 +23,9 @@ struct ImageOutput {
 };
 
 // Decides, writes and anchors the images of `pages` (after BuildLines and header/footer removal,
-// before OrderLines); counts report.images and report.imagesSkipped. An image that cannot be
-// extracted keeps its anchor with the reason (ImageState::Failed). Does nothing without a
-// document or a directory.
+// before OrderLines); counts report.images, report.imagesSkipped and report.imagesMaskDropped.
+// An image that cannot be extracted keeps its anchor with the reason (ImageState::Failed). Does
+// nothing without a document or a directory.
 void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, ConvertReport& report);
 
 } // namespace RayoPdf::Layout

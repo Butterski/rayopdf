@@ -122,6 +122,37 @@ void TestDoubleSpacedTop() {
     RAYOPDF_CHECK(Find(md, "Spaced line 19 of") != std::string::npos, 758);
 }
 
+
+// Two rows of small print at the top (a journal line and its DOI) set close together and apart from
+// the text as a block: both are furniture, even above a heading.
+void TestMetadataBlock() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Journal of Examples 4(2), 2021", 72, 760, 8);
+    AddText(pages[0], "DOI: https://doi.org/10.1000/example", 72, 750, 8);
+    AddText(pages[0], "A Section Title", 72, 715, 14);
+    for (int i = 0; i < 20; ++i)
+        AddText(pages[0], "Text line " + std::to_string(i) + " of the article body runs here.", 72, 690 - 12.0f * i, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "doi.org") == std::string::npos, 759);
+    RAYOPDF_CHECK(Find(md, "Journal of Examples") == std::string::npos, 760);
+    RAYOPDF_CHECK(Find(md, "A Section Title") != std::string::npos && Find(md, "Text line 19 of") != std::string::npos, 761);
+}
+
+// A column of short list items beside a column of prose is a column too: the list is read to
+// its end before the prose.
+void TestListColumn() {
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 12; ++i) AddText(pages[0], "- item " + std::to_string(i + 1), 72, 700 - 12.0f * i, 10);
+    AddText(pages[0], "More items", 72, 540, 12);
+    for (int i = 0; i < 8; ++i) AddText(pages[0], "- extra " + std::to_string(i + 1), 72, 520 - 12.0f * i, 10);
+    for (int i = 0; i < 10; ++i)
+        AddText(pages[0], "Right prose line " + std::to_string(i) + " alpha beta gamma.", 330, 700 - 11.0f * i, 10);
+    const std::string md = Run(pages);
+    const size_t lastItem = Find(md, "item 12"), prose = Find(md, "Right prose line 0");
+    RAYOPDF_CHECK(lastItem != std::string::npos && prose != std::string::npos, 762);
+    RAYOPDF_CHECK(lastItem < prose, 763);
+}
+
 } // namespace
 
 int main() {
@@ -129,6 +160,8 @@ int main() {
     TestLabelColumn();
     TestFormulaColumn();
     TestDoubleSpacedTop();
+    TestMetadataBlock();
+    TestListColumn();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

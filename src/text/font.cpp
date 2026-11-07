@@ -12,6 +12,7 @@
 #include "text/cjk.h"
 #include "text/cmap.h"
 #include "text/program.h"
+#include "text/repair.h"
 #include "text/tables.h"
 #include "text/unicode_text.h"
 
@@ -305,6 +306,8 @@ struct Font::Impl {
     int predefined = -1;               // the generated predefined CMap (Cjk::FindPredefined): the
                                        // encoding itself, or the usecmap of an embedded CMap
     Cjk::Collection collection = Cjk::Collection::None;  // whose CID -> Unicode applies
+    bool toUnicodeUntrusted = false;   // the ToUnicode looks wrong: it comes after collection and program
+    bool glyphTextGuessed = false;     // glyphText is a heuristic (Macintosh glyph order): Guess source
     ToUnicodeMap toUnicode;            // entries filtered to usable text
     std::vector<uint16_t> cidToGid;    // empty: CID = glyph id
     std::vector<TextRef> glyphText;    // by glyph id, into `pool` (FontProgram)
@@ -411,7 +414,8 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
         out.width = high + low;
         if (vertical) out.verticalAdvance = 2 * defaultVertical;
     }
-    if (const UnicodeEntry* entry = toUnicode.Find(code)) {
+    const UnicodeEntry* entry = toUnicode.Find(code);
+    if (entry && !toUnicodeUntrusted) {
         out.source = UnicodeSource::ToUnicode;
         out.unicode = toUnicode.Text(*entry);
         return;
@@ -440,10 +444,16 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
     if (known && !glyphText.empty()) {
         const uint32_t glyph = cidToGid.empty() ? cid : (cid < cidToGid.size() ? cidToGid[cid] : 0);
         if (glyph < glyphText.size() && glyphText[glyph].length > 0) {
-            out.source = UnicodeSource::FontProgram;
+            out.source = glyphTextGuessed ? UnicodeSource::Guess : UnicodeSource::FontProgram;
             out.unicode = std::string_view(pool.data() + glyphText[glyph].offset, glyphText[glyph].length);
             return;
         }
+    }
+    if (entry) {
+        // An untrustworthy ToUnicode, with nothing better: kept, as a guess.
+        out.source = UnicodeSource::Guess;
+        out.unicode = toUnicode.Text(*entry);
+        return;
     }
     out.source = UnicodeSource::None;
     out.unicode = {};
@@ -516,18 +526,68 @@ void FilterToUnicode(ToUnicodeMap& map) {
     map.entries.resize(kept);
 }
 
-// `dropped` (when not null) receives the number of entries FilterToUnicode removed.
-bool LoadToUnicode(const Document& doc, const PdfValue& dict, ToUnicodeMap& out, size_t* dropped = nullptr) {
+// Repairs every entry's text (Repair::RepairText; Thai forms when the map has Thai) and gathers
+// the statistics that judge the map, before unusable entries are dropped.
+void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStats& stats) {
+    Repair::MapStats first;
+    for (const UnicodeEntry& entry : map.entries) Repair::Count(map.Text(entry), first);
+    context.thai = first.thai;
+    std::string repaired;
+    for (UnicodeEntry& entry : map.entries) {
+        if (!Repair::RepairText(map.Text(entry), context, repaired)) continue;
+        if (map.text.size() + repaired.size() > UINT32_MAX) break;
+        entry.offset = static_cast<uint32_t>(map.text.size());
+        entry.length = static_cast<uint32_t>(repaired.size());
+        map.text += repaired;
+    }
+    std::vector<std::string_view> texts;
+    texts.reserve(map.entries.size());
+    for (const UnicodeEntry& entry : map.entries) {
+        const std::string_view text = map.Text(entry);
+        Repair::Count(text, stats);
+        if (text != " ") texts.push_back(text);
+    }
+    // The most codes one text has (a map of many codes onto one character).
+    std::sort(texts.begin(), texts.end());
+    for (size_t i = 0; i < texts.size();) {
+        size_t j = i;
+        while (j < texts.size() && texts[j] == texts[i]) ++j;
+        stats.largestShare = std::max(stats.largestShare, static_cast<uint32_t>(j - i));
+        i = j;
+    }
+}
+
+// Reads, repairs and judges a font's ToUnicode. `dropped` (when not null) receives the number of
+// entries dropped as unusable, `untrusted` whether the map as a whole looks wrong.
+bool LoadToUnicode(const Document& doc, const PdfValue& dict, const Repair::Context& context, ToUnicodeMap& out,
+                   size_t* dropped, bool& untrusted) {
+    untrusted = false;
     const PdfValue& stream = doc.Get(dict, "ToUnicode");
     if (!stream.IsStream()) return false;
     std::string data;
     const StreamStatus status = doc.StreamData(stream, data, kCMapStreamLimit);
     if (status == StreamStatus::Corrupt || status == StreamStatus::NotStream) return false;
     ParseToUnicode(data, out);
+    Repair::MapStats stats;
+    RepairToUnicode(out, context, stats);
+    untrusted = Repair::Untrusted(stats);
     const size_t parsed = out.entries.size();
     FilterToUnicode(out);
     if (dropped) *dropped = parsed - out.entries.size();
     return !out.entries.empty();
+}
+
+// Repairs program-derived glyph texts in place (Thai forms when some glyph is Thai).
+void RepairGlyphTexts(std::vector<std::string>& texts, Repair::Context context) {
+    Repair::MapStats stats;
+    for (const std::string& t : texts) {
+        if (!t.empty()) Repair::Count(t, stats);
+    }
+    context.thai = stats.thai;
+    std::string repaired;
+    for (std::string& t : texts) {
+        if (!t.empty() && Repair::RepairText(t, context, repaired)) t = repaired;
+    }
 }
 
 bool LoadProgram(const Document& doc, const Descriptor& d, std::string& data) {
@@ -585,6 +645,57 @@ uint32_t SfntGlyphCount(const Program::Sfnt& sfnt) {
 }
 
 // ---- Simple fonts -----------------------------------------------------------------------------
+
+// The value of a numeric glyph name in one of pdf.js's forms (algorithms §3.1): "65" (decimal),
+// "C65"/"c65" (decimal), "G41"/"g41" (two hex digits); -1 for any other name.
+int NumericNameValue(std::string_view name) {
+    int base = 10;
+    if (name.size() >= 2 && (name[0] == 'C' || name[0] == 'c')) {
+        name.remove_prefix(1);
+    } else if (name.size() == 3 && (name[0] == 'G' || name[0] == 'g')) {
+        name.remove_prefix(1);
+        base = 16;
+    }
+    if (name.empty() || name.size() > 3) return -1;
+    int value = 0;
+    for (const char ch : name) {
+        int digit = -1;
+        if (ch >= '0' && ch <= '9') digit = ch - '0';
+        else if (base == 16 && ch >= 'A' && ch <= 'F') digit = ch - 'A' + 10;
+        else if (base == 16 && ch >= 'a' && ch <= 'f') digit = ch - 'a' + 10;
+        if (digit < 0) return -1;
+        value = value * base + digit;
+    }
+    return value;
+}
+
+// Glyph names that mean nothing in the Adobe Glyph List but are numbers ("/45 /50 /103", a Type 3
+// font's names as character codes; pdf.js's Gxx and Cdd forms): read as Latin-1 when nearly all of
+// the font's unresolved names are numbers and every number is a printable Latin-1 code, as guesses
+// (algorithms §3.1; Adobe Reader does not do this).
+void NumericGlyphNames(const std::string_view (&names)[256], Font::Impl& font) {
+    int values[256];
+    size_t unresolved = 0, numeric = 0, letters = 0;
+    for (int c = 0; c < 256; ++c) {
+        values[c] = -1;
+        if (names[c].empty() || font.slots[c].source != UnicodeSource::None) continue;
+        ++unresolved;
+        const int v = NumericNameValue(names[c]);
+        if (v < 0) continue;
+        if (v < 0x20 || (v >= 0x7F && v < 0xA0) || v > 0xFF) return;  // codes, not characters
+        values[c] = v;
+        ++numeric;
+        if ((v | 0x20) >= 'a' && (v | 0x20) <= 'z') ++letters;
+    }
+    if (numeric < 4 || numeric * 10 < unresolved * 9 || letters * 4 < numeric) return;
+    std::string text;
+    for (int c = 0; c < 256; ++c) {
+        if (values[c] < 0) continue;
+        text.clear();
+        Utf8::Append(text, static_cast<uint32_t>(values[c]));
+        SetSlot(font, static_cast<uint8_t>(c), text, UnicodeSource::Guess);
+    }
+}
 
 void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::Impl& font) {
     font.kind = kind;
@@ -700,23 +811,28 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
         }
     }
 
+    const Repair::Context repairContext = Repair::ContextForName(font.baseName);
     ToUnicodeMap toUnicode;
-    const bool hasToUnicode = LoadToUnicode(doc, dict, toUnicode);
+    bool toUnicodeUntrusted = false;
+    const bool hasToUnicode = LoadToUnicode(doc, dict, repairContext, toUnicode, nullptr, toUnicodeUntrusted);
 
-    // Unicode per code, first source wins (algorithms §3.1).
+    // Unicode per code, first source wins (algorithms §3.1); an untrustworthy ToUnicode comes last.
     bool needProgram = false;
-    std::string text;
+    std::string text, repaired;
     for (int c = 0; c < 256; ++c) {
-        if (hasToUnicode) {
+        if (hasToUnicode && !toUnicodeUntrusted) {
             if (const UnicodeEntry* entry = toUnicode.Find(static_cast<uint32_t>(c))) {
                 SetSlot(font, static_cast<uint8_t>(c), toUnicode.Text(*entry), UnicodeSource::ToUnicode);
                 continue;
             }
         }
         text.clear();
-        if (!names[c].empty() && GlyphNameToUnicode(names[c], zapf, text) && UsableText(text)) {
-            SetSlot(font, static_cast<uint8_t>(c), text, nameSource[c]);
-            continue;
+        if (!names[c].empty() && GlyphNameToUnicode(names[c], zapf, text)) {
+            if (Repair::RepairText(text, repairContext, repaired)) text = repaired;
+            if (UsableText(text)) {
+                SetSlot(font, static_cast<uint8_t>(c), text, nameSource[c]);
+                continue;
+            }
         }
         font.slots[c].source = UnicodeSource::None;
         // The program is read for names that mean nothing, or when no encoding names the codes.
@@ -732,6 +848,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
             }
         }
     }
+    if (differences >= 4 && resolvedDifferences * 2 < differences) NumericGlyphNames(names, font);
 
     // TrueType programs: code -> glyph through the (3,0) / (1,0) / (3,1) subtables (§9.6.6.4),
     // glyph -> text through the inverted Unicode cmap and the 'post' names.
@@ -741,6 +858,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
             const uint32_t glyphCount = SfntGlyphCount(sfnt);
             std::vector<std::string> glyphText;
             GlyphTextFromSfnt(sfnt, glyphCount, glyphText);
+            RepairGlyphTexts(glyphText, repairContext);
             const Program::CmapSubtable* symbolCmap = sfnt.Cmap(3, 0);
             const Program::CmapSubtable* macCmap = sfnt.Cmap(1, 0);
             const Program::CmapSubtable* unicodeCmap = sfnt.Cmap(3, 1);
@@ -758,6 +876,27 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
                 if (glyph && glyph < glyphText.size() && !glyphText[glyph].empty()) {
                     SetSlot(font, static_cast<uint8_t>(c), glyphText[glyph], UnicodeSource::FontProgram);
                 }
+            }
+        }
+    }
+
+    // Symbol and Wingdings fonts without text for a code: their known symbol positions.
+    if (repairContext.symbol || repairContext.wingdings) {
+        for (int c = 0x20; c < 256; ++c) {
+            if (font.slots[c].source != UnicodeSource::None) continue;
+            const uint32_t cp = Repair::SymbolCodePoint(0xF000u + static_cast<uint32_t>(c), repairContext);
+            if (cp == 0) continue;
+            text.clear();
+            Utf8::Append(text, cp);
+            SetSlot(font, static_cast<uint8_t>(c), text, UnicodeSource::Encoding);
+        }
+    }
+    // An untrustworthy ToUnicode still gives the codes nothing else maps, as guesses.
+    if (toUnicodeUntrusted) {
+        for (int c = 0; c < 256; ++c) {
+            if (font.slots[c].source != UnicodeSource::None) continue;
+            if (const UnicodeEntry* entry = toUnicode.Find(static_cast<uint32_t>(c))) {
+                SetSlot(font, static_cast<uint8_t>(c), toUnicode.Text(*entry), UnicodeSource::Guess);
             }
         }
     }
@@ -971,6 +1110,32 @@ void ReadVerticalWidths(const Document& doc, const PdfValue& w2, std::vector<Ver
     std::stable_sort(out.begin(), out.end(), [](const VerticalRange& a, const VerticalRange& b) { return a.low < b.low; });
 }
 
+// A subset TrueType program without 'cmap' or 'post' gives no glyph text; many such subsets keep
+// their font's glyph ids, and the common text fonts (Arial, Helvetica, Times New Roman, Courier
+// New) put their first 258 glyphs in the Macintosh standard order. That order is taken when the
+// /W widths confirm it: of the CIDs (= glyph ids) below 258 with a width of their own, at least 8
+// and 80 % match the standard 14 width of the Macintosh name in the font's family (within 3 %).
+// The texts are then guesses (glyphTextGuessed).
+bool MacOrderGlyphText(const Font::Impl& font, int metrics, uint32_t glyphCount, std::vector<std::string>& out) {
+    if (glyphCount < 258 || !font.cidToGid.empty() || font.cmapKind != CMapKind::Identity) return false;
+    size_t compared = 0, agree = 0;
+    for (const WidthRange& range : font.widths) {
+        if (range.low != range.high || range.low == 0 || range.low >= 258) continue;
+        uint16_t standard = 0;
+        if (!Tables::StandardWidth(metrics, Tables::kMacGlyphNames[range.low], standard) || standard == 0) continue;
+        ++compared;
+        const double w = range.width * 1000.0;
+        if (std::fabs(w - standard) <= 0.03 * standard + 1) ++agree;
+    }
+    if (compared < 8 || agree * 5 < compared * 4) return false;
+    out.assign(258, std::string());
+    for (uint32_t g = 1; g < 258; ++g) {
+        const std::string_view name = Tables::GlyphName(Tables::kMacGlyphNames[g]);
+        if (!GlyphNameToUnicode(name, out[g]) || !UsableText(out[g])) out[g].clear();
+    }
+    return true;
+}
+
 void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     font.kind = FontKind::Type0;
     font.baseName = BaseNameOf(doc, dict);
@@ -1047,7 +1212,9 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     }
 
     size_t droppedToUnicode = 0;
-    const bool hasToUnicode = LoadToUnicode(doc, dict, font.toUnicode, &droppedToUnicode);
+    const Repair::Context repairContext = Repair::ContextForName(font.baseName);
+    const bool hasToUnicode =
+        LoadToUnicode(doc, dict, repairContext, font.toUnicode, &droppedToUnicode, font.toUnicodeUntrusted);
     const bool unicodeCMap = font.cmapKind == CMapKind::Ucs2 || font.cmapKind == CMapKind::Utf16 ||
                              font.cmapKind == CMapKind::Utf8 || font.cmapKind == CMapKind::Utf32;
     // The collection maps codes when their CIDs can be known.
@@ -1059,7 +1226,7 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     // fallback for codes an incomplete ToUnicode lacks (§3.1, §3.6): entries dropped as unusable,
     // a truncated map, or an Identity font whose /W lists CIDs (the glyphs of a subset) that the
     // ToUnicode does not map.
-    bool incomplete = hasToUnicode && (droppedToUnicode > 0 || font.toUnicode.truncated);
+    bool incomplete = hasToUnicode && (droppedToUnicode > 0 || font.toUnicode.truncated || font.toUnicodeUntrusted);
     if (hasToUnicode && !incomplete && font.cmapKind == CMapKind::Identity) {
         for (const WidthRange& range : font.widths) {
             if (range.low == range.high && range.low != 0 && !font.toUnicode.Find(range.low)) {
@@ -1076,6 +1243,8 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
             const bool isSfnt = Program::ReadSfnt(program, sfnt);
             if (cidSubtype == "CIDFontType2" && isSfnt) {
                 GlyphTextFromSfnt(sfnt, SfntGlyphCount(sfnt), glyphText);
+                bool anyText = false;
+                for (const std::string& t : glyphText) anyText = anyText || !t.empty();
                 const PdfValue& map = doc.Get(cidFont, "CIDToGIDMap");
                 if (map.IsStream()) {
                     std::string gids;
@@ -1087,6 +1256,10 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
                                                                      static_cast<uint8_t>(gids[2 * i + 1]));
                         }
                     }
+                }
+                if (!anyText && !hasToUnicode) {
+                    font.glyphTextGuessed =
+                        MacOrderGlyphText(font, StandardFontFor(font.baseName, font.style), sfnt.glyphCount, glyphText);
                 }
             } else if (cidSubtype == "CIDFontType0") {
                 Program::CffInfo cff;
@@ -1110,6 +1283,7 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
                     }
                 }
             }
+            RepairGlyphTexts(glyphText, repairContext);
             font.glyphText.resize(glyphText.size());
             bool any = false;
             for (size_t g = 0; g < glyphText.size(); ++g) {

@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// Images out of a PDF as files (roadmap D6): DCT data is written as it is stored (.jpg), JPX as
-// .jp2, and every other image is decoded to pixels and written as an 8-bit PNG (gray, gray +
-// alpha, RGB or RGBA). Decoding covers ISO 32000-1 section 8.9: /ColorSpace DeviceGray, DeviceRGB,
-// DeviceCMYK, CalGray, CalRGB, Lab, ICCBased (by /N, or its /Alternate), Indexed (any base),
-// Separation and DeviceN (through their tint transform where it is a sampled or exponential
-// function, else as gray from the tint); /BitsPerComponent 1, 2, 4, 8 and 16; /Decode;
-// /ImageMask stencils; /SMask soft masks and /Mask colour-key or stencil masks as alpha.
-// JBIG2 and CCITT data cannot be decoded and are reported Unsupported.
+// Images out of a PDF as files (roadmap D6), as 8-bit PNGs (gray, gray + alpha, RGB or RGBA) of
+// the decoded pixels, except that a JPEG (DCT) is written as stored (.jpg) when that file shows
+// what the PDF shows, and JPEG 2000 (JPX) always is (.jp2). Decoding covers ISO 32000-1 section
+// 8.9: /ColorSpace DeviceGray, DeviceRGB, DeviceCMYK, CalGray, CalRGB, Lab, ICCBased (by /N, or
+// its /Alternate), Indexed (any base), Separation and DeviceN (through their tint transform where
+// it is a sampled or exponential function, else as gray from the tint); /BitsPerComponent 1, 2, 4,
+// 8 and 16; /Decode; /ImageMask stencils; /SMask soft masks and /Mask colour-key or stencil masks
+// as alpha; JPEG data (baseline and progressive, image/jpeg.h). A JPEG is decoded instead of
+// stored when it has 4 components (stand-alone viewers read an Adobe APP14 marker as inverted
+// CMYK, PDF does not), another colour space than gray or RGB, a /Decode other than the default,
+// or a mask that hides part of it. JBIG2 and CCITT data cannot be decoded and are reported
+// Unsupported.
 //
 // Every decode is bounded: at most `maxPixels` pixels per image and the document's stream limits.
 #pragma once
@@ -33,6 +37,9 @@ struct Encoded {
     const char* extension = "png";  // "png", "jpg" or "jp2"
     uint32_t width = 0;             // pixels (0 when passed through and unknown)
     uint32_t height = 0;
+    // The image has a mask the file lacks: JPX (never decoded) or a JPEG this decoder cannot read
+    // with a mask that hides part of it, or a mask whose own data cannot be decoded.
+    bool maskDropped = false;
 };
 
 constexpr uint64_t kDefaultMaxPixels = uint64_t(1) << 28;

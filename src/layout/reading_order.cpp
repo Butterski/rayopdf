@@ -94,6 +94,19 @@ bool HasFolio(const std::string& key, const std::string& text) {
     return digits != 1;
 }
 
+// Publication metadata in a running head or foot: a URL, a DOI, a copyright or licence notice, a
+// download stamp, an ISSN. ASCII case is folded; the copyright sign is matched as UTF-8.
+bool IsMetadata(const std::string& text) {
+    static const char* const kWords[] = {"http", "www.", "doi", "copyright", "issn", "downloaded", "rights reserved",
+                                         "license", "licence", "\xC2\xA9"};
+    std::string lower(text.size(), ' ');
+    for (size_t i = 0; i < text.size(); ++i)
+        lower[i] = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
+    for (const char* word : kWords)
+        if (lower.find(word) != std::string::npos) return true;
+    return false;
+}
+
 struct KeyCount {
     int total = 0;
     int odd = 0;
@@ -246,8 +259,14 @@ struct Orderer {
     bool ColumnsLike(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, float size) {
         int texty = 0;
         size_t begin = 0;
+        bool previousTexty = false;
         for (size_t c = 0; c <= cuts.size(); ++c) {
             const size_t end = c < cuts.size() ? cuts[c] : items.size();
+            // A tall gutter beside a column of text: a column of short lines (a list, a column
+            // of headings and items) next to it is a column too, unless its lines sit on the
+            // text's baselines like the cells of a table row.
+            const bool tall = c > 0 && TallGutter(items, c == 1 ? 0 : cuts[c - 2], cuts[c - 1], end, size);
+            bool isTexty = false;
             if (end - begin >= 3) {
                 float u0 = L(items[begin]).u0, u1 = L(items[begin]).u1;
                 for (size_t k = begin; k < end; ++k) u0 = std::fmin(u0, L(items[k]).u0), u1 = std::fmax(u1, L(items[k]).u1);
@@ -262,11 +281,32 @@ struct Orderer {
                     lines += L(items[k]).chars > 0;
                     if (L(items[k]).u1 - L(items[k]).u0 >= 0.5f * (u1 - u0)) full += L(items[k]).chars;
                 }
-                if (u1 - u0 >= 8 * size && chars > 0 && (full * 2 >= chars || chars >= 25 * lines)) texty++;
+                isTexty = u1 - u0 >= 8 * size && chars > 0 && (full * 2 >= chars || chars >= 25 * lines);
+                texty += isTexty;
             }
+            if (tall && (isTexty || previousTexty)) return true;
+            previousTexty = isTexty;
             begin = end;
         }
         return texty >= 2;
+    }
+
+    // Two neighbouring groups items[a, b) and items[b, c), each of several lines, side by side
+    // over most of the shorter one's height, with few lines of one on a baseline of the other.
+    bool TallGutter(const std::vector<uint32_t>& items, size_t a, size_t b, size_t c, float size) {
+        if (b - a < 6 || c - b < 6 || b - a > 512 || c - b > 512) return false;
+        float lb = INFINITY, lt = -INFINITY, rb = INFINITY, rt = -INFINITY;
+        for (size_t k = a; k < b; ++k) lb = std::fmin(lb, L(items[k]).vb), lt = std::fmax(lt, L(items[k]).vt);
+        for (size_t k = b; k < c; ++k) rb = std::fmin(rb, L(items[k]).vb), rt = std::fmax(rt, L(items[k]).vt);
+        if (std::fmin(lt, rt) - std::fmax(lb, rb) < 0.5f * std::fmin(lt - lb, rt - rb)) return false;
+        size_t mates = 0;
+        for (size_t k = a; k < b; ++k)
+            for (size_t j = b; j < c; ++j)
+                if (std::fabs(L(items[k]).baseline - L(items[j]).baseline) <= 0.3f * size) {
+                    mates++;
+                    break;
+                }
+        return mates * 2 < b - a;
     }
 
 
@@ -583,6 +623,7 @@ struct Orderer {
 constexpr float kMarginBand = 0.06f;
 constexpr uint32_t kEdgeMinLines = 3;
 constexpr uint32_t kEdgeMaxChars = 150;
+constexpr int kEdgeMaxRows = 4;
 
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
     std::vector<uint32_t> lines;
@@ -623,7 +664,12 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     std::string piece;
     size_t first = 0, last = lines.size();  // the lines not removed: lines[first, last)
     for (int side = 0; side < 2; ++side) {
-        for (int row = 0; row < 2 && last - first > kEdgeMinLines; ++row) {
+        // Rows set close together at the edge (a two- or three-line journal or licence block)
+        // are taken together when each carries furniture evidence and the innermost is set
+        // apart: `pending` rows wait for that.
+        size_t start = side == 0 ? first : last;
+        int pending = 0;
+        for (int row = 0; row < kEdgeMaxRows && last - first > kEdgeMinLines; ++row) {
             const Line& edge = page.lines[lines[side == 0 ? first : last - 1]];
             // The row: lines on the edge line's baseline.
             size_t count = 0;
@@ -666,7 +712,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const float center = (edge.vb + edge.vt) / 2;
             const bool margin = side == 0 ? center > h * (1 - kMarginBand) : center < h * kMarginBand;
             const bool band = side == 0 ? center > h * (1 - kRunningBand) : center < h * kRunningBand;
-            bool number = false, folio = false, note = false;
+            bool number = false, folio = false, note = false, metadata = false;
             if (band) {
                 // The row's text, left to right.
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
@@ -682,8 +728,10 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 RunningKey(text, key);
                 number = count == 1 && IsPageNumberKey(key);
                 folio = !bold && HasFolio(key, text);
+                metadata = IsMetadata(text);
                 // A foot row that starts with a number or a reference mark is a footnote.
-                note = side == 1 && (key.compare(0, 2, "# ") == 0 || text.compare(0, 1, "*") == 0 ||
+                note = side == 1 && (key.compare(0, 2, "# ") == 0 || key.compare(0, 3, "#. ") == 0 ||
+                                     key.compare(0, 3, "#) ") == 0 || text.compare(0, 1, "*") == 0 ||
                                      text.compare(0, 3, "\xE2\x80\xA0") == 0 || text.compare(0, 3, "\xE2\x80\xA1") == 0 ||
                                      text.compare(0, 2, "\xC2\xA7") == 0);
             }
@@ -708,15 +756,40 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                                    ((number && largest <= 1.3f * body) ||
                                     (margin && largest <= 1.02f * body && !beforeHeading) ||
                                     (band && evidence && figureGap >= minGap && largest <= 1.35f * body));
-            if (!qualifies) break;
-            for (size_t k = 0; k < count; ++k) {
-                page.lines[lines[side == 0 ? first + k : last - 1 - k]].flags |= kLineRemoved;
-                removed++;
+            // Publication metadata (a URL, a DOI, a copyright or licence line, a download stamp,
+            // an ISSN), a row spread across the text, or small print in the head band: furniture
+            // even above a figure or a heading. Small print at the foot is a footnote or a caption.
+            const bool strong = band && !note && !superscript && chars <= kEdgeMaxChars && largest <= 1.35f * body &&
+                                (metadata || spread || (side == 0 && largest <= 0.9f * body && !mono));
+            const bool apart = (qualifies && (row < 2 || strong)) || (strong && gap >= minGap);
+            if (!apart && !(strong && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
+                // The block does not end set apart: the pending rows stay.
+                if (side == 0)
+                    first = start;
+                else
+                    last = start;
+                break;
             }
             if (side == 0)
                 first += count;
             else
                 last -= count;
+            if (!apart) {
+                pending++;
+                continue;
+            }
+            for (size_t k = side == 0 ? start : last; k < (side == 0 ? first : start); ++k) {
+                page.lines[lines[k]].flags |= kLineRemoved;
+                removed++;
+            }
+            pending = 0;
+            start = side == 0 ? first : last;
+        }
+        if (pending > 0) {
+            if (side == 0)
+                first = start;
+            else
+                last = start;
         }
     }
     return removed;

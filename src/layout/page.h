@@ -34,6 +34,7 @@ enum : uint16_t {
     kGlyphSpaceBefore = 1u << 11, // set by BuildLines: a word break precedes this glyph in its line
     kGlyphSymbolic = 1u << 12,   // symbolic font (Symbol, ZapfDingbats, Wingdings)
     kGlyphImage = 1u << 13,      // no glyph: an image set in the line; its text is the Markdown image link
+    kGlyphStrike = 1u << 14,     // struck through: set by BuildLines from a rule across its middle, or by tags
 };
 
 struct Glyph {
@@ -47,7 +48,7 @@ struct Glyph {
     uint16_t textLength = 0;
     uint16_t flags = 0;
     uint8_t dir = 0;         // baseline direction: 0 left-to-right, 1 upwards, 2 right-to-left, 3 downwards
-    uint8_t reserved = 0;
+    uint8_t mcStream = 0;    // where `mcid` counts: 0 the page's content, k PageData::markStreams[k - 1]
     uint16_t font = 0;       // page-local font index, for style comparisons
     int32_t mcid = -1;       // marked-content id, -1 when none
 };
@@ -89,6 +90,9 @@ struct ImageBox {
     uint32_t name = 0, nameLength = 0;  // in PageData::text, set by PlaceImages
     ImageState state = ImageState::Found;
     int32_t line = -1;  // the text line it sits in (an inline image), or -1
+    int32_t mcid = -1;  // marked-content id, -1 when none (counted as Glyph::mcid is)
+    uint8_t mcStream = 0;
+    uint32_t alt = 0, altLength = 0;  // alternate text in PageData::text (a tagged /Figure's /Alt), empty when none
 };
 
 // A link annotation with a URI action.
@@ -171,6 +175,9 @@ struct PageData {
     std::vector<LinkArea> links;
     std::vector<Ruling> rulings;
     std::string inlineImages;    // inline images' sources (ImageBox::inlineData)
+    // Object numbers of the Form XObjects whose own marked-content ids glyphs and images carry
+    // (Glyph::mcStream), at most kMaxMarkStreams.
+    std::vector<uint32_t> markStreams;
     int contentErrors = 0;       // content streams not fully read or interpreted
     bool limitHit = false;       // the operator or glyph budget ran out
 
@@ -185,6 +192,7 @@ struct PageData {
     std::string_view GlyphText(const Glyph& g) const { return std::string_view(text).substr(g.text, g.textLength); }
     std::string_view LinkUri(const LinkArea& l) const { return std::string_view(text).substr(l.uri, l.uriLength); }
     std::string_view ImageName(const ImageBox& i) const { return std::string_view(text).substr(i.name, i.nameLength); }
+    std::string_view ImageAlt(const ImageBox& i) const { return std::string_view(text).substr(i.alt, i.altLength); }
     // Whether the ordered lines hold text (image anchors hold none).
     bool HasText() const {
         for (uint32_t li : order)
@@ -200,6 +208,7 @@ struct PageData {
         links.clear();
         rulings.clear();
         inlineImages.clear();
+        markStreams.clear();
         lines.clear();
         lineGlyphs.clear();
         order.clear();

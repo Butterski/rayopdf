@@ -242,6 +242,53 @@ bool PageNumber(std::string_view t) {
     return (digits && t.size() <= 4) || roman;
 }
 
+int Bits(uint64_t m) {
+    int n = 0;
+    for (; m; m &= m - 1) n++;
+    return n;
+}
+
+// A plain decimal number ("-0.25", "12", with ASCII or U+2212 minus) and its value.
+bool ParseNumber(std::string_view t, float& value) {
+    bool negative = false;
+    if (!t.empty() && t[0] == '-') negative = true, t.remove_prefix(1);
+    else if (t.size() > 3 && t.substr(0, 3) == "\xE2\x88\x92") negative = true, t.remove_prefix(3);
+    if (t.empty() || t.size() > 12) return false;
+    double v = 0, scale = 0;
+    int digits = 0;
+    for (char c : t) {
+        if (c == '.' && scale == 0) {
+            scale = 1;
+        } else if (c >= '0' && c <= '9') {
+            if (scale > 0) scale /= 10, v += (c - '0') * scale;
+            else v = 10 * v + (c - '0');
+            digits++;
+        } else {
+            return false;
+        }
+    }
+    value = static_cast<float>(negative ? -v : v);
+    return digits > 0;
+}
+
+// Numbers read one after another in a cell, evenly stepped (0 0.2 0.4 0.6): a chart's axis.
+struct Progression {
+    float previous = NAN, step = NAN;
+    int run = 0;
+    // Adds the next number; true once four in a row keep one step.
+    bool Add(float value) {
+        const float d = value - previous;
+        if (run >= 2 && d != 0 && std::fabs(d - step) <= 1e-3f * std::fmax(1.0f, std::fabs(step))) {
+            run++;
+        } else {
+            step = d;
+            run = std::isnan(d) || d == 0 ? 1 : 2;
+        }
+        previous = value;
+        return run >= 4;
+    }
+};
+
 class Detector {
 public:
     // Tables of the text of baseline direction `dir`, in that direction's frame (page.h).
@@ -272,7 +319,10 @@ private:
     void SplitRowsByLines(Grid& g) const;
     void SplitColumnsByText(Grid& g) const;
     bool HeaderAbove(Grid& g);
+    bool HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
+                           const std::vector<uint8_t>& label, const Row& header, float minGap, std::vector<Gap>& gaps);
     void LatticeHeader(Grid& g) const;
+    void RowsBelow(Grid& g);
     void JoinStripes();
     void Commit();
     void MarkUsed(const Grid& g);
@@ -737,10 +787,16 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     g.vb.assign(static_cast<size_t>(nrows) * static_cast<size_t>(cols + 1), 1);
     g.hb.assign(static_cast<size_t>(nrows + 1) * static_cast<size_t>(cols), 1);
     int group = -1;
+    std::vector<Progression> numbers(static_cast<size_t>(nrows) * static_cast<size_t>(cols));
+    std::string scratch;
     for (size_t r = rowBegin; r < rowEnd; ++r) {
         if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
+            // A chart's axis in a cell: no table.
+            float value = 0;
+            const size_t cell = static_cast<size_t>(group * cols + ColumnOf(gaps, (w.x0 + w.x1) / 2));
+            if (ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
             // The word before it in the row, when only a word space apart: one cell's text.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
             const bool joined = before && w.x0 - before->x1 < std::fmax(1.0f, std::fmin(2 * wordSpace_, 0.45f) * w.size);
@@ -813,12 +869,6 @@ void Detector::SplitByText(Grid& g) const {
             const size_t i = static_cast<size_t>(r) * static_cast<size_t>(cols + 1) + static_cast<size_t>(k);
             if (!g.vb[i] && left[i] && right[i] && !across[i]) g.vb[i] = 1;
         }
-}
-
-int Bits(uint64_t m) {
-    int n = 0;
-    for (; m; m &= m - 1) n++;
-    return n;
 }
 
 // Rows of a lattice drawn without rules between them (rules only under the header and at the
@@ -1001,6 +1051,38 @@ void Detector::LatticeHeader(Grid& g) const {
     if (header >= 2 && rows - header >= 2) g.headerRows = static_cast<uint16_t>(header);
 }
 
+// Rows set right below a lattice without rules of their own (the last rows of a table whose
+// rules stop short): each line within an em of the grid's bottom whose words all fall inside its
+// columns, filling half of them and two at least, with nothing else on that line, extends it.
+void Detector::RowsBelow(Grid& g) {
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    const int cols = g.Cols();
+    BuildRows(-INFINITY, INFINITY, g.y0 - 40 * bodySize_, g.y0, rows, rowWords);
+    bool added = false;
+    for (const Row& r : rows) {
+        if (g.Rows() >= kMaxTableRows || !(r.top < g.y0 + 1) || g.y0 - r.top > r.size || !SizeFits(r, g.size)) break;
+        uint64_t mask = 0;
+        bool inside = true;
+        for (uint32_t k = r.first; k < r.first + r.count && inside; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            inside = w.x0 >= g.x0 - 1 && w.x1 <= g.x1 + 1;
+            for (int c = 1; c < cols && inside; ++c)
+                inside = !(w.x0 < g.xs[static_cast<size_t>(c)] - 1 && w.x1 > g.xs[static_cast<size_t>(c)] + 1);
+            const int c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), (w.x0 + w.x1) / 2) - g.xs.begin()) - 1;
+            mask |= uint64_t(1) << std::min(std::max(c, 0), 63);
+        }
+        const int filled = Bits(mask);
+        if (!inside || filled < 2 || 2 * filled < cols || !Free(g.x0, r.bottom - 1, g.x1, g.y0)) break;
+        g.ys.push_back(r.bottom - 1);
+        g.vb.insert(g.vb.end(), static_cast<size_t>(cols + 1), 1);
+        g.hb.insert(g.hb.end(), static_cast<size_t>(cols), 1);
+        g.y0 = g.ys.back();
+        added = true;
+    }
+    if (added) ComputeSpans(g);
+}
+
 // A header row set right above a lattice (rules drawn around the body only): the line of text
 // within an em of its top whose words all fall inside its columns, filling half of them and two at
 // least, with nothing else on that line, becomes its first row. True when it did.
@@ -1169,6 +1251,7 @@ void Detector::Lattices() {
         if (!column && (cols < 2 || g.Rows() < 2 || wholeRows * 2 > g.Rows())) continue;
         if (!Validate(g, column)) continue;
         LatticeHeader(g);
+        RowsBelow(g);
         for (size_t i = 0; i < nh; ++i)
             if (h_[i].comp == root) hUsed[i] = 1;
         MarkUsed(g);
@@ -1262,9 +1345,12 @@ void Detector::CollapseEmpty(Grid& g) const {
 bool Detector::Validate(Grid& g, bool column) {
     const int cols = g.Cols();
     std::vector<uint32_t> filled(g.cells.size(), 0);  // words per cell
+    std::vector<uint8_t> label(g.cells.size(), 0);    // a word with letters and no number
     uint32_t inside = 0, crossing = 0, mono = 0, lowerStarts = 0;
     std::vector<float> sizes;
     std::vector<uint8_t> started(static_cast<size_t>(g.Rows()), 0);
+    std::vector<Progression> numbers(g.cells.size());
+    bool axis = false;
     std::string scratch;
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
     for (; it != words_.end() && it->base >= g.y0; ++it) {
@@ -1281,7 +1367,12 @@ bool Detector::Validate(Grid& g, bool column) {
             const std::string_view t = WordText(w, scratch);
             if (!t.empty() && t[0] >= 'a' && t[0] <= 'z') lowerStarts++;
         }
-        filled[static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)])]++;
+        const size_t cell = static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)]);
+        filled[cell]++;
+        float value = 0;
+        const std::string_view text = WordText(w, scratch);
+        if (!Numeric(text)) label[cell] = 1;
+        if (ParseNumber(text, value)) axis = numbers[cell].Add(value) || axis;
         for (int k = 1; k < cols; ++k) {
             const float x = g.xs[static_cast<size_t>(k)];
             if (g.vb[static_cast<size_t>(r * (cols + 1) + k)] && w.x0 < x - 1 && w.x1 > x + 1) crossing++;
@@ -1290,6 +1381,8 @@ bool Detector::Validate(Grid& g, bool column) {
     // Code set in a box of shaded lines, or a paragraph wrapped over shaded lines (rows that go on
     // in lowercase), is no table of one column.
     if (column && (2 * mono > inside || 3 * lowerStarts >= static_cast<uint32_t>(g.Rows()))) return false;
+    // Four numbers in one cell, evenly stepped (0 0.2 0.4 0.6): a chart's axis inside its frame.
+    if (axis) return false;
     uint32_t nonEmpty = 0, most = 0;
     for (uint32_t f : filled) nonEmpty += f > 0, most = std::max(most, f);
     if (inside == 0 || nonEmpty < 2) return false;
@@ -1304,7 +1397,24 @@ bool Detector::Validate(Grid& g, bool column) {
         if (filled[c]) perRow[g.cells[c].r]++;
     int fullRows = 0;
     for (uint16_t n : perRow) fullRows += column ? n >= 1 : n >= 2;
-    if (fullRows < (column ? 3 : 2)) return false;
+    // A form to fill in: a header row with text beyond the first column over three rows labelled in
+    // the first column and left empty otherwise, in a grid ruled inside both ways (a box around a
+    // quote has no inner rules).
+    bool form = false;
+    bool headed = false;
+    for (size_t c = 0; c < g.cells.size(); ++c) headed = headed || (g.cells[c].r == 0 && g.cells[c].c > 0 && filled[c]);
+    if (!column && headed && fullRows <= 1 && g.Rows() >= 4 && cols >= 2) {
+        int labelled = 0, ruledRows = 0;
+        for (int r = 0; r < g.Rows(); ++r) {
+            const size_t first = static_cast<size_t>(g.owner[static_cast<size_t>(r * cols)]);
+            labelled += g.cells[first].r == r && label[first] && perRow[static_cast<size_t>(r)] == 1;
+            bool inner = false;
+            for (int k = 1; k < cols; ++k) inner = inner || g.vb[static_cast<size_t>(r * (cols + 1) + k)];
+            ruledRows += inner;
+        }
+        form = labelled >= 3 && 2 * ruledRows >= g.Rows();
+    }
+    if (fullRows < (column ? 3 : 2) && !form) return false;
     std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
     g.size = sizes[sizes.size() / 2];
     return true;
@@ -1494,6 +1604,19 @@ void Detector::RuleStacks() {
                     if (header > 3) header = 0;
                 }
                 if (header == end - begin) header = 0;
+                // No rule under the header (a top and a bottom rule only): the leading rows without
+                // a number, three at most, over three rows or more that start with one.
+                if (header == 0) {
+                    std::string scratch;
+                    const auto numbers = [&](size_t q) {
+                        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
+                            if (Numeric(WordText(words_[rowWords[k]], scratch))) return true;
+                        return false;
+                    };
+                    size_t lead = 0;
+                    while (lead < 3 && begin + lead < end && !numbers(begin + lead)) ++lead;
+                    if (lead > 0 && begin + lead + 3 <= end && numbers(begin + lead)) header = static_cast<uint16_t>(lead);
+                }
                 // A header label over several columns (a unit over its sub-columns) closes the gaps
                 // between them: the body rows, three at least, say where the columns are, and the
                 // label spans them.
@@ -1742,15 +1865,67 @@ void Detector::Borderless(float gapFactor) {
                 if (c != last) occupied++, last = c;
                 numbers = numbers || Numeric(WordText(words_[rowWords[k]], scratch));
             }
-            if (h.bottom - rows[begin].top <= 2.0f * em && SizeFits(h, em) && h.x0 >= xa - em && h.x1 <= xb + em &&
-                occupied >= 2 && !numbers && Columns(rows, rowWords, begin - 1, e, xa, xb, keepGap, trial, &label) &&
-                KeepsGaps(gaps, trial) && trial.size() == gaps.size())
+            const bool near = h.bottom - rows[begin].top <= 2.0f * em && SizeFits(h, em) && !numbers;
+            if (near && h.x0 >= xa - em && h.x1 <= xb + em && occupied >= 2 &&
+                Columns(rows, rowWords, begin - 1, e, xa, xb, keepGap, trial, &label) && KeepsGaps(gaps, trial) &&
+                trial.size() == gaps.size()) {
                 first = begin - 1;
+            } else if (near && HeaderOverColumns(rows, rowWords, begin, e, label, h, minGap, gaps)) {
+                // Labels centred over narrow columns of figures, wider than them: each label (a run of
+                // words a word space apart) heads the column nearest its centre, and the columns part
+                // between labels.
+                first = begin - 1;
+                xa = std::fmin(xa, h.x0 - 1), xb = std::fmax(xb, h.x1 + 1);
+            }
         }
         const float y0 = rows[e - 1].bottom, y1 = rows[first].top;
         if (high && Free(xa, y0, xb, y1)) TextGrid(rows, rowWords, first, e, gaps, TableKind::Borderless, 0, xa, xb);
         clearLabels();
+        // A header row without numbers whose labels, centred over narrow columns of figures, fill
+        // the gaps between them sets the columns wrong: the body is tried again without it.
+        if (!high && e - begin >= 4 && !numericRow[0] && numericRow[1]) r = begin + 1;
     }
+}
+
+// A header row over the columns of body rows [begin, end) (label rows aside): its labels (words
+// closer than `minGap`) each go to the column whose text centre is nearest, one label a column and
+// two labels at least, and the gaps are moved to lie between each column's text and label and the
+// next one's. False, gaps unchanged, when the labels do not part so.
+bool Detector::HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin,
+                                 size_t end, const std::vector<uint8_t>& label, const Row& header, float minGap,
+                                 std::vector<Gap>& gaps) {
+    const size_t cols = gaps.size() + 1;
+    if (cols > 64) return false;
+    std::vector<float> left(cols, INFINITY), right(cols, -INFINITY);
+    for (size_t q = begin; q < end; ++q) {
+        if (label[q]) continue;
+        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+            left[c] = std::fmin(left[c], w.x0), right[c] = std::fmax(right[c], w.x1);
+        }
+    }
+    for (size_t c = 0; c < cols; ++c)
+        if (!(right[c] > left[c])) return false;
+    uint64_t taken = 0;
+    int labels = 0;
+    uint32_t k = header.first;
+    while (k < header.first + header.count) {
+        float a = words_[rowWords[k]].x0, b = words_[rowWords[k]].x1;
+        for (++k; k < header.first + header.count && words_[rowWords[k]].x0 - b < minGap; ++k) b = std::fmax(b, words_[rowWords[k]].x1);
+        size_t best = 0;
+        for (size_t c = 1; c < cols; ++c)
+            if (std::fabs((left[c] + right[c]) / 2 - (a + b) / 2) < std::fabs((left[best] + right[best]) / 2 - (a + b) / 2)) best = c;
+        if ((taken >> best) & 1) return false;
+        taken |= uint64_t(1) << best;
+        labels++;
+        left[best] = std::fmin(left[best], a), right[best] = std::fmax(right[best], b);
+    }
+    if (labels < 2) return false;
+    for (size_t c = 0; c + 1 < cols; ++c)
+        if (!(right[c] < left[c + 1])) return false;
+    for (size_t c = 0; c + 1 < cols; ++c) gaps[c] = Gap{right[c], left[c + 1]};
+    return true;
 }
 
 void Detector::Commit() {

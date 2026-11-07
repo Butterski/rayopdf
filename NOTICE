@@ -39,3 +39,6 @@ Binaries built from this source also contain libraries linked into them:
 - The GNU C Library, licensed under the GNU LGPL version 2.1 or later, in fully static
   builds (cmake -DRAYOPDF_STATIC=ON); RayoPDF's complete source lets such a build be
   relinked with a modified C library.
+- The MinGW-w64 runtime (its C runtime startup code and the winpthreads library) in the
+  Windows build, licensed under the Zope Public License 2.1, the MIT (Expat) licence and the
+  BSD 3-Clause licence, or in the public domain (https://www.mingw-w64.org).

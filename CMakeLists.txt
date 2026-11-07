@@ -15,6 +15,8 @@ option(RAYOPDF_TESTS "Build the core tests" ON)
 option(RAYOPDF_STATIC "Link the Linux CLI fully statically" OFF)
 # AddressSanitizer and UBSan on every target.
 option(RAYOPDF_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+# ThreadSanitizer on every target (Clang; not together with RAYOPDF_SANITIZE).
+option(RAYOPDF_TSAN "Build with ThreadSanitizer" OFF)
 # libFuzzer targets of tests/fuzz (Clang only; implies the sanitizers).
 option(RAYOPDF_FUZZ "Build the libFuzzer targets of tests/fuzz" OFF)
 
@@ -24,6 +26,12 @@ if(RAYOPDF_FUZZ)
     endif()
     set(RAYOPDF_SANITIZE ON)
 endif()
+if(RAYOPDF_TSAN AND RAYOPDF_SANITIZE)
+    message(FATAL_ERROR "RAYOPDF_TSAN and RAYOPDF_SANITIZE exclude each other.")
+endif()
+
+# Threads for the batch modes' workers (--batch, --serve --json --workers=N).
+find_package(Threads REQUIRED)
 
 # Flags of all own code: no exceptions and no RTTI anywhere (roadmap D1), warnings on.
 function(rayopdf_flags target)
@@ -38,9 +46,19 @@ function(rayopdf_flags target)
                 -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
             target_link_options(${target} PRIVATE -fsanitize=address,undefined)
         endif()
+        if(RAYOPDF_TSAN)
+            target_compile_options(${target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${target} PRIVATE -fsanitize=thread)
+        endif()
         if(RAYOPDF_FUZZ)
             target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
         endif()
+    endif()
+    if(MINGW)
+        # C99 printf and strtod from MinGW-w64 rather than msvcrt's, so numbers are written as on
+        # Linux; every executable fully static (no libstdc++, libgcc or winpthread DLL beside it).
+        target_compile_definitions(${target} PRIVATE __USE_MINGW_ANSI_STDIO=1)
+        target_link_options(${target} PRIVATE -static)
     endif()
     target_compile_definitions(${target} PRIVATE RAYOPDF_VERSION="${RAYOPDF_VERSION}")
 endfunction()
@@ -64,6 +82,9 @@ foreach(module ${RAYOPDF_MODULES})
             endif()
         endforeach()
         rayopdf_flags(rayopdf_${module})
+        if(module STREQUAL "common")
+            target_link_libraries(rayopdf_common PUBLIC Threads::Threads)
+        endif()
     else()
         message(STATUS "rayopdf: module ${module} has no sources yet")
     endif()
@@ -106,8 +127,14 @@ if(RAYOPDF_TESTS)
     endforeach()
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET rayopdf)
+        # A cross build's binary runs under its emulator (Wine for the Windows build).
+        set(rayopdf_emulator)
+        if(CMAKE_CROSSCOMPILING_EMULATOR)
+            list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 rayopdf_emulator)
+            set(rayopdf_emulator --emulator ${rayopdf_emulator})
+        endif()
         add_test(NAME cli COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_cli.py"
-            --binary $<TARGET_FILE:rayopdf>)
+            --binary $<TARGET_FILE:rayopdf> ${rayopdf_emulator})
     endif()
 endif()
 

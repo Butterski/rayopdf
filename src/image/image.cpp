@@ -13,12 +13,19 @@
 //   Magenta, Yellow and Black are composed as CMYK, and anything else is gray from the summed
 //   tint (1 is black).
 // - Soft masks (/SMask) and stencil masks (/Mask stream) of another size are resampled to the
-//   image's by nearest neighbour; a mask that cannot be decoded is dropped and the image written
-//   opaque. /Matte is ignored. Alpha that is opaque everywhere is left out of the PNG.
-// - DCT and JPX data are written as stored (from the JPEG SOI marker / JP2 signature on), their
-//   masks dropped; a raw JPEG 2000 codestream gets a minimal JP2 wrapper so that it is a .jp2.
+//   image's by nearest neighbour; a mask that cannot be decoded is dropped, the image written
+//   opaque and Encoded::maskDropped set. /Matte is ignored. Alpha that is opaque everywhere is
+//   left out of the PNG.
+// - A JPEG stored as it is (image.h) is written from its SOI marker on. A decoded JPEG's samples
+//   go through the PDF colour space and /Decode like any 8-bit samples; a colour space of another
+//   number of components than the JPEG's gives way to the JPEG's own (gray, RGB, CMYK). A JPEG
+//   that should be decoded but cannot be (arithmetic coding, 12-bit, damaged, more than 64 Mi
+//   pixels) is stored after all. JPX is always stored (from the JP2 signature on; a raw JPEG 2000
+//   codestream gets a minimal JP2 wrapper so that it is a .jp2), a mask that hides part of it
+//   counted as dropped.
 #include "image/image.h"
 
+#include "image/jpeg.h"
 #include "pdf/filters.h"
 
 #include <algorithm>
@@ -526,6 +533,8 @@ struct Source {
     const PdfValue& resources;
     bool inlineImage = false;
     std::string_view inlineData;
+    // The data before its image filter when already read (a DCT image's JPEG), else empty.
+    std::string_view encoded;
 
     // Entry `full`, or for an inline image its abbreviation `brief`.
     const PdfValue& Entry(std::string_view full, std::string_view brief) const {
@@ -661,12 +670,16 @@ bool JpegSize(std::string_view jpeg, uint32_t& width, uint32_t& height) {
     return false;
 }
 
-Status PassJpeg(std::string_view data, uint32_t width, uint32_t height, Encoded& out) {
-    // Writers occasionally put bytes before the SOI marker; viewers skip them, a file must not
-    // start with them.
+// A DCT image's JPEG from its SOI marker on: writers occasionally put bytes before it, which
+// viewers skip and a file must not start with. Empty when the first 1024 bytes have none.
+std::string_view JpegStart(std::string_view data) {
     const size_t soi = data.substr(0, 1024).find("\xFF\xD8");
-    if (soi == std::string_view::npos) return Status::Corrupt;
-    data.remove_prefix(soi);
+    return soi == std::string_view::npos ? std::string_view() : data.substr(soi);
+}
+
+Status PassJpeg(std::string_view data, uint32_t width, uint32_t height, Encoded& out) {
+    data = JpegStart(data);
+    if (data.empty()) return Status::Corrupt;
     uint32_t w = 0, h = 0;
     if (JpegSize(data, w, h) && w > 0 && h > 0) {
         width = w;
@@ -1009,27 +1022,68 @@ void ColourKeyAlpha(const Source& src, const Layout& layout, uint32_t rows, cons
     }
 }
 
-// The pixels of a sampled image (no stencil): colour space, samples, /Decode. With `keyAlpha`,
-// a /Mask colour key fills it when the image has one. A soft mask (`softMask`) without
-// /ColorSpace is DeviceGray, the only space it may have.
+// A DCT image's samples through the JPEG decoder (jpeg.h): the layout is the JPEG's (8 bits, its
+// components), and a colour space of another number of components gives way to the device space
+// of the JPEG's, as viewers do.
+Status DecodeJpegSamples(const Source& src, uint64_t maxPixels, Space& space, Layout& layout, std::string& samples) {
+    std::string data;
+    std::string_view jpeg = src.encoded;
+    if (jpeg.empty()) {
+        const StreamStatus read = ReadData(src, data, kPassThroughLimit);
+        if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+        if (read == StreamStatus::TooLarge) return Status::TooLarge;
+        jpeg = JpegStart(data);
+        if (jpeg.empty()) return Status::Corrupt;
+    }
+    Jpeg::Info info;
+    // Its samples within the stream limit that bounds every other image's (4 components each).
+    const uint64_t limit = std::min<uint64_t>(maxPixels, Document::kDefaultStreamLimit / 4);
+    switch (Jpeg::Decode(reinterpret_cast<const uint8_t*>(jpeg.data()), jpeg.size(), limit, info, samples)) {
+    case Jpeg::Result::Ok: break;
+    case Jpeg::Result::Unsupported: return Status::Unsupported;
+    case Jpeg::Result::TooLarge: return Status::TooLarge;
+    case Jpeg::Result::Corrupt: return Status::Corrupt;
+    }
+    if (info.components != space.components) {
+        space = Space();
+        SetDevice(space, info.components == 1 ? Family::Gray : info.components == 3 ? Family::Rgb : Family::Cmyk);
+    }
+    layout.width = info.width;
+    layout.height = info.height;
+    layout.bpc = 8;
+    layout.components = info.components;
+    layout.rowBytes = size_t(info.width) * static_cast<size_t>(info.components);
+    return Status::Ok;
+}
+
+// The pixels of a sampled image (no stencil; Flate-family or DCT data): colour space, samples,
+// /Decode. With `keyAlpha`, a /Mask colour key fills it when the image has one. A soft mask
+// (`softMask`) without /ColorSpace is DeviceGray, the only space it may have.
 Status DecodeSampled(const Source& src, uint64_t maxPixels, bool softMask, Pixels& out,
                      std::vector<uint8_t>* keyAlpha) {
-    if (StopFilter(src) != Filters::Kind::Flate) return Status::Unsupported;
+    const Filters::Kind stop = StopFilter(src);
+    if (stop != Filters::Kind::Flate && stop != Filters::Kind::Dct) return Status::Unsupported;
     Space space;
     const SpaceContext ctx{src.doc, src.resources, src.inlineImage};
     const PdfValue& csValue = src.Entry("ColorSpace", "CS");
     Status status = Status::Ok;
     if (csValue.IsNull()) {
-        if (!softMask) return Status::Corrupt;
+        // A JPEG says what it holds; other samples need the space.
+        if (!softMask && stop != Filters::Kind::Dct) return Status::Corrupt;
         SetDevice(space, Family::Gray);
     } else if ((status = ParseSpace(ctx, csValue, 0, space)) != Status::Ok) {
         return status;
     }
     Layout layout;
-    if ((status = ReadLayout(src, false, space.components, maxPixels, layout)) != Status::Ok) return status;
     std::string data;
     uint32_t rows = 0;
-    if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
+    if (stop == Filters::Kind::Dct) {
+        if ((status = DecodeJpegSamples(src, maxPixels, space, layout, data)) != Status::Ok) return status;
+        rows = layout.height;
+    } else {
+        if ((status = ReadLayout(src, false, space.components, maxPixels, layout)) != Status::Ok) return status;
+        if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
+    }
     if (keyAlpha) ColourKeyAlpha(src, layout, rows, data, *keyAlpha);
     DecodeMap map;
     MakeDecodeMap(src, space, layout.bpc, map);
@@ -1060,35 +1114,51 @@ void ResampleAlpha(const Pixels& mask, uint32_t width, uint32_t rows, uint32_t d
     }
 }
 
-// The soft or stencil mask of `src` as alpha for `image`; false when there is none or it cannot
-// be decoded.
-bool MaskAlpha(const Source& src, const Pixels& image, uint64_t maxPixels, std::vector<uint8_t>& alpha) {
-    if (src.inlineImage) return false;  // inline images have neither (ISO 32000-1 Table 93)
+enum class MaskKind : uint8_t {
+    None,
+    Soft,       // /SMask: gray, the alpha itself
+    Stencil,    // /Mask stream: a stencil as DecodeStencil gives it, 0 where the image shows
+    ColourKey,  // /Mask array: applied while the image's samples are decoded
+};
+
+// The mask of `src` (an /SMask stream before a /Mask, as ISO 32000-1 11.6.5.3 orders them),
+// decoded at its own size into `mask`; `decoded` false when its data cannot be decoded.
+MaskKind ReadMask(const Source& src, uint64_t maxPixels, Pixels& mask, bool& decoded) {
+    decoded = false;
+    if (src.inlineImage) return MaskKind::None;  // inline images have neither (ISO 32000-1 Table 93)
     const PdfValue& smask = src.doc.Get(src.dict, "SMask");
     if (smask.IsStream()) {
-        const Source maskSrc{src.doc, smask, src.resources, false, {}};
-        Pixels mask;
-        if (DecodeSampled(maskSrc, maxPixels, true, mask, nullptr) == Status::Ok) {
-            if (mask.channels == 3) {  // not the DeviceGray it must be: its luminance
-                uint8_t* bytes = mask.Bytes();
-                for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
-                    const uint8_t* p = bytes + 3 * i;
-                    bytes[i] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
-                }
-                mask.channels = 1;
+        const Source maskSrc{src.doc, smask, src.resources, false, {}, {}};
+        decoded = DecodeSampled(maskSrc, maxPixels, true, mask, nullptr) == Status::Ok;
+        if (decoded && mask.channels == 3) {  // not the DeviceGray it must be: its luminance
+            uint8_t* bytes = mask.Bytes();
+            for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
+                const uint8_t* p = bytes + 3 * i;
+                bytes[i] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
             }
-            ResampleAlpha(mask, image.width, image.height, image.declaredHeight, false, alpha);
-            return true;
+            mask.channels = 1;
         }
-        return false;
+        return MaskKind::Soft;
     }
     const PdfValue& stencil = src.doc.Get(src.dict, "Mask");
     if (stencil.IsStream()) {
-        const Source maskSrc{src.doc, stencil, src.resources, false, {}};
-        Pixels mask;
-        if (DecodeStencil(maskSrc, maxPixels, mask) != Status::Ok) return false;
-        ResampleAlpha(mask, image.width, image.height, image.declaredHeight, true, alpha);
-        return true;
+        const Source maskSrc{src.doc, stencil, src.resources, false, {}, {}};
+        decoded = DecodeStencil(maskSrc, maxPixels, mask) == Status::Ok;
+        return MaskKind::Stencil;
+    }
+    if (stencil.IsArray()) {
+        decoded = true;
+        return MaskKind::ColourKey;
+    }
+    return MaskKind::None;
+}
+
+// Whether a decoded soft or stencil mask hides any part of its image.
+bool Transparent(const Pixels& mask, MaskKind kind) {
+    const uint8_t opaque = kind == MaskKind::Stencil ? 0 : 255;
+    const uint8_t* bytes = mask.Bytes();
+    for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
+        if (bytes[i] != opaque) return true;
     }
     return false;
 }
@@ -1117,10 +1187,50 @@ Status WritePng(const Pixels& image, const std::vector<uint8_t>* alpha, Encoded&
     return ok ? Status::Ok : Status::TooLarge;
 }
 
+// `image` with its soft or stencil mask, as a PNG; `key` the colour-key alpha DecodeSampled made.
+Status WriteMasked(const Pixels& image, MaskKind kind, bool decoded, const Pixels& mask,
+                   const std::vector<uint8_t>& key, Encoded& out) {
+    Status status;
+    if ((kind == MaskKind::Soft || kind == MaskKind::Stencil) && decoded) {
+        std::vector<uint8_t> alpha;
+        ResampleAlpha(mask, image.width, image.height, image.declaredHeight, kind == MaskKind::Stencil, alpha);
+        status = WritePng(image, &alpha, out);
+    } else {
+        status = WritePng(image, key.empty() ? nullptr : &key, out);
+    }
+    if (status == Status::Ok) out.maskDropped = kind != MaskKind::None && !decoded;
+    return status;
+}
+
+// Whether a JPEG written as stored shows what the PDF shows: 1 or 3 components in a gray or RGB
+// space of as many (or none), the default /Decode. A CMYK JPEG never does: stand-alone viewers
+// read an APP14 marker as Adobe's inverted CMYK, PDF reads the samples as ink (jpeg.h). A JPEG
+// this decoder cannot read is stored, its only form.
+bool JpegAsStored(const Source& src, std::string_view jpeg) {
+    Jpeg::Info info;
+    if (Jpeg::ReadInfo(reinterpret_cast<const uint8_t*>(jpeg.data()), jpeg.size(), info) != Jpeg::Result::Ok) return true;
+    if (info.components == 4) return false;
+    const PdfValue& csValue = src.Entry("ColorSpace", "CS");
+    if (!csValue.IsNull()) {
+        Space space;
+        const SpaceContext ctx{src.doc, src.resources, src.inlineImage};
+        if (ParseSpace(ctx, csValue, 0, space) != Status::Ok) return true;
+        if (space.family != Family::Gray && space.family != Family::Rgb) return false;
+    }
+    double decode[2 * kMaxComponents];
+    const size_t pairs = NumberPairs(src.doc, src.Entry("Decode", "D"), decode) / 2;
+    for (size_t i = 0; i < pairs; i++) {
+        if (decode[2 * i] != 0 || decode[2 * i + 1] != 1) return false;
+    }
+    return true;
+}
+
 Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
     out = Encoded();
     const Filters::Kind stop = StopFilter(src);
     const bool stencil = src.Entry("ImageMask", "IM").Bool(false);
+    Pixels mask;
+    bool maskDecoded = false;
     if (stop == Filters::Kind::Dct || stop == Filters::Kind::Jpx) {
         const int64_t w = src.Entry("Width", "W").Int(0);
         const int64_t h = src.Entry("Height", "H").Int(0);
@@ -1131,13 +1241,32 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
         if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
         // The data must be whole: a JPEG or JPEG 2000 file cut at the limit is no file.
         if (read == StreamStatus::TooLarge) return Status::TooLarge;
+        const MaskKind kind = stencil ? MaskKind::None : ReadMask(src, maxPixels, mask, maskDecoded);
+        // A mask that hides something, decoded; only pixels can carry it.
+        const bool maskShows = kind == MaskKind::ColourKey || (kind != MaskKind::None && maskDecoded && Transparent(mask, kind));
+        if (stop == Filters::Kind::Dct && !stencil) {
+            Source jpegSrc = src;
+            jpegSrc.encoded = JpegStart(data);
+            if (!jpegSrc.encoded.empty() && (maskShows || !JpegAsStored(src, jpegSrc.encoded))) {
+                Pixels image;
+                std::vector<uint8_t> key;
+                const Status status = DecodeSampled(jpegSrc, maxPixels, false, image, &key);
+                if (status == Status::Ok) return WriteMasked(image, kind, maskDecoded, mask, key, out);
+                // A JPEG this decoder cannot read (arithmetic, 12-bit, damaged, too large to
+                // decode): as stored, which the pixel limit below still bounds.
+            }
+        }
         const Status status = stop == Filters::Kind::Dct ? PassJpeg(data, width, height, out)
                                                          : PassJpx(data, width, height, out);
         if (status == Status::Ok && uint64_t(out.width) * out.height > maxPixels) {
             out = Encoded();
             return Status::TooLarge;
         }
-        if (status != Status::Ok) out = Encoded();
+        if (status != Status::Ok) {
+            out = Encoded();
+            return status;
+        }
+        out.maskDropped = maskShows || (kind != MaskKind::None && !maskDecoded);
         return status;
     }
     if (stop != Filters::Kind::Flate) return Status::Unsupported;
@@ -1148,12 +1277,11 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
         if (status != Status::Ok) return status;
         return WritePng(image, nullptr, out);
     }
-    std::vector<uint8_t> alpha;
-    const Status status = DecodeSampled(src, maxPixels, false, image, &alpha);
+    std::vector<uint8_t> key;
+    const Status status = DecodeSampled(src, maxPixels, false, image, &key);
     if (status != Status::Ok) return status;
-    std::vector<uint8_t> masked;
-    if (MaskAlpha(src, image, maxPixels, masked)) return WritePng(image, &masked, out);
-    return WritePng(image, alpha.empty() ? nullptr : &alpha, out);
+    const MaskKind kind = ReadMask(src, maxPixels, mask, maskDecoded);
+    return WriteMasked(image, kind, maskDecoded, mask, key, out);
 }
 
 } // namespace
@@ -1163,7 +1291,7 @@ Status EncodeXObject(const Document& document, const PdfValue& image, const PdfV
     out = Encoded();
     const PdfValue& stream = document.Resolve(image);
     if (!stream.IsStream()) return Status::Corrupt;
-    const Source src{document, stream, document.Resolve(resources), false, {}};
+    const Source src{document, stream, document.Resolve(resources), false, {}, {}};
     return Encode(src, out, maxPixels);
 }
 
@@ -1171,7 +1299,7 @@ Status EncodeInline(const Document& document, const PdfValue& dictionary, std::s
                     const PdfValue& resources, Encoded& out, uint64_t maxPixels) {
     out = Encoded();
     if (!dictionary.IsDict()) return Status::Corrupt;
-    const Source src{document, dictionary, document.Resolve(resources), true, data};
+    const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
     return Encode(src, out, maxPixels);
 }
 

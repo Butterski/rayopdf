@@ -202,4 +202,109 @@ inline std::string OnePage(std::string_view content,
     return b.Build(catalog);
 }
 
+// Tagged documents (ISO 32000-1 §14.7-14.8): US Letter pages whose content marks its text with
+// MCIDs, and a structure tree built element by element. Elements are named by the handles
+// Element returns (1-based); 0 is the tree root.
+class TaggedBuilder {
+public:
+    explicit TaggedBuilder(int pageCount = 1) {
+        catalog_ = pdf_.Reserve();
+        pages_ = pdf_.Reserve();
+        root_ = pdf_.Reserve();
+        for (int i = 0; i < pageCount; ++i) pageObjects_.push_back(pdf_.Reserve());
+        parentTree_.resize(static_cast<size_t>(pageCount));
+    }
+    // The builder underneath, for further objects (Form XObjects).
+    PdfBuilder& Pdf() { return pdf_; }
+    int PageObject(int page) const { return pageObjects_[static_cast<size_t>(page)]; }
+    int ObjectOf(int element) const { return elements_[static_cast<size_t>(element - 1)].object; }
+    // A structure element of type `type` (without the slash) as the next kid of `parent`; `extra`
+    // adds dictionary entries ("/Alt (a chart)", "/A << /O /Table /ColSpan 2 >>").
+    int Element(int parent, const std::string& type, const std::string& extra = "") {
+        Item item;
+        item.object = pdf_.Reserve();
+        item.parent = parent;
+        item.type = type;
+        item.extra = extra;
+        elements_.push_back(item);
+        const int handle = static_cast<int>(elements_.size());
+        Kid(parent, std::to_string(item.object) + " 0 R");
+        return handle;
+    }
+    // Marked-content id `mcid` of page `page` (0-based) as the next kid of `element`. Without
+    // `withPage` the element gets no /Pg: readers find the page through the ParentTree.
+    void Mcid(int element, int page, int mcid, bool withPage = true) {
+        Item& item = elements_[static_cast<size_t>(element - 1)];
+        if (withPage && item.page < 0) item.page = page;
+        Kid(element, std::to_string(mcid));
+        std::vector<int>& slots = parentTree_[static_cast<size_t>(page)];
+        if (slots.size() <= static_cast<size_t>(mcid)) slots.resize(static_cast<size_t>(mcid) + 1, 0);
+        slots[static_cast<size_t>(mcid)] = item.object;
+    }
+    // Any kid as PDF text (an MCR or OBJR dictionary, a reference).
+    void Kid(int element, const std::string& kid) {
+        std::string& kids = element == 0 ? rootKids_ : elements_[static_cast<size_t>(element - 1)].kids;
+        kids += kid + " ";
+    }
+    // The file: page `i` shows contents[i] with Helvetica as /F1 and `resources` (more resource
+    // entries); the StructTreeRoot carries `rootExtra` (a /RoleMap).
+    std::string Build(const std::vector<std::string>& contents, const std::string& rootExtra = "",
+                      const std::string& resources = "") {
+        std::string kids;
+        for (size_t i = 0; i < pageObjects_.size(); ++i) {
+            const int stream = pdf_.AddFlateStream("", i < contents.size() ? contents[i] : std::string());
+            pdf_.Set(pageObjects_[i], "<< /Type /Page /Parent " + std::to_string(pages_) +
+                                          " 0 R /MediaBox [0 0 612 792] /StructParents " + std::to_string(i) +
+                                          " /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont "
+                                          "/Helvetica >> >> " +
+                                          resources + " >> /Contents " + std::to_string(stream) + " 0 R >>");
+            kids += std::to_string(pageObjects_[i]) + " 0 R ";
+        }
+        for (const Item& item : elements_) {
+            const std::string parent = std::to_string(item.parent == 0 ? root_ : ObjectOf(item.parent)) + " 0 R";
+            std::string body = "<< /Type /StructElem /S /" + item.type + " /P " + parent;
+            if (item.page >= 0) body += " /Pg " + std::to_string(pageObjects_[static_cast<size_t>(item.page)]) + " 0 R";
+            body += " /K [" + item.kids + "] " + item.extra + " >>";
+            pdf_.Set(item.object, body);
+        }
+        std::string nums;
+        for (size_t i = 0; i < parentTree_.size(); ++i) {
+            nums += std::to_string(i) + " [";
+            for (int object : parentTree_[i]) nums += object ? std::to_string(object) + " 0 R " : std::string("null ");
+            nums += "] ";
+        }
+        pdf_.Set(root_, "<< /Type /StructTreeRoot /K [" + rootKids_ + "] /ParentTree << /Nums [" + nums +
+                            "] >> /ParentTreeNextKey " + std::to_string(parentTree_.size()) + " " + rootExtra + " >>");
+        pdf_.Set(pages_, "<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(pageObjects_.size()) + " >>");
+        pdf_.Set(catalog_, "<< /Type /Catalog /Pages " + std::to_string(pages_) + " 0 R /StructTreeRoot " +
+                               std::to_string(root_) + " 0 R /MarkInfo << /Marked true >> >>");
+        return pdf_.Build(catalog_);
+    }
+
+private:
+    struct Item {
+        int object = 0;
+        int parent = 0;
+        int page = -1;
+        std::string type, extra, kids;
+    };
+    PdfBuilder pdf_;
+    int catalog_ = 0, pages_ = 0, root_ = 0;
+    std::vector<int> pageObjects_;
+    std::vector<Item> elements_;
+    std::string rootKids_;
+    std::vector<std::vector<int>> parentTree_;
+};
+
+// Content-stream text `text` (no parentheses or backslashes) at (x, y) in Helvetica `size`, in a
+// marked-content sequence of tag `tag` with MCID `mcid` (no MCID when negative).
+inline std::string MarkedText(const std::string& tag, int mcid, double x, double y, double size, const std::string& text) {
+    char head[160];
+    if (mcid >= 0)
+        std::snprintf(head, sizeof head, "/%s << /MCID %d >> BDC BT /F1 %g Tf %g %g Td (", tag.c_str(), mcid, size, x, y);
+    else
+        std::snprintf(head, sizeof head, "/%s BMC BT /F1 %g Tf %g %g Td (", tag.c_str(), size, x, y);
+    return std::string(head) + text + ") Tj ET EMC\n";
+}
+
 } // namespace RayoPdf::Test

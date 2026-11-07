@@ -36,6 +36,9 @@ enum class CommentKind : uint8_t {
     Unmapped,  // most of the page's text has no reliable Unicode mapping
 };
 
+// GitHub alerts (`> [!NOTE]`): a block quote titled by one of these words alone on its first line.
+enum class AlertKind : uint8_t { None, Note, Tip, Important, Warning, Caution };
+
 // One line of a block: `skip` glyphs at its start (a list marker) are not text.
 struct BlockLine {
     uint32_t page = 0;   // index into the pages vector
@@ -48,6 +51,7 @@ struct Block {
     uint8_t level = 0;      // heading level 1-6
     uint8_t depth = 0;      // list nesting depth (0 = top level)
     uint8_t quote = 0;      // block-quote depth
+    uint8_t alert = 0;      // AlertKind: the first block of a GitHub alert (quote >= 1)
     uint8_t task = 0;       // list items: 0 none, 1 open, 2 done
     bool ordered = false;   // list items
     bool listParagraph = false; // a further paragraph of the list item before it, at its `depth`

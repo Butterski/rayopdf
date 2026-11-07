@@ -236,6 +236,7 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
                 SetName(page, image, ImageState::Failed, failure);
             } else {
                 report.images++;
+                if (encoded.maskDropped) report.imagesMaskDropped++;
                 count++;
                 SetName(page, image, ImageState::Written, output.linkPrefix + name);
             }

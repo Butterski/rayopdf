@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Black-box checks of a built rayopdf binary: arguments, exit codes, output files, --inspect,
---report and encrypted input. It builds the PDFs it needs in a temporary directory (none are
-committed) and never times anything.
+--report, encrypted input, --batch (records, exit codes, subfolders, skipping, the same files and
+records with 1 and 4 workers) and --serve --json (several requests, malformed ones among them,
+answers in request order with 1 and 4 workers). It builds the PDFs it needs in a temporary
+directory (none are committed) and never times anything.
 
 Usage:
-  python3 tests/verify_cli.py --binary build/release/rayopdf
+  python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
 """
 
 from __future__ import annotations
@@ -97,14 +99,14 @@ def encrypted_pdf(content: bytes, user: bytes, owner: bytes) -> bytes:
 
 
 class Checker:
-    def __init__(self, binary: str, work: Path) -> None:
-        self.binary = binary
+    def __init__(self, binary: str, work: Path, emulator: str | None = None) -> None:
+        self.command = [emulator, binary] if emulator else [binary]
         self.work = work
         self.failures: list[str] = []
         self.count = 0
 
-    def run(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run([self.binary, *args], capture_output=True, timeout=60)
+    def run(self, *args: str, stdin: bytes | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([*self.command, *args], capture_output=True, timeout=300, input=stdin, cwd=cwd)
 
     def check(self, name: str, condition: bool, detail: str = "") -> None:
         self.count += 1
@@ -120,15 +122,179 @@ class Checker:
         return str(path)
 
 
+def records(text: bytes) -> list[dict]:
+    out = []
+    for line in text.decode("utf-8", "replace").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            out.append({"unparsed": line})
+    return out
+
+
+def without_timing(items: list[dict], replace: tuple[str, str] = ("", "")) -> list[dict]:
+    """Records with their wall time dropped and one path prefix renamed, for comparing runs."""
+    out = []
+    for item in items:
+        item = {k: v for k, v in item.items() if k != "ms"}
+        for key in ("input", "output", "error", "markdown"):
+            if isinstance(item.get(key), str) and replace[0]:
+                item[key] = item[key].replace(replace[0], replace[1])
+        out.append(item)
+    return out
+
+
+def tree(root: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def check_batch(c: Checker, work: Path, picture: str) -> None:
+    source = work / "batch-in"
+    (source / "sub" / "deeper").mkdir(parents=True)
+    (source / ".hidden").mkdir()
+    # Documents of different lengths, so that 4 workers finish them out of order.
+    for i in range(12):
+        lines = b" ".join(b"0 -14 Td (Line %d of document %d) Tj" % (n, i) for n in range(1 + 7 * (i % 4)))
+        (source / f"doc{i:02d}.pdf").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td " + lines + b" ET"))
+    (source / "sub" / "nested.pdf").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td (Nested text) Tj ET"))
+    (source / "sub" / "deeper" / "deep.PDF").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td (Deep text) Tj ET"))
+    (source / ".hidden" / "skip.pdf").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td (Hidden) Tj ET"))
+    (source / "picture.pdf").write_bytes(Path(picture).read_bytes())
+    (source / "notes.txt").write_bytes(b"not a PDF name\n")
+    (source / "zz-broken.pdf").write_bytes(b"hello, this is not a PDF\n" * 20)
+    (source / "locked.pdf").write_bytes(encrypted_pdf(b"BT /F1 12 Tf 72 720 Td (Batch Secret) Tj ET", b"user", b"o"))
+
+    runs = {}
+    for workers in (1, 4):
+        target = work / f"batch-out-{workers}"
+        r = c.run("--batch", str(source), str(target), "--recursive", f"--workers={workers}",
+                  "--report=" + str(work / f"batch-{workers}.jsonl"))
+        report = records((work / f"batch-{workers}.jsonl").read_bytes()) if (work / f"batch-{workers}.jsonl").is_file() \
+            else []
+        runs[workers] = (r, target, report)
+    r, target, report = runs[1]
+    # Sorted by path: doc00..doc11, locked, picture, sub/deeper/deep.PDF, sub/nested, zz-broken.
+    names = [Path(item.get("input", "")).relative_to(source).as_posix() for item in report]
+    expected = [f"doc{i:02d}.pdf" for i in range(12)] + ["locked.pdf", "picture.pdf", "sub/deeper/deep.PDF",
+                                                         "sub/nested.pdf", "zz-broken.pdf"]
+    c.check("batch records in input order", names == expected, repr(names))
+    statuses = {n: (item.get("status"), item.get("code")) for n, item in zip(names, report)}
+    c.check("batch statuses", statuses.get("doc00.pdf") == ("ok", 0) and statuses.get("locked.pdf") == ("error", 11)
+            and statuses.get("zz-broken.pdf") == ("error", 10) and statuses.get("sub/nested.pdf") == ("ok", 0),
+            repr(statuses))
+    c.check("batch exit code is the last failure's", r.returncode == 10, f"{r.returncode} {r.stderr!r}")
+    c.check("batch errors on stderr", b"locked.pdf needs a password" in r.stderr and b"failed for 2 of 17" in r.stderr,
+            repr(r.stderr))
+    text = (target / "sub" / "deeper" / "deep.md").read_text(encoding="utf-8") \
+        if (target / "sub" / "deeper" / "deep.md").is_file() else ""
+    c.check("batch mirrors subfolders", "Deep text" in text and (target / "doc11.md").is_file() and
+            not (target / ".hidden").exists() and not (target / "notes.md").exists(), repr(text))
+    text = (target / "picture.md").read_text(encoding="utf-8") if (target / "picture.md").is_file() else ""
+    c.check("batch images beside each document", "![](picture-images/p1-1.png)" in text and
+            (target / "picture-images" / "p1-1.png").is_file(), repr(text))
+    ok = [item for item in report if item.get("status") == "ok"]
+    c.check("batch record counters", all(item.get("pages") == 1 and "glyphs" in item and "ms" in item and
+                                         item.get("bytes", 0) > 0 for item in ok) and len(ok) == 15, repr(report[:2]))
+    r4, target4, report4 = runs[4]
+    c.check("batch: 4 workers write the same files as 1", tree(target) == tree(target4) and len(tree(target)) == 16,
+            f"{sorted(tree(target))} {sorted(tree(target4))}")
+    c.check("batch: 4 workers write the same records as 1", r4.returncode == r.returncode and
+            without_timing(report, (str(target), "OUT")) == without_timing(report4, (str(target4), "OUT")))
+
+    r = c.run("--batch", str(source), str(target), "--skip-unchanged", "--password=user", "--report")
+    report = records(r.stdout)
+    statuses = {Path(item.get("input", "x")).name: item.get("status") for item in report}
+    c.check("batch skip-unchanged and password", r.returncode == 10 and statuses.get("doc03.pdf") == "skipped" and
+            statuses.get("locked.pdf") == "ok" and len(report) == 15 and "Batch Secret" in
+            (target / "locked.md").read_text(encoding="utf-8"), repr(statuses))
+
+    c.check("batch of a missing folder", c.run("--batch", str(work / "nowhere"), str(work / "o")).returncode == 3)
+    c.check("batch into an impossible folder",
+            c.run("--batch", str(source), str(work / "no" / "such" / "out")).returncode == 12)
+    c.check("batch with an image directory", c.run("--batch", str(source), str(target), "--images=x").returncode == 2)
+    c.check("batch with 0 workers", c.run("--batch", str(source), str(target), "--workers=0").returncode == 2)
+    c.check("batch with 65 workers", c.run("--batch", str(source), str(target), "--workers=65").returncode == 2)
+    c.check("batch without its folders", c.run("--batch", str(source)).returncode == 2)
+    clash = work / "batch-clash"
+    clash.mkdir()
+    (clash / "a.pdf").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td (Lower) Tj ET"))
+    (clash / "a.PDF").write_bytes(build_pdf(b"BT /F1 12 Tf 72 720 Td (Upper) Tj ET"))
+    if len(list(clash.iterdir())) == 2:  # a case-insensitive file system holds one
+        r = c.run("--batch", str(clash), str(work / "clash-out"), "--report")
+        report = records(r.stdout)
+        c.check("batch refuses two inputs with one output", r.returncode == 12 and len(report) == 2 and
+                report[0].get("status") == "ok" and report[1].get("status") == "error" and
+                "Upper" in (work / "clash-out" / "a.md").read_text(encoding="utf-8"), repr(report))
+
+
+def check_serve(c: Checker, work: Path, hello: str, locked: str, picture: str) -> None:
+    out = work / "serve-out"
+    out.mkdir()
+    requests = [
+        json.dumps({"id": "1", "input": hello, "output": str(out / "hello.md")}),
+        json.dumps({"id": 2, "input": hello}),
+        "{not json",
+        json.dumps({"id": "4", "input": hello, "markdown": "x"}),
+        "",
+        json.dumps({"id": "5", "input": str(work / "missing.pdf"), "output": str(out / "m.md")}),
+        json.dumps({"id": "6", "input": locked, "output": str(out / "locked.md")}),
+        json.dumps({"id": "7", "input": locked, "output": str(out / "locked.md"), "args": ["--password=user"]}),
+        json.dumps({"id": "8", "input": hello, "output": str(out / "x.md"), "args": ["--workers=2"]}),
+        json.dumps({"id": "9", "input": hello, "args": ["--pages=0"]}),
+        json.dumps({"id": "10", "input": picture, "output": str(out / "pic.md")}),
+        json.dumps({"id": "11", "input": picture}),
+        json.dumps({"input": hello, "output": str(out / "no-id.md"), "args": ["--pages=2"]}),
+        "x" * ((1 << 20) + 10),
+        json.dumps({"id": "14", "input": hello, "id2": 1}),
+    ]
+    stdin = ("\n".join(requests) + "\nquit\n" + json.dumps({"id": "after", "input": hello}) + "\n").encode()
+    runs = {}
+    for workers in (1, 4):
+        args = ["--serve", "--json"] + ([f"--workers={workers}"] if workers > 1 else [])
+        runs[workers] = c.run(*args, stdin=stdin)
+    r = runs[1]
+    lines = records(r.stdout)
+    c.check("serve hello line", r.returncode == 0 and bool(lines) and lines[0].get("protocol") == 1 and
+            "rayopdf" in lines[0], repr(r.stdout[:200]))
+    answers = lines[1:]
+    c.check("serve answers every request, in order, and stops at quit", len(answers) == 14 and
+            [a.get("id") for a in answers] == ["1", 2, None, "4", "5", "6", "7", "8", "9", "10", "11", None, None, "14"],
+            repr([a.get("id") for a in answers]))
+    if len(answers) == 14:
+        codes = [(a.get("status"), a.get("code")) for a in answers]
+        c.check("serve codes", codes == [("ok", 0), ("ok", 0), ("error", 2), ("error", 2), ("error", 3), ("error", 11),
+                                         ("ok", 0), ("error", 2), ("error", 2), ("ok", 0), ("ok", 0), ("ok", 0),
+                                         ("error", 2), ("error", 2)], repr(codes))
+        c.check("serve writes the output file", "Hello World" in (out / "hello.md").read_text(encoding="utf-8") and
+                answers[0].get("bytes") == (out / "hello.md").stat().st_size)
+        c.check("serve answers with the Markdown", "Hello World" in answers[1].get("markdown", "") and
+                answers[1].get("output") == "-")
+        c.check("serve request args", "Batch Secret" not in (out / "locked.md").read_text(encoding="utf-8") and
+                "Secret Text" in (out / "locked.md").read_text(encoding="utf-8") and
+                "Hello" not in (out / "no-id.md").read_text(encoding="utf-8"))
+        c.check("serve images beside the output, none inline",
+                (out / "pic-images" / "p1-1.png").is_file() and "![" not in answers[10].get("markdown", "x"))
+        c.check("serve too long a line", "exceeds" in answers[12].get("error", ""))
+    c.check("serve: 4 workers answer as 1", runs[4].returncode == 0 and
+            without_timing(records(runs[4].stdout)) == without_timing(lines), repr(runs[4].stdout[:300]))
+    c.check("serve without --json", c.run("--serve").returncode == 2)
+    c.check("serve with --report", c.run("--serve", "--json", "--report").returncode == 2)
+    c.check("serve with an image directory", c.run("--serve", "--json", "--images=dir").returncode == 2)
+    r = c.run("--serve", "--json", stdin=b"")
+    c.check("serve of an empty input", r.returncode == 0 and len(records(r.stdout)) == 1)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
+    parser.add_argument("--emulator", help="run the binary through this program (wine for a Windows build)")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
+    os.environ.setdefault("WINEDEBUG", "-all")
 
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        c = Checker(binary, work)
+        c = Checker(binary, work, args.emulator)
         hello = c.write("hello.pdf", build_pdf(b"BT /F1 12 Tf 72 720 Td (Hello World) Tj ET"))
         out = str(work / "hello.md")
 
@@ -170,8 +336,20 @@ def main() -> int:
             report = json.loads(r.stdout)
         except ValueError:
             report = {}
-        c.check("report", r.returncode == 0 and report.get("pages") == 1 and report.get("glyphs", 0) >= 10,
-                repr(r.stdout))
+        c.check("report", r.returncode == 0 and report.get("pages") == 1 and report.get("glyphs", 0) >= 10 and
+                report.get("status") == "ok" and report.get("code") == 0 and report.get("input") == hello and
+                report.get("bytes") == Path(out).stat().st_size, repr(r.stdout))
+        r = c.run("--convert", str(work / "missing.pdf"), out, "--report")
+        try:
+            report = json.loads(r.stdout)
+        except ValueError:
+            report = {}
+        c.check("report of a failure", r.returncode == 3 and report.get("status") == "error" and
+                report.get("code") == 3 and "missing.pdf" in report.get("error", ""), repr(r.stdout))
+        c.check("workers without a batch", c.run("--convert", hello, out, "--workers=2").returncode == 2)
+        c.check("recursive without a batch", c.run("--convert", hello, out, "--recursive").returncode == 2)
+        c.check("report file without a batch", c.run("--convert", hello, out, "--report=x.jsonl").returncode == 2)
+        c.check("json without serve", c.run("--convert", hello, out, "--json").returncode == 2)
 
         locked = c.write("locked.pdf", encrypted_pdf(b"BT /F1 12 Tf 72 720 Td (Secret Text) Tj ET", b"user", b"owner"))
         c.check("password required", c.run("--convert", locked, out).returncode == 11)
@@ -203,6 +381,9 @@ def main() -> int:
                 repr(text))
         r = c.run("--convert", picture, "-")
         c.check("no images on standard output", r.returncode == 0 and b"![" not in r.stdout)
+
+        check_batch(c, work, picture)
+        check_serve(c, work, hello, locked, picture)
 
         print(f"{c.count - len(c.failures)}/{c.count} checks passed")
         return 1 if c.failures else 0

@@ -3,6 +3,7 @@
 
 #include "layout/interpreter.h"
 #include "layout/pipeline.h"
+#include "layout/structure.h"
 #include "text/font.h"
 
 #include <algorithm>
@@ -40,7 +41,9 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
     images.document = &document;
     images.directory = options.imageDirectory;
     images.linkPrefix = options.imageLinkPrefix;
-    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images);
+    Structure structure;
+    if (options.structure && first <= last) ReadStructure(document, first - 1, last - 1, structure);
+    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure);
 }
 
 } // namespace RayoPdf::Layout

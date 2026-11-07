@@ -101,6 +101,24 @@ bool StartsWithCombiningMark(std::string_view text) {
     return (a == 0xCC && b >= 0x80) || (a == 0xCD && b <= 0xAF);
 }
 
+// Whether the line holds a strong right-to-left character (bidi class R or AL). Only lead bytes
+// D6-DF (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary) can
+// start one.
+bool HoldsRightToLeft(const PageData& page, const Line& line) {
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (g.textLength == 0) continue;
+        const unsigned char b = static_cast<unsigned char>(page.text[g.text]);
+        if (!((b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0)) continue;
+        uint32_t cp = 0;
+        size_t length = 0;
+        if (!Utf8::Decode(page.GlyphText(g), 0, cp, length)) continue;
+        const Text::Bidi::Class c = Text::Bidi::ClassOf(cp);
+        if (c == Text::Bidi::Class::R || c == Text::Bidi::Class::AL) return true;
+    }
+    return false;
+}
+
 struct BidiScratch {
     std::vector<Text::Bidi::Class> classes;
     std::vector<uint32_t> codePoints;  // each visual item's first code point (paired brackets, N0)
@@ -108,12 +126,16 @@ struct BidiScratch {
     std::vector<uint8_t> breaks;   // word break before visual item k
     std::vector<uint32_t> order;
     std::vector<uint8_t> levels;
+    std::vector<uint32_t> runs;    // level run of visual item k
 };
 
 // Right-to-left text (algorithms §4.4, UAX #9): a PDF places the glyphs of a line in visual order,
 // Markdown needs them in logical order. The line's glyphs are reordered, word breaks found
-// between visual neighbours are carried over (logical neighbours that were not visual neighbours
-// meet at a run boundary: a break), and characters at odd levels are mirrored ("(" for ")").
+// between visual neighbours are carried over, and characters at odd levels are mirrored ("(" for
+// ")"). Logical neighbours that were no visual neighbours meet at the boundary of two level runs:
+// the break there is the one where the two runs touch on the line ("اليسار." in a left-to-right
+// paragraph: the full stop is set right of the run's visual right end, its logical start). Only
+// runs that do not touch make a break.
 // `direction` -1 lets the characters decide the paragraph direction, 0 forces left-to-right.
 // True when the line's paragraph direction is right-to-left.
 bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direction) {
@@ -144,6 +166,9 @@ bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direct
     const bool rtl = Text::Bidi::VisualToLogical(s.classes.data(), s.codePoints.data(), line.count, s.order, &s.levels,
                                                  direction);
     if (s.order.size() != line.count || s.levels.size() != line.count) return false;
+    s.runs.resize(line.count);
+    for (uint32_t k = 0; k < line.count; ++k)
+        s.runs[k] = k == 0 ? 0 : s.levels[k] == s.levels[k - 1] ? s.runs[k - 1] : s.runs[k - 1] + 1;
     for (uint32_t j = 0; j < line.count; ++j) {
         const uint32_t v = s.order[j];
         page.lineGlyphs[line.first + j] = s.visual[v];
@@ -151,7 +176,21 @@ bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direct
         bool space = false;
         if (j > 0) {
             const uint32_t a = s.order[j - 1];
-            space = v == a + 1 ? s.breaks[v] != 0 : a == v + 1 ? s.breaks[a] != 0 : true;
+            if (v == a + 1) {
+                space = s.breaks[v] != 0;
+            } else if (a == v + 1) {
+                space = s.breaks[a] != 0;
+            } else if (v > 0 && s.runs[v - 1] == s.runs[a]) {
+                space = s.breaks[v] != 0;  // a's run ends visually just left of v
+            } else if (v + 1 < line.count && s.runs[v + 1] == s.runs[a]) {
+                space = s.breaks[v + 1] != 0;
+            } else if (a > 0 && s.runs[a - 1] == s.runs[v]) {
+                space = s.breaks[a] != 0;
+            } else if (a + 1 < line.count && s.runs[a + 1] == s.runs[v]) {
+                space = s.breaks[a + 1] != 0;
+            } else {
+                space = true;
+            }
         }
         g.flags = static_cast<uint16_t>(space ? (g.flags | kGlyphSpaceBefore) : (g.flags & ~kGlyphSpaceBefore));
         if (!(s.levels[v] & 1) || g.textLength == 0) continue;
@@ -347,6 +386,46 @@ void DropLineNumbers(PageData& page) {
     }
     page.lines.erase(std::remove_if(page.lines.begin(), page.lines.end(), [](const Line& l) { return l.count == 0; }),
                      page.lines.end());
+}
+
+constexpr size_t kMaxStrikeRules = 1024;
+constexpr uint64_t kStrikeChecks = uint64_t(1) << 22;  // rule and glyph comparisons per page
+
+// Strike-through (algorithms §6.6): a thin horizontal rule across the middle of glyphs on the
+// line's baseline, between a sixth and half an em above it, no longer than the line by more than
+// half an em on either side. An underline sits below the baseline, a fraction bar between a
+// numerator and a denominator off the baseline, and a table rule runs on past the text it
+// crosses. Fails closed (fewer marks) once the comparison budget runs out.
+void MarkStruck(PageData& page) {
+    std::vector<const Shape*> rules;
+    for (const Shape& s : page.shapes) {
+        const float w = s.x1 - s.x0, h = s.y1 - s.y0;
+        if (s.kind == ShapeKind::Other || !(h >= 0 && h <= 2) || !(w >= 2 && w >= 4 * h)) continue;
+        if (rules.size() >= kMaxStrikeRules) break;
+        rules.push_back(&s);
+    }
+    if (rules.empty()) return;
+    uint64_t budget = kStrikeChecks;
+    for (const Line& line : page.lines) {
+        if (line.dir != 0 || line.count == 0) continue;
+        if (budget < rules.size()) return;
+        budget -= rules.size();
+        const float em = line.size;
+        for (const Shape* s : rules) {
+            const float y = (s->y0 + s->y1) / 2;
+            if (y <= line.vb || y >= line.vt || s->y1 - s->y0 > 0.15f * em) continue;
+            if (s->x0 < line.u0 - 0.5f * em || s->x1 > line.u1 + 0.5f * em || s->x1 <= line.u0 || s->x0 >= line.u1)
+                continue;
+            if (budget < line.count) return;
+            budget -= line.count;
+            for (uint32_t k = 0; k < line.count; ++k) {
+                Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+                const float cx = (g.u0 + g.u1) / 2, lift = y - g.v;
+                if (cx < s->x0 || cx > s->x1 || std::fabs(g.v - line.baseline) > 0.1f * em) continue;
+                if (lift >= 0.16f * g.size && lift <= 0.5f * g.size) g.flags |= kGlyphStrike;
+            }
+        }
+    }
 }
 
 } // namespace
@@ -837,16 +916,29 @@ void BuildLines(PageData& page) {
     }
 
     DropLineNumbers(page);
+    MarkStruck(page);
 
     // Right-to-left text, once the page's text extent is known: a short line flush with the left
     // edge belongs to a left-to-right paragraph (an RTL sentence in an LTR document keeps its
-    // final punctuation on the right), whatever most of its characters are.
+    // final punctuation on the right), whatever most of its characters are. When the page sets
+    // right-to-left text that way only (short lines flush left, none flush right), its full lines
+    // with right-to-left text are left-to-right paragraphs too: they wrap into those short lines.
     float left = INFINITY, right = -INFINITY;
     for (const Line& line : page.lines)
         if (line.dir == 0) left = std::fmin(left, line.u0), right = std::fmax(right, line.u1);
+    uint32_t flushLeft = 0, flushRight = 0;
+    for (const Line& line : page.lines) {
+        const float em = std::fmax(line.size, 1.0f);
+        const bool atLeft = line.u0 - left <= em, atRight = right - line.u1 <= em;
+        if (atLeft == atRight || line.dir != 0 || !HoldsRightToLeft(page, line)) continue;
+        if (atLeft && right - line.u1 >= 3 * em) flushLeft++;
+        if (atRight && line.u0 - left >= 3 * em) flushRight++;
+    }
+    const bool leftAligned = flushLeft > 0 && flushRight == 0;
     for (Line& line : page.lines) {
         const float em = std::fmax(line.size, 1.0f);
-        const int direction = line.u0 - left <= em && right - line.u1 >= 3 * em ? 0 : -1;
+        const bool atLeft = line.u0 - left <= em;
+        const int direction = atLeft && (right - line.u1 >= 3 * em || leftAligned) ? 0 : -1;
         if (ToLogicalOrder(page, line, bidi, direction)) line.flags |= kLineRtl;
     }
 }

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// Whole-file input and output through the OS, without iostreams (roadmap D1).
+// Files, folders and the standard streams through the OS, without iostreams or <filesystem>
+// (roadmap D1): POSIX on Linux, the Win32 API on Windows. Paths are UTF-8 everywhere; on Windows
+// they are converted to UTF-16 for the system, and '/' and '\' both separate folders. Every
+// function may be called from several threads at once.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace RayoPdf::File {
 
@@ -30,10 +34,11 @@ public:
     // Opens `path` (UTF-8). A FIFO or device is refused before anything can wait on it.
     ReadStatus Open(const std::string& path, uint64_t maximumBytes);
     std::string_view Bytes() const { return std::string_view(data_, size_); }
-
-private:
+    // Releases the file (unmaps it) early; Bytes() is empty afterwards. Windows deletes no file
+    // while it is mapped.
     void Close();
 
+private:
     const char* data_ = nullptr;
     size_t size_ = 0;
     bool mapped_ = false;
@@ -48,5 +53,71 @@ bool WriteAll(const std::string& path, std::string_view content);
 // Creates the directory `path` (one level; its parent must exist) unless a directory is there
 // already. False when it cannot, or when something else has the name.
 bool EnsureDirectory(const std::string& path);
+
+// A new, empty directory under the system's temporary folder ($TMPDIR or /tmp; on Windows
+// GetTempPath) whose name starts with `prefix`; its path in `path`. False when none can be made.
+bool MakeTemporaryDirectory(std::string_view prefix, std::string& path);
+
+// Deletes the file, or the empty directory, at `path`. False when it cannot.
+bool RemoveFile(const std::string& path);
+bool RemoveEmptyDirectory(const std::string& path);
+
+enum class FileType : uint8_t { None, Regular, Directory, Other };
+
+struct FileInfo {
+    FileType type = FileType::None;  // None: nothing there, or it cannot be examined
+    uint64_t size = 0;
+    int64_t modified = 0;            // last modification, in the system's units: compare only
+};
+
+// What is at `path`, symbolic links followed. False (and type None) when nothing can be found.
+bool StatusOf(const std::string& path, FileInfo& info);
+
+struct DirectoryEntry {
+    std::string name;   // UTF-8, without the folder
+    FileType type = FileType::None;  // of the target, for a symbolic link
+    bool link = false;  // a symbolic link (or, on Windows, another reparse point)
+};
+
+// The entries of the directory `path` except "." and "..", in the order the system lists them.
+// False when the directory cannot be read.
+bool ListDirectory(const std::string& path, std::vector<DirectoryEntry>& entries);
+
+// `path` made absolute against the working directory, with "." and ".." segments resolved
+// lexically and '/' as the separator ("/a/b" on Linux, "C:/a/b" on Windows).
+std::string AbsolutePath(const std::string& path);
+
+// A file written from start to end in pieces (a report): created or truncated by Open, "-" for
+// standard output. Unlike WriteAll, what was written stays if the process stops halfway.
+class OutputStream {
+public:
+    OutputStream() = default;
+    ~OutputStream();
+    OutputStream(const OutputStream&) = delete;
+    OutputStream& operator=(const OutputStream&) = delete;
+
+    bool Open(const std::string& path);
+    bool IsOpen() const { return open_; }
+    bool Write(std::string_view content);
+    // False when the file could not be closed (or was not open).
+    bool Close();
+
+private:
+    bool open_ = false;
+    bool standardOutput_ = false;
+    intptr_t handle_ = -1;  // a file descriptor, or a Windows HANDLE
+};
+
+// The standard streams as bytes: no text-mode translation and no stdio buffer. A write is one
+// system call for the whole text (repeated only when the system takes part of it), so the lines of
+// several threads do not mix. ReadStandardInput returns what the input has, up to `size` bytes, as
+// soon as it has any (never waiting for a full buffer); 0 at its end or on an error.
+bool WriteStandardOutput(std::string_view content);
+bool WriteStandardError(std::string_view content);
+size_t ReadStandardInput(char* buffer, size_t size);
+
+// The command line's arguments as UTF-8: `argv` as given on Linux; on Windows the wide command line,
+// as `argv` holds only the system's ANSI code page. Puts the standard streams into binary mode there.
+std::vector<std::string> Arguments(int argc, char** argv);
 
 } // namespace RayoPdf::File

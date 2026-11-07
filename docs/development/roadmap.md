@@ -124,13 +124,37 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 
 ```
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-        [--no-exact] [--no-annotations] [--report]
+        [--no-exact] [--no-annotations] [--no-structure] [--report]
 rayopdf --inspect IN.pdf
-rayopdf --batch …
-rayopdf --serve --json
+rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
+        [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-annotations] [--no-structure]
+rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-annotations]
+        [--no-structure]
 ```
 
-`--serve --json` uses RayoMD's protocol-1 request and record shape.
+(`--no-exact` arrives with exact recovery.) One record shape serves `--report`, the batch report
+and the serve answers, after RayoMD's protocol-1 record: `{"id"?, "input", "output", "status":
+"ok"|"skipped"|"error", "code", "error"?, "pages", "bytes", "ms", <counters>, "markdown"?}`, one
+JSON object a line; `code` is the exit code the document alone would give.
+
+- **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
+  hidden ones and links to folders excepted, mirrored) to `NAME.md` and `NAME-images/` under the
+  output folder, sorted by their UTF-8 paths. Two inputs with one output (`a.pdf`, `a.PDF`) leave
+  the second refused (code 12). The exit code is the last failed document's, in input order.
+- **`--serve --json`** answers requests `{"id"?, "input", "output"?, "args"?}` (RayoMD's protocol
+  1 without its `markdown`/`source_path` input, as the input of a PDF converter is a file). The
+  first line out is `{"rayopdf":"VERSION","protocol":1}`; without `output` the answer carries the
+  Markdown. `args` holds flags of `--convert` only; batch flags and unknown fields are code-2
+  errors and the session goes on. Lines are at most 1 MiB, `args` at most 64. The request reader
+  (`src/common/serve.*`) has the fuzz target `fuzz_common_serve`.
+- **`--workers=N`** (1–64) converts documents in parallel, one thread each: a batch defaults to one
+  per usable CPU, at most 6; a serve session to 1. Records and output files never depend on N:
+  documents share no mutable state (the arena chunk pool is locked, scratch buffers are
+  thread-local), records are written in input (request) order, and only `ms` varies. The
+  converter runs clean under ThreadSanitizer (`tools/dev.py test --config tsan`).
+- **Windows:** a static MinGW-w64 build (`tools/dev.py build --config
+  windows`); paths and arguments are UTF-8 inside and UTF-16 at the Win32 API; standard streams
+  are binary, so the Markdown is byte for byte the Linux build's.
 
 |Exit code|Meaning|
 |---|---|
@@ -141,6 +165,11 @@ rayopdf --serve --json
 |11|password required|
 |12|unwritable output|
 |13|unsupported encryption (a handler or revision other than the Standard handler R2–R6)|
+
+Releases (`tools/package.py`): `rayopdf-VERSION-linux-x64-static.tar.gz` and
+`rayopdf-VERSION-windows-x64.zip`, each one folder with the binary, the README's usage part,
+LICENSE, NOTICE, VERSION and `third_party/licenses/`, with fixed times and owners, and
+`SHA256SUMS`.
 
 ### D8 Limits
 
@@ -183,42 +212,54 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.6 (2026-11-06)
+### Status: 0.0.7 (2026-11-07)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
 CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-layer tool on every
-odl metric and on three of olmOCR's four born-digital categories; 0.0.5 completed the CJK CMaps
-and UAX #9; 0.0.6 passes the fourth category, `table_tests`. Harness results:
-[0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
-[0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md),
-[0.0.5](../benchmarks/v0.0.5-2026-11-06.md), [0.0.6](../benchmarks/v0.0.6-2026-11-06.md).
+odl metric; 0.0.5 completed the CJK CMaps and UAX #9; 0.0.6 passed olmOCR `table_tests`; 0.0.7
+adds tagged PDF (M6), the product front ends (M7 without the performance campaign) and the OCR/ML
+decision (M8). Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
+[0.0.2](../benchmarks/v0.0.2-2026-11-06.md), [0.0.3](../benchmarks/v0.0.3-2026-11-06.md),
+[0.0.4](../benchmarks/v0.0.4-2026-11-06.md), [0.0.5](../benchmarks/v0.0.5-2026-11-06.md),
+[0.0.6](../benchmarks/v0.0.6-2026-11-06.md), [0.0.7](../benchmarks/v0.0.7-2026-11-07.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
   tree, `--inspect`); exact recovery of RayoMD PDFs is not. Gates met: page counts (996 of 996),
   0 crashes and hangs under ASan, 24 h of aggregate fuzzing over all 11 targets (the reader's three
-  ran 2.2 h each, clean). Open: `--inspect` measures 0.352 ms fresh-process against the 0.3 ms
-  gate, with an empty static program at 0.248 ms on the same machine.
+  ran 2.2 h each, clean). Open: `--inspect` measures 0.377 ms fresh-process against the 0.3 ms
+  gate, with an empty static program at 0.222 ms on the same machine.
 - **M2 Text:** the font → Unicode chain including every predefined CMap of Adobe's five CJK
-  collections, words, lines, duplicates as bold, ligatures, dehyphenation, uncertainty comments.
-  NID gate met: above the best text-layer tool on odl (0.915 against 0.914) and on every untagged
-  synthetic producer. Open: garbage ToUnicode detection.
+  collections, detection and repair of untrustworthy ToUnicode maps, words, lines, duplicates as
+  bold, ligatures, dehyphenation, uncertainty comments. Gates met: NID above the best text-layer
+  tool on odl (0.917) and on every untagged synthetic producer; census `broken` pages 1.71 %
+  against pdftotext's 3.45 % on the same pages. Open: the speed gates (performance campaign).
 - **M3 Layout:** XY cuts with column checks, obstacles, bridging lines and Breuel's partial order
-  as fallback; running headers and footers by repetition and, on single pages, by position and
-  style; right-to-left lines (full UAX #9). odl NID ≥ docling met. Open:
-  olmOCR `multi_column` 0.692, `long_tiny_text` 0.507 and `headers_footers` 0.653 pass every
-  text-layer tool but not docling (0.695, 0.523, 0.898); `xelatex-2col` NID 0.905 (gate 0.95).
-- **M4 Semantics:** headings with absolute levels (run-in headings included), lists, code
-  (numbered listings included), quotes, emphasis, links, footnotes, image files, Unicode math.
-  Heading-level accuracy 0.975 (gate 0.95) and READoc GitHub `head_teds` above every tool. Open:
-  odl MHS 0.8267 against docling's 0.8269, construct F1 0.852 (gate 0.95), READoc arxiv
-  `head_teds`, image alt text (M6).
-- **M5 Tables:** ruled, horizontal-rule-only, striped, sideways and high-confidence borderless
-  tables, GFM or HTML with spans. Gates met: synthetic untagged TEDS 0.985, odl TEDS 0.837 ≥
-  liteparse's 0.818 (docling 0.879), olmOCR `table_tests` 0.617 ≥ pymupdf's 0.615. Open: READoc
-  arxiv `table_teds` 0.471 (0.489 at 0.0.3).
-- **M6–M8:** not started.
+  as fallback; running headers and footers by repetition and, on single pages, by position, style
+  and publication metadata; right-to-left lines (full UAX #9). Gates met: odl NID ≥ docling,
+  olmOCR `multi_column` 0.698 ≥ docling's 0.695. Open: `headers_footers` 0.707 and
+  `long_tiny_text` 0.509 pass every text-layer tool but not docling (0.898, 0.523);
+  `xelatex-2col` NID 0.929 (gate 0.95).
+- **M4 Semantics:** headings with absolute levels (run-in, numbered), lists, code, quotes, GitHub
+  alerts, emphasis with nesting, strikethrough, links, footnotes, image files with alt text from
+  tags, Unicode math. Gates met: odl MHS 0.840 ≥ docling's 0.827, heading-level accuracy 0.975.
+  Open: construct F1 0.930 (gate 0.95; holdout 0.829, gate 0.90), READoc arxiv `head_teds` 0.469
+  against pymupdf's 0.515.
+- **M5 Tables:** ruled, horizontal-rule-only, striped, sideways, form and high-confidence
+  borderless tables, GFM or HTML with spans. Gates met: synthetic untagged TEDS 0.987, odl TEDS
+  0.877 ≥ liteparse's 0.818 (docling 0.879), olmOCR `table_tests` 0.618 ≥ pymupdf's 0.615. Open:
+  READoc arxiv `table_teds` 0.481 (0.489 at 0.0.3).
+- **M6 Tagged:** structure tree read, checked and used for blocks, tables, lists, figures and
+  order. Tagged synthetic producers: TEDS 0.978 (docling 0.881), construct F1 0.927, above the
+  untagged path on every tagged producer. Open: construct F1 gate 0.98 (inline code untagged by
+  rayomd-pdfua, chromium's title heading, `<sup>`/`<sub>` math).
+- **M7 Product:** `--batch`, `--serve --json`, `--workers`, the record, Windows build, packaging
+  done. Open: the performance campaign and the release bar's speed items.
+- **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md): R = 10.68 % of
+  census pages (8.92 % image-only, 1.71 % broken text after RayoPDF's repair), CJK present →
+  branch (c), linked OCR (PP-OCRv6 through ONNX Runtime minimal or ncnn) for routed pages; no
+  table ML (Q2 ≤ +0.002) and no reading-order or heading ML (Q1 and Q3 negative). Not built yet.
 
 ## Engineering conventions
 
