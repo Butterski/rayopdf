@@ -40,7 +40,7 @@ keeps the output bytes (Markdown, image files, `--report` records except `ms`) i
 |odl warm, static|1.046 ms/page median, 779 pages/s|
 |odl fresh, static / release, images off|1.541 / 2.005 ms median (146 / 187 minor faults)|
 |empty static-pie program, fresh|0.225 ms, 26 faults|
-|`--inspect`, static, fresh|0.296 ms median (after step 7; reader code unchanged)|
+|`--inspect`, static, fresh|0.287 ms median with the binary on the container's own file system (0.37 ms when run from a bind-mounted host directory, as in the 0.0.7 record); empty static program 0.215 ms|
 |odl in one batch, callgrind|2.32 G instructions: page interpretation 67 % (content lexer 18 %, ShowString 17 %, font loading 20 %, content inflate 6 %), lines 15 %, writer 7 %, tables 7 %, blocks 2 %, order 1 %, reader 0.5 %|
 |std::fmin/fmax through libm|6.3 % of instructions plus PLT stubs; 16 calls per glyph|
 |Syntax::ParseNumber|7.8 %; 27 % of the slowest odl page|
@@ -83,7 +83,7 @@ rounds; fresh = native timer, median of 11 per document.
 |odl fresh, static, images off, median|1.571 ms|1.308 ms (-17 %)|≤ 1 ms: not met|
 |odl fresh, static, images written, median / mean / p95|1.891 / 7.42 / 31.5 ms|1.578 / 6.10 / 26.6 ms||
 |odl fresh, release, images off, median|2.016 ms|1.743 ms||
-|`--inspect`, static, fresh median|0.377 ms (0.0.7 record)|0.296 ms|≤ 0.3 ms (M1): met|
+|`--inspect`, static, fresh median, binary on the container's file system|0.287 ms|0.286 ms|≤ 0.3 ms (M1): met by both; not a campaign gain|
 |peak RSS, images written, 4653 x 2334 RGB + soft mask (odl 136)|189 MiB|97 MiB|bounded: reduced, not bounded|
 |peak RSS, odl as one batch with images|203 MiB|120 MiB||
 

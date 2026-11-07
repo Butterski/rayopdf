@@ -212,29 +212,33 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.7 (2026-11-07)
+### Status: 0.0.8 (2026-11-07)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
 CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-layer tool on every
 odl metric; 0.0.5 completed the CJK CMaps and UAX #9; 0.0.6 passed olmOCR `table_tests`; 0.0.7
-adds tagged PDF (M6), the product front ends (M7 without the performance campaign) and the OCR/ML
-decision (M8). Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
-[0.0.2](../benchmarks/v0.0.2-2026-11-06.md), [0.0.3](../benchmarks/v0.0.3-2026-11-06.md),
-[0.0.4](../benchmarks/v0.0.4-2026-11-06.md), [0.0.5](../benchmarks/v0.0.5-2026-11-06.md),
-[0.0.6](../benchmarks/v0.0.6-2026-11-06.md), [0.0.7](../benchmarks/v0.0.7-2026-11-07.md).
+added tagged PDF (M6), the product front ends (M7 without the performance campaign) and the OCR/ML
+decision (M8); 0.0.8 is the first performance campaign, with byte-identical output. Harness
+results: [0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
+[0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md),
+[0.0.5](../benchmarks/v0.0.5-2026-11-06.md), [0.0.6](../benchmarks/v0.0.6-2026-11-06.md),
+[0.0.7](../benchmarks/v0.0.7-2026-11-07.md), [0.0.8](../benchmarks/v0.0.8-2026-11-07.md);
+performance method and steps: [performance.md](performance.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every non-image filter, the Standard security handler R2–R6, the page
   tree, `--inspect`); exact recovery of RayoMD PDFs is not. Gates met: page counts (996 of 996),
   0 crashes and hangs under ASan, 24 h of aggregate fuzzing over all 11 targets (the reader's three
-  ran 2.2 h each, clean). Open: `--inspect` measures 0.377 ms fresh-process against the 0.3 ms
-  gate, with an empty static program at 0.222 ms on the same machine.
+  ran 2.2 h each, clean), `--inspect` 0.286 ms fresh-process median on odl with the binary on the
+  container's own file system (0.37 ms when run from a bind-mounted host directory).
 - **M2 Text:** the font → Unicode chain including every predefined CMap of Adobe's five CJK
   collections, detection and repair of untrustworthy ToUnicode maps, words, lines, duplicates as
   bold, ligatures, dehyphenation, uncertainty comments. Gates met: NID above the best text-layer
   tool on odl (0.917) and on every untagged synthetic producer; census `broken` pages 1.71 %
-  against pdftotext's 3.45 % on the same pages. Open: the speed gates (performance campaign).
+  against pdftotext's 3.45 % on the same pages; speed: 1.50 ms per odl document fresh-process
+  median with a native timer (2.90 ms/page when the harness starts each process from Python),
+  and 0.667 ms/page in process against the fastest competitor's 4.88 (edgeparse, in process).
 - **M3 Layout:** XY cuts with column checks, obstacles, bridging lines and Breuel's partial order
   as fallback; running headers and footers by repetition and, on single pages, by position, style
   and publication metadata; right-to-left lines (full UAX #9). Gates met: odl NID ≥ docling,
@@ -255,7 +259,9 @@ decision (M8). Harness results: [0.0.1](../benchmarks/v0-2026-11-05.md),
   untagged path on every tagged producer. Open: construct F1 gate 0.98 (inline code untagged by
   rayomd-pdfua, chromium's title heading, `<sup>`/`<sub>` math).
 - **M7 Product:** `--batch`, `--serve --json`, `--workers`, the record, Windows build, packaging
-  done. Open: the performance campaign and the release bar's speed items.
+  done. First performance campaign done (0.0.8: −30 % in-process, −13 % fresh, peak RSS with
+  images halved, output byte-identical). Open: the release bar's speed items (≥ 2,000 pages/s
+  warm, ≤ 1 ms/page fresh) and peak RSS bounded independently of image size.
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md): R = 10.68 % of
   census pages (8.92 % image-only, 1.71 % broken text after RayoPDF's repair), CJK present →
   branch (c), linked OCR (PP-OCRv6 through ONNX Runtime minimal or ncnn) for routed pages; no

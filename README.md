@@ -4,7 +4,7 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.7: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
+Version 0.0.8: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
 code blocks, block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and
 CJK text included; tagged PDFs are read through their structure tree. Scanned pages are marked,
 not read (no OCR yet); math is written as Unicode text.
@@ -111,6 +111,10 @@ VERSION and `third_party/licenses/`; `tools/package.py` makes them byte for byte
 - [RayoPDF 0.0.7 on the harness](docs/benchmarks/v0.0.7-2026-11-07.md): tagged PDF, batch and
   serve front ends, Windows build, ToUnicode repair, JPEG decoding, the OCR/ML gate.
 - [OCR/ML decision](docs/development/ocr_ml_decision.md): the M8 measurements and the decision.
+- [RayoPDF 0.0.8 on the harness](docs/benchmarks/v0.0.8-2026-11-07.md): the first performance
+  campaign, output byte-identical to 0.0.7.
+- [Performance](docs/development/performance.md): campaign method, findings, steps, results and
+  rejected attempts.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation
