@@ -27,23 +27,25 @@ RAYOPDF_HOT_INLINE bool ReadSimpleNumber(Cursor& c, PdfValue& value) {
     const char* const end = c.data.data() + c.data.size();
     bool negative = false;
     if (p < end && (*p == '+' || *p == '-')) negative = *p++ == '-';
+    // The integer digits, then after a point the fraction digits: two loops with one test a byte.
+    // Past 19 digits the mantissa wraps, but such a number is left to the general path.
     uint64_t mantissa = 0;
-    unsigned digits = 0;
-    unsigned fraction = 0;
-    bool point = false;
-    for (; p < end; ++p) {
-        const unsigned d = static_cast<unsigned>(static_cast<unsigned char>(*p)) - '0';
-        if (d < 10) {
-            if (++digits > 19) return false;
-            mantissa = mantissa * 10 + d;
-            fraction += point;
-        } else if (*p == '.' && !point) {
-            point = true;
-        } else {
-            break;
-        }
+    const char* const first = p;
+    for (unsigned d; p < end && (d = static_cast<unsigned>(static_cast<unsigned char>(*p)) - '0') < 10; ++p) {
+        mantissa = mantissa * 10 + d;
     }
-    if (digits == 0 || (p < end && Syntax::IsRegular(static_cast<unsigned char>(*p)))) return false;
+    size_t digits = static_cast<size_t>(p - first);
+    size_t fraction = 0;
+    const bool point = p < end && *p == '.';
+    if (point) {
+        const char* const after = ++p;
+        for (unsigned d; p < end && (d = static_cast<unsigned>(static_cast<unsigned char>(*p)) - '0') < 10; ++p) {
+            mantissa = mantissa * 10 + d;
+        }
+        fraction = static_cast<size_t>(p - after);
+        digits += fraction;
+    }
+    if (digits == 0 || digits > 19 || (p < end && Syntax::IsRegular(static_cast<unsigned char>(*p)))) return false;
     if (!point && mantissa <= static_cast<uint64_t>(INT64_MAX)) {
         value.type = PdfValue::Type::Int;
         value.integer = negative ? -static_cast<int64_t>(mantissa) : static_cast<int64_t>(mantissa);

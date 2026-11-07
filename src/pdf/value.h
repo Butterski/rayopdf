@@ -63,7 +63,9 @@ struct PdfValue {
     bool IsRef() const { return type == Type::Ref; }
 
     // An Int or Real as a double; `fallback` for anything else.
-    double Number(double fallback = 0) const;
+    double Number(double fallback = 0) const {
+        return type == Type::Int ? static_cast<double>(integer) : type == Type::Real ? real : fallback;
+    }
     // An Int, or a Real truncated toward zero when it fits; `fallback` for anything else.
     int64_t Int(int64_t fallback = 0) const;
     bool Bool(bool fallback = false) const { return type == Type::Bool ? boolean : fallback; }

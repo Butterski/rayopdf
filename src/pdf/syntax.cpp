@@ -11,12 +11,6 @@
 
 namespace RayoPdf {
 
-double PdfValue::Number(double fallback) const {
-    if (type == Type::Int) return static_cast<double>(integer);
-    if (type == Type::Real) return real;
-    return fallback;
-}
-
 int64_t PdfValue::Int(int64_t fallback) const {
     if (type == Type::Int) return integer;
     // 2^63 is exact in a double; a NaN fails both comparisons.
