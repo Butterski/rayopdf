@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/tables.h"
 
+#include "common/minmax.h"
 #include "layout/lines.h"
 
 #include <algorithm>
@@ -98,7 +99,7 @@ void MergeEdges(std::vector<Edge>& edges) {
         cur.pos = pos;
         for (size_t k = i + 1; k < j; ++k) {
             if (edges[k].a <= cur.b + kJoin) {
-                cur.b = std::fmax(cur.b, edges[k].b);
+                cur.b = Fmax(cur.b, edges[k].b);
                 cur.area = cur.area && edges[k].area;
             } else {
                 if (cur.b - cur.a >= kMinEdge) out.push_back(cur);
@@ -278,7 +279,7 @@ struct Progression {
     // Adds the next number; true once four in a row keep one step.
     bool Add(float value) {
         const float d = value - previous;
-        if (run >= 2 && d != 0 && std::fabs(d - step) <= 1e-3f * std::fmax(1.0f, std::fabs(step))) {
+        if (run >= 2 && d != 0 && std::fabs(d - step) <= 1e-3f * Fmax(1.0f, std::fabs(step))) {
             run++;
         } else {
             step = d;
@@ -361,8 +362,8 @@ void Detector::CollectWords() {
             w.x0 = INFINITY, w.x1 = -INFINITY, w.y0 = INFINITY, w.y1 = -INFINITY;
             do {
                 const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + k]];
-                w.x0 = std::fmin(w.x0, g.u0), w.x1 = std::fmax(w.x1, g.u1);
-                w.y0 = std::fmin(w.y0, g.vb), w.y1 = std::fmax(w.y1, g.vt);
+                w.x0 = Fmin(w.x0, g.u0), w.x1 = Fmax(w.x1, g.u1);
+                w.y0 = Fmin(w.y0, g.vb), w.y1 = Fmax(w.y1, g.vt);
                 ++k;
             } while (k < line.count && !(page_.glyphs[page_.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore));
             w.k1 = k;
@@ -381,7 +382,7 @@ void Detector::CollectWords() {
     wordUsed_.assign(words_.size(), 0);
     if (!sizes.empty()) {
         std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
-        bodySize_ = std::fmax(1.0f, sizes[sizes.size() / 2]);
+        bodySize_ = Fmax(1.0f, sizes[sizes.size() / 2]);
     }
     if (spaces.size() >= 20) {
         std::nth_element(spaces.begin(), spaces.begin() + static_cast<std::ptrdiff_t>(spaces.size() / 2), spaces.end());
@@ -448,12 +449,12 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
         if (wordUsed_[i]) continue;
         const float cx = (w.x0 + w.x1) / 2;
         if (cx < xa || cx > xb) continue;
-        if (!rows.empty() && rows.back().base - w.base <= 0.35f * std::fmax(rows.back().size, w.size)) {
+        if (!rows.empty() && rows.back().base - w.base <= 0.35f * Fmax(rows.back().size, w.size)) {
             Row& r = rows.back();
             r.count++;
-            r.top = std::fmax(r.top, w.y1), r.bottom = std::fmin(r.bottom, w.y0);
-            r.x0 = std::fmin(r.x0, w.x0), r.x1 = std::fmax(r.x1, w.x1);
-            r.size = std::fmax(r.size, w.size);
+            r.top = Fmax(r.top, w.y1), r.bottom = Fmin(r.bottom, w.y0);
+            r.x0 = Fmin(r.x0, w.x0), r.x1 = Fmax(r.x1, w.x1);
+            r.size = Fmax(r.size, w.size);
             if (w.mono) {
                 r.mono++;
             } else if (w.k1 - w.k0 > r.proseGlyphs) {
@@ -486,7 +487,7 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
                        const std::vector<uint8_t>* skip) {
     gaps.clear();
     if (rowEnd <= rowBegin || !(xb > xa) || !std::isfinite(xb - xa)) return false;
-    const float bin = std::fmax(0.5f, (xb - xa) / kMaxBins);
+    const float bin = Fmax(0.5f, (xb - xa) / kMaxBins);
     const int n = std::min(kMaxBins, static_cast<int>((xb - xa) / bin) + 1);
     std::vector<int> diff(static_cast<size_t>(n) + 1, 0);
     const auto binOf = [&](float x) {
@@ -578,12 +579,12 @@ bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& 
                     const std::string_view t = WordText(w, scratch);
                     if (!t.empty() && t[0] >= 'a' && t[0] <= 'z') lower++;
                 }
-                a = std::fmin(a, w.x0), b = std::fmax(b, w.x1);
+                a = Fmin(a, w.x0), b = Fmax(b, w.x1);
                 wordsIn++;
             }
             if (b > a) {
                 widths.push_back(b - a);
-                lo = std::fmin(lo, a), hi = std::fmax(hi, b);
+                lo = Fmin(lo, a), hi = Fmax(hi, b);
             }
         }
         if (widths.size() < 2 || !(hi > lo)) continue;
@@ -631,8 +632,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     Grid g;
     g.kind = kind;
     float left = INFINITY, right = -INFINITY;
-    for (size_t r = rowBegin; r < rowEnd; ++r) left = std::fmin(left, rows[r].x0), right = std::fmax(right, rows[r].x1);
-    left = std::fmax(left, xa) - 1, right = std::fmin(std::fmax(right, left + 2), xb) + 1;
+    for (size_t r = rowBegin; r < rowEnd; ++r) left = Fmin(left, rows[r].x0), right = Fmax(right, rows[r].x1);
+    left = Fmax(left, xa) - 1, right = Fmin(Fmax(right, left + 2), xb) + 1;
     g.xs.push_back(left);
     for (const Gap& gap : gaps) g.xs.push_back((gap.a + gap.b) / 2);
     g.xs.push_back(right);
@@ -642,7 +643,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
             const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
-            colLeft[c] = std::fmin(colLeft[c], w.x0), colRight[c] = std::fmax(colRight[c], w.x1);
+            colLeft[c] = Fmin(colLeft[c], w.x0), colRight[c] = Fmax(colRight[c], w.x1);
         }
     // Rows of multi-line cells. Where the whitespace between lines is of two kinds, the wider parts
     // rows and the narrower the lines of one cell (cell padding; cells set to the middle), except
@@ -659,13 +660,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         }
     // Lines closer than a line pitch are cells of one row set to the middle at different heights.
     const auto offset = [&](size_t r) {
-        return rows[r - 1].base - rows[r].base < 0.85f * std::fmax(rows[r - 1].size, rows[r].size);
+        return rows[r - 1].base - rows[r].base < 0.85f * Fmax(rows[r - 1].size, rows[r].size);
     };
     const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[r - 1].bottom - rows[r].top; };
     float narrow = INFINITY;
     for (size_t r = rowBegin + 1; r < rowEnd; ++r)
-        if (!offset(r)) narrow = std::fmin(narrow, gapAbove(r));
-    const float wide = narrow + std::fmax(2.0f, 0.25f * rows[rowBegin].size);
+        if (!offset(r)) narrow = Fmin(narrow, gapAbove(r));
+    const float wide = narrow + Fmax(2.0f, 0.25f * rows[rowBegin].size);
     size_t wideGaps = 0;
     for (size_t r = rowBegin + 1; r < rowEnd; ++r) wideGaps += gapAbove(r) >= wide;
     if (n >= 3 && wideGaps >= 2 && wideGaps + 1 < n) {
@@ -701,7 +702,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
                 const TWord& w = words_[rowWords[k]];
                 const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
-                out[c] = std::fmax(out[c], w.x1);
+                out[c] = Fmax(out[c], w.x1);
             }
         };
         rights(rowBegin, above);
@@ -769,7 +770,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const auto extent = [&](size_t s, float& top, float& bottom) {
         const size_t end = s + 1 < starts.size() ? starts[s + 1] : rowEnd;
         top = -INFINITY, bottom = INFINITY;
-        for (size_t r = starts[s]; r < end; ++r) top = std::fmax(top, rows[r].top), bottom = std::fmin(bottom, rows[r].bottom);
+        for (size_t r = starts[s]; r < end; ++r) top = Fmax(top, rows[r].top), bottom = Fmin(bottom, rows[r].bottom);
     };
     float top = 0, bottom = 0, previousBottom = 0;
     extent(0, top, bottom);
@@ -799,7 +800,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             if (ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
             // The word before it in the row, when only a word space apart: one cell's text.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
-            const bool joined = before && w.x0 - before->x1 < std::fmax(1.0f, std::fmin(2 * wordSpace_, 0.45f) * w.size);
+            const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
             for (int c = 1; c < cols; ++c) {
                 const float x = g.xs[static_cast<size_t>(c)];
                 if ((w.x0 < x - 0.5f && w.x1 > x + 0.5f) || (joined && before->x1 < x && w.x0 > x))
@@ -815,7 +816,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
 // boundary: one whose sliver of a column was collapsed counts for the boundary that took its place).
 void Detector::Boundaries(Grid& g, int32_t root) const {
     const int rows = g.Rows(), cols = g.Cols();
-    const float reach = std::fmax(kSnap, 1.2f * bodySize_);
+    const float reach = Fmax(kSnap, 1.2f * bodySize_);
     g.vb.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols + 1), 0);
     g.hb.assign(static_cast<size_t>(rows + 1) * static_cast<size_t>(cols), 0);
     for (const Edge& e : v_) {
@@ -826,7 +827,7 @@ void Detector::Boundaries(Grid& g, int32_t root) const {
         if (std::fabs(g.xs[static_cast<size_t>(c)] - e.pos) > reach) continue;
         for (int r = 0; r < rows; ++r) {
             const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
-            const float overlap = std::fmin(top, e.b) - std::fmax(bottom, e.a);
+            const float overlap = Fmin(top, e.b) - Fmax(bottom, e.a);
             if (overlap >= 0.5f * (top - bottom)) g.vb[static_cast<size_t>(r * (cols + 1) + c)] = 1;
         }
     }
@@ -838,7 +839,7 @@ void Detector::Boundaries(Grid& g, int32_t root) const {
         if (std::fabs(g.ys[static_cast<size_t>(r)] - e.pos) > reach) continue;
         for (int c = 0; c < cols; ++c) {
             const float left = g.xs[static_cast<size_t>(c)], right = g.xs[static_cast<size_t>(c + 1)];
-            const float overlap = std::fmin(right, e.b) - std::fmax(left, e.a);
+            const float overlap = Fmin(right, e.b) - Fmax(left, e.a);
             if (overlap >= 0.5f * (right - left)) g.hb[static_cast<size_t>(r * cols + c)] = 1;
         }
     }
@@ -925,7 +926,7 @@ void Detector::SplitRowsByLines(Grid& g) const {
                 const float y = (above + l.base) / 2 + 0.3f * l.size;
                 if (y < (cuts.empty() ? top : cuts.back()) && y > bottom) cuts.push_back(y);
             }
-            if (!std::isnan(above) || full(l)) above = std::isnan(above) ? l.base : std::fmin(above, l.base);
+            if (!std::isnan(above) || full(l)) above = std::isnan(above) ? l.base : Fmin(above, l.base);
         }
         for (float y : cuts) {
             ys.push_back(y);
@@ -966,10 +967,10 @@ void Detector::SplitColumnsByText(Grid& g) const {
             int r = 0, wc = 0;
             if (!Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, wc) || wc != c || r == 0) continue;
             ink.push_back(Ink{it->x0, it->x1, r});
-            size = std::fmax(size, it->size);
+            size = Fmax(size, it->size);
         }
         std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
-        const float minGap = std::fmax(4.0f, size);
+        const float minGap = Fmax(4.0f, size);
         float reach = -INFINITY;
         for (size_t i = 0; i < ink.size(); ++i) {
             if (i > 0 && ink[i].a - reach >= minGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
@@ -987,7 +988,7 @@ void Detector::SplitColumnsByText(Grid& g) const {
                     oldBoundary.push_back(-1);
                 }
             }
-            reach = std::fmax(reach, ink[i].b);
+            reach = Fmax(reach, ink[i].b);
         }
         xs.push_back(g.xs[static_cast<size_t>(c + 1)]);
         parent.push_back(c);
@@ -1141,18 +1142,18 @@ void Detector::Lattices() {
             const float x0 = i < nh ? e.a : e.pos, x1 = i < nh ? e.b : e.pos;
             const float y0 = i < nh ? e.pos : e.a, y1 = i < nh ? e.pos : e.b;
             if (bx0[r] == INFINITY) rootList.push_back(static_cast<int32_t>(r));
-            bx0[r] = std::fmin(bx0[r], x0), bx1[r] = std::fmax(bx1[r], x1);
-            by0[r] = std::fmin(by0[r], y0), by1[r] = std::fmax(by1[r], y1);
+            bx0[r] = Fmin(bx0[r], x0), bx1[r] = Fmax(bx1[r], x1);
+            by0[r] = Fmin(by0[r], y0), by1[r] = Fmax(by1[r], y1);
         }
         constexpr float kNear = 6.0f;
         if (rootList.size() <= 512) {
             for (size_t a = 0; a < rootList.size(); ++a)
                 for (size_t b = a + 1; b < rootList.size(); ++b) {
                     const size_t p = static_cast<size_t>(rootList[a]), q = static_cast<size_t>(rootList[b]);
-                    const float gapX = std::fmax(bx0[p], bx0[q]) - std::fmin(bx1[p], bx1[q]);
-                    const float gapY = std::fmax(by0[p], by0[q]) - std::fmin(by1[p], by1[q]);
-                    const float spanX = std::fmin(bx1[p] - bx0[p], bx1[q] - bx0[q]);
-                    const float spanY = std::fmin(by1[p] - by0[p], by1[q] - by0[q]);
+                    const float gapX = Fmax(bx0[p], bx0[q]) - Fmin(bx1[p], bx1[q]);
+                    const float gapY = Fmax(by0[p], by0[q]) - Fmin(by1[p], by1[q]);
+                    const float spanX = Fmin(bx1[p] - bx0[p], bx1[q] - bx0[q]);
+                    const float spanY = Fmin(by1[p] - by0[p], by1[q] - by0[q]);
                     // Side by side with rows in common, or stacked with columns in common.
                     const bool beside = gapX <= kNear && gapX > -kNear && -gapY >= 0.5f * spanY;
                     const bool stacked = gapY <= kNear && gapY > -kNear && -gapX >= 0.5f * spanX;
@@ -1180,16 +1181,16 @@ void Detector::Lattices() {
             if (e.comp == root) {
                 hs++;
                 g.ys.push_back(e.pos);
-                g.x0 = std::fmin(g.x0, e.a), g.x1 = std::fmax(g.x1, e.b);
-                g.y0 = std::fmin(g.y0, e.pos), g.y1 = std::fmax(g.y1, e.pos);
+                g.x0 = Fmin(g.x0, e.a), g.x1 = Fmax(g.x1, e.b);
+                g.y0 = Fmin(g.y0, e.pos), g.y1 = Fmax(g.y1, e.pos);
             }
         for (const Edge& e : v_)
             if (e.comp == root) {
                 vs++;
                 drawn = drawn || !e.area;
                 g.xs.push_back(e.pos);
-                g.x0 = std::fmin(g.x0, e.pos), g.x1 = std::fmax(g.x1, e.pos);
-                g.y0 = std::fmin(g.y0, e.a), g.y1 = std::fmax(g.y1, e.b);
+                g.x0 = Fmin(g.x0, e.pos), g.x1 = Fmax(g.x1, e.pos);
+                g.y0 = Fmin(g.y0, e.a), g.y1 = Fmax(g.y1, e.b);
             }
         if (hs < 2 || vs < 2) continue;
         bool drawnTop = false;
@@ -1242,7 +1243,7 @@ void Detector::Lattices() {
             std::vector<uint32_t> textWords;
             std::vector<Gap> gaps;
             BuildRows(g.x0, g.x1, g.y0, g.y1, textRows, textWords);
-            if (Columns(textRows, textWords, 0, textRows.size(), g.x0, g.x1, std::fmax(3.0f, 0.8f * bodySize_), gaps))
+            if (Columns(textRows, textWords, 0, textRows.size(), g.x0, g.x1, Fmax(3.0f, 0.8f * bodySize_), gaps))
                 column = false;
         }
         // A box drawn around the body rows alone: the header row stands right above it (a shaded
@@ -1302,7 +1303,7 @@ void Detector::JoinStripes() {
             joined.vb.insert(joined.vb.end(), down.vb.begin(), down.vb.end());
             joined.hb = up.hb;
             joined.hb.insert(joined.hb.end(), down.hb.begin(), down.hb.end());
-            joined.x0 = std::fmin(up.x0, down.x0), joined.x1 = std::fmax(up.x1, down.x1);
+            joined.x0 = Fmin(up.x0, down.x0), joined.x1 = Fmax(up.x1, down.x1);
             joined.y0 = down.y0, joined.y1 = up.y1;
             joined.size = up.size;
             joined.headerRows = up.headerRows;
@@ -1472,7 +1473,7 @@ void Detector::RuleStacks() {
                     bool even = true;
                     for (size_t q = 1; q < rows.size() && even; ++q)
                         even = SizeFits(rows[q], em) && rows[q - 1].bottom - rows[q].top < 1.6f * em;
-                    if (!even || !Columns(rows, rowWords, 0, rows.size(), xa, xb, std::fmax(3.0f, 0.5f * em), gaps)) break;
+                    if (!even || !Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) break;
                 }
                 ++j;
             }
@@ -1486,8 +1487,8 @@ void Detector::RuleStacks() {
             float yhi = top, ylo = bottom;
             {
                 const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
-                ylo = open ? std::fmax(below, bottom - 80 * em) : bottom;
-                if (single) yhi = std::fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
+                ylo = open ? Fmax(below, bottom - 80 * em) : bottom;
+                if (single) yhi = Fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
             }
             BuildRows(xa, xb, ylo, yhi, rows, rowWords);
             // Core rows: between the rules.
@@ -1524,10 +1525,10 @@ void Detector::RuleStacks() {
             if (begin + 1 < end && coreEnd <= coreBegin && (!SizeFits(rows[begin], em) || running(begin))) ++begin;
             // Under a rule, columns may stand as close as half an em (word processors' narrow cell
             // margins): twice a word space, and every row has to agree.
-            const float minGap = std::fmax(3.0f, 0.5f * em);
+            const float minGap = Fmax(3.0f, 0.5f * em);
             const auto pitchOk = [&](size_t a, size_t b) {
                 // Rows a above b are close enough to belong to one table.
-                return rows[a].bottom - rows[b].top < 1.6f * std::fmax(rows[a].size, rows[b].size);
+                return rows[a].bottom - rows[b].top < 1.6f * Fmax(rows[a].size, rows[b].size);
             };
             const auto extend = [&](size_t& from, size_t& to, bool down) {
                 for (;;) {
@@ -1550,7 +1551,7 @@ void Detector::RuleStacks() {
                     if (occupied < 2) {
                         if (!down || to - from < 2) return;
                         float closest = INFINITY;
-                        for (size_t q = from + 1; q < to; ++q) closest = std::fmin(closest, rows[q - 1].bottom - rows[q].top);
+                        for (size_t q = from + 1; q < to; ++q) closest = Fmin(closest, rows[q - 1].bottom - rows[q].top);
                         if (rows[to - 1].bottom - rows[next].top > closest + 0.15f * em) return;
                     }
                     gaps = trial;
@@ -1672,13 +1673,13 @@ void Detector::Continue() {
                 if (last >= 0 && w.x0 - right < 0.5f * w.size) return false;
                 occupied++, last = col;
             }
-            right = std::fmax(right, w.x1);
+            right = Fmax(right, w.x1);
         }
         return occupied >= 2;
     };
     size_t e = r;
     while (e < rows.size() && fits(e) &&
-           (e == r || rows[e - 1].bottom - rows[e].top < 1.6f * std::fmax(rows[e - 1].size, rows[e].size)))
+           (e == r || rows[e - 1].bottom - rows[e].top < 1.6f * Fmax(rows[e - 1].size, rows[e].size)))
         ++e;
     if (e > r && Free(xa, rows[e - 1].bottom, xb, rows[r].top))
         TextGrid(rows, rowWords, r, e, gaps, TableKind::Ruled, 0, xa, xb);
@@ -1712,7 +1713,7 @@ void Detector::Borderless(float gapFactor) {
             const TWord& w = words_[rowWords[k]];
             mono = mono || w.mono;
             if (right > -INFINITY && w.x0 - right >= gapFactor * rows[r].size) segments++;
-            right = std::fmax(right, w.x1);
+            right = Fmax(right, w.x1);
         }
         split[r] = segments >= 2 && !mono;
     }
@@ -1727,7 +1728,7 @@ void Detector::Borderless(float gapFactor) {
             continue;
         }
         const float em = rows[r].size;
-        const float minGap = std::fmax(4.0f, gapFactor * em), keepGap = gapFactor < 1.0f ? minGap : std::fmin(minGap, std::fmax(4.0f, 0.5f * em));
+        const float minGap = Fmax(4.0f, gapFactor * em), keepGap = gapFactor < 1.0f ? minGap : Fmin(minGap, Fmax(4.0f, 0.5f * em));
         float xa = rows[r].x0 - 1, xb = rows[r].x1 + 1;
         Columns(rows, rowWords, r, r + 1, xa, xb, minGap, gaps);
         size_t e = r + 1;
@@ -1741,7 +1742,7 @@ void Detector::Borderless(float gapFactor) {
         while (e < rows.size() && (split[e] || isLabel(e)) && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
                std::fabs(rows[e].size - em) <= 0.2f * em) {
             label[e] = isLabel(e);
-            const float na = std::fmin(xa, rows[e].x0 - 1), nb = std::fmax(xb, rows[e].x1 + 1);
+            const float na = Fmin(xa, rows[e].x0 - 1), nb = Fmax(xb, rows[e].x1 + 1);
             // Rows after the first keep its gaps half an em wide at least where figures stand on both
             // sides of the gap in that row (close columns of numbers), else as wide as the first; in
             // the second pass, its gaps already that close, as wide as the first.
@@ -1810,7 +1811,7 @@ void Detector::Borderless(float gapFactor) {
         if (begin + lead >= e || !numericRow[lead] || n - labels - static_cast<int>(lead) < 3) lead = 0;
         // Column edges of the body rows: aligned left, right or centred.
         int aligned = 0;
-        const float tol = std::fmax(2.0f, 0.3f * em);
+        const float tol = Fmax(2.0f, 0.3f * em);
         for (int c = 0; c < m; ++c) {
             lefts.clear(), rights.clear(), centres.clear();
             for (size_t q = begin + lead; q < e; ++q) {
@@ -1818,7 +1819,7 @@ void Detector::Borderless(float gapFactor) {
                 float a = INFINITY, b = -INFINITY;
                 for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
                     const TWord& w = words_[rowWords[k]];
-                    if (ColumnOf(gaps, (w.x0 + w.x1) / 2) == c) a = std::fmin(a, w.x0), b = std::fmax(b, w.x1);
+                    if (ColumnOf(gaps, (w.x0 + w.x1) / 2) == c) a = Fmin(a, w.x0), b = Fmax(b, w.x1);
                 }
                 if (b > a) lefts.push_back(a), rights.push_back(b), centres.push_back((a + b) / 2);
             }
@@ -1875,7 +1876,7 @@ void Detector::Borderless(float gapFactor) {
                 // words a word space apart) heads the column nearest its centre, and the columns part
                 // between labels.
                 first = begin - 1;
-                xa = std::fmin(xa, h.x0 - 1), xb = std::fmax(xb, h.x1 + 1);
+                xa = Fmin(xa, h.x0 - 1), xb = Fmax(xb, h.x1 + 1);
             }
         }
         const float y0 = rows[e - 1].bottom, y1 = rows[first].top;
@@ -1902,7 +1903,7 @@ bool Detector::HeaderOverColumns(const std::vector<Row>& rows, const std::vector
         for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
             const TWord& w = words_[rowWords[k]];
             const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
-            left[c] = std::fmin(left[c], w.x0), right[c] = std::fmax(right[c], w.x1);
+            left[c] = Fmin(left[c], w.x0), right[c] = Fmax(right[c], w.x1);
         }
     }
     for (size_t c = 0; c < cols; ++c)
@@ -1912,14 +1913,14 @@ bool Detector::HeaderOverColumns(const std::vector<Row>& rows, const std::vector
     uint32_t k = header.first;
     while (k < header.first + header.count) {
         float a = words_[rowWords[k]].x0, b = words_[rowWords[k]].x1;
-        for (++k; k < header.first + header.count && words_[rowWords[k]].x0 - b < minGap; ++k) b = std::fmax(b, words_[rowWords[k]].x1);
+        for (++k; k < header.first + header.count && words_[rowWords[k]].x0 - b < minGap; ++k) b = Fmax(b, words_[rowWords[k]].x1);
         size_t best = 0;
         for (size_t c = 1; c < cols; ++c)
             if (std::fabs((left[c] + right[c]) / 2 - (a + b) / 2) < std::fabs((left[best] + right[best]) / 2 - (a + b) / 2)) best = c;
         if ((taken >> best) & 1) return false;
         taken |= uint64_t(1) << best;
         labels++;
-        left[best] = std::fmin(left[best], a), right[best] = std::fmax(right[best], b);
+        left[best] = Fmin(left[best], a), right[best] = Fmax(right[best], b);
     }
     if (labels < 2) return false;
     for (size_t c = 0; c + 1 < cols; ++c)
@@ -2043,8 +2044,8 @@ void Detector::Commit() {
                     const uint32_t gi2 = pieceGlyphs[p.first + k];
                     const Glyph& gl = page_.glyphs[gi2];
                     page_.lineGlyphs.push_back(gi2);
-                    l.u0 = std::fmin(l.u0, gl.u0), l.u1 = std::fmax(l.u1, gl.u1);
-                    l.vb = std::fmin(l.vb, gl.vb), l.vt = std::fmax(l.vt, gl.vt);
+                    l.u0 = Fmin(l.u0, gl.u0), l.u1 = Fmax(l.u1, gl.u1);
+                    l.vb = Fmin(l.vb, gl.vb), l.vt = Fmax(l.vt, gl.vt);
                     all &= gl.flags;
                 }
                 l.chars = p.count;
@@ -2091,7 +2092,7 @@ int Detector::Run() {
     // Columns an em apart first; then, where the page sets its words close (dense tables of small
     // type), gaps down to 2.5 word spaces (0.6 em at least) for what is left.
     Borderless(1.0f);
-    const float close = std::fmax(0.6f, 2.5f * wordSpace_);
+    const float close = Fmax(0.6f, 2.5f * wordSpace_);
     if (close < 1.0f) Borderless(close);
     Commit();
     return restored_;

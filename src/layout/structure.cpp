@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/structure.h"
 
+#include "common/minmax.h"
 #include "layout/interpreter.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
@@ -558,8 +559,8 @@ void MeasureLine(const PageData& page, Line& line) {
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (k == 0) line.u0 = g.u0, line.u1 = g.u1, line.vb = g.vb, line.vt = g.vt;
-        line.u0 = std::fmin(line.u0, g.u0), line.u1 = std::fmax(line.u1, g.u1);
-        line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+        line.u0 = Fmin(line.u0, g.u0), line.u1 = Fmax(line.u1, g.u1);
+        line.vb = Fmin(line.vb, g.vb), line.vt = Fmax(line.vt, g.vt);
         all &= g.flags;
     }
     line.flags = static_cast<uint16_t>(line.flags & ~(kLineAllBold | kLineAllItalic | kLineAllMono | kLineArtifact |
@@ -600,8 +601,8 @@ uint32_t Piece(const PageData& page, const std::vector<uint32_t>& owner, const s
             if (go == o) {
                 key = std::min(key, GlyphKey(seq[gi], gi));
                 if (box) {
-                    box[0] = std::fmin(box[0], g.x0), box[1] = std::fmin(box[1], g.y0);
-                    box[2] = std::fmax(box[2], g.x1), box[3] = std::fmax(box[3], g.y1);
+                    box[0] = Fmin(box[0], g.x0), box[1] = Fmin(box[1], g.y0);
+                    box[2] = Fmax(box[2], g.x1), box[3] = Fmax(box[3], g.y1);
                 }
             }
         }
@@ -1013,11 +1014,11 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
             const Unit& a = units[i];
             for (size_t j = i + 1; j < units.size(); ++j) {
                 const Unit& b = units[j];
-                const float overlap = std::fmin(a.box[2], b.box[2]) - std::fmax(a.box[0], b.box[0]);
+                const float overlap = Fmin(a.box[2], b.box[2]) - Fmax(a.box[0], b.box[0]);
                 if (!(overlap > 1.0f)) continue;
                 pairs++;
                 // b comes later in the tree but sits wholly above a.
-                const float tolerance = 0.25f * std::fmin(a.box[3] - a.box[1], b.box[3] - b.box[1]);
+                const float tolerance = 0.25f * Fmin(a.box[3] - a.box[1], b.box[3] - b.box[1]);
                 if (b.box[1] >= a.box[3] - tolerance) violations++;
             }
         }
@@ -1197,8 +1198,8 @@ void TaggedLayout::LayOutTables(PageData& page, uint32_t p) {
                                                    (src.flags & (kLineArtifact | kLineInvisible | kLineAllBold |
                                                                  kLineAllItalic | kLineAllMono | kLineRtl)));
                 src.flags |= kLineTableCell;
-                table.x0 = std::fmin(table.x0, src.u0), table.x1 = std::fmax(table.x1, src.u1);
-                table.y0 = std::fmin(table.y0, src.vb), table.y1 = std::fmax(table.y1, src.vt);
+                table.x0 = Fmin(table.x0, src.u0), table.x1 = Fmax(table.x1, src.u1);
+                table.y0 = Fmin(table.y0, src.vb), table.y1 = Fmax(table.y1, src.vt);
                 if (!any) size = src.size, dir = src.dir;
                 any = true;
                 page.lines.push_back(copy);
@@ -1563,7 +1564,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
             list.blocks.back().quote == b.quote) {
             const BlockLine& prev = list.lines[list.blocks.back().first + list.blocks.back().count - 1];
             const Line& before = pages[prev.page].lines[prev.line];
-            const float em = std::fmax(1.0f, std::fmax(before.size, firstLine.size));
+            const float em = Fmax(1.0f, Fmax(before.size, firstLine.size));
             const float gap = firstLine.u0 - before.u1;
             if (prev.page == head.page && before.dir == firstLine.dir && before.count > 0 &&
                 std::fabs(before.baseline - firstLine.baseline) <= 0.3f * em && gap > -0.5f * em && gap < 0.6f * em) {
@@ -1729,7 +1730,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
                 if (list.blocks[k].kind != BlockKind::ListItem) continue;
                 itemX[k - i] = markerX(list.blocks[k]);
                 float& gx = groupX(listOf(list.blocks[k]), itemX[k - i]);
-                gx = std::fmin(gx, itemX[k - i]);
+                gx = Fmin(gx, itemX[k - i]);
             }
             for (const auto& g : groups) xs.push_back(g.second);
             std::sort(xs.begin(), xs.end());

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/lines.h"
 
+#include "common/minmax.h"
 #include "common/utf8.h"
 #include "text/bidi.h"
 
@@ -60,9 +61,9 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const uint64_t h = HashText(text);
         hashes[i] = h;
         // Coordinates are finite but may be huge: clamped before the integer conversion.
-        const int64_t cx = static_cast<int64_t>(std::floor(std::fmin(std::fmax(g.x0 / kCell, -1e15f), 1e15f)));
-        const int64_t cy = static_cast<int64_t>(std::floor(std::fmin(std::fmax(g.y0 / kCell, -1e15f), 1e15f)));
-        const float tolerance = std::fmax(0.15f * g.size, 0.5f);
+        const int64_t cx = static_cast<int64_t>(std::floor(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f)));
+        const int64_t cy = static_cast<int64_t>(std::floor(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f)));
+        const float tolerance = Fmax(0.15f * g.size, 0.5f);
         uint32_t found = kEmpty;
         for (int dx = -1; dx <= 1 && found == kEmpty; ++dx) {
             for (int dy = -1; dy <= 1 && found == kEmpty; ++dy) {
@@ -301,11 +302,11 @@ void DropLineNumbers(PageData& page) {
                 step > 5 * a.size)
                 break;
             if (pitch > 0) {
-                const float ratio = std::fmax(step, pitch) / std::fmin(step, pitch);
+                const float ratio = Fmax(step, pitch) / Fmin(step, pitch);
                 const float whole = std::round(ratio);
                 if (whole > 4 || std::fabs(ratio - whole) > 0.25f) break;
             }
-            pitch = pitch > 0 ? std::fmin(pitch, step) : step;
+            pitch = pitch > 0 ? Fmin(pitch, step) : step;
             if (pitch > 2.5f * a.size) break;
             ++end;
         }
@@ -336,8 +337,8 @@ void DropLineNumbers(PageData& page) {
                 g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
                 line.u0 = g.u0, line.vb = g.vb, line.vt = g.vt;
             }
-            line.u0 = std::fmin(line.u0, g.u0);
-            line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+            line.u0 = Fmin(line.u0, g.u0);
+            line.vb = Fmin(line.vb, g.vb), line.vt = Fmax(line.vt, g.vt);
             all &= g.flags;
         }
         line.flags = static_cast<uint16_t>(line.flags & ~(kLineAllBold | kLineAllItalic | kLineAllMono));
@@ -354,7 +355,7 @@ void DropLineNumbers(PageData& page) {
     std::vector<uint8_t> numbered(page.lines.size(), 0);
     float textRight = -INFINITY;
     for (const Line& l : page.lines)
-        if (l.dir == 0 && l.count > 0) textRight = std::fmax(textRight, l.u1);
+        if (l.dir == 0 && l.count > 0) textRight = Fmax(textRight, l.u1);
     for (const NumberCandidate& c : cands) {
         numbered[c.line] = 1;
         if (c.codeLine != UINT32_MAX) numbered[c.codeLine] = 1;
@@ -543,7 +544,7 @@ void BuildLines(PageData& page) {
         const bool space = (g.flags & kGlyphSpace) != 0;
         if (!frags.empty()) {
             Fragment& f = frags.back();
-            const float em = std::fmax(f.size, g.size);
+            const float em = Fmax(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
             const float dv = g.v - f.baseline;
             const bool sameBase = std::fabs(dv) <= 0.25f * em;
@@ -553,7 +554,7 @@ void BuildLines(PageData& page) {
             if (g.dir == f.dir && (sameBase || script || space) && gap >= -0.6f * em && gap <= maxGap &&
                 std::fabs(dv) <= 0.6f * em) {
                 f.end = k + 1;
-                f.lastU1 = std::fmax(f.lastU1, g.u1);
+                f.lastU1 = Fmax(f.lastU1, g.u1);
                 if (!space) {
                     f.lastSize = g.size;
                     if (!f.any) {
@@ -561,8 +562,8 @@ void BuildLines(PageData& page) {
                         f.baseline = g.v, f.size = g.size;
                         f.any = true;
                     } else {
-                        f.u0 = std::fmin(f.u0, g.u0), f.u1 = std::fmax(f.u1, g.u1);
-                        f.vb = std::fmin(f.vb, g.vb), f.vt = std::fmax(f.vt, g.vt);
+                        f.u0 = Fmin(f.u0, g.u0), f.u1 = Fmax(f.u1, g.u1);
+                        f.vb = Fmin(f.vb, g.vb), f.vt = Fmax(f.vt, g.vt);
                         // A fragment that began with a superscript takes the baseline of the
                         // full-size text that follows.
                         if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
@@ -619,7 +620,7 @@ void BuildLines(PageData& page) {
         size_t end = at + 1;
         while (end < fo.size()) {
             const Fragment& f = frags[fo[end]];
-            if (f.dir != head.dir || head.baseline - f.baseline > 0.25f * std::fmax(head.size, f.size)) break;
+            if (f.dir != head.dir || head.baseline - f.baseline > 0.25f * Fmax(head.size, f.size)) break;
             ++end;
         }
         cluster.assign(fo.begin() + static_cast<std::ptrdiff_t>(at), fo.begin() + static_cast<std::ptrdiff_t>(end));
@@ -628,14 +629,14 @@ void BuildLines(PageData& page) {
         for (size_t c = 0; c < cluster.size(); ++c) {
             const Fragment& f = frags[cluster[c]];
             if (g.count > 0) {
-                const float em = std::fmax(g.size, f.size);
+                const float em = Fmax(g.size, f.size);
                 const bool lastMarker = frags[members.back()].marker && g.count == 1;
                 const float maxGap = (lastMarker ? kMarkerGap : kJoinGap) * em;
                 if (f.u0 - g.u1 <= maxGap) {
                     members.push_back(cluster[c]);
                     g.count++;
-                    g.u0 = std::fmin(g.u0, f.u0), g.u1 = std::fmax(g.u1, f.u1);
-                    g.vb = std::fmin(g.vb, f.vb), g.vt = std::fmax(g.vt, f.vt);
+                    g.u0 = Fmin(g.u0, f.u0), g.u1 = Fmax(g.u1, f.u1);
+                    g.vb = Fmin(g.vb, f.vb), g.vt = Fmax(g.vt, f.vt);
                     if (f.size > g.size) g.size = f.size, g.baseline = f.baseline;
                     continue;
                 }
@@ -681,7 +682,7 @@ void BuildLines(PageData& page) {
         Group& line = groups[best];
         small.merged = true;
         line.scripts = true;
-        line.u0 = std::fmin(line.u0, small.u0), line.u1 = std::fmax(line.u1, small.u1);
+        line.u0 = Fmin(line.u0, small.u0), line.u1 = Fmax(line.u1, small.u1);
         if (extraOf[best] == kEmpty) {
             extraOf[best] = static_cast<uint32_t>(extra.size());
             extra.emplace_back();
@@ -746,7 +747,7 @@ void BuildLines(PageData& page) {
             }
             g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
             if (!first) {
-                const float em = std::fmax(std::fmin(previousSize, g.size), 0.5f * std::fmax(previousSize, g.size));
+                const float em = Fmax(Fmin(previousSize, g.size), 0.5f * Fmax(previousSize, g.size));
                 const float gap = g.u0 - right;
                 const bool combining = StartsWithCombiningMark(page.GlyphText(g));
                 if (!combining && (pendingSpace || gap > wordGap * em)) g.flags |= kGlyphSpaceBefore;
@@ -756,10 +757,10 @@ void BuildLines(PageData& page) {
                 if (gap > kGutterCandidate * em) {
                     segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
                 } else {
-                    segments.back().u1 = std::fmax(segments.back().u1, g.u1);
+                    segments.back().u1 = Fmax(segments.back().u1, g.u1);
                 }
-                right = std::fmax(right, g.u1);
-                p.u0 = std::fmin(p.u0, g.u0), p.u1 = std::fmax(p.u1, g.u1);
+                right = Fmax(right, g.u1);
+                p.u0 = Fmin(p.u0, g.u0), p.u1 = Fmax(p.u1, g.u1);
             } else {
                 segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
                 right = g.u1;
@@ -878,8 +879,8 @@ void BuildLines(PageData& page) {
                     g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
                     line.u0 = g.u0, line.u1 = g.u1, line.vb = g.vb, line.vt = g.vt;
                 }
-                line.u0 = std::fmin(line.u0, g.u0), line.u1 = std::fmax(line.u1, g.u1);
-                line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+                line.u0 = Fmin(line.u0, g.u0), line.u1 = Fmax(line.u1, g.u1);
+                line.vb = Fmin(line.vb, g.vb), line.vt = Fmax(line.vt, g.vt);
                 allFlags &= g.flags;
                 line.chars++;
                 bool counted = false;
@@ -925,10 +926,10 @@ void BuildLines(PageData& page) {
     // with right-to-left text are left-to-right paragraphs too: they wrap into those short lines.
     float left = INFINITY, right = -INFINITY;
     for (const Line& line : page.lines)
-        if (line.dir == 0) left = std::fmin(left, line.u0), right = std::fmax(right, line.u1);
+        if (line.dir == 0) left = Fmin(left, line.u0), right = Fmax(right, line.u1);
     uint32_t flushLeft = 0, flushRight = 0;
     for (const Line& line : page.lines) {
-        const float em = std::fmax(line.size, 1.0f);
+        const float em = Fmax(line.size, 1.0f);
         const bool atLeft = line.u0 - left <= em, atRight = right - line.u1 <= em;
         if (atLeft == atRight || line.dir != 0 || !HoldsRightToLeft(page, line)) continue;
         if (atLeft && right - line.u1 >= 3 * em) flushLeft++;
@@ -936,7 +937,7 @@ void BuildLines(PageData& page) {
     }
     const bool leftAligned = flushLeft > 0 && flushRight == 0;
     for (Line& line : page.lines) {
-        const float em = std::fmax(line.size, 1.0f);
+        const float em = Fmax(line.size, 1.0f);
         const bool atLeft = line.u0 - left <= em;
         const int direction = atLeft && (right - line.u1 >= 3 * em || leftAligned) ? 0 : -1;
         if (ToLogicalOrder(page, line, bidi, direction)) line.flags |= kLineRtl;
@@ -952,8 +953,8 @@ void Measure(const PageData& page, Line& line) {
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (k == 0) line.u0 = g.u0, line.u1 = g.u1, line.vb = g.vb, line.vt = g.vt;
-        line.u0 = std::fmin(line.u0, g.u0), line.u1 = std::fmax(line.u1, g.u1);
-        line.vb = std::fmin(line.vb, g.vb), line.vt = std::fmax(line.vt, g.vt);
+        line.u0 = Fmin(line.u0, g.u0), line.u1 = Fmax(line.u1, g.u1);
+        line.vb = Fmin(line.vb, g.vb), line.vt = Fmax(line.vt, g.vt);
         all &= g.flags;
     }
     line.flags = static_cast<uint16_t>(line.flags & ~(kLineAllBold | kLineAllItalic | kLineAllMono | kLineArtifact |

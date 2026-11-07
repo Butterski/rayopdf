@@ -25,6 +25,7 @@
 //   counted as dropped.
 #include "image/image.h"
 
+#include "common/minmax.h"
 #include "image/jpeg.h"
 #include "pdf/filters.h"
 
@@ -114,14 +115,14 @@ struct FunctionPart {
 };
 
 void Evaluate(const FunctionPart& f, double x, double* out) {
-    x = std::fmin(std::fmax(x, f.domain[0]), f.domain[1]);
+    x = Fmin(Fmax(x, f.domain[0]), f.domain[1]);
     if (f.type == 2) {
         const double t = Power(x, f.exponent);
         for (int j = 0; j < f.outputs; j++) out[j] = f.c0[j] + t * (f.c1[j] - f.c0[j]);
     } else {
         const double span = f.domain[1] - f.domain[0];
         double e = span > 0 ? f.encode[0] + (x - f.domain[0]) * (f.encode[1] - f.encode[0]) / span : f.encode[0];
-        e = std::fmin(std::fmax(e, 0.0), static_cast<double>(f.size - 1));
+        e = Fmin(Fmax(e, 0.0), static_cast<double>(f.size - 1));
         const uint32_t i0 = static_cast<uint32_t>(e);
         const uint32_t i1 = i0 + 1 < f.size ? i0 + 1 : i0;
         const double t = e - i0;
@@ -133,7 +134,7 @@ void Evaluate(const FunctionPart& f, double x, double* out) {
         }
     }
     if (f.hasRange) {
-        for (int j = 0; j < f.outputs; j++) out[j] = std::fmin(std::fmax(out[j], f.range[2 * j]), f.range[2 * j + 1]);
+        for (int j = 0; j < f.outputs; j++) out[j] = Fmin(Fmax(out[j], f.range[2 * j]), f.range[2 * j + 1]);
     }
 }
 
@@ -275,9 +276,9 @@ struct Space {
 void Convert(const Space& space, const double* v, uint8_t* out);
 
 void ConvertLab(const Space& space, const double* v, uint8_t* out) {
-    const double l = std::fmin(std::fmax(v[0], 0.0), 100.0);
-    const double a = std::fmin(std::fmax(v[1], space.range[0]), space.range[1]);
-    const double b = std::fmin(std::fmax(v[2], space.range[2]), space.range[3]);
+    const double l = Fmin(Fmax(v[0], 0.0), 100.0);
+    const double a = Fmin(Fmax(v[1], space.range[0]), space.range[1]);
+    const double b = Fmin(Fmax(v[2], space.range[2]), space.range[3]);
     const double fy = (l + 16) / 116;
     const double f[3] = {fy + a / 500, fy, fy - b / 200};
     double xyz[3];
@@ -310,7 +311,7 @@ void Convert(const Space& space, const double* v, uint8_t* out) {
     case Family::Cmyk: ConvertCmyk(v[0], v[1], v[2], v[3], out); return;
     case Family::Lab: ConvertLab(space, v, out); return;
     case Family::Indexed: {
-        const double index = std::fmin(std::fmax(std::floor(v[0] + 0.5), 0.0), static_cast<double>(space.hival));
+        const double index = Fmin(Fmax(std::floor(v[0] + 0.5), 0.0), static_cast<double>(space.hival));
         const size_t at = static_cast<size_t>(index) * static_cast<size_t>(space.channels);
         std::memcpy(out, space.palette.data() + at, static_cast<size_t>(space.channels));
         return;
@@ -330,14 +331,14 @@ void Convert(const Space& space, const double* v, uint8_t* out) {
     if (space.useProcess) {
         double cmyk[4] = {0, 0, 0, 0};
         for (int i = 0; i < space.components; i++) {
-            if (space.process[i] >= 0) cmyk[space.process[i]] = std::fmax(cmyk[space.process[i]], Clamp01(v[i]));
+            if (space.process[i] >= 0) cmyk[space.process[i]] = Fmax(cmyk[space.process[i]], Clamp01(v[i]));
         }
         ConvertCmyk(cmyk[0], cmyk[1], cmyk[2], cmyk[3], out);
         return;
     }
     double sum = 0;
     for (int i = 0; i < space.components; i++) sum += Clamp01(v[i]);
-    out[0] = To8(1 - std::fmin(sum, 1.0));
+    out[0] = To8(1 - Fmin(sum, 1.0));
 }
 
 struct SpaceContext {

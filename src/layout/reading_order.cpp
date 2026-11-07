@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/reading_order.h"
 
+#include "common/minmax.h"
 #include "layout/lines.h"
 
 #include <algorithm>
@@ -149,8 +150,8 @@ struct Orderer {
         if (rules.empty() || L(items[0]).dir != 0) return false;
         float u0 = INFINITY, u1 = -INFINITY, vb = INFINITY, vt = -INFINITY;
         for (uint32_t i : items) {
-            u0 = std::fmin(u0, L(i).u0), u1 = std::fmax(u1, L(i).u1);
-            vb = std::fmin(vb, L(i).vb), vt = std::fmax(vt, L(i).vt);
+            u0 = Fmin(u0, L(i).u0), u1 = Fmax(u1, L(i).u1);
+            vb = Fmin(vb, L(i).vb), vt = Fmax(vt, L(i).vt);
         }
         const float width = u1 - u0;
         std::sort(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
@@ -162,13 +163,13 @@ struct Orderer {
             const float top = L(items[k]).vt;
             for (const Rule& r : rules) {
                 if (r.y <= vb || r.y >= vt) continue;
-                if (std::fmin(r.x1, u1) - std::fmax(r.x0, u0) < 0.6f * width) continue;
+                if (Fmin(r.x1, u1) - Fmax(r.x0, u0) < 0.6f * width) continue;
                 if (r.y >= top - 1 && r.y <= bottom + 1) {
                     cuts.push_back(k);
                     break;
                 }
             }
-            bottom = std::fmin(bottom, L(items[k]).vb);
+            bottom = Fmin(bottom, L(items[k]).vb);
         }
         if (cuts.empty()) return false;
         for (uint32_t i : items) page.lines[i].flags |= kLineTable;
@@ -208,7 +209,7 @@ struct Orderer {
         float right = L(items[0]).u1;
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 - right >= minGap) cuts.push_back(k);
-            right = std::fmax(right, L(items[k]).u1);
+            right = Fmax(right, L(items[k]).u1);
         }
     }
 
@@ -216,13 +217,13 @@ struct Orderer {
     // narrow gutter (LaTeX protrudes quotes and hyphens) closes the exact gap.
     void SplitXSoft(std::vector<uint32_t>& items, float size, std::vector<size_t>& cuts) {
         cuts.clear();
-        const auto shrink = [&](uint32_t i) { return std::fmin(0.7f * size, 0.25f * (L(i).u1 - L(i).u0)); };
+        const auto shrink = [&](uint32_t i) { return Fmin(0.7f * size, 0.25f * (L(i).u1 - L(i).u0)); };
         std::sort(items.begin(), items.end(),
                   [&](uint32_t a, uint32_t b) { return L(a).u0 + shrink(a) < L(b).u0 + shrink(b); });
         float right = L(items[0]).u1 - shrink(items[0]);
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 + shrink(items[k]) - right >= 1.0f) cuts.push_back(k);
-            right = std::fmax(right, L(items[k]).u1 - shrink(items[k]));
+            right = Fmax(right, L(items[k]).u1 - shrink(items[k]));
         }
     }
 
@@ -244,9 +245,9 @@ struct Orderer {
             if (gap > 0) {
                 cuts.push_back(k);
                 gaps_.push_back(gap);
-                widest = std::fmax(widest, gap);
+                widest = Fmax(widest, gap);
             }
-            bottom = std::fmin(bottom, L(items[k]).vb);
+            bottom = Fmin(bottom, L(items[k]).vb);
         }
         size_t kept = 0;
         for (size_t c = 0; c < cuts.size(); ++c)
@@ -269,7 +270,7 @@ struct Orderer {
             bool isTexty = false;
             if (end - begin >= 3) {
                 float u0 = L(items[begin]).u0, u1 = L(items[begin]).u1;
-                for (size_t k = begin; k < end; ++k) u0 = std::fmin(u0, L(items[k]).u0), u1 = std::fmax(u1, L(items[k]).u1);
+                for (size_t k = begin; k < end; ++k) u0 = Fmin(u0, L(items[k]).u0), u1 = Fmax(u1, L(items[k]).u1);
                 // Weighted by characters: display formulas and figure labels inside a column are
                 // many short lines with few characters.
                 // A group of long lines (prose averages 25 characters a line or more, table cells
@@ -296,9 +297,9 @@ struct Orderer {
     bool TallGutter(const std::vector<uint32_t>& items, size_t a, size_t b, size_t c, float size) {
         if (b - a < 6 || c - b < 6 || b - a > 512 || c - b > 512) return false;
         float lb = INFINITY, lt = -INFINITY, rb = INFINITY, rt = -INFINITY;
-        for (size_t k = a; k < b; ++k) lb = std::fmin(lb, L(items[k]).vb), lt = std::fmax(lt, L(items[k]).vt);
-        for (size_t k = b; k < c; ++k) rb = std::fmin(rb, L(items[k]).vb), rt = std::fmax(rt, L(items[k]).vt);
-        if (std::fmin(lt, rt) - std::fmax(lb, rb) < 0.5f * std::fmin(lt - lb, rt - rb)) return false;
+        for (size_t k = a; k < b; ++k) lb = Fmin(lb, L(items[k]).vb), lt = Fmax(lt, L(items[k]).vt);
+        for (size_t k = b; k < c; ++k) rb = Fmin(rb, L(items[k]).vb), rt = Fmax(rt, L(items[k]).vt);
+        if (Fmin(lt, rt) - Fmax(lb, rb) < 0.5f * Fmin(lt - lb, rt - rb)) return false;
         size_t mates = 0;
         for (size_t k = a; k < b; ++k)
             for (size_t j = b; j < c; ++j)
@@ -321,7 +322,7 @@ struct Orderer {
             const size_t end = cuts[c];
             const size_t next = c + 1 < cuts.size() ? cuts[c + 1] : items.size();
             float u0 = INFINITY, u1 = -INFINITY;
-            for (size_t k = begin; k < end; ++k) u0 = std::fmin(u0, L(items[k]).u0), u1 = std::fmax(u1, L(items[k]).u1);
+            for (size_t k = begin; k < end; ++k) u0 = Fmin(u0, L(items[k]).u0), u1 = Fmax(u1, L(items[k]).u1);
             bool labels = u1 - u0 <= 4 * size && end - begin <= 128 && next - end <= 2048;
             for (size_t k = begin; k < end && labels; ++k) {
                 const Line& label = L(items[k]);
@@ -348,7 +349,7 @@ struct Orderer {
         SplitY(byY, yCuts);
         // LaTeX's 10 pt gutter narrows to 7 pt where hyphens protrude: half an em suffices, since
         // word gaps never reach this stage (lines are whole runs of words).
-        SplitX(items, std::fmax(3.0f, 0.5f * size), xCuts);
+        SplitX(items, Fmax(3.0f, 0.5f * size), xCuts);
         DropLabelCuts(items, xCuts, size);
         if (!xCuts.empty() && (yCuts.empty() || ColumnsLike(items, xCuts, size))) {
             std::vector<size_t> ruleCuts;
@@ -373,7 +374,7 @@ struct Orderer {
         // y cut there would slice columns into rows, so columns found with their bridging lines
         // set aside come first.
         float widest = 0;
-        for (float g : gaps_) widest = std::fmax(widest, g);
+        for (float g : gaps_) widest = Fmax(widest, g);
         if ((yCuts.empty() || widest < size) && MaskedColumns(items, size, depth)) return;
         if (!yCuts.empty() && widest < size && Topological(items)) return;
         if (!yCuts.empty()) {
@@ -423,12 +424,12 @@ struct Orderer {
             for (size_t b = 0; b < n; ++b) {
                 if (a == b) continue;
                 const Line& lb = L(v[b]);
-                const float tolerance = 0.3f * std::fmin(la.size, lb.size);
+                const float tolerance = 0.3f * Fmin(la.size, lb.size);
                 bool before = la.u0 < lb.u1 && lb.u0 < la.u1 && la.baseline > lb.baseline + tolerance;
                 if (!before && la.u1 <= lb.u0) {
                     before = true;
-                    const float high = std::fmax(la.baseline, lb.baseline) - tolerance;
-                    const float low = std::fmin(la.baseline, lb.baseline) + tolerance;
+                    const float high = Fmax(la.baseline, lb.baseline) - tolerance;
+                    const float low = Fmin(la.baseline, lb.baseline) + tolerance;
                     for (size_t c = std::min(a, b) + 1; c < std::max(a, b) && before; ++c) {
                         const Line& lc = L(v[c]);
                         if (lc.baseline >= high || lc.baseline <= low) continue;
@@ -468,7 +469,7 @@ struct Orderer {
         float left = INFINITY, right = -INFINITY;
         scratch.clear();
         for (uint32_t i : items) {
-            left = std::fmin(left, L(i).u0), right = std::fmax(right, L(i).u1);
+            left = Fmin(left, L(i).u0), right = Fmax(right, L(i).u1);
             if (L(i).count > 0) scratch.push_back(i);
         }
         float median = 0;
@@ -480,7 +481,7 @@ struct Orderer {
         }
         // Substantial: a quarter of the region, or most of a typical line when the region holds
         // many narrow columns.
-        const float wide = std::fmin(0.25f * (right - left), 0.6f * median);
+        const float wide = Fmin(0.25f * (right - left), 0.6f * median);
         scratch.assign(items.begin(), items.end());
         std::sort(scratch.begin(), scratch.end(), [&](uint32_t a, uint32_t b) { return L(a).baseline > L(b).baseline; });
         size_t from = 0;
@@ -494,8 +495,8 @@ struct Orderer {
                 if (lf.baseline - lg.baseline > window) break;
                 if (j == k || lg.u1 - lg.u0 < wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
                 if (std::fabs(lg.baseline - lf.baseline) > window) continue;
-                minRight = std::fmin(minRight, lg.u1);
-                maxLeft = std::fmax(maxLeft, lg.u0);
+                minRight = Fmin(minRight, lg.u1);
+                maxLeft = Fmax(maxLeft, lg.u0);
             }
             (maxLeft > minRight ? cross : rest).push_back(scratch[k]);
         }
@@ -509,7 +510,7 @@ struct Orderer {
         CrossLines(items, cross, rest);
         if (cross.empty() || rest.size() < 6) return false;
         std::vector<size_t> cuts;
-        SplitX(rest, std::fmax(3.0f, 0.5f * size), cuts);
+        SplitX(rest, Fmax(3.0f, 0.5f * size), cuts);
         DropLabelCuts(rest, cuts, size);
         if (cuts.empty() || !ColumnsLike(rest, cuts, size)) return false;
         // The columns' left edges, to place the bridging lines.
@@ -551,7 +552,7 @@ struct Orderer {
             return;
         }
         float left = L(items[0]).u0, right = L(items[0]).u1;
-        for (uint32_t i : items) left = std::fmin(left, L(i).u0), right = std::fmax(right, L(i).u1);
+        for (uint32_t i : items) left = Fmin(left, L(i).u0), right = Fmax(right, L(i).u1);
         const float wide = 0.25f * (right - left);
         // XY-Cut++'s length condition: a cross-layout line is longer than β = 1.3 times the
         // median line, so a line of text wrapped around a pull quote or a figure is not one.
@@ -579,8 +580,8 @@ struct Orderer {
                 const Line& lg = L(g);
                 if (lg.u1 - lg.u0 < wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
                 if (std::fabs(lg.baseline - lf.baseline) > window) continue;
-                minRight = std::fmin(minRight, lg.u1);
-                maxLeft = std::fmax(maxLeft, lg.u0);
+                minRight = Fmin(minRight, lg.u1);
+                maxLeft = Fmax(maxLeft, lg.u0);
             }
             if (maxLeft > minRight)
                 separators.push_back(f);
@@ -638,7 +639,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     const float h = page.height;
     // The horizontal extent of the page's text, against which a row's spread is measured.
     float textLeft = INFINITY, textRight = -INFINITY;
-    for (uint32_t i : lines) textLeft = std::fmin(textLeft, page.lines[i].u0), textRight = std::fmax(textRight, page.lines[i].u1);
+    for (uint32_t i : lines) textLeft = Fmin(textLeft, page.lines[i].u0), textRight = Fmax(textRight, page.lines[i].u1);
     // The text's own line spacing: the median gap from a line to the next line below it in its
     // column. A header or footer is set apart by more than that, so double-spaced text keeps its
     // first and last lines.
@@ -658,7 +659,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         std::nth_element(gaps.begin(), gaps.begin() + static_cast<std::ptrdiff_t>(gaps.size() / 2), gaps.end());
         spacing = gaps[gaps.size() / 2];
     }
-    const float minGap = std::fmax(body, 1.5f * spacing);
+    const float minGap = Fmax(body, 1.5f * spacing);
     int removed = 0;
     std::vector<uint32_t> rowLines;
     std::string piece;
@@ -680,12 +681,12 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             bool superscript = false, bold = true, mono = true;
             for (size_t k = 0; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
-                if (std::fabs(l.baseline - edge.baseline) > 0.3f * std::fmax(l.size, edge.size)) break;
+                if (std::fabs(l.baseline - edge.baseline) > 0.3f * Fmax(l.size, edge.size)) break;
                 count++;
-                inner = side == 0 ? std::fmin(inner, l.vb) : std::fmax(inner, l.vt);
+                inner = side == 0 ? Fmin(inner, l.vb) : Fmax(inner, l.vt);
                 chars += l.chars;
-                largest = std::fmax(largest, l.size);
-                rowLeft = std::fmin(rowLeft, l.u0), rowRight = std::fmax(rowRight, l.u1);
+                largest = Fmax(largest, l.size);
+                rowLeft = Fmin(rowLeft, l.u0), rowRight = Fmax(rowRight, l.u1);
                 bold = bold && (l.flags & kLineAllBold);
                 mono = mono && (l.flags & kLineAllMono);
                 superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
@@ -745,8 +746,8 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             float figureGap = gap;
             for (const ImageBox& image : page.images) {
                 if ((image.x1 - image.x0) * (image.y1 - image.y0) < 0.01f * page.width * h) continue;
-                if (side == 0 && image.y1 <= inner + 1) figureGap = std::fmin(figureGap, inner - image.y1);
-                if (side == 1 && image.y0 >= inner - 1) figureGap = std::fmin(figureGap, image.y0 - inner);
+                if (side == 0 && image.y1 <= inner + 1) figureGap = Fmin(figureGap, inner - image.y1);
+                if (side == 1 && image.y0 >= inner - 1) figureGap = Fmin(figureGap, image.y0 - inner);
             }
             // A spread row reaches both edges of the text: a row with a piece in each column of a
             // two-column page does not.
@@ -804,7 +805,7 @@ int RemoveMarginLines(PageData& page) {
     uint32_t upright = 0;
     for (const Line& l : page.lines) {
         if (l.dir != 0 || l.count == 0 || (l.flags & kLineRemoved)) continue;
-        left = std::fmin(left, l.u0), right = std::fmax(right, l.u1);
+        left = Fmin(left, l.u0), right = Fmax(right, l.u1);
         upright++;
     }
     if (upright < kEdgeMinLines) return 0;
@@ -814,7 +815,7 @@ int RemoveMarginLines(PageData& page) {
         float x0 = INFINITY, x1 = -INFINITY;
         for (uint32_t k = 0; k < l.count; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[l.first + k]];
-            x0 = std::fmin(x0, g.x0), x1 = std::fmax(x1, g.x1);
+            x0 = Fmin(x0, g.x0), x1 = Fmax(x1, g.x1);
         }
         if (x1 <= left || x0 >= right) {
             l.flags |= kLineRemoved;
@@ -846,8 +847,8 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
         float highest = -INFINITY, lowest = INFINITY;
         for (const Line& line : page.lines) {
             if (line.dir != 0) continue;
-            highest = std::fmax(highest, (line.vb + line.vt) / 2);
-            lowest = std::fmin(lowest, (line.vb + line.vt) / 2);
+            highest = Fmax(highest, (line.vb + line.vt) / 2);
+            lowest = Fmin(lowest, (line.vb + line.vt) / 2);
         }
         for (uint32_t li = 0; li < page.lines.size(); ++li) {
             const Line& line = page.lines[li];

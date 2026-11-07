@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/interpreter.h"
 
+#include "common/minmax.h"
 #include "common/utf8.h"
 #include "pdf/content_lexer.h"
 
@@ -41,10 +42,10 @@ struct Box {
 
 Box Intersect(const Box& a, const Box& b) {
     Box r;
-    r.x0 = std::fmax(a.x0, b.x0);
-    r.y0 = std::fmax(a.y0, b.y0);
-    r.x1 = std::fmin(a.x1, b.x1);
-    r.y1 = std::fmin(a.y1, b.y1);
+    r.x0 = Fmax(a.x0, b.x0);
+    r.y0 = Fmax(a.y0, b.y0);
+    r.x1 = Fmin(a.x1, b.x1);
+    r.y1 = Fmin(a.y1, b.y1);
     return r;
 }
 
@@ -59,10 +60,10 @@ Box UnitSquare(const Matrix& m) {
     const double ys[4] = {m.f, m.b + m.f, m.d + m.f, m.b + m.d + m.f};
     Box r{xs[0], ys[0], xs[0], ys[0]};
     for (int i = 1; i < 4; ++i) {
-        r.x0 = std::fmin(r.x0, xs[i]);
-        r.x1 = std::fmax(r.x1, xs[i]);
-        r.y0 = std::fmin(r.y0, ys[i]);
-        r.y1 = std::fmax(r.y1, ys[i]);
+        r.x0 = Fmin(r.x0, xs[i]);
+        r.x1 = Fmax(r.x1, xs[i]);
+        r.y0 = Fmin(r.y0, ys[i]);
+        r.y1 = Fmax(r.y1, ys[i]);
     }
     return r;
 }
@@ -571,7 +572,7 @@ void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect
     if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx) || !std::isfinite(by)) return;
     // Straight pieces count only when axis-aligned on the page (within a hundredth of a point).
     if (!rect && std::fabs(ax - bx) > 0.01 && std::fabs(ay - by) > 0.01) return;
-    pieces_.push_back(PathPiece{std::fmin(ax, bx), std::fmin(ay, by), std::fmax(ax, bx), std::fmax(ay, by), rect});
+    pieces_.push_back(PathPiece{Fmin(ax, bx), Fmin(ay, by), Fmax(ax, bx), Fmax(ay, by), rect});
 }
 
 void Interpreter::PathPoint(double x, double y, bool curve) {
@@ -583,10 +584,10 @@ void Interpreter::PathPoint(double x, double y, bool curve) {
         pathBox_ = Box{dx, dy, dx, dy};
         pathEmpty_ = false;
     } else {
-        pathBox_.x0 = std::fmin(pathBox_.x0, dx);
-        pathBox_.y0 = std::fmin(pathBox_.y0, dy);
-        pathBox_.x1 = std::fmax(pathBox_.x1, dx);
-        pathBox_.y1 = std::fmax(pathBox_.y1, dy);
+        pathBox_.x0 = Fmin(pathBox_.x0, dx);
+        pathBox_.y0 = Fmin(pathBox_.y0, dy);
+        pathBox_.x1 = Fmax(pathBox_.x1, dx);
+        pathBox_.y1 = Fmax(pathBox_.y1, dy);
     }
     if (curve) pathCurved_ = true;
 }
@@ -599,7 +600,7 @@ void Interpreter::Paint(bool fill, bool stroke) {
             if (stroke) {
                 // Half the line width around the path; the line width scales with the CTM.
                 const double scale = std::sqrt(std::fabs(gs_.ctm.a * gs_.ctm.d - gs_.ctm.b * gs_.ctm.c));
-                const double half = std::fmax(gs_.lineWidth * scale, 0.1) / 2;
+                const double half = Fmax(gs_.lineWidth * scale, 0.1) / 2;
                 box.x0 -= half, box.y0 -= half, box.x1 += half, box.y1 += half;
             }
             const Box visible = Intersect(box, gs_.clip);
@@ -619,7 +620,7 @@ void Interpreter::Paint(bool fill, bool stroke) {
         }
         if ((fill || stroke) && !pieces_.empty()) {
             const double scale = std::sqrt(std::fabs(gs_.ctm.a * gs_.ctm.d - gs_.ctm.b * gs_.ctm.c));
-            const double half = stroke ? std::fmax(gs_.lineWidth * scale, 0.1) / 2 : 0;
+            const double half = stroke ? Fmax(gs_.lineWidth * scale, 0.1) / 2 : 0;
             const uint8_t flags = static_cast<uint8_t>((stroke ? kRulingStroke : 0) | (fill ? kRulingFill : 0));
             const auto add = [&](double x0, double y0, double x1, double y1) {
                 Box b{x0 - half, y0 - half, x1 + half, y1 + half};
@@ -851,10 +852,10 @@ void Interpreter::EndMarked() {
         }
         Glyph& c = glyphs[carrier];
         if (g.dir == c.dir) {
-            c.x0 = std::fmin(c.x0, g.x0), c.y0 = std::fmin(c.y0, g.y0);
-            c.x1 = std::fmax(c.x1, g.x1), c.y1 = std::fmax(c.y1, g.y1);
-            c.u0 = std::fmin(c.u0, g.u0), c.u1 = std::fmax(c.u1, g.u1);
-            c.vb = std::fmin(c.vb, g.vb), c.vt = std::fmax(c.vt, g.vt);
+            c.x0 = Fmin(c.x0, g.x0), c.y0 = Fmin(c.y0, g.y0);
+            c.x1 = Fmax(c.x1, g.x1), c.y1 = Fmax(c.y1, g.y1);
+            c.u0 = Fmin(c.u0, g.u0), c.u1 = Fmax(c.u1, g.u1);
+            c.vb = Fmin(c.vb, g.vb), c.vt = Fmax(c.vt, g.vt);
         }
         g.flags |= kGlyphDropped;
     }
@@ -1005,13 +1006,13 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     double bx0 = dx[0], bx1 = dx[0], by0 = dy[0], by1 = dy[0];
     double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
     for (int i = 0; i < 4; ++i) {
-        bx0 = std::fmin(bx0, dx[i]), bx1 = std::fmax(bx1, dx[i]);
-        by0 = std::fmin(by0, dy[i]), by1 = std::fmax(by1, dy[i]);
+        bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
+        by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
         double u, v;
         ToFrame(g.dir, dx[i], dy[i], u, v);
         if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
-        fu0 = std::fmin(fu0, u), fu1 = std::fmax(fu1, u);
-        fv0 = std::fmin(fv0, v), fv1 = std::fmax(fv1, v);
+        fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
+        fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
     }
     double ou, ov;
     ToFrame(g.dir, trm.e, trm.f, ou, ov);

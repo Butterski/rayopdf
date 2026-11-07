@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/markdown_writer.h"
 
+#include "common/minmax.h"
 #include "common/utf8.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
@@ -225,7 +226,7 @@ void Writer::StyleWords(bool styles) {
         float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
             const Glyph& g = pages_[refs_[k].page].glyphs[refs_[k].glyph];
-            x0 = std::fmin(x0, g.x0), y0 = std::fmin(y0, g.y0), x1 = std::fmax(x1, g.x1), y1 = std::fmax(y1, g.y1);
+            x0 = Fmin(x0, g.x0), y0 = Fmin(y0, g.y0), x1 = Fmax(x1, g.x1), y1 = Fmax(y1, g.y1);
         }
         // A link annotation over the word's centre (algorithms §6.8).
         const uint32_t page = refs_[w.first].page;
@@ -631,7 +632,7 @@ void Writer::Code(const Block& block, const std::string& prefix) {
     for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
         const PageData& page = pages_[lines_[bl].page];
         const Line& line = page.lines[lines_[bl].line];
-        left = std::fmin(left, line.u0);
+        left = Fmin(left, line.u0);
         for (uint32_t k = 0; k < line.count && widths.size() < 4096; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             if (g.u1 > g.u0) widths.push_back(g.u1 - g.u0);

@@ -2,6 +2,7 @@
 #include "layout/images.h"
 
 #include "common/file.h"
+#include "common/minmax.h"
 #include "image/image.h"
 #include "pdf/content_lexer.h"
 
@@ -119,7 +120,7 @@ bool InsertInline(PageData& page, uint32_t index, std::string& link) {
     page.glyphs[page.lineGlyphs[first]].flags &= static_cast<uint16_t>(~kGlyphSpaceBefore);
     line.first = first;
     line.count++;
-    line.u0 = std::fmin(line.u0, image.x0), line.u1 = std::fmax(line.u1, image.x1);
+    line.u0 = Fmin(line.u0, image.x0), line.u1 = Fmax(line.u1, image.x1);
     return true;
 }
 

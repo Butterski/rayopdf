@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/semantics.h"
 
+#include "common/minmax.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
 
@@ -423,13 +424,13 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     if ((next.flags ^ last.flags) & kLineTable) return false;
     if ((next.flags | last.flags) & kLineAnchor) return false;
     if (next.quoteBars != last.quoteBars) return false;
-    const float em = std::fmax(last.size, next.size);
+    const float em = Fmax(last.size, next.size);
     // A size change starts a block, except in an OCR layer whose sizes are fitted word boxes.
     const bool ocr = (last.flags & next.flags & kLineInvisible) != 0;
     if (!ocr && std::fabs(next.size - last.size) > 0.15f * em) return false;
     const float pitch = last.baseline - next.baseline;
     if (pitch <= 0.3f * em) return false;
-    const float limit = b.pitch > 0 ? std::fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : 1.6f * em;
+    const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : 1.6f * em;
     if (pitch > limit) return false;
     if (next.u0 > last.u1 || next.u1 < last.u0) return false;
     const bool monoNext = next.mono >= kMonoShare && !monoDocument;
@@ -442,7 +443,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
         // mid-sentence.
         return next.u0 >= first.markerU0 - 0.5f * em && !last.endsTerminal && last.u1 - last.u0 >= 25 * em;
     }
-    const float right = std::fmax(b.right, next.u1);
+    const float right = Fmax(b.right, next.u1);
     // Lines centred on one axis (a title over two or three lines) are no indented paragraph start.
     const bool centred = std::fabs((next.u0 + next.u1) - (last.u0 + last.u1)) <= 0.5f * em &&
                          std::fabs(next.u0 - last.u0) >= 0.8f * em;
@@ -455,8 +456,8 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
         }
     }
     // A short line ending a sentence ends the paragraph.
-    const float left = std::fmin(b.bodyU0, next.u0);
-    if (last.endsTerminal && last.u1 < right - std::fmax(2.5f * em, 0.12f * (right - left))) return false;
+    const float left = Fmin(b.bodyU0, next.u0);
+    if (last.endsTerminal && last.u1 < right - Fmax(2.5f * em, 0.12f * (right - left))) return false;
     return true;
 }
 
@@ -523,7 +524,7 @@ bool AtBottom(const std::vector<Info>& infos, uint32_t begin, uint32_t end, uint
     };
     float lowest = INFINITY;
     for (uint32_t j = begin; j < end; ++j)
-        if (under(infos[j])) lowest = std::fmin(lowest, infos[j].baseline);
+        if (under(infos[j])) lowest = Fmin(lowest, infos[j].baseline);
     for (uint32_t j = begin; j < end; ++j) {
         const Info& o = infos[j];
         if (under(o) && o.size > 1.1f * note.size && o.baseline > lowest + 0.5f * o.size) return false;
@@ -544,7 +545,7 @@ bool RuleBetween(const std::vector<PageData>& pages, const BlockLine& a, const B
     const Line& upper = page.lines[a.line];
     const Line& lower = page.lines[b.line];
     if (upper.dir != 0 || lower.dir != 0) return false;
-    const float left = std::fmin(upper.u0, lower.u0), right = std::fmax(upper.u1, lower.u1);
+    const float left = Fmin(upper.u0, lower.u0), right = Fmax(upper.u1, lower.u1);
     for (const Shape& s : page.shapes) {
         if (s.y1 - s.y0 > 3 || s.x0 > left + 0.5f || s.x1 < right - 0.5f) continue;
         const float y = (s.y0 + s.y1) / 2;
@@ -574,7 +575,7 @@ bool OffGrid(const std::vector<PageData>& pages, const std::vector<BlockLine>& l
         for (uint32_t l = from + 1; l < blk->first + blk->count; ++l) {
             if (lines[l - 1].page != upper.page || lines[l].page != upper.page) continue;
             const float step = LastRow(page, page.lines[lines[l - 1].line]) - page.lines[lines[l].line].baseline;
-            if (step > 0) pitch = std::fmin(pitch, step);
+            if (step > 0) pitch = Fmin(pitch, step);
         }
     }
     if (!(pitch < INFINITY)) return false;
@@ -864,11 +865,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                        in.dir == last.dir && !in.numbering && last.size >= kHeadingSize * body &&
                        in.size >= kHeadingSize * body && std::fabs(in.u0 - last.u0) <= last.size &&
                        last.baseline - in.baseline > 0 &&
-                       last.baseline - in.baseline <= 2.5f * std::fmax(last.size, in.size)) {
+                       last.baseline - in.baseline <= 2.5f * Fmax(last.size, in.size)) {
                 // A chapter or section number set large on a line of its own above its title
                 // ("4" over "Basis Fields") heads it with the title.
                 b.count++;
-                b.right = std::fmax(b.right, in.u1);
+                b.right = Fmax(b.right, in.u1);
                 b.bold = b.bold && (in.flags & kLineAllBold) != 0;
                 continue;
             } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument)) {
@@ -876,9 +877,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     b.pitch = last.baseline - in.baseline;
                     b.bodyU0 = in.u0;
                 } else {
-                    b.bodyU0 = std::fmin(b.bodyU0, in.u0);
+                    b.bodyU0 = Fmin(b.bodyU0, in.u0);
                 }
-                b.right = std::fmax(b.right, in.u1);
+                b.right = Fmax(b.right, in.u1);
                 b.count++;
                 continue;
             }
@@ -1102,14 +1103,14 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const auto extent = [&](size_t r, float& u0, float& u1) {
             u0 = INFINITY, u1 = -INFINITY;
             for (uint32_t i = raws[r].first; i < raws[r].first + raws[r].count; ++i)
-                u0 = std::fmin(u0, infos[i].u0), u1 = std::fmax(u1, infos[i].u1);
+                u0 = Fmin(u0, infos[i].u0), u1 = Fmax(u1, infos[i].u1);
         };
         size_t title = raws.size();
         float titleSize = 0;
         for (size_t r = 0; r < raws.size() && infos[raws[r].first].page == page; ++r) {
             if (kinds[r].kind != BlockKind::Heading || kinds[r].level > 0) continue;
             if (title == raws.size()) title = r;
-            titleSize = std::fmax(titleSize, kinds[r].size);
+            titleSize = Fmax(titleSize, kinds[r].size);
         }
         if (title < raws.size() && kinds[title].size >= titleSize && infos[raws[title].first].dir == 0) {
             float t0 = 0, t1 = 0;
@@ -1118,7 +1119,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             // the title's does not.
             float left = INFINITY, right = -INFINITY;
             for (const Info& in : infos)
-                if (in.page == page && in.dir == 0) left = std::fmin(left, in.u0), right = std::fmax(right, in.u1);
+                if (in.page == page && in.dir == 0) left = Fmin(left, in.u0), right = Fmax(right, in.u1);
             for (size_t r = title + 1; r < raws.size() && infos[raws[r].first].page == page; ++r) {
                 const Info& first = infos[raws[r].first];
                 float u0 = 0, u1 = 0;
@@ -1257,7 +1258,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         for (size_t r = 0; r < raws.size(); ++r) {
             if (levelOf[r] <= 0) continue;
             levelOf[r] = map[levelOf[r]];
-            if (levelOf[r] == 1) topSize = std::fmax(topSize, kinds[r].size), topCount++;
+            if (levelOf[r] == 1) topSize = Fmax(topSize, kinds[r].size), topCount++;
         }
         const bool title = next >= 2 && topCount <= 2 && topSize >= kSmallTitleSize * body;
         const bool sections =
