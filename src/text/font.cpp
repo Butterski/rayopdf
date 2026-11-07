@@ -540,20 +540,25 @@ void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStat
         entry.length = static_cast<uint32_t>(repaired.size());
         map.text += repaired;
     }
-    std::vector<std::string_view> texts;
-    texts.reserve(map.entries.size());
-    for (const UnicodeEntry& entry : map.entries) {
-        const std::string_view text = map.Text(entry);
+    // The most codes one text has (a map of many codes onto one character): equal texts counted
+    // in an open-addressing table, so a CID font's map of tens of thousands of codes costs one
+    // pass instead of a sort.
+    size_t capacity = 16;
+    while (capacity < map.entries.size() * 2) capacity <<= 1;
+    const size_t mask = capacity - 1;
+    constexpr size_t kFree = SIZE_MAX;
+    std::vector<size_t> owners(capacity, kFree);  // the first entry with the slot's text
+    std::vector<uint32_t> counts(map.entries.size(), 0);
+    for (size_t e = 0; e < map.entries.size(); ++e) {
+        const std::string_view text = map.Text(map.entries[e]);
         Repair::Count(text, stats);
-        if (text != " ") texts.push_back(text);
-    }
-    // The most codes one text has (a map of many codes onto one character).
-    std::sort(texts.begin(), texts.end());
-    for (size_t i = 0; i < texts.size();) {
-        size_t j = i;
-        while (j < texts.size() && texts[j] == texts[i]) ++j;
-        stats.largestShare = std::max(stats.largestShare, static_cast<uint32_t>(j - i));
-        i = j;
+        if (text == " ") continue;
+        uint64_t hash = 14695981039346656037ull;
+        for (unsigned char c : text) hash = (hash ^ c) * 1099511628211ull;
+        size_t slot = static_cast<size_t>(hash) & mask;
+        while (owners[slot] != kFree && map.Text(map.entries[owners[slot]]) != text) slot = (slot + 1) & mask;
+        if (owners[slot] == kFree) owners[slot] = e;
+        stats.largestShare = std::max(stats.largestShare, ++counts[owners[slot]]);
     }
 }
 
