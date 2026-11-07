@@ -11,6 +11,10 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
 #include <vector>
 
 #if RAYOPDF_PNG_SSE2
@@ -311,12 +315,19 @@ void PutBe32(uint8_t* at, uint32_t value) {
     at[3] = static_cast<uint8_t>(value);
 }
 
+const uint8_t* PixelRow(void* context, uint32_t y) {
+    const auto* rows = static_cast<const std::pair<const uint8_t*, size_t>*>(context);
+    return rows->first + size_t(y) * rows->second;
+}
+
 } // namespace
 
-bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, std::string& out) {
+namespace Png {
+
+bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, std::string& out) {
     out.clear();
     // PNG caps both dimensions at 2^31 - 1; the filtered rows must fit the compressor.
-    if (!pixels || width == 0 || height == 0 || channels < 1 || channels > 4 || width > 0x7FFFFFFFu ||
+    if (!source || width == 0 || height == 0 || channels < 1 || channels > 4 || width > 0x7FFFFFFFu ||
         height > 0x7FFFFFFFu) {
         return false;
     }
@@ -327,25 +338,36 @@ bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int chann
     const size_t rowBytes = static_cast<size_t>(rowBytes64);
     const size_t filteredSize = static_cast<size_t>(filtered64);
 
-    // One filter byte, then the residuals, per row.
+    // One filter byte, then the residuals, per row; the source's rows are asked for once each.
     std::vector<uint8_t> filtered(filteredSize);
     std::vector<uint8_t> zeros(rowBytes, 0);
+    const uint8_t* up = zeros.data();
     for (uint32_t y = 0; y < height; y++) {
-        const uint8_t* row = pixels + size_t(y) * rowBytes;
-        const uint8_t* up = y == 0 ? zeros.data() : row - rowBytes;
+        const uint8_t* row = source(context, y);
         uint8_t* target = filtered.data() + size_t(y) * (rowBytes + 1);
-        const int filter = Png::ChooseFilter(row, up, rowBytes, bpp);
+        const int filter = ChooseFilter(row, up, rowBytes, bpp);
         target[0] = static_cast<uint8_t>(filter);
-        Png::FilterRow(filter, row, up, rowBytes, bpp, target + 1);
+        FilterRow(filter, row, up, rowBytes, bpp, target + 1);
+        up = row;
     }
 
     static constexpr uint8_t kSignature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
     static constexpr uint8_t kColorType[5] = {0, 0, 4, 2, 6};  // gray, gray + alpha, RGB, RGBA
     const size_t bound = Deflate::ZlibBound(filteredSize);
     // Signature, IHDR (8 + 13 + 4), IDAT header, data, IDAT CRC, IEND (12); the bound's 8 bytes of
-    // slack lie within the IDAT CRC and IEND that follow.
-    out.resize(8 + 25 + 8 + bound + 4 + 12);
-    uint8_t* const base = reinterpret_cast<uint8_t*>(&out[0]);
+    // slack lie within the IDAT CRC and IEND that follow. The file is put together in a buffer
+    // kept per thread and left uninitialized, then copied: only the pages written count towards
+    // the process's memory (a zero-filled string of the bound holds as much again as the filtered
+    // rows), and a batch maps it once instead of for every image.
+    const size_t need = 8 + 25 + 8 + bound + 4 + 12;
+    thread_local std::unique_ptr<uint8_t[]> file;
+    thread_local size_t capacity = 0;
+    if (capacity < need) {
+        file.reset(new (std::nothrow) uint8_t[need]);
+        capacity = file ? need : 0;
+        if (!file) return false;
+    }
+    uint8_t* const base = file.get();
     std::memcpy(base, kSignature, 8);
     uint8_t* ihdr = base + 8;
     PutBe32(ihdr, 13);
@@ -357,7 +379,7 @@ bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int chann
     ihdr[18] = 0;  // deflate
     ihdr[19] = 0;  // adaptive filtering
     ihdr[20] = 0;  // no interlace
-    PutBe32(ihdr + 21, Png::Crc32(ihdr + 4, 17));
+    PutBe32(ihdr + 21, Crc32(ihdr + 4, 17));
 
     uint8_t* idat = base + 33;
     std::memcpy(idat + 4, "IDAT", 4);
@@ -365,14 +387,25 @@ bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int chann
     const size_t compressed = Deflate::ZlibCompress(
         std::string_view(reinterpret_cast<const char*>(filtered.data()), filteredSize), idat + 8, scratch);
     PutBe32(idat, static_cast<uint32_t>(compressed));
-    PutBe32(idat + 8 + compressed, Png::Crc32(idat + 4, 4 + compressed));
+    PutBe32(idat + 8 + compressed, Crc32(idat + 4, 4 + compressed));
 
     uint8_t* iend = idat + 8 + compressed + 4;
     PutBe32(iend, 0);
     std::memcpy(iend + 4, "IEND", 4);
-    PutBe32(iend + 8, Png::Crc32(iend + 4, 4));
-    out.resize(static_cast<size_t>(iend + 12 - base));
+    PutBe32(iend + 8, Crc32(iend + 4, 4));
+    out.assign(reinterpret_cast<const char*>(base), static_cast<size_t>(iend + 12 - base));
     return true;
+}
+
+} // namespace Png
+
+bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, std::string& out) {
+    if (!pixels) {
+        out.clear();
+        return false;
+    }
+    std::pair<const uint8_t*, size_t> rows{pixels, size_t(width) * static_cast<size_t>(channels)};
+    return Png::EncodeRows(width, height, channels, PixelRow, &rows, out);
 }
 
 } // namespace RayoPdf::Image

@@ -27,6 +27,7 @@
 
 #include "common/minmax.h"
 #include "image/jpeg.h"
+#include "image/png.h"
 #include "pdf/filters.h"
 
 #include <algorithm>
@@ -1092,27 +1093,82 @@ Status DecodeSampled(const Source& src, uint64_t maxPixels, bool softMask, Pixel
     return Status::Ok;
 }
 
-// `mask` (gray) resampled to width x rows by nearest neighbour into `alpha`; `invert` for a
-// stencil, whose 0 (painted) is opaque.
-void ResampleAlpha(const Pixels& mask, uint32_t width, uint32_t rows, uint32_t declaredHeight, bool invert,
-                   std::vector<uint8_t>& alpha) {
-    alpha.resize(size_t(width) * rows);
-    std::vector<uint32_t> columns(width);
-    for (uint32_t x = 0; x < width; x++) columns[x] = static_cast<uint32_t>(uint64_t(x) * mask.width / width);
-    const size_t ch = static_cast<size_t>(mask.channels);
-    for (uint32_t y = 0; y < rows; y++) {
-        const uint32_t my = static_cast<uint32_t>(uint64_t(y) * mask.declaredHeight / declaredHeight);
-        uint8_t* target = alpha.data() + size_t(y) * width;
-        if (my >= mask.height) {  // rows the mask's data lacks: opaque
-            std::fill(target, target + width, uint8_t(255));
-            continue;
-        }
-        const uint8_t* row = mask.Bytes() + size_t(my) * mask.width * ch;
-        for (uint32_t x = 0; x < width; x++) {
-            const uint8_t v = row[size_t(columns[x]) * ch];
-            target[x] = invert ? static_cast<uint8_t>(255 - v) : v;
+// The alpha of an image, a row at a time: a soft or stencil mask (gray) resampled to the image's
+// width x rows by nearest neighbour (`invert` for a stencil, whose 0, painted, is opaque; rows
+// the mask's data lacks are opaque), or a colour key's alpha (one byte a pixel). Made a row at a
+// time, so that no whole alpha plane, nor an image with it interleaved, is held.
+class AlphaRows {
+public:
+    AlphaRows(const Pixels& image, const Pixels* mask, bool invert, const std::vector<uint8_t>* key)
+        : image_(image), mask_(mask), invert_(invert), key_(key) {
+        if (mask_) {
+            columns_.resize(image.width);
+            for (uint32_t x = 0; x < image.width; x++) {
+                columns_[x] = static_cast<uint32_t>(uint64_t(x) * mask_->width / image.width);
+            }
         }
     }
+
+    // Row y's alpha, image.width bytes, into `out`.
+    void Row(uint32_t y, uint8_t* out) const {
+        const uint32_t width = image_.width;
+        if (key_) {
+            std::memcpy(out, key_->data() + size_t(y) * width, width);
+            return;
+        }
+        const uint32_t my = static_cast<uint32_t>(uint64_t(y) * mask_->declaredHeight / image_.declaredHeight);
+        if (my >= mask_->height) {
+            std::fill(out, out + width, uint8_t(255));
+            return;
+        }
+        const size_t ch = static_cast<size_t>(mask_->channels);
+        const uint8_t* row = mask_->Bytes() + size_t(my) * mask_->width * ch;
+        for (uint32_t x = 0; x < width; x++) {
+            const uint8_t v = row[size_t(columns_[x]) * ch];
+            out[x] = invert_ ? static_cast<uint8_t>(255 - v) : v;
+        }
+    }
+
+    // Whether every pixel's alpha is 255.
+    bool Opaque() const {
+        std::vector<uint8_t> row(image_.width);
+        for (uint32_t y = 0; y < image_.height; y++) {
+            Row(y, row.data());
+            for (uint8_t a : row) {
+                if (a != 255) return false;
+            }
+        }
+        return true;
+    }
+
+private:
+    const Pixels& image_;
+    const Pixels* mask_;
+    bool invert_;
+    const std::vector<uint8_t>* key_;
+    std::vector<uint32_t> columns_;
+};
+
+// The rows of an image with its alpha interleaved, for Png::EncodeRows: two row buffers in turn.
+struct InterleavedRows {
+    const Pixels* image;
+    const AlphaRows* alpha;
+    std::vector<uint8_t> rows[2];
+    std::vector<uint8_t> alphaRow;
+};
+
+const uint8_t* InterleavedRow(void* context, uint32_t y) {
+    InterleavedRows& r = *static_cast<InterleavedRows*>(context);
+    const size_t width = r.image->width;
+    const size_t ch = static_cast<size_t>(r.image->channels);
+    uint8_t* target = r.rows[y & 1].data();
+    r.alpha->Row(y, r.alphaRow.data());
+    const uint8_t* pixels = r.image->Bytes() + size_t(y) * width * ch;
+    for (size_t x = 0; x < width; x++) {
+        std::memcpy(target + x * (ch + 1), pixels + x * ch, ch);
+        target[x * (ch + 1) + ch] = r.alphaRow[x];
+    }
+    return target;
 }
 
 enum class MaskKind : uint8_t {
@@ -1164,12 +1220,8 @@ bool Transparent(const Pixels& mask, MaskKind kind) {
     return false;
 }
 
-Status WritePng(const Pixels& image, const std::vector<uint8_t>* alpha, Encoded& out) {
-    const size_t count = size_t(image.width) * image.height;
-    bool opaque = true;
-    if (alpha) {
-        for (size_t i = 0; i < count && opaque; i++) opaque = (*alpha)[i] == 255;
-    }
+Status WritePng(const Pixels& image, const AlphaRows* alpha, Encoded& out) {
+    const bool opaque = !alpha || alpha->Opaque();
     out.extension = "png";
     out.width = image.width;
     out.height = image.height;
@@ -1177,13 +1229,10 @@ Status WritePng(const Pixels& image, const std::vector<uint8_t>* alpha, Encoded&
     if (opaque) {
         ok = EncodePng(image.Bytes(), image.width, image.height, image.channels, out.bytes);
     } else {
-        const size_t ch = static_cast<size_t>(image.channels);
-        std::vector<uint8_t> rgba(count * (ch + 1));
-        for (size_t i = 0; i < count; i++) {
-            std::memcpy(rgba.data() + i * (ch + 1), image.Bytes() + i * ch, ch);
-            rgba[i * (ch + 1) + ch] = (*alpha)[i];
-        }
-        ok = EncodePng(rgba.data(), image.width, image.height, image.channels + 1, out.bytes);
+        const size_t rowBytes = size_t(image.width) * static_cast<size_t>(image.channels + 1);
+        InterleavedRows rows{&image, alpha, {std::vector<uint8_t>(rowBytes), std::vector<uint8_t>(rowBytes)},
+                             std::vector<uint8_t>(image.width)};
+        ok = Png::EncodeRows(image.width, image.height, image.channels + 1, InterleavedRow, &rows, out.bytes);
     }
     return ok ? Status::Ok : Status::TooLarge;
 }
@@ -1193,11 +1242,13 @@ Status WriteMasked(const Pixels& image, MaskKind kind, bool decoded, const Pixel
                    const std::vector<uint8_t>& key, Encoded& out) {
     Status status;
     if ((kind == MaskKind::Soft || kind == MaskKind::Stencil) && decoded) {
-        std::vector<uint8_t> alpha;
-        ResampleAlpha(mask, image.width, image.height, image.declaredHeight, kind == MaskKind::Stencil, alpha);
+        const AlphaRows alpha(image, &mask, kind == MaskKind::Stencil, nullptr);
+        status = WritePng(image, &alpha, out);
+    } else if (!key.empty()) {
+        const AlphaRows alpha(image, nullptr, false, &key);
         status = WritePng(image, &alpha, out);
     } else {
-        status = WritePng(image, key.empty() ? nullptr : &key, out);
+        status = WritePng(image, nullptr, out);
     }
     if (status == Status::Ok) out.maskDropped = kind != MaskKind::None && !decoded;
     return status;

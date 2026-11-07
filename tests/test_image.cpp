@@ -243,6 +243,23 @@ void TestEncodePng() {
                 RAYOPDF_CHECK(ReadPng(out, png), 504);
                 RAYOPDF_CHECK(png.width == s.w && png.height == s.h && png.channels == channels, 504);
                 RAYOPDF_CHECK(png.pixels == pixels, 504);
+                // The same file from rows handed out one at a time through two buffers in turn.
+                struct Rows {
+                    const std::vector<uint8_t>* pixels;
+                    size_t rowBytes;
+                    std::vector<uint8_t> buffers[2];
+                } rows{&pixels, size_t(s.w) * static_cast<size_t>(channels), {}};
+                rows.buffers[0].resize(rows.rowBytes);
+                rows.buffers[1].resize(rows.rowBytes);
+                const auto rowOf = [](void* context, uint32_t y) -> const uint8_t* {
+                    Rows& r = *static_cast<Rows*>(context);
+                    uint8_t* to = r.buffers[y & 1].data();
+                    std::memcpy(to, r.pixels->data() + size_t(y) * r.rowBytes, r.rowBytes);
+                    return to;
+                };
+                std::string fromRows;
+                RAYOPDF_CHECK(Image::Png::EncodeRows(s.w, s.h, channels, rowOf, &rows, fromRows) && fromRows == out,
+                              1000);
             }
         }
     }
