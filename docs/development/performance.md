@@ -53,7 +53,8 @@ keeps the output bytes (Markdown, image files, `--report` records except `ms`) i
 ## Steps
 
 Instructions per conversion (callgrind) and time against the previous step; steps 1–7 ran the
-G-warm fixtures with images written, which dilutes the text path on the odl fixtures.
+G-warm fixtures with images written, which dilutes the text path on the odl fixtures; from step 8
+every fixture runs with images off, plus two fixtures with images written.
 
 |Step|Commit|Change|Largest effects|
 |---|---|---|---|
@@ -65,24 +66,34 @@ G-warm fixtures with images written, which dilutes the text path on the odl fixt
 |5|8885f11|glyph box without NaN checks, font metrics once a string, ASCII text fast path|pdfua report -10.6 %, xelatex book -10.0 %, odl 192 -8.6 %|
 |6|6841dd8|exact no-duplicate filter before the duplicate probe|time -4 to -6.6 % on text pages, instructions within +0.27 %|
 |7|0a0f11a|base-encoding glyph texts once per process|arxiv_math -3.5 %, manual -1.7 %|
+|8|70a492c|number loop in integer and fraction runs, `PdfValue::Number` inline|odl 141 -7.1 %, odl 183 -0.9 %|
+|9|db16d3a|alpha composed a row at a time (`Png::EncodeRows`), PNG built in an uninitialized per-thread buffer|peak RSS of odl 136 189 -> 97 MiB; odl batch with images 1.07 -> 0.93 s, 203 -> 120 MiB|
 
-## Results (step 7 against 0.0.7)
+## Results (step 9 against 0.0.7)
+
+Measured 2026-11-07, same machine and pinning; warm = best of 3 per document, two alternating
+rounds; fresh = native timer, median of 11 per document.
 
 |Metric|0.0.7|now|Release bar|
 |---|---|---|---|
-|odl warm, release, ms/page median|1.108|0.813 (-27 %)|≤ 0.5: not met|
-|odl warm, release, pages/s|740|1,028|≥ 2,000: not met|
-|odl warm, static, ms/page median|1.046|0.798 (-24 %)||
-|odl fresh, static, images off, median|1.541 ms|1.295 ms (-16 %)|≤ 1 ms: not met|
-|odl fresh, static, images written, median|1.883 ms|1.602 ms||
-|odl fresh, release, images off, median|2.005 ms|1.712 ms||
-|peak RSS with images|188 MiB|unchanged|bounded: not addressed|
+|odl warm, release, ms/page median|1.105|0.806 (-27 %)|≤ 0.5: not met|
+|odl warm, release, ms/page p95|2.22|1.60||
+|odl warm, release, pages/s|738|1,037 (+41 %)|≥ 2,000: not met|
+|odl warm, static, ms/page median|1.049|0.796 (-24 %)||
+|odl fresh, static, images off, median|1.571 ms|1.308 ms (-17 %)|≤ 1 ms: not met|
+|odl fresh, static, images written, median / mean / p95|1.891 / 7.42 / 31.5 ms|1.578 / 6.10 / 26.6 ms||
+|odl fresh, release, images off, median|2.016 ms|1.743 ms||
+|`--inspect`, static, fresh median|0.377 ms (0.0.7 record)|0.296 ms|≤ 0.3 ms (M1): met|
+|peak RSS, images written, 4653 x 2334 RGB + soft mask (odl 136)|189 MiB|97 MiB|bounded: reduced, not bounded|
+|peak RSS, odl as one batch with images|203 MiB|120 MiB||
 
-The remaining gap is broad: at step 7 no function holds more than 13 % of the cycles over odl
-(inflate 12.8 % + table building 2 %, content lexer 8.6 %, ShowString 8.1 %, BuildLines 6.5 %,
+The remaining gap is broad: no function holds more than 13 % of the cycles over odl (inflate
+12.8 % + table building 2 %, content lexer 8.6 %, ShowString 8.1 %, BuildLines 6.5 %,
 FoldDuplicates 5.5 %, writer 6 %, tables 4 %). A fresh process costs about 0.3 ms before the
 conversion (the start-up of `--inspect`) plus the conversion with cold caches, about 1.25 times
 its warm time, so the fresh target follows the warm one (warm ≈ 0.55 ms gives fresh ≈ 1 ms).
+Peak RSS with images still grows with the largest image: its decoded pixels, its decoded mask and
+the filtered rows the compressor takes whole (about twice the pixels).
 
 ## Tried and rejected
 
@@ -90,16 +101,25 @@ its warm time, so the fresh target follows the warm one (warm ≈ 0.55 ms gives 
   (first design of step 6): time -3 to -6 %, but instructions +0.4 to +1.7 % on seven fixtures
   (gate +0.3 %): a wide window hits the same letter close by, so most glyphs paid both the filter
   and the probe. The kept design tests the exact tolerance window.
+- **2026-11-07, a new inflate decoder.** Measured first: on the 1,144 text-like Flate streams of
+  odl (12.0 MB inflated) RayoPDF's Inflate takes 1.58 ns/byte, libdeflate 1.29 ns/byte (the
+  perf image's reference build), with the same output for every stream. The decoder is already
+  libdeflate's design (packed table entries, 56-bit refills, a fast loop with up to three
+  literals a refill); a rewrite could save at most about 0.02 ms a page. Not done.
+- **2026-11-07, the PNG file in a fresh uninitialized buffer per image** (first design of step 9):
+  the same bytes and RSS, but kept per thread in the final design so a batch maps it once.
+- **Not done, measured too small:** `_Exit` after the last write (the destructors and frees after
+  the Markdown is written are about 12 k instructions, 4 µs, a conversion); hot-section ordering
+  (RayoMD measured 3 to 6 fewer faults; a fresh odl conversion takes 150 faults, 26 of them the
+  empty program's); page-level parallelism (odl's documents are single pages).
 
 ## Open candidates (measured, not done)
 
-- Inflate: 14 instructions a byte where libdeflate-style decoders need 4-6; the table build is
-  2 % of the cycles over 1,018 streams.
-- Content lexer: split the number loop into integer and fraction runs; inline `PdfValue::Number`.
 - Writer (`StyleWords`, `Inline`) string building; table detector passes (`Columns`, `Borderless`).
-- Start-up: hot-section ordering (RayoMD's `hot.ld` method), heap growth faults, `_Exit` after the
-  last write.
-- Images: decode and encode in rows for bounded peak RSS.
+- The content lexer's string and name operands (`ParseValue`, 2.7 % of cycles).
+- Images: a compressor that takes the filtered rows as they come (bounded RSS instead of about
+  twice the largest image); the warm `--bench` loop over one image now maps glibc's inflate
+  buffers anew (odl 107 with images: -5.6 % instructions, +4.8 % time in that loop only).
 
 ## Rerunning
 
