@@ -61,6 +61,19 @@ void TestGlyphNames() {
     RAYOPDF_CHECK(Tables::StandardFontByName("CourierNew") == Tables::kCourier, 317);
     uint16_t w = 0;
     RAYOPDF_CHECK(Tables::StandardWidth(Tables::kHelvetica, Tables::FindGlyphName("A"), w) && w == 667, 318);
+    // Every name is found at its own index: by its bytes (a copy), which proves the names unique
+    // and sorted, and as a view into the table (the offsets path).
+    bool bytes = true, views = true;
+    for (uint16_t i = 0; i < Tables::kGlyphNameCount; ++i) {
+        const std::string copy(Tables::GlyphName(i));
+        bytes = bytes && Tables::FindGlyphName(copy) == i;
+        views = views && Tables::FindGlyphName(Tables::GlyphName(i)) == i;
+    }
+    RAYOPDF_CHECK(bytes, 353);
+    RAYOPDF_CHECK(views, 354);
+    // A view into the table that is not a whole name is looked up by its bytes.
+    const std::string_view euro = Tables::GlyphName(Tables::FindGlyphName("Euro"));
+    RAYOPDF_CHECK(Tables::FindGlyphName(euro.substr(0, 1)) == Tables::FindGlyphName("E"), 394);
 }
 
 void TestToUnicode() {

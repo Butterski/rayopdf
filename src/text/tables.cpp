@@ -13,6 +13,25 @@ namespace RayoPdf::Text {
 namespace Tables {
 
 uint16_t FindGlyphName(std::string_view name) {
+    // A view into the table itself (EncodingName and the other generated name tables hand those
+    // out, 256 of them for a simple font): its index from the offsets, with no byte compared.
+    // The names are unique (test_text 353), so that is the index the byte search finds.
+    const uintptr_t base = reinterpret_cast<uintptr_t>(kGlyphNameBytes);
+    const uintptr_t at = reinterpret_cast<uintptr_t>(name.data());
+    if (!name.empty() && at >= base && at - base < kGlyphNameOffsets[kGlyphNameCount]) {
+        const size_t offset = at - base;
+        size_t first = 0;
+        size_t last = kGlyphNameCount;
+        while (first < last) {
+            const size_t middle = (first + last) / 2;
+            if (kGlyphNameOffsets[middle] < offset) first = middle + 1;
+            else last = middle;
+        }
+        if (first < kGlyphNameCount && kGlyphNameOffsets[first] == offset &&
+            kGlyphNameOffsets[first + 1] - offset == name.size()) {
+            return static_cast<uint16_t>(first);
+        }
+    }
     size_t low = 0;
     size_t high = kGlyphNameCount;
     while (low < high) {
