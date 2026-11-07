@@ -7,6 +7,7 @@
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --inspect IN.pdf [--password=PW]
+//   rayopdf --bench IN.pdf TMPDIR N [--images=none] [--no-structure] ...   (developer option)
 //   rayopdf --version | --help
 //
 // OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
@@ -81,6 +82,12 @@ void PrintUsage(std::FILE* out) {
         "                                               answer JSON requests, one a line (protocol 1)\n"
         "  rayopdf --inspect IN.pdf [--password=PW]     print the document's structure as JSON\n"
         "  rayopdf --version | --help\n"
+        "\n"
+        "Developer option (performance measurements, docs/development/performance.md):\n"
+        "  rayopdf --bench IN.pdf TMPDIR N [options]    convert IN.pdf once, then N times more in\n"
+        "                                               this process into TMPDIR/out.md (images in\n"
+        "                                               TMPDIR/out-images/); prints the fastest and\n"
+        "                                               median milliseconds of the N timed runs\n"
         "\n"
         "Options:\n"
         "  --password=PW      user or owner password of an encrypted PDF\n"
@@ -444,6 +451,42 @@ int ConvertFile(const std::string& input, const std::string& output, const Docum
     return record.code;
 }
 
+// --bench: the warm loop of the performance campaign. One untimed conversion, then `runs` timed
+// ones with the same Markdown buffer, each the whole path of --convert (read, open, convert,
+// write the Markdown and the images). Prints `runs=N best_ms=B median_ms=M pages=P`.
+int Bench(const std::string& input, const std::string& folder, std::string_view count, const DocumentOptions& document) {
+    int runs = 0;
+    if (!ParsePage(count, runs)) return Usage("--bench needs a run count of at least 1: ", count);
+    if (!File::EnsureDirectory(folder)) {
+        PrintError("cannot create the folder " + folder);
+        return kExitUnwritable;
+    }
+    const std::string output = folder + (folder.empty() || folder.back() == '/' ? "out.md" : "/out.md");
+    Layout::ConvertOptions options = document.convert;
+    ChooseImageTarget(output, document, options);
+    std::string markdown;
+    std::vector<double> times;
+    times.reserve(static_cast<size_t>(runs));
+    uint64_t pages = 0;
+    for (int run = 0; run <= runs; ++run) {
+        const Clock::time_point start = Clock::now();
+        Batch::Record record;
+        ConvertDocument(input, output, document.password, options, markdown, record, false);
+        if (record.code != kExitOk) {
+            PrintError(record.error);
+            return record.code;
+        }
+        if (run > 0) times.push_back(MillisecondsSince(start));
+        pages = record.pages;
+    }
+    std::sort(times.begin(), times.end());
+    char line[160];
+    std::snprintf(line, sizeof line, "runs=%d best_ms=%.6f median_ms=%.6f pages=%" PRIu64 "\n", runs, times.front(),
+                  times[times.size() / 2], pages);
+    File::WriteStandardOutput(line);
+    return kExitOk;
+}
+
 // Flags of the batch modes.
 struct BatchOptions {
     bool recursive = false;
@@ -768,14 +811,15 @@ int main(int argc, char** argv) {
         PrintUsage(stderr);
         return kExitUsage;
     }
-    enum class Mode { None, Convert, Inspect, Batch, Serve } mode = Mode::None;
+    enum class Mode { None, Convert, Inspect, Batch, Serve, Bench } mode = Mode::None;
     std::string input;
     std::string output;
     DocumentOptions document;
+    std::string benchCount;
     BatchOptions batch;
     bool report = false;
     bool json = false;
-    const char* kModes = "only one of --convert, --batch, --serve and --inspect";
+    const char* kModes = "only one of --convert, --batch, --serve, --inspect and --bench";
 
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string_view arg = args[i];
@@ -810,6 +854,13 @@ int main(int argc, char** argv) {
             if (i + 1 >= args.size()) return Usage("--inspect needs IN.pdf");
             mode = Mode::Inspect;
             input = args[++i];
+        } else if (arg == "--bench") {
+            if (mode != Mode::None) return Usage(kModes);
+            if (i + 3 >= args.size()) return Usage("--bench needs IN.pdf, TMPDIR and N");
+            mode = Mode::Bench;
+            input = args[++i];
+            output = args[++i];
+            benchCount = args[++i];
         } else if (arg == "--report") {
             report = true;
         } else if (StartsWith(arg, "--report=")) {
@@ -859,6 +910,7 @@ int main(int argc, char** argv) {
             if (!json) return Usage("--serve needs --json");
             if (report) return Usage("--serve --json takes no --report: its answers are the records");
             return RunServe(document, batch.workersGiven ? batch.workers : 1);
+        case Mode::Bench: return Bench(input, output, benchCount, document);
         case Mode::None: break;
     }
     return Usage("nothing to do: give --convert, --batch, --serve --json or --inspect");

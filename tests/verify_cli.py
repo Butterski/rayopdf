@@ -331,6 +331,13 @@ def main() -> int:
         c.check("inspect", r.returncode == 0 and info.get("pages") == 1 and info.get("encrypted") is False,
                 repr(r.stdout))
 
+        bench = work / "bench"
+        r = c.run("--bench", hello, str(bench), "3", "--images=none")
+        c.check("bench", r.returncode == 0 and r.stdout.startswith(b"runs=3 best_ms=") and b" pages=1\n" in r.stdout
+                and "Hello World" in (bench / "out.md").read_text(encoding="utf-8"), repr(r.stdout))
+        c.check("bench without a count", c.run("--bench", hello, str(bench)).returncode == 2)
+        c.check("bench with 0 runs", c.run("--bench", hello, str(bench), "0").returncode == 2)
+
         r = c.run("--convert", hello, out, "--report")
         try:
             report = json.loads(r.stdout)
