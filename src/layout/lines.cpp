@@ -41,6 +41,15 @@ struct Fragment {
 
 // Folds overprinted duplicates (the same text drawn again within 0.15 em, algorithms §4.2) into one
 // glyph marked bold. `vis` keeps the survivors.
+//
+// Most glyphs have no duplicate, and the probe of nine cells walks chains whose ends no branch
+// predictor guesses. A filter answers "no duplicate" first, exactly: a bit per (text hash,
+// direction, 4-unit cell) of every glyph kept so far. The probe can only find a kept glyph of the
+// same direction and text whose x0 and y0 lie within the tolerance (|a - b| < t in float implies
+// it for the real difference too), so when no bit of the cells under that window (widened by
+// 1/1024 against rounding at its ends) is set, the probe would find nothing and is skipped. A set
+// bit (a duplicate, the same letter close by, a collision) runs the probe as before, and every
+// kept glyph goes into the probe's table as before, so what the probe finds is unchanged.
 void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     std::vector<Glyph>& glyphs = page.glyphs;
     size_t capacity = 16;
@@ -49,6 +58,25 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     std::vector<uint32_t> table(capacity, kEmpty);
     constexpr float kCell = 2.0f;
     std::vector<uint64_t> hashes(glyphs.size(), 0);
+    // The filter: 32 bits a table slot, indexed by multiply-shift hashing of (key, cell x, cell y).
+    constexpr double kFilterCell = 4.0;
+    constexpr float kFilterReach = 1e7f;  // windows of glyphs beyond are not tested
+    constexpr float kFilterKeep = 2e7f;   // kept glyphs beyond cannot be within reach + 8
+    constexpr float kFilterTolerance = 8.0f;
+    int filterLog = 5;
+    while ((size_t(1) << filterLog) < capacity * 32) ++filterLog;
+    std::vector<uint64_t> filter((size_t(1) << filterLog) / 64, 0);
+    const auto filterBit = [filterLog](uint64_t keyAndX, int64_t y) {
+        const uint64_t k = keyAndX ^ (static_cast<uint64_t>(y) * 0xC2B2AE3D27D4EB4Full);
+        return static_cast<size_t>((k * 0xBF58476D1CE4E5B9ull) >> (64 - filterLog));
+    };
+    const auto keyAndX = [](uint64_t key, int64_t x) { return key + static_cast<uint64_t>(x) * 0x9E3779B97F4A7C15ull; };
+    // floor(c / 4) for |c| < 2^62 without a libm call.
+    const auto cellOf = [](double c) {
+        const double q = c / kFilterCell;
+        const int64_t t = static_cast<int64_t>(q);
+        return t - (q < static_cast<double>(t) ? 1 : 0);
+    };
     size_t kept = 0;
     for (size_t k = 0; k < vis.size(); ++k) {
         const uint32_t i = vis[k];
@@ -64,8 +92,24 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const int64_t cx = static_cast<int64_t>(std::floor(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f)));
         const int64_t cy = static_cast<int64_t>(std::floor(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f)));
         const float tolerance = Fmax(0.15f * g.size, 0.5f);
+        const uint64_t key = h ^ (static_cast<uint64_t>(g.dir) << 56);
+        bool candidate = true;
+        if (std::fabs(g.x0) < kFilterReach && std::fabs(g.y0) < kFilterReach && tolerance <= kFilterTolerance) {
+            const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
+            const int64_t xa = cellOf(g.x0 - reach), xb = cellOf(g.x0 + reach);
+            const int64_t ya = cellOf(g.y0 - reach), yb = cellOf(g.y0 + reach);
+            uint64_t any = 0;
+            for (int64_t x = xa; x <= xb; ++x) {
+                const uint64_t kx = keyAndX(key, x);
+                for (int64_t y = ya; y <= yb; ++y) {
+                    const size_t b = filterBit(kx, y);
+                    any |= filter[b >> 6] >> (b & 63);
+                }
+            }
+            candidate = (any & 1) != 0;
+        }
         uint32_t found = kEmpty;
-        for (int dx = -1; dx <= 1 && found == kEmpty; ++dx) {
+        for (int dx = -1; dx <= 1 && found == kEmpty && candidate; ++dx) {
             for (int dy = -1; dy <= 1 && found == kEmpty; ++dy) {
                 uint64_t slot = Mix(cx + dx, cy + dy, h) & mask;
                 for (size_t probes = 0; table[slot] != kEmpty && probes < capacity; ++probes) {
@@ -90,6 +134,10 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         uint64_t slot = Mix(cx, cy, h) & mask;
         while (table[slot] != kEmpty) slot = (slot + 1) & mask;
         table[slot] = i;
+        if (std::fabs(g.x0) < kFilterKeep && std::fabs(g.y0) < kFilterKeep) {
+            const size_t b = filterBit(keyAndX(key, cellOf(g.x0)), cellOf(g.y0));
+            filter[b >> 6] |= uint64_t(1) << (b & 63);
+        }
         vis[kept++] = i;
     }
     vis.resize(kept);
