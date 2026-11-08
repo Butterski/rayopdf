@@ -565,29 +565,26 @@ private:
         }
         uint8_t lengths[286 + 30];
         const unsigned total = litlenCount + distanceCount;
+        // A refill leaves enough bits for at least a code and its extra bits (7 + 7). Whether the
+        // bits taken passed the end of the input is asked after the last code, and before a code
+        // found corrupt: the answers asking before every code would give, as that only grows.
         for (unsigned index = 0; index < total;) {
-            Refill();
-            if (!Within()) return Step::Truncated;
+            if (bitsleft_ < 14) Refill();
             const uint32_t entry = precode[bitbuf_ & ((1u << kPrecodeRoot) - 1)];
-            Bits(TakenBits(entry));
             const unsigned symbol = Value(entry);
             if (symbol < 16) {
+                Bits(TakenBits(entry));
                 lengths[index++] = static_cast<uint8_t>(symbol);
                 continue;
             }
-            uint8_t value = 0;
-            unsigned repeat = 0;
-            if (symbol == 16) {
-                if (index == 0) return Step::Corrupt;
-                value = lengths[index - 1];
-                repeat = 3 + Bits(2);
-            } else if (symbol == 17) {
-                repeat = 3 + Bits(3);
-            } else {
-                repeat = 11 + Bits(7);
+            const unsigned extraBits = symbol == 16 ? 2 : symbol == 17 ? 3 : 7;
+            const unsigned repeat = (symbol == 18 ? 11 : 3) +
+                                    static_cast<unsigned>((bitbuf_ >> TakenBits(entry)) & ((1u << extraBits) - 1));
+            if ((symbol == 16 && index == 0) || repeat > total - index) {
+                return Within() ? Step::Corrupt : Step::Truncated;
             }
-            if (repeat > total - index) return Step::Corrupt;
-            std::memset(lengths + index, value, repeat);
+            Bits(TakenBits(entry) + extraBits);
+            std::memset(lengths + index, symbol == 16 ? lengths[index - 1] : 0, repeat);
             index += repeat;
         }
         if (!Within()) return Step::Truncated;
