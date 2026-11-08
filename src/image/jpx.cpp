@@ -388,6 +388,34 @@ public:
         }
     }
 
+    // Every channel is an 8-bit unsigned component taken as it is.
+    bool Bytes() const { return fast_; }
+
+    // With Bytes(): writes `width` pixels of image row `y` from x = `x` from row j of the tile's
+    // components, converted straight to bytes.
+    void TileRow(const TileComponent* components, uint32_t j, uint32_t x, uint32_t y, uint32_t width) {
+        const size_t n = m_.channels.size();
+        uint8_t* out = reinterpret_cast<uint8_t*>(&image_.samples[0]) + (size_t(y) * image_.width + x) * n;
+        if (n == 1) {
+            components[m_.channels[0].component].RowBytes(j, width, out);
+            return;
+        }
+        bytes_.resize(n * width);
+        for (size_t k = 0; k < n; k++) components[m_.channels[k].component].RowBytes(j, width, bytes_.data() + k * width);
+        const uint8_t* b = bytes_.data();
+        if (n == 3) {
+            for (uint32_t i = 0; i < width; i++, out += 3) {
+                out[0] = b[i];
+                out[1] = b[width + i];
+                out[2] = b[2 * size_t(width) + i];
+            }
+            return;
+        }
+        for (uint32_t i = 0; i < width; i++) {
+            for (size_t k = 0; k < n; k++) *out++ = b[k * width + i];
+        }
+    }
+
     // Writes `width` pixels of image row `y` from x = `x`, sample i of component c at
     // region.samples[c][i] (the row's start already applied).
     void Row(const int32_t* const* rows, uint32_t x, uint32_t y, uint32_t width) {
@@ -395,11 +423,8 @@ public:
         const size_t bytes = m_.bits / 8;
         uint8_t* out = reinterpret_cast<uint8_t*>(&image_.samples[0]) + (size_t(y) * image_.width + x) * n * bytes;
         if (fast_) {
-            for (size_t k = 0; k < n; k++) {
-                const int32_t* src = rows[m_.channels[k].component];
-                uint8_t* o = out + k;
-                for (uint32_t i = 0; i < width; i++, o += n) *o = static_cast<uint8_t>(src[i]);
-            }
+            // 8-bit unsigned channels arrive clipped to [0, 255].
+            for (size_t k = 0; k < n; k++) Internal::NarrowBytes(rows[m_.channels[k].component], out + k, width, n);
             return;
         }
         int32_t v[Internal::kMaxComponents + 1];
@@ -453,6 +478,7 @@ private:
     const Mapping& m_;
     Image& image_;
     bool fast_ = false;
+    std::vector<uint8_t> bytes_;  // TileRow's channels, a row each
 };
 
 // Writes each tile straight into the image: every component at full size.
@@ -477,9 +503,16 @@ public:
         for (int c = 1; c < count; c++) {
             if (components[c].width < width || components[c].height < height) return;
         }
+        if (writer_.Bytes()) {
+            for (uint32_t j = 0; j < height; j++) writer_.TileRow(components, j, x, y + j, width);
+            return;
+        }
+        // Each image row: the components' samples converted into one row buffer each.
+        rowBuffer_.resize(size_t(count) * width);
         const int32_t* rows[Internal::kMaxComponents];
+        for (int c = 0; c < count; c++) rows[c] = rowBuffer_.data() + size_t(c) * width;
         for (uint32_t j = 0; j < height; j++) {
-            for (int c = 0; c < count; c++) rows[c] = components[c].samples + size_t(j) * components[c].stride;
+            for (int c = 0; c < count; c++) components[c].Row(j, width, rowBuffer_.data() + size_t(c) * width);
             writer_.Row(rows, x, y + j, width);
         }
     }
@@ -488,6 +521,7 @@ private:
     PixelWriter& writer_;
     Image& image_;
     uint32_t ox_ = 0, oy_ = 0;
+    std::vector<int32_t> rowBuffer_;
 };
 
 // Collects the components as planes.
@@ -523,10 +557,7 @@ public:
             if (x >= comp.width || y >= comp.height) continue;
             const uint32_t width = std::min(t.width, comp.width - x);
             const uint32_t height = std::min(t.height, comp.height - y);
-            for (uint32_t j = 0; j < height; j++) {
-                std::memcpy(comp.samples.data() + size_t(y + j) * comp.width + x, t.samples + size_t(j) * t.stride,
-                            width * sizeof(int32_t));
-            }
+            for (uint32_t j = 0; j < height; j++) t.Row(j, width, comp.samples.data() + size_t(y + j) * comp.width + x);
         }
     }
 

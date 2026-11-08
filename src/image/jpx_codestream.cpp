@@ -1182,8 +1182,14 @@ Result TileDecoder::DecodeBlocks() {
         const Resolution& top = tc.res[tc.decoded - 1];
         const size_t stride = top.x1 - top.x0;
         const size_t count = stride * (top.y1 - top.y0);
-        if (tc.style.reversible) ints_[c].assign(count, 0);
-        else floats_[c].assign(count, 0.0f);
+        // Code-blocks without data leave zeros.
+        if (tc.style.reversible) {
+            ints_[c].resize(count);
+            std::memset(ints_[c].data(), 0, count * sizeof(int32_t));
+        } else {
+            floats_[c].resize(count);
+            std::memset(floats_[c].data(), 0, count * sizeof(float));
+        }
         for (int r = 0; r < tc.decoded; r++) {
             const Resolution& res = tc.res[r];
             const uint32_t precincts = res.pw * res.ph;
@@ -1233,18 +1239,9 @@ Result TileDecoder::DecodeBlocks() {
                         const size_t x = size_t(block.x0 - band.x0) + offsetX;
                         const size_t y = size_t(block.y0 - band.y0) + offsetY;
                         const int32_t* in = coefficients_.data();
-                        if (tc.style.reversible) {
-                            for (int j = 0; j < hgt; j++) {
-                                int32_t* out = ints_[c].data() + (y + j) * stride + x;
-                                for (int i2 = 0; i2 < w; i2++) out[i2] = in[i2] / 2;
-                                in += w;
-                            }
-                        } else {
-                            for (int j = 0; j < hgt; j++) {
-                                float* out = floats_[c].data() + (y + j) * stride + x;
-                                for (int i2 = 0; i2 < w; i2++) out[i2] = static_cast<float>(in[i2]) * step;
-                                in += w;
-                            }
+                        for (int j = 0; j < hgt; j++, in += w) {
+                            if (tc.style.reversible) Dequantize53(in, ints_[c].data() + (y + j) * stride + x, size_t(w));
+                            else Dequantize97(in, floats_[c].data() + (y + j) * stride + x, size_t(w), step);
                         }
                     }
                 }
@@ -1288,25 +1285,20 @@ void TileDecoder::Transform(TileSink& sink) {
     }
     std::vector<TileComponent> out(n);
     for (size_t c = 0; c < n; c++) {
-        TileComp& tc = comps_[c];
+        const TileComp& tc = comps_[c];
         const SizComponent& sc = h_.components[c];
         const Resolution& top = tc.res[tc.decoded - 1];
-        const size_t count = size_t(top.x1 - top.x0) * (top.y1 - top.y0);
-        const int32_t shift = sc.isSigned ? 0 : int32_t(1) << (sc.precision - 1);
-        const int32_t low = sc.isSigned ? -(int32_t(1) << (sc.precision - 1)) : 0;
-        const int32_t high = sc.isSigned ? (int32_t(1) << (sc.precision - 1)) - 1 : (int32_t(1) << sc.precision) - 1;
-        if (tc.style.reversible) {
-            ShiftClamp(ints_[c].data(), count, shift, low, high);
-        } else {
-            ints_[c].resize(count);
-            ShiftClampFloat(floats_[c].data(), ints_[c].data(), count, shift, low, high);
-        }
-        out[c].samples = ints_[c].data();
-        out[c].stride = top.x1 - top.x0;
-        out[c].x0 = top.x0;
-        out[c].y0 = top.y0;
-        out[c].width = top.x1 - top.x0;
-        out[c].height = top.y1 - top.y0;
+        TileComponent& t = out[c];
+        if (tc.style.reversible) t.ints = ints_[c].data();
+        else t.floats = floats_[c].data();
+        t.stride = top.x1 - top.x0;
+        t.x0 = top.x0;
+        t.y0 = top.y0;
+        t.width = top.x1 - top.x0;
+        t.height = top.y1 - top.y0;
+        t.shift = sc.isSigned ? 0 : int32_t(1) << (sc.precision - 1);
+        t.low = sc.isSigned ? -(int32_t(1) << (sc.precision - 1)) : 0;
+        t.high = sc.isSigned ? (int32_t(1) << (sc.precision - 1)) - 1 : (int32_t(1) << sc.precision) - 1;
     }
     sink.Tile(out.data(), static_cast<int>(n));
 }

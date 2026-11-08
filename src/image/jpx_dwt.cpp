@@ -404,23 +404,64 @@ void InverseIct(float* c0, float* c1, float* c2, size_t count) {
     }
 }
 
-void ShiftClamp(int32_t* data, size_t count, int32_t shift, int32_t low, int32_t high) {
-    for (size_t i = 0; i < count; i++) {
-        const int64_t v = int64_t(data[i]) + shift;
-        data[i] = static_cast<int32_t>(v < low ? low : (v > high ? high : v));
+void ShiftClamp(const int32_t* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    // Clipping to [low - shift, high - shift] before the shift cannot overflow (precisions are at
+    // most 16 bits) and gives what clipping the exact sum gives.
+    const __m128i s = _mm_set1_epi32(shift), l = _mm_set1_epi32(low - shift), h = _mm_set1_epi32(high - shift);
+    for (; i + 4 <= count; i += 4) {
+        __m128i r = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
+        const __m128i below = _mm_cmplt_epi32(r, l);
+        r = _mm_or_si128(_mm_and_si128(below, l), _mm_andnot_si128(below, r));
+        const __m128i above = _mm_cmpgt_epi32(r, h);
+        r = _mm_or_si128(_mm_and_si128(above, h), _mm_andnot_si128(above, r));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), _mm_add_epi32(r, s));
+    }
+#endif
+    for (; i < count; i++) {
+        const int64_t v = int64_t(in[i]) + shift;
+        out[i] = static_cast<int32_t>(v < low ? low : (v > high ? high : v));
     }
 }
+
+namespace {
+
+int32_t ShiftClampOne(float v, int32_t shift, int32_t low, int32_t high) {
+    if (v > 2147483648.0f) return high;
+    if (!(v >= -2147483648.0f)) return low;  // also NaN, which lrintf turns into INT_MIN
+    const int64_t r = static_cast<int64_t>(std::llrint(v)) + shift;
+    return static_cast<int32_t>(r < low ? low : (r > high ? high : r));
+}
+
+#if defined(__SSE2__)
+// Values beyond +-2^30 clip anyway (precisions are at most 16 bits); _mm_max_ps returns its second
+// operand for NaN, which then clips to `low` as lrintf's INT_MIN would. cvtps2dq rounds to
+// nearest even, as lrintf.
+__m128i RoundClipped(const float* p) {
+    const __m128 lo = _mm_set1_ps(-1073741824.0f), hi = _mm_set1_ps(1073741824.0f);
+    return _mm_cvtps_epi32(_mm_min_ps(_mm_max_ps(_mm_loadu_ps(p), lo), hi));
+}
+
+// Sixteen values within +-2^30, plus 128, clipped to [0, 255]: the saturating packs clip a value
+// at or beyond the int16 range to that range's end, where adding 128 and clipping to [0, 255]
+// gives what it gives for the value itself.
+void StoreShiftedBytes(uint8_t* out, __m128i a, __m128i b, __m128i c, __m128i d) {
+    const __m128i s = _mm_set1_epi16(128);
+    const __m128i ab = _mm_adds_epi16(_mm_packs_epi32(a, b), s);
+    const __m128i cd = _mm_adds_epi16(_mm_packs_epi32(c, d), s);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(out), _mm_packus_epi16(ab, cd));
+}
+#endif
+
+} // namespace
 
 void ShiftClampFloat(const float* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high) {
     size_t i = 0;
 #if defined(__SSE2__)
-    // Values beyond +-2^30 clip anyway (precisions are at most 16 bits); _mm_max_ps returns its
-    // second operand for NaN, which then clips to `low` as lrintf's INT_MIN would.
-    const __m128 lo = _mm_set1_ps(-1073741824.0f), hi = _mm_set1_ps(1073741824.0f);
     const __m128i s = _mm_set1_epi32(shift), l = _mm_set1_epi32(low), h = _mm_set1_epi32(high);
     for (; i + 4 <= count; i += 4) {
-        const __m128 v = _mm_min_ps(_mm_max_ps(_mm_loadu_ps(in + i), lo), hi);
-        __m128i r = _mm_add_epi32(_mm_cvtps_epi32(v), s);  // round to nearest even, as lrintf
+        __m128i r = _mm_add_epi32(RoundClipped(in + i), s);
         const __m128i below = _mm_cmplt_epi32(r, l);
         r = _mm_or_si128(_mm_and_si128(below, l), _mm_andnot_si128(below, r));
         const __m128i above = _mm_cmpgt_epi32(r, h);
@@ -428,17 +469,74 @@ void ShiftClampFloat(const float* in, int32_t* out, size_t count, int32_t shift,
         _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), r);
     }
 #endif
+    for (; i < count; i++) out[i] = ShiftClampOne(in[i], shift, low, high);
+}
+
+void ShiftClampBytes(const int32_t* in, uint8_t* out, size_t count) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    for (; i + 16 <= count; i += 16) {
+        const __m128i* p = reinterpret_cast<const __m128i*>(in + i);
+        StoreShiftedBytes(out + i, _mm_loadu_si128(p), _mm_loadu_si128(p + 1), _mm_loadu_si128(p + 2),
+                          _mm_loadu_si128(p + 3));
+    }
+#endif
     for (; i < count; i++) {
-        const float v = in[i];
-        if (v > 2147483648.0f) {
-            out[i] = high;
-        } else if (!(v >= -2147483648.0f)) {  // also NaN, which lrintf turns into INT_MIN
-            out[i] = low;
-        } else {
-            const int64_t r = static_cast<int64_t>(std::llrint(v)) + shift;
-            out[i] = static_cast<int32_t>(r < low ? low : (r > high ? high : r));
+        const int64_t v = int64_t(in[i]) + 128;
+        out[i] = static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+}
+
+void ShiftClampFloatBytes(const float* in, uint8_t* out, size_t count) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    for (; i + 16 <= count; i += 16) {
+        StoreShiftedBytes(out + i, RoundClipped(in + i), RoundClipped(in + i + 4), RoundClipped(in + i + 8),
+                          RoundClipped(in + i + 12));
+    }
+#endif
+    for (; i < count; i++) out[i] = static_cast<uint8_t>(ShiftClampOne(in[i], 128, 0, 255));
+}
+
+void Dequantize53(const int32_t* in, int32_t* out, size_t count) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    for (; i + 4 <= count; i += 4) {
+        // v / 2 rounds toward zero: add the sign bit before the arithmetic shift.
+        const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), _mm_srai_epi32(_mm_add_epi32(v, _mm_srli_epi32(v, 31)), 1));
+    }
+#endif
+    for (; i < count; i++) out[i] = in[i] / 2;
+}
+
+void Dequantize97(const int32_t* in, float* out, size_t count, float step) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    // cvtdq2ps rounds as the scalar conversion does (to nearest even).
+    const __m128 s = _mm_set1_ps(step);
+    for (; i + 4 <= count; i += 4) {
+        const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
+        _mm_storeu_ps(out + i, _mm_mul_ps(_mm_cvtepi32_ps(v), s));
+    }
+#endif
+    for (; i < count; i++) out[i] = static_cast<float>(in[i]) * step;
+}
+
+void NarrowBytes(const int32_t* in, uint8_t* out, size_t count, size_t stride) {
+    size_t i = 0;
+#if defined(__SSE2__)
+    if (stride == 1) {
+        // The saturating packs keep values in [0, 255] as they are.
+        for (; i + 16 <= count; i += 16) {
+            const __m128i* p = reinterpret_cast<const __m128i*>(in + i);
+            const __m128i a = _mm_packs_epi32(_mm_loadu_si128(p), _mm_loadu_si128(p + 1));
+            const __m128i b = _mm_packs_epi32(_mm_loadu_si128(p + 2), _mm_loadu_si128(p + 3));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), _mm_packus_epi16(a, b));
         }
     }
+#endif
+    for (; i < count; i++) out[i * stride] = static_cast<uint8_t>(in[i]);
 }
 
 } // namespace RayoPdf::Image::Jpx::Internal

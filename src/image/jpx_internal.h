@@ -72,8 +72,20 @@ void InverseIct(float* c0, float* c1, float* c2, size_t count);
 
 // DC level shift and clipping to [low, high], from integer or floating-point (rounded to nearest
 // even as lrintf does) coefficients, into int32 samples.
-void ShiftClamp(int32_t* data, size_t count, int32_t shift, int32_t low, int32_t high);
+void ShiftClamp(const int32_t* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high);
 void ShiftClampFloat(const float* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high);
+// The same for 8-bit unsigned components (shift 128, clipping to [0, 255]), into bytes.
+void ShiftClampBytes(const int32_t* in, uint8_t* out, size_t count);
+void ShiftClampFloatBytes(const float* in, uint8_t* out, size_t count);
+
+// A code-block's coefficients (one fractional bit, tier-1's output) into the tile: halved,
+// truncating toward zero as C division does (5/3), or converted to float and multiplied by `step`
+// (9/7), one row of `count` samples.
+void Dequantize53(const int32_t* in, int32_t* out, size_t count);
+void Dequantize97(const int32_t* in, float* out, size_t count, float step);
+
+// Samples already clipped to [0, 255] as bytes, `stride` bytes apart in `out`.
+void NarrowBytes(const int32_t* in, uint8_t* out, size_t count, size_t stride);
 
 // ------------------------------------------------------------------------------ codestream
 
@@ -100,15 +112,33 @@ struct CodestreamInfo {
     std::vector<ComponentInfo> components;
 };
 
-// One decoded tile: per component, its samples (after the DC level shift and clipping) at the
-// decoded resolution, `width` x `height` at (x0, y0) of the component's reduced grid.
+// One decoded tile component at the decoded resolution, `width` x `height` at (x0, y0) of the
+// component's reduced grid: its coefficients after the inverse wavelet and component transforms
+// (integers with the 5/3 wavelet, floats with the 9/7), which Row turns into samples a row at a
+// time.
 struct TileComponent {
-    const int32_t* samples = nullptr;
+    const int32_t* ints = nullptr;
+    const float* floats = nullptr;
     size_t stride = 0;
     uint32_t x0 = 0;
     uint32_t y0 = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    int32_t shift = 0;  // the DC level shift and the clipping range
+    int32_t low = 0;
+    int32_t high = 0;
+
+    // The first `count` samples of row j (DC level shifted and clipped) into `out`.
+    void Row(uint32_t j, uint32_t count, int32_t* out) const {
+        if (floats) ShiftClampFloat(floats + size_t(j) * stride, out, count, shift, low, high);
+        else ShiftClamp(ints + size_t(j) * stride, out, count, shift, low, high);
+    }
+
+    // The same as bytes, for an 8-bit unsigned component (shift 128, low 0, high 255).
+    void RowBytes(uint32_t j, uint32_t count, uint8_t* out) const {
+        if (floats) ShiftClampFloatBytes(floats + size_t(j) * stride, out, count);
+        else ShiftClampBytes(ints + size_t(j) * stride, out, count);
+    }
 };
 
 class TileSink {
