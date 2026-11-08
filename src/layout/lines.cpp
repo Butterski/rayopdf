@@ -592,46 +592,24 @@ void LineText(const PageData& page, const Line& line, std::string& out, uint32_t
     }
 }
 
-void BuildLines(PageData& page) {
-    page.lines.clear();
-    page.lineGlyphs.clear();
-    std::vector<Glyph>& glyphs = page.glyphs;
+namespace {
 
-    // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave, except that invisible
-    // text is the page's text when nothing visible is (an OCR layer). The add-on's OCR layer
-    // (kGlyphOcr) stays whatever else the page has.
-    bool visibleText = false, invisibleText = false;
-    for (const Glyph& g : glyphs) {
-        if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
-        if (g.flags & kGlyphClipped || g.size < 1.0f) continue;
-        if (!(g.flags & kGlyphInvisible)) {
-            visibleText = true;
-            break;
-        }
-        invisibleText = true;
-    }
-    const bool keepInvisible = !visibleText && invisibleText;
-    std::vector<uint32_t> vis;
-    vis.reserve(glyphs.size());
-    for (uint32_t i = 0; i < glyphs.size(); ++i) {
-        Glyph& g = glyphs[i];
-        if (g.flags & kGlyphDropped) continue;
-        const bool hidden = (g.flags & kGlyphClipped) || g.size < 1.0f ||
-                            ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible);
-        if (hidden) {
-            g.flags |= kGlyphDropped;
-            if (!(g.flags & kGlyphSpace)) page.hiddenGlyphs++;
-            continue;
-        }
-        // Codes without text carry nothing to place.
-        if (g.textLength == 0) continue;
-        // Typographic signals come from rendered text only: an invisible layer that came with the
-        // PDF (OCR text over a scan) has no face to be bold, italic or fixed-pitch in, whatever its
-        // font says. The add-on's OCR layer (kGlyphOcr) carries what the scan's pixels show.
-        if ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
-            g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
-        vis.push_back(i);
-    }
+// Fmin and Fmax (common/minmax.h) without their NaN tests, for pages whose placed glyphs all
+// have a finite frame box, baseline and size: of finite values both keep the smaller (larger)
+// one, and the later of two equal ones, so the lines are the same as with the tests.
+struct FiniteMinMax {
+    static float Min(float a, float b) { return a < b ? a : b; }
+    static float Max(float a, float b) { return a > b ? a : b; }
+};
+struct CheckedMinMax {
+    static float Min(float a, float b) { return Fmin(a, b); }
+    static float Max(float a, float b) { return Fmax(a, b); }
+};
+
+// Lines from the placed glyphs `vis` (content order), M the page's min and max.
+template <typename M>
+void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
+    std::vector<Glyph>& glyphs = page.glyphs;
     FoldDuplicates(page, vis);
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
@@ -642,7 +620,7 @@ void BuildLines(PageData& page) {
         const bool space = (g.flags & kGlyphSpace) != 0;
         if (!frags.empty()) {
             Fragment& f = frags.back();
-            const float em = Fmax(f.size, g.size);
+            const float em = M::Max(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
             const float dv = g.v - f.baseline;
             const bool sameBase = std::fabs(dv) <= 0.25f * em;
@@ -652,7 +630,7 @@ void BuildLines(PageData& page) {
             if (g.dir == f.dir && (sameBase || script || space) && gap >= -0.6f * em && gap <= maxGap &&
                 std::fabs(dv) <= 0.6f * em) {
                 f.end = k + 1;
-                f.lastU1 = Fmax(f.lastU1, g.u1);
+                f.lastU1 = M::Max(f.lastU1, g.u1);
                 if (!space) {
                     f.lastSize = g.size;
                     if (!f.any) {
@@ -660,8 +638,8 @@ void BuildLines(PageData& page) {
                         f.baseline = g.v, f.size = g.size;
                         f.any = true;
                     } else {
-                        f.u0 = Fmin(f.u0, g.u0), f.u1 = Fmax(f.u1, g.u1);
-                        f.vb = Fmin(f.vb, g.vb), f.vt = Fmax(f.vt, g.vt);
+                        f.u0 = M::Min(f.u0, g.u0), f.u1 = M::Max(f.u1, g.u1);
+                        f.vb = M::Min(f.vb, g.vb), f.vt = M::Max(f.vt, g.vt);
                         // A fragment that began with a superscript takes the baseline of the
                         // full-size text that follows.
                         if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
@@ -718,7 +696,7 @@ void BuildLines(PageData& page) {
         size_t end = at + 1;
         while (end < fo.size()) {
             const Fragment& f = frags[fo[end]];
-            if (f.dir != head.dir || head.baseline - f.baseline > 0.25f * Fmax(head.size, f.size)) break;
+            if (f.dir != head.dir || head.baseline - f.baseline > 0.25f * M::Max(head.size, f.size)) break;
             ++end;
         }
         cluster.assign(fo.begin() + static_cast<std::ptrdiff_t>(at), fo.begin() + static_cast<std::ptrdiff_t>(end));
@@ -727,14 +705,14 @@ void BuildLines(PageData& page) {
         for (size_t c = 0; c < cluster.size(); ++c) {
             const Fragment& f = frags[cluster[c]];
             if (g.count > 0) {
-                const float em = Fmax(g.size, f.size);
+                const float em = M::Max(g.size, f.size);
                 const bool lastMarker = frags[members.back()].marker && g.count == 1;
                 const float maxGap = (lastMarker ? kMarkerGap : kJoinGap) * em;
                 if (f.u0 - g.u1 <= maxGap) {
                     members.push_back(cluster[c]);
                     g.count++;
-                    g.u0 = Fmin(g.u0, f.u0), g.u1 = Fmax(g.u1, f.u1);
-                    g.vb = Fmin(g.vb, f.vb), g.vt = Fmax(g.vt, f.vt);
+                    g.u0 = M::Min(g.u0, f.u0), g.u1 = M::Max(g.u1, f.u1);
+                    g.vb = M::Min(g.vb, f.vb), g.vt = M::Max(g.vt, f.vt);
                     if (f.size > g.size) g.size = f.size, g.baseline = f.baseline;
                     continue;
                 }
@@ -780,7 +758,7 @@ void BuildLines(PageData& page) {
         Group& line = groups[best];
         small.merged = true;
         line.scripts = true;
-        line.u0 = Fmin(line.u0, small.u0), line.u1 = Fmax(line.u1, small.u1);
+        line.u0 = M::Min(line.u0, small.u0), line.u1 = M::Max(line.u1, small.u1);
         if (extraOf[best] == kEmpty) {
             extraOf[best] = static_cast<uint32_t>(extra.size());
             extra.emplace_back();
@@ -844,7 +822,7 @@ void BuildLines(PageData& page) {
             }
             g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
             if (!first) {
-                const float em = Fmax(Fmin(previousSize, g.size), 0.5f * Fmax(previousSize, g.size));
+                const float em = M::Max(M::Min(previousSize, g.size), 0.5f * M::Max(previousSize, g.size));
                 const float gap = g.u0 - right;
                 const bool combining = StartsWithCombiningMark(page.GlyphText(g));
                 if (!combining && (pendingSpace || gap > wordGap * em)) g.flags |= kGlyphSpaceBefore;
@@ -854,10 +832,10 @@ void BuildLines(PageData& page) {
                 if (gap > kGutterCandidate * em) {
                     segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
                 } else {
-                    segments.back().u1 = Fmax(segments.back().u1, g.u1);
+                    segments.back().u1 = M::Max(segments.back().u1, g.u1);
                 }
-                right = Fmax(right, g.u1);
-                p.u0 = Fmin(p.u0, g.u0), p.u1 = Fmax(p.u1, g.u1);
+                right = M::Max(right, g.u1);
+                p.u0 = M::Min(p.u0, g.u0), p.u1 = M::Max(p.u1, g.u1);
             } else {
                 segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
                 right = g.u1;
@@ -958,7 +936,6 @@ void BuildLines(PageData& page) {
         uint32_t count;
     };
     std::vector<SizeCount> sizes;
-    BidiScratch bidi;
     for (const Proto& p : protos) {
         uint32_t at = p.first;
         const uint32_t end = p.first + p.count;
@@ -977,8 +954,8 @@ void BuildLines(PageData& page) {
                     g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
                     line.u0 = g.u0, line.u1 = g.u1, line.vb = g.vb, line.vt = g.vt;
                 }
-                line.u0 = Fmin(line.u0, g.u0), line.u1 = Fmax(line.u1, g.u1);
-                line.vb = Fmin(line.vb, g.vb), line.vt = Fmax(line.vt, g.vt);
+                line.u0 = M::Min(line.u0, g.u0), line.u1 = M::Max(line.u1, g.u1);
+                line.vb = M::Min(line.vb, g.vb), line.vt = M::Max(line.vt, g.vt);
                 allFlags &= g.flags;
                 line.chars++;
                 bool counted = false;
@@ -1013,6 +990,58 @@ void BuildLines(PageData& page) {
             at = stop;
         }
     }
+}
+
+} // namespace
+
+void BuildLines(PageData& page) {
+    page.lines.clear();
+    page.lineGlyphs.clear();
+    std::vector<Glyph>& glyphs = page.glyphs;
+
+    // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave, except that invisible
+    // text is the page's text when nothing visible is (an OCR layer). The add-on's OCR layer
+    // (kGlyphOcr) stays whatever else the page has.
+    bool visibleText = false, invisibleText = false;
+    for (const Glyph& g : glyphs) {
+        if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
+        if (g.flags & kGlyphClipped || g.size < 1.0f) continue;
+        if (!(g.flags & kGlyphInvisible)) {
+            visibleText = true;
+            break;
+        }
+        invisibleText = true;
+    }
+    const bool keepInvisible = !visibleText && invisibleText;
+    std::vector<uint32_t> vis;
+    vis.reserve(glyphs.size());
+    // Stays 0 while every placed glyph's frame box, baseline and size are finite: x - x is 0 for
+    // a finite x and NaN otherwise, and a NaN stays in the sum.
+    float nonFinite = 0;
+    for (uint32_t i = 0; i < glyphs.size(); ++i) {
+        Glyph& g = glyphs[i];
+        if (g.flags & kGlyphDropped) continue;
+        const bool hidden = (g.flags & kGlyphClipped) || g.size < 1.0f ||
+                            ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible);
+        if (hidden) {
+            g.flags |= kGlyphDropped;
+            if (!(g.flags & kGlyphSpace)) page.hiddenGlyphs++;
+            continue;
+        }
+        // Codes without text carry nothing to place.
+        if (g.textLength == 0) continue;
+        // Typographic signals come from rendered text only: an invisible layer that came with the
+        // PDF (OCR text over a scan) has no face to be bold, italic or fixed-pitch in, whatever its
+        // font says. The add-on's OCR layer (kGlyphOcr) carries what the scan's pixels show.
+        if ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
+            g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
+        nonFinite += ((g.u0 - g.u0) + (g.u1 - g.u1)) + ((g.vb - g.vb) + (g.vt - g.vt)) + ((g.v - g.v) + (g.size - g.size));
+        vis.push_back(i);
+    }
+    if (nonFinite == 0)
+        PlaceGlyphs<FiniteMinMax>(page, vis);
+    else
+        PlaceGlyphs<CheckedMinMax>(page, vis);
 
     DropLineNumbers(page);
     MarkStruck(page);
@@ -1026,6 +1055,7 @@ void BuildLines(PageData& page) {
     // reorder.
     if (!std::any_of(page.text.begin(), page.text.end(), [](char c) { return RightToLeftLead(static_cast<unsigned char>(c)); }))
         return;
+    BidiScratch bidi;
     float left = INFINITY, right = -INFINITY;
     for (const Line& line : page.lines)
         if (line.dir == 0) left = Fmin(left, line.u0), right = Fmax(right, line.u1);

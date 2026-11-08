@@ -11,6 +11,7 @@
 #include "layout/page.h"
 #include "layout/pipeline.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -224,6 +225,20 @@ void TestDuplicateCells() {
         const std::string md = Run(pages);
         Show("duplicate cells", md);
         RAYOPDF_CHECK(md == "Plain **strong**\n", 484);
+    }
+}
+
+// A glyph with an infinite or NaN frame coordinate sends its page through the NaN-tested min and
+// max; the other text still forms its lines.
+void TestNonFiniteGlyph() {
+    for (const float bad : {INFINITY, NAN}) {
+        std::vector<PageData> pages{NewPage(1)};
+        AddText(pages[0], "Words on a page.", 72, 700, 10);
+        AddText(pages[0], "x", 72, 600, 10);
+        pages[0].glyphs.back().u1 = bad;
+        const std::string md = Run(pages);
+        Show("non-finite glyph", md);
+        RAYOPDF_CHECK(Contains(md, "Words on a page."), 489);
     }
 }
 
@@ -1097,6 +1112,7 @@ int main() {
     TestCodeBlock();
     TestDuplicateBold();
     TestDuplicateCells();
+    TestNonFiniteGlyph();
     TestEmptyPage();
     TestLinkAnnotation();
     TestEscaping();
