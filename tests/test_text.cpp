@@ -603,6 +603,26 @@ void TestWidthRanges() {
                   1457);
 }
 
+// Texts Repair::RepairText rewrites, through every font path that repairs: a base encoding's
+// private-use glyph (Symbol's parenlefttp, U+F8EB) and ToUnicode entries of a tab and U+F8EB.
+void TestRepairedTexts() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        std::string f;
+        f += "/F1 << /Type /Font /Subtype /Type1 /BaseFont /Symbol >>";
+        const int toUnicode = b.AddStream("", "1 begincodespacerange <00> <FF> endcodespacerange\n"
+                                              "3 beginbfchar <41> <0009> <42> <F8EB> <43> <0041> endbfchar");
+        f += " /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 /Widths [500 500 500] /ToUnicode " +
+             Ref(toUnicode) + " >>";
+        return f;
+    }, 1458);
+    const std::vector<Code> symbol = Codes(l.Get("F1"), "\xE6");
+    const std::vector<Code> mapped = Codes(l.Get("F2"), "ABC");
+    RAYOPDF_CHECK(symbol.size() == 1 && symbol[0].unicode == "\xE2\x8E\x9B" && mapped.size() == 3 &&
+                      mapped[0].unicode == " " && mapped[1].unicode == "\xE2\x8E\x9B" && mapped[2].unicode == "A",
+                  1459);
+}
+
 } // namespace
 
 int main() {
@@ -615,6 +635,7 @@ int main() {
     TestEmbeddedPrograms();
     TestLazyPrograms();
     TestWidthRanges();
+    TestRepairedTexts();
     std::puts("test_text: ok");
     return 0;
 }

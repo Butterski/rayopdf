@@ -52,6 +52,17 @@ bool UsableText(std::string_view text) {
     return true;
 }
 
+// Whether Repair::RepairText may change `text` under some context: only a code point of
+// U+0009-U+000D or U+E000-U+F8FF can be rewritten, and Utf8::Decode gives one only from a byte
+// 0x09-0x0D or a sequence led by 0xEE or 0xEF. False: RepairText returns false.
+bool MayRepair(std::string_view text) {
+    for (const char ch : text) {
+        const unsigned char u = static_cast<unsigned char>(ch);
+        if ((u >= 0x09 && u <= 0x0D) || u == 0xEE || u == 0xEF) return true;
+    }
+    return false;
+}
+
 // "ABCDEF+Name" -> "Name" (a subset tag is six uppercase letters and '+').
 std::string_view StripSubsetTag(std::string_view name) {
     if (name.size() > 7 && name[6] == '+') {
@@ -626,7 +637,7 @@ void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStat
     std::string repaired;
     bool repairedAny = false;
     for (UnicodeEntry& entry : map.entries) {
-        if (!Repair::RepairText(map.Text(entry), context, repaired)) continue;
+        if (!MayRepair(map.Text(entry)) || !Repair::RepairText(map.Text(entry), context, repaired)) continue;
         if (map.text.size() + repaired.size() > UINT32_MAX) break;
         entry.offset = static_cast<uint32_t>(map.text.size());
         entry.length = static_cast<uint32_t>(repaired.size());
@@ -692,7 +703,7 @@ void RepairGlyphTexts(std::vector<std::string>& texts, Repair::Context context) 
     context.thai = stats.thai;
     std::string repaired;
     for (std::string& t : texts) {
-        if (!t.empty() && Repair::RepairText(t, context, repaired)) t = repaired;
+        if (MayRepair(t) && Repair::RepairText(t, context, repaired)) t = repaired;
     }
 }
 
@@ -986,7 +997,9 @@ void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
             if (baseTexts->named[c]) {
                 std::string_view named = baseTexts->Text(c);
                 bool usable = baseTexts->usable[c];
-                if (Repair::RepairText(named, repairContext, repaired)) named = repaired, usable = UsableText(named);
+                if (MayRepair(named) && Repair::RepairText(named, repairContext, repaired)) {
+                    named = repaired, usable = UsableText(named);
+                }
                 if (usable) {
                     SetSlot(font, static_cast<uint8_t>(c), named, nameSource[c]);
                     continue;
@@ -995,7 +1008,7 @@ void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
         } else {
             text.clear();
             if (!names[c].empty() && GlyphNameToUnicode(names[c], zapf, text)) {
-                if (Repair::RepairText(text, repairContext, repaired)) text = repaired;
+                if (MayRepair(text) && Repair::RepairText(text, repairContext, repaired)) text = repaired;
                 if (UsableText(text)) {
                     SetSlot(font, static_cast<uint8_t>(c), text, nameSource[c]);
                     continue;
