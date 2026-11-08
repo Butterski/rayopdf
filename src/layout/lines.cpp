@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -57,7 +58,8 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     const uint64_t mask = capacity - 1;
     std::vector<uint32_t> table(capacity, kEmpty);
     constexpr float kCell = 2.0f;
-    std::vector<uint64_t> hashes(glyphs.size(), 0);
+    // Read only for glyphs in the table, each written before it goes in: no fill needed.
+    const std::unique_ptr<uint64_t[]> hashes(new uint64_t[glyphs.size()]);
     // The filter: 32 bits a table slot, indexed by multiply-shift hashing of (key, cell x, cell y).
     constexpr double kFilterCell = 4.0;
     constexpr float kFilterReach = 1e7f;  // windows of glyphs beyond are not tested
@@ -77,6 +79,12 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const int64_t t = static_cast<int64_t>(q);
         return t - (q < static_cast<double>(t) ? 1 : 0);
     };
+    // floor(v) of a clamped coordinate (|v| <= 1e15) by one integer conversion: a float of 2^23
+    // or more is an integer, so the conversion and the float of its result are exact.
+    const auto floorOf = [](float v) {
+        const int64_t t = static_cast<int64_t>(v);
+        return t - (v < static_cast<float>(t) ? 1 : 0);
+    };
     size_t kept = 0;
     for (size_t k = 0; k < vis.size(); ++k) {
         const uint32_t i = vis[k];
@@ -89,8 +97,8 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const uint64_t h = HashText(text);
         hashes[i] = h;
         // Coordinates are finite but may be huge: clamped before the integer conversion.
-        const int64_t cx = static_cast<int64_t>(std::floor(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f)));
-        const int64_t cy = static_cast<int64_t>(std::floor(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f)));
+        const int64_t cx = floorOf(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f));
+        const int64_t cy = floorOf(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f));
         const float tolerance = Fmax(0.15f * g.size, 0.5f);
         const uint64_t key = h ^ (static_cast<uint64_t>(g.dir) << 56);
         bool candidate = true;
