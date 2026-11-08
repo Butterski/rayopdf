@@ -223,27 +223,43 @@ template <typename T, typename V>
 uint32_t GatherRows(const T* first, size_t stride, uint32_t width, V* buf) {
     uint32_t i = 0;
     for (; i + 4 <= width; i += 4) {
-        __m128 r[8];
-        for (int k = 0; k < 8; k++) r[k] = AsFloats(first + k * stride + i);
-        _MM_TRANSPOSE4_PS(r[0], r[1], r[2], r[3]);
-        _MM_TRANSPOSE4_PS(r[4], r[5], r[6], r[7]);
-        for (int j = 0; j < 4; j++) Join(buf[i + j], r[j], r[4 + j]);
+        const T* p = first + i;
+        __m128 r0 = AsFloats(p), r1 = AsFloats(p + stride), r2 = AsFloats(p + 2 * stride), r3 = AsFloats(p + 3 * stride);
+        __m128 r4 = AsFloats(p + 4 * stride), r5 = AsFloats(p + 5 * stride), r6 = AsFloats(p + 6 * stride);
+        __m128 r7 = AsFloats(p + 7 * stride);
+        _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
+        _MM_TRANSPOSE4_PS(r4, r5, r6, r7);
+        Join(buf[i], r0, r4);
+        Join(buf[i + 1], r1, r5);
+        Join(buf[i + 2], r2, r6);
+        Join(buf[i + 3], r3, r7);
     }
     return i;
 }
 
 template <typename T, typename V>
 uint32_t ScatterRows(const V* buf, int32_t sn, uint32_t lowStart, uint32_t width, T* first, size_t stride) {
+    // Position p takes lane vector p / 2 of the low half when p has the low parity.
+    const V* even = lowStart == 0 ? buf : buf + sn;
+    const V* odd = lowStart == 0 ? buf + sn : buf;
     uint32_t p = 0;
     for (; p + 4 <= width; p += 4) {
-        __m128 r[8];
-        for (uint32_t j = 0; j < 4; j++) {
-            const uint32_t q = p + j;
-            Halves((q & 1) == lowStart ? buf[q >> 1] : buf[sn + (q >> 1)], r[j], r[4 + j]);
-        }
-        _MM_TRANSPOSE4_PS(r[0], r[1], r[2], r[3]);
-        _MM_TRANSPOSE4_PS(r[4], r[5], r[6], r[7]);
-        for (int k = 0; k < 8; k++) FromFloats(first + k * stride + p, r[k]);
+        __m128 r0, r1, r2, r3, r4, r5, r6, r7;
+        Halves(even[p >> 1], r0, r4);
+        Halves(odd[p >> 1], r1, r5);
+        Halves(even[(p >> 1) + 1], r2, r6);
+        Halves(odd[(p >> 1) + 1], r3, r7);
+        _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
+        _MM_TRANSPOSE4_PS(r4, r5, r6, r7);
+        T* q = first + p;
+        FromFloats(q, r0);
+        FromFloats(q + stride, r1);
+        FromFloats(q + 2 * stride, r2);
+        FromFloats(q + 3 * stride, r3);
+        FromFloats(q + 4 * stride, r4);
+        FromFloats(q + 5 * stride, r5);
+        FromFloats(q + 6 * stride, r6);
+        FromFloats(q + 7 * stride, r7);
     }
     return p;
 }
@@ -313,6 +329,12 @@ void Inverse2D(T* data, size_t stride, uint32_t width, uint32_t height, uint32_t
         uint32_t x0 = 0;
         for (; x0 + 16 <= width; x0 += 16) {
             for (uint32_t y = 0; y < height; y++) {
+#if defined(__SSE2__)
+                if (y + 16 < height) {
+                    _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0), _MM_HINT_T0);
+                    _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0 + 15), _MM_HINT_T0);
+                }
+#endif
                 buf[y] = Load(data + y * stride + x0);
                 buf2[y] = Load(data + y * stride + x0 + 8);
             }

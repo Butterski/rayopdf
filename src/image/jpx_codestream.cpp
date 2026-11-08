@@ -1182,13 +1182,27 @@ Result TileDecoder::DecodeBlocks() {
         const Resolution& top = tc.res[tc.decoded - 1];
         const size_t stride = top.x1 - top.x0;
         const size_t count = stride * (top.y1 - top.y0);
-        // Code-blocks without data leave zeros.
+        // Code-blocks without data leave zeros. The code-blocks of a band never overlap, so when
+        // their areas add up to the tile component's, they cover it and only those without data
+        // need clearing; otherwise the whole buffer is cleared first.
+        uint64_t covered = 0;
+        for (int r = 0; r < tc.decoded; r++) {
+            const Resolution& res = tc.res[r];
+            for (uint64_t k = 0; k < uint64_t(res.pw) * res.ph * res.bands; k++) {
+                const PrecinctBand& pb = precinctBands_[res.firstPrecinctBand + k];
+                for (uint32_t i = 0; i < pb.cw * pb.ch; i++) {
+                    const CodeBlock& block = blocks_[pb.firstBlock + i];
+                    covered += uint64_t(block.x1 - block.x0) * uint64_t(block.y1 - block.y0);
+                }
+            }
+        }
+        const bool exact = covered == count;
         if (tc.style.reversible) {
             ints_[c].resize(count);
-            std::memset(ints_[c].data(), 0, count * sizeof(int32_t));
+            if (!exact) std::memset(ints_[c].data(), 0, count * sizeof(int32_t));
         } else {
             floats_[c].resize(count);
-            std::memset(floats_[c].data(), 0, count * sizeof(float));
+            if (!exact) std::memset(floats_[c].data(), 0, count * sizeof(float));
         }
         for (int r = 0; r < tc.decoded; r++) {
             const Resolution& res = tc.res[r];
@@ -1207,7 +1221,20 @@ Result TileDecoder::DecodeBlocks() {
                     const uint32_t blocks = pb.cw * pb.ch;
                     for (uint32_t i = 0; i < blocks; i++) {
                         const CodeBlock& block = blocks_[pb.firstBlock + i];
-                        if (block.segmentCount == 0 || block.corrupted) continue;
+                        const int w = block.x1 - block.x0;
+                        const int hgt = block.y1 - block.y0;
+                        const size_t x = size_t(block.x0 - band.x0) + offsetX;
+                        const size_t y = size_t(block.y0 - band.y0) + offsetY;
+                        if (block.segmentCount == 0 || block.corrupted) {
+                            if (!exact) continue;
+                            // Both zero kinds are all-zero bytes.
+                            const size_t bytes = size_t(w) * (tc.style.reversible ? sizeof(int32_t) : sizeof(float));
+                            for (int j = 0; j < hgt; j++) {
+                                if (tc.style.reversible) std::memset(ints_[c].data() + (y + j) * stride + x, 0, bytes);
+                                else std::memset(floats_[c].data() + (y + j) * stride + x, 0, bytes);
+                            }
+                            continue;
+                        }
                         blockData_.resize(size_t(block.length) + 2);
                         size_t at = 0;
                         for (int32_t ch = block.chunkHead; ch >= 0; ch = chunks_[ch].next) {
@@ -1221,8 +1248,6 @@ Result TileDecoder::DecodeBlocks() {
                             segmentLengths_.push_back(segments_[s].length);
                             segmentPasses_.push_back(segments_[s].passes);
                         }
-                        const int w = block.x1 - block.x0;
-                        const int hgt = block.y1 - block.y0;
                         CodeBlockJob job;
                         job.data = blockData_.data();
                         job.segmentLengths = segmentLengths_.data();
@@ -1236,8 +1261,6 @@ Result TileDecoder::DecodeBlocks() {
                         job.style = tc.style.style;
                         coefficients_.resize(size_t(w) * hgt);
                         if (!t1_.Decode(job, coefficients_.data())) return Result::Corrupt;
-                        const size_t x = size_t(block.x0 - band.x0) + offsetX;
-                        const size_t y = size_t(block.y0 - band.y0) + offsetY;
                         const int32_t* in = coefficients_.data();
                         for (int j = 0; j < hgt; j++, in += w) {
                             if (tc.style.reversible) Dequantize53(in, ints_[c].data() + (y + j) * stride + x, size_t(w));
