@@ -72,6 +72,14 @@ bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
     return false;
 }
 
+// IsJunk, inline for Count (every code point of every ToUnicode entry).
+inline bool JunkCodePoint(uint32_t cp) {
+    if (cp == 0xFFFD) return true;
+    if (cp < 0x20) return cp != '\t' && cp != '\n' && cp != '\f';
+    if (cp >= 0x80 && cp <= 0x9F) return true;
+    return (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
+}
+
 } // namespace
 
 Context ContextForName(std::string_view baseName) {
@@ -83,12 +91,7 @@ Context ContextForName(std::string_view baseName) {
     return c;
 }
 
-bool IsJunk(uint32_t cp) {
-    if (cp == 0xFFFD) return true;
-    if (cp < 0x20) return cp != '\t' && cp != '\n' && cp != '\f';
-    if (cp >= 0x80 && cp <= 0x9F) return true;
-    return (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
-}
+bool IsJunk(uint32_t cp) { return JunkCodePoint(cp); }
 
 uint32_t SymbolCodePoint(uint32_t cp, const Context& context) {
     if (cp >= 0xF020 && cp <= 0xF0FF) {
@@ -139,11 +142,17 @@ bool RepairText(std::string_view text, const Context& context, std::string& out)
 
 void Count(std::string_view text, MapStats& stats) {
     ++stats.entries;
+    // One printable ASCII byte (most entries of a simple font): never junk, accented or Thai.
+    if (text.size() == 1 && static_cast<unsigned char>(text[0]) >= 0x20 && static_cast<unsigned char>(text[0]) < 0x7F) {
+        const unsigned char lower = static_cast<unsigned char>(text[0]) | 0x20;
+        if (lower >= 'a' && lower <= 'z') ++stats.latinLetters;
+        return;
+    }
     size_t at = 0, length = 0;
     uint32_t cp = 0;
     bool junk = text.empty();
     while (Utf8::Decode(text, at, cp, length)) {
-        if (IsJunk(cp)) junk = true;
+        if (JunkCodePoint(cp)) junk = true;
         if ((cp < 0x80 && ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z')) || (cp >= 0xC0 && cp <= 0x24F && cp != 0xD7 &&
                                                                              cp != 0xF7)) {
             ++stats.latinLetters;

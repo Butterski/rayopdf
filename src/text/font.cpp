@@ -42,6 +42,8 @@ constexpr double kNotdefWidth = 0.25;
 // glyph-name result with them counts as missing, algorithms §3.6).
 bool UsableText(std::string_view text) {
     if (text.empty()) return false;
+    // One byte: ASCII is its own code point; any other byte decodes as U+FFFD.
+    if (text.size() == 1) return static_cast<unsigned char>(text[0]) >= 0x20 && static_cast<unsigned char>(text[0]) < 0x7F;
     size_t at = 0;
     uint32_t cp = 0;
     size_t length = 0;
@@ -603,10 +605,14 @@ bool Font::Cid(uint32_t code, uint8_t bytes, uint32_t& cid) const {
 
 namespace {
 
-// Appends `text` to the pool; its reference.
+// Appends `text` to the pool; its reference. A one-byte text (most codes' text) is pushed.
 TextRef Pool(std::string& pool, std::string_view text) {
     TextRef ref{static_cast<uint32_t>(pool.size()), static_cast<uint32_t>(text.size())};
-    pool.append(text.data(), text.size());
+    if (text.size() == 1) {
+        pool.push_back(text[0]);
+    } else {
+        pool.append(text.data(), text.size());
+    }
     return ref;
 }
 

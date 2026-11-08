@@ -9,6 +9,7 @@
 #include "text/cmap.h"
 #include "text/font.h"
 #include "text/program.h"
+#include "text/repair.h"
 #include "text/tables.h"
 
 #include <cmath>
@@ -639,6 +640,25 @@ void TestRepairedTexts() {
                   1459);
 }
 
+// One-byte texts: a ToUnicode's DEL and C0 control are unusable (the encoding's text then), its
+// printable byte usable; Repair::Count of one byte as of any text.
+void TestOneByteTexts() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        const int toUnicode = b.AddStream("", "1 begincodespacerange <00> <FF> endcodespacerange\n"
+                                              "3 beginbfchar <41> <7F> <42> <7E> <43> <1F> endbfchar");
+        return "/F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode " + Ref(toUnicode) + " >>";
+    }, 1461);
+    const std::vector<Code> codes = Codes(l.Get("F1"), "ABC");
+    RAYOPDF_CHECK(codes.size() == 3 && codes[0].unicode == "A" && codes[0].source == UnicodeSource::Encoding &&
+                      codes[1].unicode == "~" && codes[1].source == UnicodeSource::ToUnicode && codes[2].unicode == "C",
+                  1461);
+    Repair::MapStats stats;
+    for (const char* text : {"A", "~", " ", "\x7F", "\x80", "\x1F", "z", "@"}) Repair::Count(text, stats);
+    RAYOPDF_CHECK(stats.entries == 8 && stats.latinLetters == 2 && stats.junk == 2 && stats.accented == 0 && !stats.thai,
+                  1462);
+}
+
 } // namespace
 
 int main() {
@@ -652,6 +672,7 @@ int main() {
     TestLazyPrograms();
     TestWidthRanges();
     TestRepairedTexts();
+    TestOneByteTexts();
     std::puts("test_text: ok");
     return 0;
 }
