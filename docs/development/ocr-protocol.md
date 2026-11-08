@@ -197,13 +197,66 @@ core cannot decode leaves the page as without OCR.
 ## Text layer
 
 Each response line with `conf` ≥ 0.5 becomes glyphs, one per code point, with the box from its
-`chars` span and the line's box, mapped back to page space; the baseline sits at a fifth of the
-line height and the font size is three quarters of it. Lines are added top to bottom, then left to
-right. The glyphs are flagged `kGlyphInvisible | kGlyphOcr`: like an existing invisible OCR layer
-they give paragraphs and lists, no headings or emphasis, and they are kept even when the page has
-visible text (a region on a digital page). Reading order, tables, header and footer removal and the
-writer then run as usual. A page image covering ≥ 90 % of a page with text is a background and is
-not written as an image file, as for a scan with its own OCR layer.
+`chars` span and the line's box, mapped back to page space. Lines are added top to bottom, then left
+to right. The glyphs are flagged `kGlyphInvisible | kGlyphOcr` and are kept even when the page has
+visible text (a region on a digital page). Unlike an invisible OCR layer that came with the PDF
+(whose word boxes are fitted, so it gives paragraphs and lists only), the add-on's layer carries
+the typography the canvas shows (`src/layout/ocr_style.h`), so headings, emphasis, code and quotes
+come out of the usual rules:
+
+- **Size and baseline.** Otsu's threshold over the line boxes splits ink from paper (pages whose
+  classes are closer than 48 grey levels keep the box geometry below). In each letter's columns
+  the vertical run of ink rows holding the most ink is the letter (a neighbouring line's ink is
+  cut off by two blank rows); x-height letters (a c e m n o r s u v w x z, Greek and Cyrillic
+  ones) give the x-height, capitals and digits the cap height, so the measure holds on skewed
+  scans. The font size is the x-height over 0.5, or the cap height through the page's own
+  cap/x-height ratio; the baseline is the median foot of the letters standing on it. Sizes within
+  8 % of the page's body size (weighted median) become the body size, other sizes within 6 % of
+  each other one size; a line with fewer than 3 measurable letters takes the size of the nearest
+  sized line on its baseline (a table row), else the body size. The line keeps its box as its
+  vertical extent, widened to 0.2 em below and 0.8 em above the baseline when smaller. Lines with
+  nothing measurable keep the old geometry: baseline at a fifth of the box, size three quarters.
+- **Bold.** A word's stroke width is the mean horizontal ink run (runs over 0.3 em left out) in
+  the band of its x-height letters (or capitals), over the font size. Bold is at least 1.3 times
+  the page's body words (weighted median). Text larger than the body is bold per size, all its
+  lines pooled (one heading level, one style); body text per word of 3 letters or more, a line
+  with 60 % of its letters in bold words bold throughout, a short word between bold words bold
+  from 1.15 times.
+- **Italic.** The shear (−0.15 to 0.45, 13 steps) that piles the ink of a word's stem letters
+  (b d h l m n p q r u, B D E F H I L P R T U) into the fewest columns; italic is at least 0.12
+  more than the page's body words, with the same line and between-word rules.
+- **Fixed pitch.** A line of 16 code points or more whose character centres, spaces included,
+  lie on a grid (least squares, refitted without up to 15 % slips; residual ≤ 0.12 of the cell,
+  cell 0.47–0.75 em) is monospace; a shorter line whose centres all sit on the grid of a
+  monospace neighbour (within 2.5 em, same size) too, a longer one with 85 % of them. Neighbouring
+  monospace lines of one pitch share the grid of the longest, and their glyphs take its cells, so
+  that code blocks keep their columns and indentation.
+- **Rules.** Dark runs (at least max(24, contrast/5) below the paper) found in 16-pixel strips
+  (covering 85 % of a strip, at most 0.3 em thick), chained across strips and extended pixel by
+  pixel: horizontal ones at least 3 em long, vertical ones at least 1.3 em (a one-line quote bar).
+  Each becomes a filled ruling and a filled rectangle shape, unless the page already has rulings
+  over the canvas (vector-text pages). Lattice tables and quote bars use them as for digital
+  pages.
+
+Reading order, tables, header and footer removal and the writer then run as usual, on tagged
+pages too. One rule differs for OCR text: a heading style holding a large share of the text
+outside tables is demoted to body text, as for any text, except that a style of title size
+(1.38 times the body) is weighed against the tables' text as well. A scan has no outline to name
+the section titles of a document that is mostly tables. A page image covering ≥ 90 % of a page
+with text is a background and is not written as an image file, as for a scan with its own OCR
+layer.
+
+**Text in images of digital pages (region routes)** goes where a reader meets the image. On a page
+with a text layer (at least 50 characters), when images are written (the default), the text
+becomes the image's alternate text,
+`![text](file)`: the lines joined top to bottom with single spaces, white space and control
+characters collapsed, at most 1,000 bytes cut after a whole word with "…", and Markdown escaped
+by the writer. A tagged figure's `/Alt` is kept and the OCR text is then not used. Such an image is
+never set inline in a text line; an image that is not written (a logo repeated on many pages, a
+page background) takes its text with it. With `--images=none` the text is body text at the image's
+place, as above. Whole-page routes and regions on pages without a text layer (scans, scans drawn
+with margins) are always body text: there the image's text is the page's. The decision and its numbers are
+recorded in [ocr_ml_decision.md](ocr_ml_decision.md#text-in-images-of-digital-pages).
 
 ## Glyph shapes
 

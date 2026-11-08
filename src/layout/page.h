@@ -99,6 +99,9 @@ struct ImageBox {
     int32_t mcid = -1;  // marked-content id, -1 when none (counted as Glyph::mcid is)
     uint8_t mcStream = 0;
     uint32_t alt = 0, altLength = 0;  // alternate text in PageData::text (a tagged /Figure's /Alt), empty when none
+    // Text the OCR add-on read in the image (region OCR, layout/ocr.h) when the image is written:
+    // its alternate text where it has no /Alt. In PageData::text, empty when none.
+    uint32_t ocr = 0, ocrLength = 0;
 };
 
 // A link annotation with a URI action.
@@ -146,7 +149,7 @@ enum : uint16_t {
     kLineAllMono = 1u << 3,
     kLineArtifact = 1u << 4,  // every glyph inside /Artifact marked content
     kLineTable = 1u << 5,     // inside a ruled grid read row by row: no headings or lists
-    kLineInvisible = 1u << 6, // every glyph drawn invisibly (an OCR layer): no typographic signals
+    kLineInvisible = 1u << 6, // every glyph drawn invisibly, not by the add-on (a PDF's own OCR layer): no typographic signals
     kLineTableCell = 1u << 7, // text of a table cell: written by its table, never ordered on its own
     // Stands for table `first` (PageData::tables) in reading order: no glyphs (count 0), its box is
     // the table's box. Code walking page.order meets lines with count 0.
@@ -199,6 +202,7 @@ struct PageData {
     std::string_view LinkUri(const LinkArea& l) const { return std::string_view(text).substr(l.uri, l.uriLength); }
     std::string_view ImageName(const ImageBox& i) const { return std::string_view(text).substr(i.name, i.nameLength); }
     std::string_view ImageAlt(const ImageBox& i) const { return std::string_view(text).substr(i.alt, i.altLength); }
+    std::string_view ImageOcrText(const ImageBox& i) const { return std::string_view(text).substr(i.ocr, i.ocrLength); }
     // Whether the ordered lines hold text (image anchors hold none).
     bool HasText() const {
         for (uint32_t li : order)

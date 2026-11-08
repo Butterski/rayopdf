@@ -4,6 +4,7 @@
 #include "image/image.h"
 #include "layout/images.h"
 #include "layout/interpreter.h"
+#include "layout/ocr_style.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,9 @@ namespace {
 // detection boxes padded around the ink).
 constexpr float kBaselineShare = 0.2f;
 constexpr float kSizeShare = 0.75f;
+// A measured line's extent around its baseline, in font sizes (the interpreter's default metrics).
+constexpr float kOcrAscent = 0.8f;
+constexpr float kOcrDescent = 0.2f;
 constexpr uint16_t kOcrFont = 0xFFFF;  // a page-local font index of its own
 
 bool SpaceCodePoint(uint32_t cp) {
@@ -140,6 +144,8 @@ uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& resp
         const OcrProtocol::Line& q = response.lines[b];
         return p.y0 != q.y0 ? p.y0 < q.y0 : p.x0 < q.x0;
     });
+    OcrStyle style;
+    MeasureOcrStyle(canvas, response, style);
     const double step = 1.0 / canvas.scale;
     const int32_t cw = static_cast<int32_t>(canvas.width), ch = static_cast<int32_t>(canvas.height);
     uint32_t added = 0;
@@ -148,8 +154,18 @@ uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& resp
         if (line.conf < kOcrMinConf || line.text.empty()) continue;
         const int32_t ly0 = std::max(0, line.y0), ly1 = std::min(ch, line.y1);
         if (ly1 <= ly0 || line.x1 <= 0 || line.x0 >= cw) continue;
-        const float top = float(canvas.y1 - ly0 * step), bottom = float(canvas.y1 - ly1 * step);
-        const float h = top - bottom;
+        float top = float(canvas.y1 - ly0 * step), bottom = float(canvas.y1 - ly1 * step);
+        float baseline = bottom + kBaselineShare * (top - bottom), size = kSizeShare * (top - bottom);
+        // Measured from the ink: the baseline the letters stand on and the font size from their
+        // x-height; the line keeps its box (the detector's padding included, as the gaps between
+        // lines and rows were measured with), widened to a font's usual extent if it is smaller.
+        const OcrLineStyle& measured = style.lines[index];
+        if (measured.measured) {
+            baseline = float(canvas.y1 - measured.baseline * step);
+            size = float(measured.em * step);
+            bottom = std::min(bottom, baseline - kOcrDescent * size);
+            top = std::max(top, baseline + kOcrAscent * size);
+        }
         size_t k = 0;
         for (size_t at = 0; at < line.text.size() && k < line.chars.size(); ++k) {
             size_t length = 0;
@@ -158,17 +174,23 @@ uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& resp
             at += length;
             if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) continue;
             if (page.glyphs.size() >= kMaxGlyphsPerPage || page.text.size() >= (size_t(1) << 30)) return added;
-            const int32_t sx0 = std::min(std::max(line.chars[k].x0, 0), cw);
-            const int32_t sx1 = std::min(std::max(line.chars[k].x1, sx0), cw);
+            double sx0 = std::min(std::max(line.chars[k].x0, 0), cw);
+            double sx1 = std::min(std::max(line.chars[k].x1, line.chars[k].x0), cw);
+            if (measured.pitch > 0) {
+                // Fixed-pitch text: the character's cell on its block's grid.
+                const double cell = std::round((0.5 * (sx0 + sx1) - measured.origin) / measured.pitch);
+                sx0 = std::min(std::max(measured.origin + (cell - 0.5) * measured.pitch, 0.0), double(cw));
+                sx1 = std::min(std::max(sx0 + measured.pitch, sx0), double(cw));
+            }
             Glyph g;
             g.x0 = float(canvas.x0 + sx0 * step);
-            g.x1 = std::max(float(canvas.x0 + sx1 * step), g.x0);
+            g.x1 = std::max(float(canvas.x0 + std::max(sx1, sx0) * step), g.x0);
             g.y0 = bottom, g.y1 = top;
-            g.u0 = g.x0, g.u1 = g.x1, g.vb = bottom, g.vt = top, g.v = bottom + kBaselineShare * h;
-            g.size = kSizeShare * h;
+            g.u0 = g.x0, g.u1 = g.x1, g.vb = bottom, g.vt = top, g.v = baseline;
+            g.size = size;
             g.text = static_cast<uint32_t>(page.text.size());
             g.textLength = static_cast<uint16_t>(bytes.size());
-            g.flags = kGlyphInvisible | kGlyphOcr;
+            g.flags = static_cast<uint16_t>(kGlyphInvisible | kGlyphOcr | style.flags[measured.first + k]);
             if (SpaceCodePoint(cp)) {
                 g.flags |= kGlyphSpace;
             } else {
@@ -179,7 +201,51 @@ uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& resp
             page.glyphs.push_back(g);
         }
     }
+    AddOcrRulings(canvas, style, page);
     return added;
+}
+
+size_t AppendOcrAltText(const OcrProtocol::Response& response, std::string& out) {
+    std::vector<uint32_t> order;
+    order.reserve(response.lines.size());
+    for (uint32_t i = 0; i < response.lines.size(); ++i)
+        if (response.lines[i].conf >= kOcrMinConf && !response.lines[i].text.empty()) order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        const OcrProtocol::Line& p = response.lines[a];
+        const OcrProtocol::Line& q = response.lines[b];
+        return p.y0 != q.y0 ? p.y0 < q.y0 : p.x0 < q.x0;
+    });
+    static const char kEllipsis[] = "\xE2\x80\xA6";
+    const size_t start = out.size();
+    for (uint32_t index : order) {
+        const std::string& text = response.lines[index].text;
+        bool space = out.size() > start;  // a line break is a space
+        for (size_t at = 0; at < text.size();) {
+            size_t length = 0;
+            const uint32_t cp = Decode(text, at, length);
+            if (length == 0) break;
+            if (cp <= 0x20 || (cp >= 0x7F && cp < 0xA0) || SpaceCodePoint(cp)) {
+                at += length;
+                space = space || out.size() > start;
+                continue;
+            }
+            if (out.size() - start + (space ? 1 : 0) + length > kOcrMaxAltBytes - (sizeof kEllipsis - 1)) {
+                // Too long: cut after the last whole word, then the ellipsis.
+                if (!space) {
+                    size_t last = out.size();
+                    while (last > start && out[last - 1] != ' ') --last;
+                    if (last > start + 1) out.resize(last - 1);
+                }
+                out += kEllipsis;
+                return out.size() - start;
+            }
+            if (space) out.push_back(' ');
+            space = false;
+            out.append(text, at, length);
+            at += length;
+        }
+    }
+    return out.size() - start;
 }
 
 } // namespace RayoPdf::Layout

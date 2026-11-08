@@ -27,7 +27,13 @@ namespace RayoPdf::Layout {
 // and adds the OCR counters to `report`: ocrPagesRouted, ocrPages, ocrFailures, ocrAddonMissing,
 // ocrBrokenPages, ocrVectorTextPages, ocrGlyphFonts, ocrGlyphs. Sets quality[p].ocrFailed for
 // routed pages left without text by a failing add-on. Does nothing with OcrMode::Off.
+//
+// Text read in an image region of a page with a text layer goes where the reader of the Markdown
+// meets the image: with `imagesWritten`, it is the image's alternate text (ImageBox::ocr, used
+// when the image has no /Alt), so the figure's words stay with the figure instead of entering the
+// body; without images it is body text at the image's place (an OCR text layer).
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report);
+                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report,
+                    bool imagesWritten);
 
 } // namespace RayoPdf::Layout

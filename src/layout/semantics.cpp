@@ -1079,18 +1079,26 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // A heading style that holds a large share of the text is the body of a document whose most
     // common size is something else (footnotes, captions): its blocks are not headings. A style
     // of a single block is still a heading when the text of the tables beside it outweighs it (the
-    // title over a page that is all table).
+    // title over a page that is all table). Scanned text (the add-on's OCR layer) has no outline to
+    // name the section titles of a document that is mostly tables: there a style of title size
+    // (kTitleSize) is weighed against the tables' text too, whatever its number of blocks.
     {
         std::unordered_map<int, uint64_t> styleChars;
         std::unordered_map<int, uint32_t> styleBlocks;
         for (const Classified& k : kinds)
             if (k.kind == BlockKind::Heading && k.level == 0) styleChars[k.styleKey] += k.chars, styleBlocks[k.styleKey]++;
+        const auto scanned = [&](size_t r) {
+            const Info& in = infos[raws[r].first];
+            const Line& l = pages[in.page].lines[in.line];
+            return l.count > 0 && (pages[in.page].glyphs[pages[in.page].lineGlyphs[l.first]].flags & kGlyphOcr) != 0;
+        };
         for (size_t r = 0; r < raws.size(); ++r) {
             Classified& k = kinds[r];
             if (k.kind != BlockKind::Heading || k.level > 0) continue;
             const uint64_t chars = styleChars[k.styleKey];
             if (chars * 10 <= totalChars * 3) continue;
-            if (styleBlocks[k.styleKey] == 1 && chars * 10 <= (totalChars + cellChars) * 3) continue;
+            const bool weighed = styleBlocks[k.styleKey] == 1 || (k.size >= kTitleSize * body && scanned(r));
+            if (weighed && chars * 10 <= (totalChars + cellChars) * 3) continue;
             k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
         }
     }

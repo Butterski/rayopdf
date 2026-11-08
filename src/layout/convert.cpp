@@ -40,7 +40,7 @@ void ConvertDocument(const Document& document, const ConvertOptions& options, st
         quality[slot].unreliable = stats.unmapped + stats.guessed;
     }
     report.pages = static_cast<int>(pages.size());
-    RecognisePages(document, fonts, options.ocr, pages, quality, report);
+    RecognisePages(document, fonts, options.ocr, pages, quality, report, !options.imageDirectory.empty());
     std::vector<OutlineEntry> outline;
     ReadOutline(document, outline);
     ImageOutput images;

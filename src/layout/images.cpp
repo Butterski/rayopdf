@@ -148,6 +148,9 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
                 image.line = InlineLine(page, image);
                 if (image.line >= 0) small = false;
             }
+            // Text read in it by OCR (layout/ocr.h) makes it content with an anchor of its own: the
+            // text is its alternate text.
+            if (image.ocrLength > 0) image.line = -1, small = false;
             const bool background = text && Area(image) >= kBackgroundShare * pageArea;
             // The same image drawn again at the same place on the page adds nothing.
             bool again = false;

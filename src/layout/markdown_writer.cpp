@@ -877,9 +877,10 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             }
             out += prefix;
             out += "![";
-            // Alternate text (a tagged figure's /Alt) on one line, with what would end the link
-            // text or start other markup escaped.
-            for (const char c : page.ImageAlt(image)) {
+            // Alternate text (a tagged figure's /Alt, else the text OCR read in the image) on one
+            // line, with what would end the link text or start other markup escaped.
+            const std::string_view alt = image.altLength > 0 ? page.ImageAlt(image) : page.ImageOcrText(image);
+            for (const char c : alt) {
                 if (c == '\\' || c == '[' || c == ']' || c == '*' || c == '_' || c == '`' || c == '<' || c == '&')
                     out.push_back('\\');
                 out.push_back(static_cast<unsigned char>(c) < 0x20 ? ' ' : c);

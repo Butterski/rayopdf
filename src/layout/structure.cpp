@@ -554,7 +554,7 @@ bool Counted(const Glyph& g) {
 bool Neutral(const Glyph& g) { return (g.flags & (kGlyphSpace | kGlyphImage)) != 0; }
 
 void MeasureLine(const PageData& page, Line& line) {
-    uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible;
+    uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
     line.chars = line.count;
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
@@ -569,7 +569,9 @@ void MeasureLine(const PageData& page, Line& line) {
     if (all & kGlyphItalic) line.flags |= kLineAllItalic;
     if (all & kGlyphMonospace) line.flags |= kLineAllMono;
     if (all & kGlyphArtifact) line.flags |= kLineArtifact;
-    if (all & kGlyphInvisible) line.flags |= kLineInvisible;
+    // As in lines.cpp: the add-on's OCR layer (kGlyphOcr) carries typography; a PDF's own
+    // invisible layer does not.
+    if ((all & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
 }
 
 // The order of a glyph inside its owner: its content item's place in the tree, then its place in

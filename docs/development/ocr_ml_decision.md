@@ -238,3 +238,33 @@ cost is the text-layer cost on 89.3 % of pages plus the OCR cost on R core's 10.
   adding an order-test view to Q1.
 - **Re-run triggers** (§6.4): a new census corpus, a change to RayoPDF's font → Unicode chain (it
   lowers M2 and raises M3), new PP-OCR or Tesseract major versions.
+
+## Text in images of digital pages
+
+Decision of 2026-11-08 (plan row B6), taken by principle: text that region OCR reads in an image on
+a page with a text layer belongs to the figure, not to the running text. With images written (the
+default) it is the image's alternate text, `![text](file)` (one line, at most 1,000 bytes, a tagged
+figure's `/Alt` kept instead). With `--images=none` it stays body text at the image's place. Text read
+on pages without a text layer (whole-page scans, scans drawn with margins) is the page's text and
+stays body text in both modes ([ocr-protocol.md](ocr-protocol.md#text-layer)).
+
+Measured with the add-on (`rayopdf-ocr` 0.0.8 ncnn small, static builds, `cli` harness, images
+written). "Body" is 0.0.9 at 8b692d9; "alt" is 8b692d9 with only this change:
+
+|Suite (development)|Body|Alt|Documents whose Markdown differs|
+|---|---|---|---|
+|odl NID / TEDS / MHS / overall|0.9245 / 0.8774 / 0.8422 / 0.9004|0.9247 / 0.8774 / 0.8422 / 0.9007|6 of 200|
+|olmOCR born-digital, pass rate per category (headers_footers, long_tiny_text, multi_column, table_tests)|68.8 / 87.1 / 71.7 / 64.7 %|68.8 / 87.1 / 71.7 / 64.7 %|5 of 1,269|
+|synthetic (all producers)|unchanged|unchanged|0 of 199|
+
+The text-based metrics hardly move, because the alternate text is still in the Markdown. The
+change is where the words sit: next to the figure they come from instead of between the
+paragraphs around it. One rule was found on the development data along the way: a scan drawn with
+wide margins on an otherwise empty page is a region route. Before the `textLayer` condition, its
+whole text went into the alt text and the page got the "no extractable text" comment (olmOCR
+`tables`, 3 tests lost). With the condition it stays body text.
+
+Holdout, measured once on the final build, aggregate only: READoc github text_eds 0.9377,
+head_teds 0.876, seg_kt 0.9966; arxiv text_eds 0.7452, head_teds 0.4687, table_teds 0.4812,
+seg_kt 0.956. These numbers were not used to decide. For reference, Main's earlier runs gave github
+text_eds 0.939 without the add-on and 0.926 with body placement.

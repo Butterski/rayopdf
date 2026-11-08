@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-// Core tests of OCR routing and the OCR client (exit codes 1200-1249): the add-on protocol's frame
-// codec (common/ocr_protocol.h), routing (layout/ocr_route.h), page rasters and the OCR text layer
-// (layout/ocr_layer.h), the client against the stand-in add-on tests/ocr_mock_addon.cpp in each of
-// its failure modes (layout/ocr_client.h), and whole conversions with and without an add-on
-// (layout/ocr.h), including documents converted on several threads at once.
+// Core tests of OCR routing and the OCR client (exit codes 1200-1249, and 1400-1449 for the OCR
+// text layer's typography): the add-on protocol's frame codec (common/ocr_protocol.h), routing
+// (layout/ocr_route.h), page rasters and the OCR text layer (layout/ocr_layer.h, with the size,
+// weight, slant, pitch and rules read from the pixels, layout/ocr_style.h), the client against the
+// stand-in add-on tests/ocr_mock_addon.cpp in each of its failure modes (layout/ocr_client.h), and
+// whole conversions with and without an add-on (layout/ocr.h), including documents converted on
+// several threads at once.
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "common/file.h"
 #include "common/ocr_protocol.h"
 #include "layout/convert.h"
 #include "layout/ocr_client.h"
@@ -580,6 +583,142 @@ void TestOcrGlyphs() {
     RAYOPDF_CHECK(Contains(md, "<!-- rayopdf: page 1 has no extractable text; OCR failed -->"), 1223);
 }
 
+// ---------------------------------------------------------------- typography from the pixels
+
+size_t Count(const std::string& haystack, const std::string& needle);
+
+// Draws `text` on `canvas` as a scan would show it, one cell of `pitch` pixels per code point, and
+// adds its line to `response` with even character spans over the cells. Each letter is two stems
+// `stem` pixels wide: x-height letters `xh` high on `baseline`, capitals and digits 1.4 times,
+// b d h k l 1.5 times, g p q y reaching 0.5 xh below. `styles` (one per byte of ASCII `text`, or
+// empty) marks letters 'b' bold (stems one pixel wider) or 'i' italic (sheared by 0.25). The box
+// is the detector's: padded above the tallest letters, below the baseline only as far as the
+// line's descenders reach (a line without descenders gets a shorter box).
+void ScanLine(OcrCanvas& canvas, P::Response& response, int32_t x, int32_t baseline, int32_t xh, int32_t pitch,
+              const std::string& text, const std::string& styles = {}) {
+    bool descender = false;
+    for (size_t k = 0; k < text.size(); ++k) {
+        const char c = text[k];
+        if (c == ' ') continue;
+        int32_t top = baseline - xh, bottom = baseline;
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) top = baseline - xh * 14 / 10;
+        if (c == 'b' || c == 'd' || c == 'h' || c == 'k' || c == 'l') top = baseline - xh * 15 / 10;
+        if (c == 'g' || c == 'p' || c == 'q' || c == 'y') bottom = baseline + xh / 2, descender = true;
+        const char style = k < styles.size() ? styles[k] : '.';
+        const int32_t stem = style == 'b' ? 3 : 2;
+        const float shear = style == 'i' ? 0.25f : 0.0f;
+        const int32_t cell = x + pitch * static_cast<int32_t>(k);
+        for (int32_t y = top; y < bottom; ++y) {
+            const int32_t shift = static_cast<int32_t>(std::lround(shear * float(baseline - y)));
+            for (const int32_t at : {cell + pitch / 8, cell + pitch / 2 + pitch / 8})
+                for (int32_t s = 0; s < stem; ++s) canvas.pixels[size_t(y) * canvas.width + size_t(at + shift + s)] = 0;
+        }
+    }
+    response.lines.push_back(OcrLine(x, baseline - xh * 2, x + pitch * static_cast<int32_t>(text.size()),
+                                     baseline + (descender ? xh * 7 / 10 : 2), text));
+}
+
+// The page's Markdown after the add-on's lines become its OCR text layer.
+std::string ScanMarkdown(const OcrCanvas& canvas, const P::Response& response, PageData* out = nullptr) {
+    std::vector<PageData> pages(1, NewPage());
+    AddOcrGlyphs(canvas, response, pages[0]);
+    if (out) *out = pages[0];
+    std::string md;
+    ConvertReport report;
+    std::vector<PageTextQuality> quality(1);
+    ConvertPages(pages, quality, {}, false, md, report);
+    return md;
+}
+
+const char* const kScanBody[] = {
+    "the summer run on our moon is a quiet one",  "many people go up early and come down soon",
+    "a slow rain was coming over the green hills", "we saw no sign of any car or bus on the way",
+    "some ran across a narrow bridge in the rain", "and every one of us was happy to be home",
+};
+
+void TestOcrTypography() {
+    OcrCanvas canvas;
+    // Sizes from the x-height: a title twice the body's x-height heads the page; body lines whose
+    // boxes differ (with or without descenders) stay one size and one paragraph.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1400);
+    P::Response response;
+    ScanLine(canvas, response, 144, 200, 20, 16, "Heading over the text");
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 300 + 30 * i, 10, 8, kScanBody[i]);
+    std::string md = ScanMarkdown(canvas, response);
+    Show("ocr heading", md);
+    RAYOPDF_CHECK(Contains(md, "# Heading over the text\n") && Contains(md, "\nthe summer run on our moon") &&
+                      Contains(md, "quiet one many people"),
+                  1400);
+
+    // Bold by stroke width: one word set with wider stems in body text.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1401);
+    response.lines.clear();
+    const std::string boldLine = "a warm summer came over the old town again";
+    std::string styles(boldLine.size(), '.');
+    for (size_t k = 7; k < 13; ++k) styles[k] = 'b';  // "summer"
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 200 + 30 * i, 10, 8, kScanBody[i]);
+    ScanLine(canvas, response, 144, 380, 10, 8, boldLine, styles);
+    md = ScanMarkdown(canvas, response);
+    Show("ocr bold", md);
+    RAYOPDF_CHECK(Contains(md, "a warm **summer** came over") && Count(md, "**") == 2, 1401);
+
+    // Italic by slant: one word set sheared.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1402);
+    response.lines.clear();
+    const std::string italicLine = "we need the minimum number of hours now";
+    styles.assign(italicLine.size(), '.');
+    for (size_t k = 12; k < 19; ++k) styles[k] = 'i';  // "minimum"
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 200 + 30 * i, 10, 8, kScanBody[i]);
+    ScanLine(canvas, response, 144, 380, 10, 8, italicLine, styles);
+    md = ScanMarkdown(canvas, response);
+    Show("ocr italic", md);
+    RAYOPDF_CHECK(Contains(md, "the *minimum* number") && Count(md, "*") == 2, 1402);
+
+    // Fixed pitch: lines whose characters sit on a grid of 0.6 em cells make a code block that keeps
+    // their indentation; a closing line too short to fit a grid of its own sits on theirs.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1403);
+    response.lines.clear();
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 200 + 30 * i, 10, 8, kScanBody[i]);
+    ScanLine(canvas, response, 144, 400, 10, 12, "def run(numbers, more):");
+    ScanLine(canvas, response, 144 + 48, 425, 10, 12, "return sum(numbers) + 1");
+    ScanLine(canvas, response, 144, 450, 10, 12, "end");
+    md = ScanMarkdown(canvas, response);
+    Show("ocr code", md);
+    RAYOPDF_CHECK(Contains(md, "```\ndef run(numbers, more):\n    return sum(numbers) + 1\nend\n```"), 1403);
+
+    // Rules drawn on the page: a horizontal and a vertical run of dark pixels become rulings and
+    // filled shapes; text strokes do not.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1404);
+    response.lines.clear();
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 200 + 30 * i, 10, 8, kScanBody[i]);
+    for (int32_t y = 600; y < 602; ++y)
+        for (int32_t x = 144; x < 744; ++x) canvas.pixels[size_t(y) * canvas.width + size_t(x)] = 0;
+    for (int32_t y = 700; y < 800; ++y)
+        for (int32_t x = 300; x < 303; ++x) canvas.pixels[size_t(y) * canvas.width + size_t(x)] = 0;
+    PageData ruled;
+    ScanMarkdown(canvas, response, &ruled);
+    RAYOPDF_CHECK(ruled.rulings.size() == 2 && ruled.shapes.size() == 2, 1404);
+    const Ruling& across = ruled.rulings[0].x1 - ruled.rulings[0].x0 > 100 ? ruled.rulings[0] : ruled.rulings[1];
+    const Ruling& down = &across == &ruled.rulings[0] ? ruled.rulings[1] : ruled.rulings[0];
+    RAYOPDF_CHECK(std::fabs(across.x0 - 72) < 0.6f && std::fabs(across.x1 - 372) < 0.6f &&
+                      std::fabs(across.y0 - (792 - 301)) < 0.6f && std::fabs(across.y1 - (792 - 300)) < 0.6f &&
+                      std::fabs(down.x0 - 150) < 0.6f && std::fabs(down.x1 - 151.5f) < 0.6f &&
+                      std::fabs(down.y0 - (792 - 400)) < 0.6f && std::fabs(down.y1 - (792 - 350)) < 0.6f &&
+                      (across.flags & kRulingFill) && ruled.shapes[0].kind == ShapeKind::Rect && ruled.shapes[0].filled,
+                  1404);
+
+    // Furniture on an OCR page: the first line, in the body size but without descenders (a shorter
+    // box), is text, not small print in the running band; the page number at the foot goes.
+    RAYOPDF_CHECK(StartCanvas(0, 0, 612, 792, 2.0f, canvas), 1405);
+    response.lines.clear();
+    ScanLine(canvas, response, 144, 150, 10, 8, "Sentinel at the start of the text");
+    for (int i = 0; i < 6; ++i) ScanLine(canvas, response, 144, 230 + 30 * i, 10, 8, kScanBody[i]);
+    ScanLine(canvas, response, 600, 1500, 10, 8, "12");
+    md = ScanMarkdown(canvas, response);
+    Show("ocr furniture", md);
+    RAYOPDF_CHECK(Contains(md, "Sentinel at the start of the text") && !Contains(md, "12"), 1405);
+}
+
 // ---------------------------------------------------------------- the client
 
 OcrOptions MockOptions(uint32_t requestMs = 20000, uint32_t handshakeMs = 20000) {
@@ -694,8 +833,9 @@ void TestClient() {
 // ---------------------------------------------------------------- whole conversions
 
 // A document of US Letter pages: "t" a page of text, "s" a scanned page (a gray image of five
-// lines filling the page), "r" text with a text-bearing figure, "c" text with a chart, "o" a scan
-// with an invisible OCR layer.
+// lines filling the page), "m" the same scan drawn with wide margins (a region route on a page
+// without text), "r" text with a text-bearing figure, "c" text with a chart, "o" a scan with an
+// invisible OCR layer.
 std::string MakeDocument(const std::string& kinds) {
     Test::PdfBuilder b;
     const int catalog = b.Reserve();
@@ -728,6 +868,7 @@ std::string MakeDocument(const std::string& kinds) {
                 content += "BT 3 Tr /F1 11 Tf 72 " + std::to_string(400 - 16 * i) + " Td (" + tag +
                            "an invisible OCR layer over the scan, long enough.) Tj ET\n";
         if (kind == 'r') content += "q 450 0 0 300 72 250 cm /Fi Do Q\n";
+        if (kind == 'm') content += "q 450 0 0 600 80 100 cm /Sc Do Q\n";
         if (kind == 'c') content += "q 450 0 0 225 72 250 cm /Ch Do Q\n";
         const int stream = b.AddFlateStream("", content);
         const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pagesObject) + " 0 R /MediaBox [0 0 612 792] " +
@@ -881,6 +1022,97 @@ void TestWorkers() {
                       1243);
 }
 
+// A fresh folder for image files, removed with what was written into it.
+struct ImageFolder {
+    std::string path;
+    ImageFolder() { RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-ocr-test-", path), 1246); }
+    ~ImageFolder() {
+        std::vector<File::DirectoryEntry> entries;
+        if (File::ListDirectory(path, entries))
+            for (const File::DirectoryEntry& e : entries) File::RemoveFile(path + "/" + e.name);
+        File::RemoveEmptyDirectory(path);
+    }
+};
+
+size_t Count(const std::string& haystack, const std::string& needle) {
+    size_t n = 0;
+    for (size_t at = haystack.find(needle); at != std::string::npos; at = haystack.find(needle, at + 1)) ++n;
+    return n;
+}
+
+void TestAltText() {
+    // The text of a figure on a digital page: its alternate text when the image is written, body
+    // text when images are off.
+    Mode("ok");
+    ImageFolder folder;
+    ConvertOptions written;
+    written.ocr = MockOptions();
+    written.imageDirectory = folder.path;
+    written.imageLinkPrefix = "img/";
+    ConvertReport report;
+    const std::string md = ConvertWith(MakeDocument("r"), written, report);
+    Show("alt text", md);
+    RAYOPDF_CHECK(Contains(md, "![Mock line 1 of the scanned page Mock line 2 reads on Mock line 3 of the scanned page "
+                               "Mock line 4 reads on Mock line 5 of the scanned page Mock line 6 reads on](img/p1-1.png)") &&
+                      Count(md, "Mock line") == 6 && Contains(md, "Page 1 body") && report.images == 1 &&
+                      report.ocrPagesRouted == 1 && report.ocrPages == 1,
+                  1246);
+    ConvertOptions none;
+    none.ocr = MockOptions();
+    ConvertReport bodyReport;
+    const std::string body = ConvertWith(MakeDocument("r"), none, bodyReport);
+    RAYOPDF_CHECK(Contains(body, "\nMock line 1 of the scanned page") && !Contains(body, "![") && bodyReport.ocrPages == 1,
+                  1246);
+
+    // A page without a text layer (a scan drawn with margins, routed as a region): the text is the
+    // page's, written as body text even when the image is written.
+    ConvertReport scanReport;
+    const std::string scan = ConvertWith(MakeDocument("m"), written, scanReport);
+    Show("scan with margins", scan);
+    RAYOPDF_CHECK(Count(scan, "Mock line") == 5 && !Contains(scan, "![Mock") &&
+                      Contains(scan, "](img/p1-1.png)") && !Contains(scan, "no extractable text") &&
+                      scanReport.ocrPages == 1,
+                  1246);
+
+    // A tagged figure's /Alt wins over the OCR text.
+    Test::TaggedBuilder t;
+    const int doc = t.Element(0, "Document");
+    const int p = t.Element(doc, "P");
+    t.Mcid(p, 0, 0);
+    t.Mcid(p, 0, 1);
+    const int figure = t.Element(doc, "Figure", "/Alt (a chart of sales)");
+    t.Mcid(figure, 0, 2);
+    const int image = t.Pdf().AddFlateStream(
+        "/Type /XObject /Subtype /Image /ColorSpace /DeviceGray /BitsPerComponent 8 /Width 600 /Height 400",
+        TextRaster(600, 400, 6, 60));
+    std::string c = Test::MarkedText("P", 0, 72, 720, 11, "Body text that a reader extracts from the text layer of page one.");
+    c += Test::MarkedText("P", 1, 72, 704, 11, "A second line of body text, long enough to be the page's text.");
+    c += "/Figure << /MCID 2 >> BDC q 450 0 0 300 72 250 cm /Fi Do Q EMC\n";
+    const std::string tagged = t.Build({c}, "", "/XObject << /Fi " + std::to_string(image) + " 0 R >>");
+    ConvertReport taggedReport;
+    const std::string withAlt = ConvertWith(tagged, written, taggedReport);
+    Show("tagged alt", withAlt);
+    RAYOPDF_CHECK(taggedReport.structure == StructureUse::Used && Contains(withAlt, "![a chart of sales](img/") &&
+                      !Contains(withAlt, "Mock line") && taggedReport.ocrPages == 1,
+                  1247);
+
+    // The alternate text: lines top to bottom, white space and control characters as one space,
+    // low-confidence lines dropped, at most kOcrMaxAltBytes cut at a word.
+    P::Response response;
+    response.lines.push_back(OcrLine(0, 50, 100, 60, "second\tline  here"));
+    response.lines.push_back(OcrLine(0, 10, 100, 20, " first\nline "));
+    response.lines.push_back(OcrLine(0, 30, 100, 40, "unsure", 3000));
+    std::string alt = "before";
+    RAYOPDF_CHECK(AppendOcrAltText(response, alt) == 27 && alt == "beforefirst line second line here", 1248);
+    P::Response longer;
+    for (int i = 0; i < 60; ++i) longer.lines.push_back(OcrLine(0, i * 10, 100, i * 10 + 8, "twenty-four letter line."));
+    std::string cut;
+    const size_t n = AppendOcrAltText(longer, cut);
+    RAYOPDF_CHECK(n == cut.size() && n <= kOcrMaxAltBytes && n > kOcrMaxAltBytes - 40 &&
+                      cut.compare(cut.size() - 9, 9, "letter\xE2\x80\xA6") == 0 && n == 996,
+                  1248);
+}
+
 } // namespace
 
 int main() {
@@ -893,12 +1125,14 @@ int main() {
     TestLooksLikeText();
     TestCanvas();
     TestOcrGlyphs();
+    TestOcrTypography();
     TestDiscovery();
     TestClient();
     TestConvertWithoutAddon();
     TestConvertWithMock();
     TestConvertFailures();
     TestWorkers();
+    TestAltText();
     std::puts("test_layout_ocr: ok");
     return 0;
 }

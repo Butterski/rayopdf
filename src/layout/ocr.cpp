@@ -25,10 +25,30 @@ OcrStatus Recognise(OcrSession& session, const OcrCanvas& canvas, PageData& page
     return status;
 }
 
+// One region to the add-on, its text kept as the image's alternate text (ImageBox::ocr): the
+// bytes kept, or the failure.
+OcrStatus RecogniseAlt(OcrSession& session, const OcrCanvas& canvas, PageData& page, ImageBox& image, size_t& kept) {
+    OcrProtocol::Request request;
+    request.op = OcrProtocol::Op::Page;
+    request.width = canvas.width;
+    request.height = canvas.height;
+    request.dpi = static_cast<uint32_t>(canvas.scale * 72.0f + 0.5f);
+    OcrProtocol::Response response;
+    const OcrStatus status = session.Recognize(request, canvas.pixels, response);
+    kept = 0;
+    if (status != OcrStatus::Ok || page.text.size() > (size_t(1) << 30)) return status;
+    const size_t at = page.text.size();
+    kept = AppendOcrAltText(response, page.text);
+    image.ocr = static_cast<uint32_t>(at);
+    image.ocrLength = static_cast<uint32_t>(kept);
+    return status;
+}
+
 } // namespace
 
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report) {
+                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report,
+                    bool imagesWritten) {
     if (options.mode == OcrMode::Off) return;
     std::vector<OcrPlan> plans(pages.size());
     std::vector<uint32_t> glyphPages, vectorPages;
@@ -140,7 +160,12 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
                 report.ocrPagesRouted++;
             }
             uint32_t added = 0;
-            const OcrStatus status = Recognise(*session, canvas, page, added);
+            size_t kept = 0;
+            // A figure's text on a digital page is its alternate text; on a page without a text
+            // layer (a scan with margins) the region's text is the page's.
+            const OcrStatus status = imagesWritten && plan.textLayer
+                                         ? RecogniseAlt(*session, canvas, page, page.images[index], kept)
+                                         : Recognise(*session, canvas, page, added);
             if (status != OcrStatus::Ok) {
                 regionFailed = true;
                 if (status != OcrStatus::Refused) {
@@ -149,7 +174,7 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
                 }
                 continue;
             }
-            recognised = recognised || added > 0;
+            recognised = recognised || added > 0 || kept > 0;
         }
         if (recognised) report.ocrPages++;
         if (regionFailed) report.ocrFailures++;

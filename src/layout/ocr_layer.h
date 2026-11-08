@@ -51,8 +51,17 @@ uint32_t ComposeImages(const Document& document, const PageData& page, const std
 
 // The response's lines (conf at least kOcrMinConf, inside the canvas) as glyphs of `page`, one per
 // code point with its box from `chars` and the line's box, flagged kGlyphInvisible | kGlyphOcr: an
-// OCR text layer, read as paragraphs and lists with no typographic signals. Lines are added top to
-// bottom, then left to right. Returns the non-space glyphs added.
+// OCR text layer with the size, baseline, weight, slant and pitch measured from the canvas
+// (layout/ocr_style.h), and the canvas's rules added to page.rulings and page.shapes. Lines are
+// added top to bottom, then left to right. Returns the non-space glyphs added.
 uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& response, PageData& page);
+
+// The longest alternate text taken from OCR, in bytes (cut at a word, with "…" after it).
+constexpr size_t kOcrMaxAltBytes = 1000;
+
+// The response's text (lines with conf at least kOcrMinConf, top to bottom, then left to right) as
+// one line for an image's alternate text, appended to `out`: lines joined by a space, runs of white
+// space and control characters as one space, at most kOcrMaxAltBytes. Returns the bytes appended.
+size_t AppendOcrAltText(const OcrProtocol::Response& response, std::string& out);
 
 } // namespace RayoPdf::Layout

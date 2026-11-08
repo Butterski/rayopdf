@@ -209,8 +209,10 @@ void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, Oc
     plan.images.clear();
     plan.checkText = false;
     plan.replaceInvisible = false;
+    plan.textLayer = false;
     if (mode == OcrMode::Off || page.images.empty()) return;
     const uint32_t chars = signals.visibleChars + signals.invisibleChars;
+    plan.textLayer = chars >= kPageMinChars;
     const bool force = mode == OcrMode::Force;
     bool whole = chars < kPageMinChars && signals.coverage >= kPageMinCoverage;
     if (force) {

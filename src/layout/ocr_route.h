@@ -72,6 +72,9 @@ struct OcrPlan {
     std::vector<uint32_t> images;    // indices into PageData::images
     bool checkText = false;          // Regions: confirm each by LooksLikeText (auto mode)
     bool replaceInvisible = false;   // Page: an existing invisible layer gives way to OCR text
+    // Regions: the page has a text layer (at least kPageMinChars characters), so a region's text is
+    // a figure's, not the page's.
+    bool textLayer = false;
 };
 
 void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, OcrPlan& plan);

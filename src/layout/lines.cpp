@@ -578,9 +578,10 @@ void BuildLines(PageData& page) {
         }
         // Codes without text carry nothing to place.
         if (g.textLength == 0) continue;
-        // Typographic signals come from rendered text only: an invisible layer (OCR text over a
-        // scan) has no face to be bold, italic or fixed-pitch in, whatever its font says.
-        if (g.flags & kGlyphInvisible)
+        // Typographic signals come from rendered text only: an invisible layer that came with the
+        // PDF (OCR text over a scan) has no face to be bold, italic or fixed-pitch in, whatever its
+        // font says. The add-on's OCR layer (kGlyphOcr) carries what the scan's pixels show.
+        if ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
             g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
         vis.push_back(i);
     }
@@ -921,7 +922,8 @@ void BuildLines(PageData& page) {
             Line line;
             line.first = static_cast<uint32_t>(page.lineGlyphs.size());
             line.dir = p.dir;
-            uint16_t allFlags = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible;
+            uint16_t allFlags =
+                kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
             sizes.clear();
             for (uint32_t k = at; k < stop; ++k) {
                 Glyph& g = glyphs[proto[k]];
@@ -960,7 +962,7 @@ void BuildLines(PageData& page) {
             if (allFlags & kGlyphItalic) line.flags |= kLineAllItalic;
             if (allFlags & kGlyphMonospace) line.flags |= kLineAllMono;
             if (allFlags & kGlyphArtifact) line.flags |= kLineArtifact;
-            if (allFlags & kGlyphInvisible) line.flags |= kLineInvisible;
+            if ((allFlags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
             page.lines.push_back(line);
             at = stop;
         }
@@ -998,7 +1000,7 @@ namespace {
 
 // Extent, character count and common style of `line` from its glyphs.
 void Measure(const PageData& page, Line& line) {
-    uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible;
+    uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
     line.chars = line.count;
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
@@ -1013,7 +1015,7 @@ void Measure(const PageData& page, Line& line) {
     if (all & kGlyphItalic) line.flags |= kLineAllItalic;
     if (all & kGlyphMonospace) line.flags |= kLineAllMono;
     if (all & kGlyphArtifact) line.flags |= kLineArtifact;
-    if (all & kGlyphInvisible) line.flags |= kLineInvisible;
+    if ((all & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
 }
 
 } // namespace
