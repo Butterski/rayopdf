@@ -131,11 +131,20 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
                 ya = cellOf(g.y0 - reach), yb = cellOf(g.y0 + reach);
             }
             uint64_t any = 0;
-            for (int64_t x = xa; x <= xb; ++x) {
-                const uint64_t kx = keyAndX(key, x);
-                for (int64_t y = ya; y <= yb; ++y) {
-                    const size_t b = filterBit(kx, y);
-                    any |= filter[b >> 6] >> (b & 63);
+            if (xb - xa <= 1 && yb - ya <= 1) {
+                // At most two cells each way (tolerances up to about 2): the four corners, a cell
+                // tested twice when the window holds one.
+                const uint64_t ka = keyAndX(key, xa), kb = keyAndX(key, xb);
+                const size_t b0 = filterBit(ka, ya), b1 = filterBit(ka, yb), b2 = filterBit(kb, ya), b3 = filterBit(kb, yb);
+                any = (filter[b0 >> 6] >> (b0 & 63)) | (filter[b1 >> 6] >> (b1 & 63)) | (filter[b2 >> 6] >> (b2 & 63)) |
+                      (filter[b3 >> 6] >> (b3 & 63));
+            } else {
+                for (int64_t x = xa; x <= xb; ++x) {
+                    const uint64_t kx = keyAndX(key, x);
+                    for (int64_t y = ya; y <= yb; ++y) {
+                        const size_t b = filterBit(kx, y);
+                        any |= filter[b >> 6] >> (b & 63);
+                    }
                 }
             }
             candidate = (any & 1) != 0;
