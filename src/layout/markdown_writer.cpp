@@ -74,23 +74,7 @@ class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
-          monoIsBody_(blocks.monoDocument) {
-        // Bold or italic that covers most text is the document's normal face, not emphasis.
-        uint64_t total = 0, bold = 0, italic = 0;
-        for (const PageData& page : pages) {
-            for (uint32_t li : page.order) {
-                const Line& line = page.lines[li];
-                for (uint32_t k = 0; k < line.count; ++k) {
-                    const uint16_t f = page.glyphs[page.lineGlyphs[line.first + k]].flags;
-                    total++;
-                    if (f & kGlyphBold) bold++;
-                    if (f & kGlyphItalic) italic++;
-                }
-            }
-        }
-        boldIsBody_ = total > 0 && bold * 10 > total * 6;
-        italicIsBody_ = total > 0 && italic * 10 > total * 6;
-    }
+          boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument) {}
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);

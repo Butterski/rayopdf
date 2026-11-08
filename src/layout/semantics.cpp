@@ -244,7 +244,9 @@ void CollectMarks(const PageData& page, Marks& marks) {
     }
 }
 
-void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks, Info& info, std::string& scratch) {
+// `bold` and `italic` go up by the line's bold and italic glyphs (BlockList::boldBody).
+void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks, Info& info, std::string& scratch,
+              uint64_t& bold, uint64_t& italic) {
     const Line& line = page.lines[li];
     info = Info();
     info.page = pi;
@@ -254,11 +256,13 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
     info.flags = line.flags;
     info.chars = line.chars;
     info.markerU0 = info.textU0 = line.u0;
-    uint32_t mono = 0;
+    uint32_t mono = 0, boldHere = 0, italicHere = 0;
     bool letter = false;
     bool numbering = line.chars <= 8;
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        boldHere += (g.flags & kGlyphBold) != 0;
+        italicHere += (g.flags & kGlyphItalic) != 0;
         // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
         if (letter && !numbering && !(g.flags & kGlyphMonospace)) continue;
         const uint32_t cp = FirstCodePoint(page.GlyphText(g));
@@ -269,6 +273,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
                            cp == 'V' || cp == 'X' || (k == 0 && cp >= 'A' && cp <= 'Z')))
             numbering = false;
     }
+    bold += boldHere;
+    italic += italicHere;
     info.hasLetter = letter;
     info.numbering = numbering;
     info.mono = line.count ? float(mono) / float(line.count) : 0;
@@ -738,6 +744,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     Marks marks;
     std::string scratch;
     std::vector<uint32_t> byBase;
+    // Glyphs of the ordered lines, and those of them bold and italic (BlockList::boldBody).
+    uint64_t faceGlyphs = 0, boldGlyphs = 0, italicGlyphs = 0;
     for (uint32_t p = 0; p < pages.size(); ++p) {
         const PageData& page = pages[p];
         CollectMarks(page, marks);
@@ -745,6 +753,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         for (uint32_t li : page.order) {
             infos.emplace_back();
             const Line& tl = page.lines[li];
+            faceGlyphs += tl.count;
             if (tl.flags & kLineAnchor) {
                 // A table (layout/tables.h) or an image (layout/images.h): no glyphs, only its
                 // place and box.
@@ -753,9 +762,15 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 t.u0 = tl.u0, t.u1 = tl.u1, t.vb = tl.vb, t.vt = tl.vt, t.baseline = tl.baseline, t.size = tl.size;
                 t.markerU0 = t.textU0 = tl.u0;
                 t.endsTerminal = true;
+                // Its glyphs, should it have any, count for the faces like any line's.
+                for (uint32_t k = 0; k < tl.count; ++k) {
+                    const uint16_t f = page.glyphs[page.lineGlyphs[tl.first + k]].flags;
+                    boldGlyphs += (f & kGlyphBold) != 0;
+                    italicGlyphs += (f & kGlyphItalic) != 0;
+                }
                 continue;
             }
-            LineInfo(page, p, li, marks, infos.back(), scratch);
+            LineInfo(page, p, li, marks, infos.back(), scratch, boldGlyphs, italicGlyphs);
         }
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
         // (a table header), not headings; a heading beside the other column's text has no peer. A
@@ -831,6 +846,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // paragraphs, and the writer marks no code spans in them.
     const bool monoDocument = totalChars > 0 && monoChars * 10 > totalChars * 6 && proseLineChars * 10 < totalChars;
     out.monoDocument = monoDocument;
+    out.boldBody = faceGlyphs > 0 && boldGlyphs * 10 > faceGlyphs * 6;
+    out.italicBody = faceGlyphs > 0 && italicGlyphs * 10 > faceGlyphs * 6;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
     FindNotes(pages, infos, body, out.noteRefs);
     // A bar beside text set at heading size is an accent rule (slide titles, call-outs), not a

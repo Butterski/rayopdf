@@ -76,6 +76,10 @@ struct BlockList {
     std::vector<BlockLine> lines;
     std::vector<NoteRef> noteRefs;  // sorted by page, then glyph
     bool monoDocument = false;      // typeset in a monospace font: monospace text is the body, not code
+    // Bold (italic) glyphs make more than 60 % of the glyphs of the pages' ordered lines: that face
+    // is the document's normal one, not emphasis.
+    bool boldBody = false;
+    bool italicBody = false;
 };
 
 // Pages carry their lines in reading order (PageData::order). `unmappedPages` holds per page (index

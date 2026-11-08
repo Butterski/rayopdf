@@ -1321,6 +1321,8 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
     const BlockList geo = std::move(list);
     list = BlockList();
     list.monoDocument = geo.monoDocument;
+    list.boldBody = geo.boldBody;
+    list.italicBody = geo.italicBody;
     const size_t n = pages.size();
     // Per line, its geometric block.
     std::vector<std::vector<int32_t>> geoBlock(n);
