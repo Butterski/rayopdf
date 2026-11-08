@@ -114,7 +114,8 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
             cx = floorOf(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f));
             cy = floorOf(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f));
         }
-        const float tolerance = Fmax(0.15f * g.size, 0.5f);
+        // Fmax against a constant: a NaN size gives 0.5 either way.
+        const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
         const uint64_t key = h ^ (static_cast<uint64_t>(g.dir) << 56);
         bool candidate = true;
         if (tolerance <= kFilterTolerance && (near || (std::fabs(g.x0) < kFilterReach && std::fabs(g.y0) < kFilterReach))) {

@@ -367,13 +367,26 @@ void Detector::CollectWords() {
             w.k0 = k;
             w.base = line.baseline;
             w.size = line.size;
-            w.x0 = INFINITY, w.x1 = -INFINITY, w.y0 = INFINITY, w.y1 = -INFINITY;
+            // Plain comparisons, which equal Fmin and Fmax without a NaN; a word with a NaN in its
+            // glyphs' boxes (the sum turns NaN; infinities of both signs too) takes them again with
+            // Fmin and Fmax, which skip it. A word's box is never NaN.
+            float x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY, sum = 0;
             do {
                 const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + k]];
-                w.x0 = Fmin(w.x0, g.u0), w.x1 = Fmax(w.x1, g.u1);
-                w.y0 = Fmin(w.y0, g.vb), w.y1 = Fmax(w.y1, g.vt);
+                x0 = x0 < g.u0 ? x0 : g.u0, x1 = x1 > g.u1 ? x1 : g.u1;
+                y0 = y0 < g.vb ? y0 : g.vb, y1 = y1 > g.vt ? y1 : g.vt;
+                sum += (g.u0 + g.u1) + (g.vb + g.vt);
                 ++k;
             } while (k < line.count && !(page_.glyphs[page_.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore));
+            if (sum != sum) {
+                x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY;
+                for (uint32_t j = w.k0; j < k; ++j) {
+                    const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + j]];
+                    x0 = Fmin(x0, g.u0), x1 = Fmax(x1, g.u1);
+                    y0 = Fmin(y0, g.vb), y1 = Fmax(y1, g.vt);
+                }
+            }
+            w.x0 = x0, w.x1 = x1, w.y0 = y0, w.y1 = y1;
             w.k1 = k;
             w.mono = (line.flags & kLineAllMono) != 0;
             w.removed = (line.flags & kLineRemoved) != 0;
@@ -460,8 +473,9 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
         if (!rows.empty() && rows.back().base - w.base <= 0.35f * Fmax(rows.back().size, w.size)) {
             Row& r = rows.back();
             r.count++;
-            r.top = Fmax(r.top, w.y1), r.bottom = Fmin(r.bottom, w.y0);
-            r.x0 = Fmin(r.x0, w.x0), r.x1 = Fmax(r.x1, w.x1);
+            // Word boxes are never NaN: plain comparisons give what Fmin and Fmax would.
+            r.top = r.top > w.y1 ? r.top : w.y1, r.bottom = r.bottom < w.y0 ? r.bottom : w.y0;
+            r.x0 = r.x0 < w.x0 ? r.x0 : w.x0, r.x1 = r.x1 > w.x1 ? r.x1 : w.x1;
             r.size = Fmax(r.size, w.size);
             if (w.mono) {
                 r.mono++;
