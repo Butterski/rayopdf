@@ -840,7 +840,8 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
         bool artifact;
     };
     std::vector<Candidate> candidates;
-    for (int p = 0; p < n; ++p) {
+    // One page gives no evidence of running lines (every test below needs two pages at least).
+    for (int p = 0; p < n && n >= 2; ++p) {
         PageData& page = pages[static_cast<size_t>(p)];
         const float h = page.height;
         // A lone number is a page number only as the page's outermost line.
@@ -889,16 +890,22 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
             removed++;
         }
     }
-    // The body size (algorithms §6.1: the most common size by characters) for the edge test.
-    std::unordered_map<int, uint64_t> sizeChars;
+    // The body size (algorithms §6.1: the most common size by characters) for the edge test: the
+    // size key with the most characters, the smallest of equal counts.
+    std::vector<std::pair<int, uint64_t>> sizeChars;
     for (const PageData& page : pages)
         for (const Line& line : page.lines)
-            if (line.dir == 0) sizeChars[static_cast<int>(std::lround(line.size * 2))] += line.chars;
+            if (line.dir == 0) sizeChars.emplace_back(static_cast<int>(std::lround(line.size * 2)), line.chars);
+    std::sort(sizeChars.begin(), sizeChars.end(),
+              [](const std::pair<int, uint64_t>& a, const std::pair<int, uint64_t>& b) { return a.first < b.first; });
     int bodyKey = 0;
     uint64_t bodyCount = 0;
-    for (const auto& kv : sizeChars)
-        if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey))
-            bodyKey = kv.first, bodyCount = kv.second;
+    for (size_t i = 0; i < sizeChars.size();) {
+        const int size = sizeChars[i].first;
+        uint64_t chars = 0;
+        for (; i < sizeChars.size() && sizeChars[i].first == size; ++i) chars += sizeChars[i].second;
+        if (chars > bodyCount || (chars == bodyCount && size < bodyKey)) bodyKey = size, bodyCount = chars;
+    }
     for (PageData& page : pages) {
         removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
         removed += RemoveMarginLines(page);
