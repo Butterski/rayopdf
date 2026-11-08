@@ -338,6 +338,8 @@ private:
     std::vector<Edge> rules_;     // horizontal edges left for partially ruled tables
     std::vector<Grid> grids_;
     std::vector<uint8_t> wordUsed_;  // inside an accepted grid
+    std::vector<uint32_t> events_;   // Columns: bin events, 2 * bin + 1 an ink start, 2 * bin an ink end
+    std::vector<int> bins_;          // Columns: ink starts minus ends per bin
     float bodySize_ = 10;
     float wordSpace_ = 0.3f;  // the page's median space between words of a line, in ems
     int restored_ = 0;
@@ -489,33 +491,62 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
     if (rowEnd <= rowBegin || !(xb > xa) || !std::isfinite(xb - xa)) return false;
     const float bin = Fmax(0.5f, (xb - xa) / kMaxBins);
     const int n = std::min(kMaxBins, static_cast<int>((xb - xa) / bin) + 1);
-    std::vector<int> diff(static_cast<size_t>(n) + 1, 0);
     const auto binOf = [&](float x) {
         const float t = (x - xa) / bin;  // compared before conversion: x may be far off or not finite
         if (!(t > 0)) return 0;
         if (t >= float(n - 1)) return n - 1;
         return static_cast<int>(t);
     };
+    // Each word covers bins binOf(x0) to binOf(x1): an ink start there and an end after it. A bin
+    // is covered while starts outnumber ends; gaps are the uncovered runs between covered bins.
+    size_t words = 0;
+    for (size_t r = rowBegin; r < rowEnd; ++r)
+        if (!(skip && (*skip)[r])) words += rows[r].count;
+    int first = -1, run = 0, cover = 0;
+    if (words * 16 <= static_cast<size_t>(n)) {
+        // Few words for the width: the cover changes only at their bins, so the starts and ends
+        // (2 * bin + 1 a start, 2 * bin an end) are sorted and walked one stretch of bins of one
+        // cover at a time.
+        events_.clear();
+        for (size_t r = rowBegin; r < rowEnd; ++r)
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(skip && (*skip)[r]); ++k) {
+                const TWord& w = words_[rowWords[k]];
+                events_.push_back(static_cast<uint32_t>(binOf(w.x0)) * 2 + 1);
+                events_.push_back(static_cast<uint32_t>(binOf(w.x1) + 1) * 2);
+            }
+        std::sort(events_.begin(), events_.end());
+        for (size_t e = 0; e < events_.size();) {
+            const int i = static_cast<int>(events_[e] >> 1);
+            if (i >= n) break;
+            for (; e < events_.size() && static_cast<int>(events_[e] >> 1) == i; ++e) cover += (events_[e] & 1) ? 1 : -1;
+            const int next = e < events_.size() ? std::min(n, static_cast<int>(events_[e] >> 1)) : n;
+            if (cover > 0) {
+                if (first < 0) first = i;
+                if (run > 0 && float(run) * bin >= minGap) gaps.push_back(Gap{xa + float(i - run) * bin, xa + float(i) * bin});
+                run = 0;
+            } else if (first >= 0) {
+                run += next - i;
+            }
+        }
+        return !gaps.empty();
+    }
+    bins_.assign(static_cast<size_t>(n) + 1, 0);
     for (size_t r = rowBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(skip && (*skip)[r]); ++k) {
             const TWord& w = words_[rowWords[k]];
-            diff[static_cast<size_t>(binOf(w.x0))]++;
-            diff[static_cast<size_t>(binOf(w.x1)) + 1]--;
+            bins_[static_cast<size_t>(binOf(w.x0))]++;
+            bins_[static_cast<size_t>(binOf(w.x1)) + 1]--;
         }
-    int first = -1, last = -1, run = 0, cover = 0;
     for (int i = 0; i < n; ++i) {
-        cover += diff[static_cast<size_t>(i)];
+        cover += bins_[static_cast<size_t>(i)];
         if (cover > 0) {
             if (first < 0) first = i;
-            if (last >= 0 && run > 0 && float(run) * bin >= minGap)
-                gaps.push_back(Gap{xa + float(i - run) * bin, xa + float(i) * bin});
-            last = i;
+            if (run > 0 && float(run) * bin >= minGap) gaps.push_back(Gap{xa + float(i - run) * bin, xa + float(i) * bin});
             run = 0;
         } else if (first >= 0) {
             ++run;
         }
     }
-    (void)last;
     return !gaps.empty();
 }
 
