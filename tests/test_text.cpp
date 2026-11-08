@@ -526,6 +526,37 @@ void TestEmbeddedPrograms() {
     RAYOPDF_CHECK(codes[1].source == UnicodeSource::FontProgram, 344);
 }
 
+// A font with a trusted ToUnicode and /Widths reads its program only when a shown code needs it
+// (or SpaceWidth asks): the texts are those of an eager load, and views handed out before stay valid.
+void TestLazyPrograms() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        const std::string clear = "%!PS-AdobeFont-1.0: T1\n/Encoding 256 array 0 1 255 {1 index exch /.notdef put} for\n"
+                                  "dup 32 /space put dup 65 /Omega put dup 66 /f_l put readonly def\ncurrentfile eexec\n";
+        const int t1 = b.AddStream("/Length1 " + std::to_string(clear.size()) + " /Length2 0 /Length3 0", clear);
+        const int toUnicode = b.AddStream("", "1 begincodespacerange <00> <FF> endcodespacerange\n"
+                                              "1 beginbfchar <41> <0058> endbfchar");
+        std::string widths = "250";
+        for (int c = 33; c <= 66; ++c) widths += c == 65 ? " 500" : c == 66 ? " 600" : " 0";
+        std::string f;
+        for (const char* name : {"F1", "F2"}) {
+            f += std::string(" /") + name + " << /Type /Font /Subtype /Type1 /BaseFont /T1 /FirstChar 32 /Widths [" +
+                 widths + "] /ToUnicode " + Ref(toUnicode) + " /FontDescriptor << /Flags 4 /FontFile " + Ref(t1) +
+                 " >> >>";
+        }
+        return f;
+    }, 1450);
+
+    const Font& font = l.Get("F1");
+    const std::vector<Code> first = Codes(font, "A");
+    std::vector<Code> codes = Codes(font, "BA");
+    RAYOPDF_CHECK(codes.size() == 2 && codes[0].unicode == "fl" && codes[0].source == UnicodeSource::FontProgram &&
+                      Near(codes[0].width, 0.6), 1451);
+    RAYOPDF_CHECK(codes[1].unicode == "X" && codes[1].source == UnicodeSource::ToUnicode && first[0].unicode == "X", 1452);
+    // The space's width comes from the program's /space at code 32, which the ToUnicode lacks.
+    RAYOPDF_CHECK(Near(l.Get("F2").SpaceWidth(), 0.25) && Near(font.SpaceWidth(), 0.25), 1453);
+}
+
 } // namespace
 
 int main() {
@@ -536,6 +567,7 @@ int main() {
     TestSimpleFonts();
     TestType0AndType3();
     TestEmbeddedPrograms();
+    TestLazyPrograms();
     std::puts("test_text: ok");
     return 0;
 }

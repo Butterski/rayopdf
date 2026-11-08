@@ -97,7 +97,9 @@ private:
 
 // The fonts of one document, each loaded once: keyed by the object number of the font
 // dictionary (or the address of a direct dictionary). Get never fails: a font that cannot be read
-// becomes a fallback that reads single bytes as WinAnsi with a width of 0.5.
+// becomes a fallback that reads single bytes as WinAnsi with a width of 0.5. A font may read its
+// embedded program on first need inside Next or SpaceWidth (the Document too), so a cache and its
+// fonts belong to one thread at a time, as the Document does.
 class FontCache {
 public:
     explicit FontCache(const Document& document);

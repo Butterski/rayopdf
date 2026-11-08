@@ -3,7 +3,9 @@
 // resolved when the font loads: a simple font gets a 256-entry table of advance, Unicode and
 // source, so reading a code is one lookup; a Type0 font gets sorted tables (ToUnicode entries,
 // CID ranges, /W ranges) searched in O(log n). Unicode text lives in the font's own buffers, so
-// Next never allocates.
+// Next never allocates. One exception: a font whose trusted ToUnicode leaves codes to its embedded
+// program reads the program (Font::Impl::Complete) only when a shown code needs it, so most such
+// fonts never inflate it; that first Next allocates.
 
 #include "text/font.h"
 
@@ -262,11 +264,16 @@ bool IsSymbolName(std::string_view name) {
     return name.substr(0, 6) == "Symbol";
 }
 
+// Where a simple font's slot text lives: the font's pool, the pool of texts completed after
+// loading (Font::Impl::Complete), or not known yet (the font's program is still unread).
+enum class SlotState : uint8_t { Pool, LatePool, Pending };
+
 struct Slot {
     float width = 0;
     uint32_t offset = 0;
     uint16_t length = 0;
     UnicodeSource source = UnicodeSource::None;
+    SlotState state = SlotState::Pool;
 };
 
 struct TextRef {
@@ -285,6 +292,10 @@ struct VerticalRange {
     uint32_t high = 0;
     float advance = 0;  // w1y
 };
+
+// What completing a font after loading needs (Font::Impl::Complete), defined with the loaders.
+struct SimpleLoad;
+struct Type0Load;
 
 // How a Type0 font's codes become CIDs and, for the Unicode-based CMaps, text. Predefined: a
 // legacy predefined CMap of the generated CJK tables (90ms-RKSJ-H, GBK-EUC-H, ...); Other: a CMap
@@ -371,6 +382,14 @@ struct Font::Impl {
     std::vector<VerticalRange> verticals;
     float defaultVertical = -1.0f;
 
+    // A font with a trusted ToUnicode reads its embedded program only when a shown code needs it
+    // (one the ToUnicode lacks; SpaceWidth): until then the loader's state waits here, and a
+    // simple font's slots that the ToUnicode does not fill are Pending.
+    std::unique_ptr<SimpleLoad> pendingSimple;
+    std::unique_ptr<Type0Load> pendingType0;
+    std::string latePool;  // simple fonts: texts set by Complete (views into `pool` stay valid)
+    bool late = false;     // SetSlot writes into latePool
+
     bool NextSimple(std::string_view bytes, size_t& at, Code& out) const;
     bool NextComposite(std::string_view bytes, size_t& at, Code& out) const;
     float WidthOf(uint32_t cid) const;
@@ -378,6 +397,15 @@ struct Font::Impl {
     bool CidOf(uint32_t code, uint8_t length, uint32_t& cid) const;
     bool PredefinedCid(uint32_t code, uint8_t length, uint32_t& cid) const;
     void Composite(uint32_t code, uint8_t length, Code& out) const;
+    std::string_view SlotText(const Slot& slot) const {
+        return std::string_view((slot.state == SlotState::LatePool ? latePool : pool).data() + slot.offset, slot.length);
+    }
+    // Reads what a pending font waits for; a Font is used by one thread, so a const reader may
+    // complete it (the Impl itself is never const).
+    void Complete();
+    void CompleteIfPending() const {
+        if (RAYOPDF_UNLIKELY(pendingSimple || pendingType0)) const_cast<Impl*>(this)->Complete();
+    }
 };
 
 namespace {
@@ -442,6 +470,7 @@ bool Font::Impl::CidOf(uint32_t code, uint8_t length, uint32_t& cid) const {
 bool Font::Impl::NextSimple(std::string_view bytes, size_t& at, Code& out) const {
     if (at >= bytes.size()) return false;
     const uint8_t c = static_cast<uint8_t>(bytes[at++]);
+    if (RAYOPDF_UNLIKELY(slots[c].state == SlotState::Pending)) const_cast<Impl*>(this)->Complete();
     const Slot& slot = slots[c];
     out.code = c;
     out.bytes = 1;
@@ -449,7 +478,7 @@ bool Font::Impl::NextSimple(std::string_view bytes, size_t& at, Code& out) const
     out.verticalAdvance = 0;
     out.wordSpace = c == 32;
     out.source = slot.source;
-    out.unicode = std::string_view(pool.data() + slot.offset, slot.length);
+    out.unicode = SlotText(slot);
     return true;
 }
 
@@ -496,6 +525,8 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
             return;
         }
     }
+    // The program's glyph texts come after the ToUnicode and the collection: read now if pending.
+    if (known && RAYOPDF_UNLIKELY(pendingType0 != nullptr)) const_cast<Impl*>(this)->Complete();
     if (known && !glyphText.empty()) {
         const uint32_t glyph = cidToGid.empty() ? cid : (cid < cidToGid.size() ? cidToGid[cid] : 0);
         if (glyph < glyphText.size() && glyphText[glyph].length > 0) {
@@ -540,9 +571,6 @@ bool Font::Impl::NextComposite(std::string_view bytes, size_t& at, Code& out) co
     return true;
 }
 
-Font::Font(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
-Font::~Font() = default;
-
 bool Font::Next(std::string_view bytes, size_t& at, Code& out) const {
     return impl_->kind == FontKind::Type0 ? impl_->NextComposite(bytes, at, out) : impl_->NextSimple(bytes, at, out);
 }
@@ -553,7 +581,11 @@ bool Font::Vertical() const { return impl_->vertical; }
 const double* Font::Matrix() const { return impl_->matrix; }
 double Font::Ascent() const { return impl_->ascent; }
 double Font::Descent() const { return impl_->descent; }
-double Font::SpaceWidth() const { return impl_->spaceWidth; }
+double Font::SpaceWidth() const {
+    impl_->CompleteIfPending();
+    return impl_->spaceWidth;
+}
+// A pending font has a trusted ToUnicode, so it is never unmappable: nothing to complete.
 bool Font::Unmappable() const { return impl_->unmappable; }
 
 const PdfValue& Font::Dictionary() const {
@@ -575,10 +607,12 @@ TextRef Pool(std::string& pool, std::string_view text) {
 }
 
 void SetSlot(Font::Impl& font, uint8_t code, std::string_view text, UnicodeSource source) {
-    const TextRef ref = Pool(font.pool, text);
-    font.slots[code].offset = ref.offset;
-    font.slots[code].length = static_cast<uint16_t>(text.size() < 0xFFFF ? text.size() : 0xFFFF);
-    font.slots[code].source = source;
+    const TextRef ref = Pool(font.late ? font.latePool : font.pool, text);
+    Slot& slot = font.slots[code];
+    slot.offset = ref.offset;
+    slot.length = static_cast<uint16_t>(text.size() < 0xFFFF ? text.size() : 0xFFFF);
+    slot.source = source;
+    slot.state = font.late ? SlotState::LatePool : SlotState::Pool;
 }
 
 // Only the usable entries of a parsed ToUnicode map stay (algorithms §3.6).
@@ -675,12 +709,12 @@ std::string BaseNameOf(const Document& doc, const PdfValue& dict) {
 
 void FinishSpaceWidthSimple(Font::Impl& font) {
     const Slot& space = font.slots[32];
-    if (std::string_view(font.pool.data() + space.offset, space.length) == " " && space.width > 0) {
+    if (font.SlotText(space) == " " && space.width > 0) {
         font.spaceWidth = space.width;
         return;
     }
     for (const Slot& slot : font.slots) {
-        if (std::string_view(font.pool.data() + slot.offset, slot.length) == " " && slot.width > 0) {
+        if (font.SlotText(slot) == " " && slot.width > 0) {
             font.spaceWidth = slot.width;
             return;
         }
@@ -779,7 +813,9 @@ struct SimpleNames {
     Tables::Encoding base = Tables::Encoding::Standard;
     bool hasBase = false;
     bool builtin = false;           // the names are the program's built-in encoding
+    bool programNames = false;      // the base names come from the program (ReadBaseNames)
     size_t differences = 0;         // /Differences entries naming a glyph
+    bool differenced[256] = {};     // names[c] is a /Differences name
     Program::Type1Encoding type1;   // storage of built-in names
     Program::CffInfo cff;
     std::string program;            // the font program, once read
@@ -794,18 +830,17 @@ struct SimpleNames {
     }
 };
 
-void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, const std::string& baseName,
-                     const Descriptor& desc, SimpleNames& out) {
+// The names /Encoding declares: which base encoding applies (or that the program's built-in one
+// does) and the /Differences names, which override the base names. Reads no font program.
+void ReadDeclaredNames(const Document& doc, const PdfValue& dict, FontKind kind, const std::string& baseName,
+                       const Descriptor& desc, SimpleNames& out) {
     out.standard = Tables::StandardFontByName(baseName);
     out.symbolName = IsSymbolName(baseName) || out.standard == Tables::kSymbol;
     out.zapf = out.standard == Tables::kZapfDingbats || ContainsNoCase(baseName, "dingbats");
     out.symbolic = desc.hasFlags ? (desc.flags & kSymbolic) != 0 && !(desc.flags & kNonsymbolic)
                                  : out.symbolName || out.zapf;
     const bool symbolName = out.symbolName, zapf = out.zapf, symbolic = out.symbolic;
-    std::string_view (&names)[256] = out.names;
-    UnicodeSource (&nameSource)[256] = out.nameSource;
-    bool (&fromBase)[256] = out.fromBase;
-    for (auto& s : nameSource) s = UnicodeSource::Encoding;
+    for (auto& s : out.nameSource) s = UnicodeSource::Encoding;
     const PdfValue& encoding = doc.Get(dict, "Encoding");
     out.encoding = &encoding;
     Tables::Encoding& base = out.base;
@@ -815,10 +850,6 @@ void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, c
     } else if (encoding.IsDict()) {
         hasBase = EncodingByName(doc.Get(encoding, "BaseEncoding").Name(), base);
     }
-
-    Program::Type1Encoding& type1 = out.type1;
-    Program::CffInfo& cff = out.cff;
-    bool& builtin = out.builtin;
     if (!hasBase) {
         if (symbolName) {
             base = Tables::Encoding::Symbol, hasBase = true;
@@ -826,39 +857,13 @@ void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, c
             base = Tables::Encoding::ZapfDingbats, hasBase = true;
         } else if ((kind == FontKind::Type1 || kind == FontKind::MMType1) && desc.fontFile &&
                    (symbolic || !encoding.IsName())) {
-            // The program's built-in encoding (§9.6.6.2): Type 1 clear text or CFF.
-            const std::string_view data = out.ProgramData(doc, desc);
-            if (desc.fontFileKind == 1 && Program::ReadType1Encoding(data, type1)) {
-                builtin = !type1.standard;
-            } else if (desc.fontFileKind == 3) {
-                std::string_view table = data;
-                Program::Sfnt sfnt;
-                if (Program::ReadSfnt(data, sfnt) && !sfnt.cff.empty()) table = sfnt.cff;
-                if (Program::ReadCff(table, cff) && !cff.cidKeyed) {
-                    if (cff.encoding == 1) base = Tables::Encoding::CffExpert, hasBase = true;
-                    else builtin = cff.encoding == 2;
-                }
-            }
-            if (!builtin && !hasBase) hasBase = true;  // Standard
+            out.programNames = true;  // the program's built-in encoding (§9.6.6.2)
         } else if (kind == FontKind::TrueType) {
             // pdf.js: a nonsymbolic TrueType font without an encoding reads as WinAnsi; a
             // symbolic one goes through its cmap below.
             if (!symbolic) base = Tables::Encoding::WinAnsi, hasBase = true;
         } else if (kind != FontKind::Type3) {
             hasBase = true;  // Standard
-        }
-    }
-    for (int c = 0; c < 256; ++c) {
-        if (builtin) {
-            if (desc.fontFileKind == 1) {
-                names[c] = type1.codes.Name(static_cast<size_t>(c));
-            } else if (cff.codeGlyphs[c] >= 0) {
-                names[c] = cff.glyphNames.Name(static_cast<size_t>(cff.codeGlyphs[c]));
-            }
-            nameSource[c] = UnicodeSource::FontProgram;
-        } else if (hasBase) {
-            names[c] = EncodingName(base, static_cast<uint32_t>(c));
-            fromBase[c] = true;
         }
     }
     // /Differences: [code /name /name ... code /name ...]
@@ -871,9 +876,8 @@ void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, c
                 code = v.Int(-1);
             } else if (v.IsName() && code >= 0 && code < 256) {
                 if (v.Name() != ".notdef") {
-                    names[code] = v.Name();
-                    nameSource[code] = UnicodeSource::Encoding;
-                    fromBase[code] = false;
+                    out.names[code] = v.Name();
+                    out.differenced[code] = true;
                     ++out.differences;
                 }
                 ++code;
@@ -884,59 +888,87 @@ void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, c
     }
 }
 
-void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::Impl& font) {
-    font.kind = kind;
-    font.baseName = BaseNameOf(doc, dict);
-    if (kind == FontKind::Type3 && font.baseName.empty()) {
-        const std::string_view name = doc.Get(dict, "Name").Name();
-        font.baseName.assign(name.data(), name.size());
+// The base names of the codes /Differences leaves: the program's built-in encoding (Type 1 clear
+// text or CFF; the program is read here) or the base encoding.
+void ReadBaseNames(const Document& doc, const Descriptor& desc, SimpleNames& out) {
+    Program::Type1Encoding& type1 = out.type1;
+    Program::CffInfo& cff = out.cff;
+    bool& builtin = out.builtin;
+    if (out.programNames) {
+        const std::string_view data = out.ProgramData(doc, desc);
+        if (desc.fontFileKind == 1 && Program::ReadType1Encoding(data, type1)) {
+            builtin = !type1.standard;
+        } else if (desc.fontFileKind == 3) {
+            std::string_view table = data;
+            Program::Sfnt sfnt;
+            if (Program::ReadSfnt(data, sfnt) && !sfnt.cff.empty()) table = sfnt.cff;
+            if (Program::ReadCff(table, cff) && !cff.cidKeyed) {
+                if (cff.encoding == 1) out.base = Tables::Encoding::CffExpert, out.hasBase = true;
+                else builtin = cff.encoding == 2;
+            }
+        }
+        if (!builtin && !out.hasBase) out.hasBase = true;  // Standard
     }
-    StyleFromName(font.baseName, font.style);
-    const Descriptor desc = ReadDescriptor(doc, doc.Get(dict, "FontDescriptor"), font.style);
-
-    if (kind == FontKind::Type3) {
-        const PdfSpan<PdfValue> m = doc.Get(dict, "FontMatrix").Array();
-        double values[6];
-        bool ok = m.size() == 6;
-        for (size_t i = 0; ok && i < 6; ++i) ok = doc.Number(m[i], values[i]);
-        if (ok && values[0] != 0) std::memcpy(font.matrix, values, sizeof values);
+    for (int c = 0; c < 256; ++c) {
+        if (out.differenced[c]) continue;
+        if (builtin) {
+            if (desc.fontFileKind == 1) {
+                out.names[c] = type1.codes.Name(static_cast<size_t>(c));
+            } else if (cff.codeGlyphs[c] >= 0) {
+                out.names[c] = cff.glyphNames.Name(static_cast<size_t>(cff.codeGlyphs[c]));
+            }
+            out.nameSource[c] = UnicodeSource::FontProgram;
+        } else if (out.hasBase) {
+            out.names[c] = EncodingName(out.base, static_cast<uint32_t>(c));
+            out.fromBase[c] = true;
+        }
     }
+}
 
-    SimpleNames simple;
-    ReadSimpleNames(doc, dict, kind, font.baseName, desc, simple);
-    const int standard = simple.standard;
+void ReadSimpleNames(const Document& doc, const PdfValue& dict, FontKind kind, const std::string& baseName,
+                     const Descriptor& desc, SimpleNames& out) {
+    ReadDeclaredNames(doc, dict, kind, baseName, desc, out);
+    ReadBaseNames(doc, desc, out);
+}
+
+// A simple font's loader state that the codes without a trusted ToUnicode text need: kept by a
+// pending font until a shown code needs it.
+struct SimpleLoad {
+    const Document* doc = nullptr;
+    FontKind kind = FontKind::Unknown;
+    Descriptor desc;
+    Repair::Context repairContext;
+    ToUnicodeMap toUnicode;
+    bool hasToUnicode = false;
+    bool toUnicodeUntrusted = false;
+    size_t resolvedDifferences = 0;  // /Differences names with a usable text
+    SimpleNames names;               // the declared names; CompleteSimpleTexts adds the base names
+};
+
+// The texts of the codes a trusted ToUnicode does not give (every code without one): the base
+// names (the program's built-in encoding is read here), /Differences, the TrueType program, the
+// Symbol positions, an untrusted ToUnicode, the WinAnsi guess; and whether the font is unmappable.
+void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
+    const Document& doc = *load.doc;
+    const Descriptor& desc = load.desc;
+    SimpleNames& simple = load.names;
+    ReadBaseNames(doc, desc, simple);
     const bool zapf = simple.zapf;
     const std::string_view (&names)[256] = simple.names;
     const UnicodeSource (&nameSource)[256] = simple.nameSource;
     const bool (&fromBase)[256] = simple.fromBase;
-    const PdfValue& encoding = *simple.encoding;
     const Tables::Encoding base = simple.base;
     const bool hasBase = simple.hasBase, builtin = simple.builtin;
-    const size_t differences = simple.differences;
-    size_t resolvedDifferences = 0;
-    const auto loadProgram = [&]() -> std::string_view { return simple.ProgramData(doc, desc); };
+    const size_t differences = simple.differences, resolvedDifferences = load.resolvedDifferences;
+    const Repair::Context& repairContext = load.repairContext;
+    const ToUnicodeMap& toUnicode = load.toUnicode;
+    const bool hasToUnicode = load.hasToUnicode, toUnicodeUntrusted = load.toUnicodeUntrusted;
 
-    const Repair::Context repairContext = Repair::ContextForName(font.baseName);
-    ToUnicodeMap toUnicode;
-    bool toUnicodeUntrusted = false;
-    const bool hasToUnicode = LoadToUnicode(doc, dict, repairContext, toUnicode, nullptr, toUnicodeUntrusted);
-
-    // Unicode per code, first source wins (algorithms §3.1); an untrustworthy ToUnicode comes last.
-    // The map's entries are sorted by code, one per code: walked along with the codes.
     bool needProgram = false;
     std::string text, repaired;
     const EncodingTexts* baseTexts = hasBase && !builtin ? &EncodingTextsFor(base, zapf) : nullptr;
-    const UnicodeEntry* unicodeAt = toUnicode.entries.data();
-    const UnicodeEntry* const unicodeEnd = unicodeAt + toUnicode.entries.size();
-    font.pool.reserve(512);
     for (int c = 0; c < 256; ++c) {
-        if (hasToUnicode && !toUnicodeUntrusted) {
-            while (unicodeAt != unicodeEnd && unicodeAt->code < static_cast<uint32_t>(c)) ++unicodeAt;
-            if (unicodeAt != unicodeEnd && unicodeAt->code == static_cast<uint32_t>(c)) {
-                SetSlot(font, static_cast<uint8_t>(c), toUnicode.Text(*unicodeAt), UnicodeSource::ToUnicode);
-                continue;
-            }
-        }
+        if (font.slots[c].source == UnicodeSource::ToUnicode) continue;  // set by LoadSimple
         if (fromBase[c]) {
             // The base encoding's name: its text and usability made once per process.
             if (baseTexts->named[c]) {
@@ -962,23 +994,13 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
         // The program is read for names that mean nothing, or when no encoding names the codes.
         if (!names[c].empty() || (!hasBase && !builtin && !hasToUnicode)) needProgram = true;
     }
-    if (encoding.IsDict() && differences > 0) {
-        const PdfSpan<PdfValue> diff = doc.Get(encoding, "Differences").Array();
-        for (const PdfValue& item : diff) {
-            const PdfValue& v = doc.Resolve(item);
-            if (v.IsName() && v.Name() != ".notdef") {
-                text.clear();
-                if (GlyphNameToUnicode(v.Name(), zapf, text) && UsableText(text)) ++resolvedDifferences;
-            }
-        }
-    }
     if (differences >= 4 && resolvedDifferences * 2 < differences) NumericGlyphNames(names, font);
 
     // TrueType programs: code -> glyph through the (3,0) / (1,0) / (3,1) subtables (§9.6.6.4),
     // glyph -> text through the inverted Unicode cmap and the 'post' names.
-    if (needProgram && kind == FontKind::TrueType && desc.fontFileKind == 2) {
+    if (needProgram && load.kind == FontKind::TrueType && desc.fontFileKind == 2) {
         Program::Sfnt sfnt;
-        if (Program::ReadSfnt(loadProgram(), sfnt)) {
+        if (Program::ReadSfnt(simple.ProgramData(doc, desc), sfnt)) {
             const uint32_t glyphCount = SfntGlyphCount(sfnt);
             std::vector<std::string> glyphText;
             GlyphTextFromSfnt(sfnt, glyphCount, glyphText);
@@ -1040,11 +1062,73 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     // Unmappable (algorithms §3.6): no ToUnicode and nothing better than a guess, or /Differences
     // whose names mostly mean nothing (subset fonts naming glyphs g12, cid33).
     font.unmappable = !hasToUnicode && (mapped == 0 || (differences > 0 && resolvedDifferences * 2 < differences));
+}
+
+void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::Impl& font) {
+    font.kind = kind;
+    font.baseName = BaseNameOf(doc, dict);
+    if (kind == FontKind::Type3 && font.baseName.empty()) {
+        const std::string_view name = doc.Get(dict, "Name").Name();
+        font.baseName.assign(name.data(), name.size());
+    }
+    StyleFromName(font.baseName, font.style);
+    const Descriptor desc = ReadDescriptor(doc, doc.Get(dict, "FontDescriptor"), font.style);
+
+    if (kind == FontKind::Type3) {
+        const PdfSpan<PdfValue> m = doc.Get(dict, "FontMatrix").Array();
+        double values[6];
+        bool ok = m.size() == 6;
+        for (size_t i = 0; ok && i < 6; ++i) ok = doc.Number(m[i], values[i]);
+        if (ok && values[0] != 0) std::memcpy(font.matrix, values, sizeof values);
+    }
+
+    std::unique_ptr<SimpleLoad> load(new SimpleLoad());
+    load->doc = &doc;
+    load->kind = kind;
+    load->desc = desc;
+    load->repairContext = Repair::ContextForName(font.baseName);
+    SimpleNames& simple = load->names;
+    ReadDeclaredNames(doc, dict, kind, font.baseName, desc, simple);
+    const int standard = simple.standard;
+    // The /Differences names that mean something (numeric names, unmappable fonts).
+    const PdfValue& encoding = *simple.encoding;
+    if (encoding.IsDict() && simple.differences > 0) {
+        std::string text;
+        const PdfSpan<PdfValue> diff = doc.Get(encoding, "Differences").Array();
+        for (const PdfValue& item : diff) {
+            const PdfValue& v = doc.Resolve(item);
+            if (v.IsName() && v.Name() != ".notdef") {
+                text.clear();
+                if (GlyphNameToUnicode(v.Name(), simple.zapf, text) && UsableText(text)) ++load->resolvedDifferences;
+            }
+        }
+    }
+
+    load->hasToUnicode =
+        LoadToUnicode(doc, dict, load->repairContext, load->toUnicode, nullptr, load->toUnicodeUntrusted);
+    // Unicode per code, first source wins (algorithms §3.1): a trusted ToUnicode's codes first (its
+    // entries are sorted by code, one per code), the others in CompleteSimpleTexts.
+    const bool trusted = load->hasToUnicode && !load->toUnicodeUntrusted;
+    font.pool.reserve(512);
+    if (trusted) {
+        const UnicodeEntry* unicodeAt = load->toUnicode.entries.data();
+        const UnicodeEntry* const unicodeEnd = unicodeAt + load->toUnicode.entries.size();
+        for (int c = 0; c < 256 && unicodeAt != unicodeEnd; ++c) {
+            while (unicodeAt != unicodeEnd && unicodeAt->code < static_cast<uint32_t>(c)) ++unicodeAt;
+            if (unicodeAt != unicodeEnd && unicodeAt->code == static_cast<uint32_t>(c)) {
+                SetSlot(font, static_cast<uint8_t>(c), load->toUnicode.Text(*unicodeAt), UnicodeSource::ToUnicode);
+            }
+        }
+    }
+    // The other codes' texts need the base names and may need the program. With a trusted
+    // ToUnicode and /Widths (no width needs a name) they wait until a shown code lacks a text.
+    const PdfValue& widthsValue = doc.Get(dict, "Widths");
+    const bool pending = trusted && widthsValue.IsArray() && desc.fontFile != nullptr;
+    if (!pending) CompleteSimpleTexts(font, *load);
 
     // Widths (§9.6.2, §9.6.5): /FirstChar + /Widths with /MissingWidth beyond; the standard 14
     // metrics when /Widths is absent.
     const double scale = kind == FontKind::Type3 ? font.matrix[0] : 0.001;
-    const PdfValue& widthsValue = doc.Get(dict, "Widths");
     if (widthsValue.IsArray()) {
         const PdfSpan<PdfValue> widths = widthsValue.Array();
         const int64_t first = doc.Get(dict, "FirstChar").Int(0);
@@ -1057,6 +1141,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
             font.slots[c].width = static_cast<float>(w * scale);
         }
     } else if (kind != FontKind::Type3) {
+        const std::string_view (&names)[256] = simple.names;
         const int metrics = StandardFontFor(font.baseName, font.style);
         for (int c = 0; c < 256; ++c) {
             uint16_t w = 0;
@@ -1092,7 +1177,14 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
         Extents(desc, ascentFallback, descentFallback, font.ascent, font.descent);
     }
     if (standard >= 0 && standard < 4) font.style.monospace = true;
-    FinishSpaceWidthSimple(font);
+    if (pending) {
+        for (Slot& slot : font.slots) {
+            if (slot.source != UnicodeSource::ToUnicode) slot.state = SlotState::Pending;
+        }
+        font.pendingSimple = std::move(load);
+    } else {
+        FinishSpaceWidthSimple(font);
+    }
 }
 
 // ---- Type0 ------------------------------------------------------------------------------------
@@ -1259,6 +1351,116 @@ bool MacOrderGlyphText(const Font::Impl& font, int metrics, uint32_t glyphCount,
     return true;
 }
 
+// A Type0 font's loader state that reading its embedded program needs: kept by a pending font.
+struct Type0Load {
+    const Document* doc = nullptr;
+    Descriptor desc;
+    const PdfValue* cidFont = nullptr;
+    std::string_view cidSubtype;
+    Repair::Context repairContext;
+    bool hasToUnicode = false;
+    bool collectionMaps = false;
+};
+
+// The glyph texts of a Type0 font's embedded program (and the CIDToGIDMap they need).
+void ReadType0Program(Font::Impl& font, const Type0Load& load) {
+    const Document& doc = *load.doc;
+    const Descriptor& desc = load.desc;
+    const PdfValue& cidFont = *load.cidFont;
+    const std::string_view cidSubtype = load.cidSubtype;
+    const Repair::Context& repairContext = load.repairContext;
+    const bool hasToUnicode = load.hasToUnicode;
+    std::string program;
+    if (!LoadProgram(doc, desc, program)) return;
+    std::vector<std::string> glyphText;
+    Program::Sfnt sfnt;
+    const bool isSfnt = Program::ReadSfnt(program, sfnt);
+    if (cidSubtype == "CIDFontType2" && isSfnt) {
+        GlyphTextFromSfnt(sfnt, SfntGlyphCount(sfnt), glyphText);
+        bool anyText = false;
+        for (const std::string& t : glyphText) anyText = anyText || !t.empty();
+        const PdfValue& map = doc.Get(cidFont, "CIDToGIDMap");
+        if (map.IsStream()) {
+            std::string gids;
+            const StreamStatus status = doc.StreamData(map, gids, kCidToGidLimit);
+            if (status != StreamStatus::Corrupt && status != StreamStatus::NotStream) {
+                font.cidToGid.resize(gids.size() / 2);
+                for (size_t i = 0; i < font.cidToGid.size(); ++i) {
+                    font.cidToGid[i] = static_cast<uint16_t>(static_cast<uint8_t>(gids[2 * i]) << 8 |
+                                                             static_cast<uint8_t>(gids[2 * i + 1]));
+                }
+            }
+        }
+        if (!anyText && !hasToUnicode) {
+            font.glyphTextGuessed =
+                MacOrderGlyphText(font, StandardFontFor(font.baseName, font.style), sfnt.glyphCount, glyphText);
+        }
+    } else if (cidSubtype == "CIDFontType0") {
+        Program::CffInfo cff;
+        const std::string_view table = isSfnt && !sfnt.cff.empty() ? std::string_view(sfnt.cff) : std::string_view(program);
+        if (Program::ReadCff(table, cff)) {
+            if (!cff.cidKeyed) {
+                // A name-keyed program: CIDs are glyph ids, glyph names give the text.
+                glyphText.assign(cff.glyphCount, std::string());
+                for (uint32_t g = 1; g < cff.glyphCount; ++g) {
+                    if (!GlyphNameToUnicode(cff.glyphNames.Name(g), glyphText[g]) || !UsableText(glyphText[g])) {
+                        glyphText[g].clear();
+                    }
+                }
+            } else if (isSfnt && !sfnt.cmaps.empty()) {
+                // CID-keyed inside OpenType: CID -> glyph (charset), glyph -> text (cmap).
+                GlyphTextFromSfnt(sfnt, cff.glyphCount, glyphText);
+                uint32_t maxCid = 0;
+                for (uint16_t cid : cff.glyphCids) maxCid = cid > maxCid ? cid : maxCid;
+                font.cidToGid.assign(static_cast<size_t>(maxCid) + 1, 0);
+                for (uint32_t g = 0; g < cff.glyphCids.size(); ++g) font.cidToGid[cff.glyphCids[g]] = static_cast<uint16_t>(g);
+            }
+        }
+    }
+    RepairGlyphTexts(glyphText, repairContext);
+    font.glyphText.resize(glyphText.size());
+    bool any = false;
+    for (size_t g = 0; g < glyphText.size(); ++g) {
+        if (glyphText[g].empty()) continue;
+        font.glyphText[g] = Pool(font.pool, glyphText[g]);
+        any = true;
+    }
+    if (!any) font.glyphText.clear();
+}
+
+// The space: a code whose text is U+0020.
+void FinishSpaceWidthType0(Font::Impl& font, bool collectionMaps) {
+    font.spaceWidth = 0;
+    for (const UnicodeEntry& entry : font.toUnicode.entries) {
+        if (font.toUnicode.Text(entry) == " ") {
+            uint32_t cid = 0;
+            const float w = font.CidOf(entry.code, 0, cid) ? font.WidthOf(cid) : font.defaultWidth;
+            if (w > 0) {
+                font.spaceWidth = w;
+                break;
+            }
+        }
+    }
+    for (size_t g = 0; font.spaceWidth == 0 && g < font.glyphText.size(); ++g) {
+        const TextRef& ref = font.glyphText[g];
+        if (std::string_view(font.pool).substr(ref.offset, ref.length) != " ") continue;
+        uint32_t cid = static_cast<uint32_t>(g);
+        if (!font.cidToGid.empty()) {
+            cid = UINT32_MAX;
+            for (size_t c = 0; c < font.cidToGid.size(); ++c) {
+                if (font.cidToGid[c] == g) {
+                    cid = static_cast<uint32_t>(c);
+                    break;
+                }
+            }
+            if (cid == UINT32_MAX) break;
+        }
+        font.spaceWidth = font.WidthOf(cid);
+    }
+    // CID 1 is the proportional space of all four Adobe CJK collections.
+    if (font.spaceWidth == 0 && collectionMaps && FindByCid(font.widths, 1u)) font.spaceWidth = font.WidthOf(1);
+}
+
 void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     font.kind = FontKind::Type0;
     font.baseName = BaseNameOf(doc, dict);
@@ -1359,96 +1561,21 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
         }
     }
     if (desc.fontFile && ((!hasToUnicode && !unicodeCMap && !collectionMaps) || incomplete)) {
-        std::string program;
-        if (LoadProgram(doc, desc, program)) {
-            std::vector<std::string> glyphText;
-            Program::Sfnt sfnt;
-            const bool isSfnt = Program::ReadSfnt(program, sfnt);
-            if (cidSubtype == "CIDFontType2" && isSfnt) {
-                GlyphTextFromSfnt(sfnt, SfntGlyphCount(sfnt), glyphText);
-                bool anyText = false;
-                for (const std::string& t : glyphText) anyText = anyText || !t.empty();
-                const PdfValue& map = doc.Get(cidFont, "CIDToGIDMap");
-                if (map.IsStream()) {
-                    std::string gids;
-                    const StreamStatus status = doc.StreamData(map, gids, kCidToGidLimit);
-                    if (status != StreamStatus::Corrupt && status != StreamStatus::NotStream) {
-                        font.cidToGid.resize(gids.size() / 2);
-                        for (size_t i = 0; i < font.cidToGid.size(); ++i) {
-                            font.cidToGid[i] = static_cast<uint16_t>(static_cast<uint8_t>(gids[2 * i]) << 8 |
-                                                                     static_cast<uint8_t>(gids[2 * i + 1]));
-                        }
-                    }
-                }
-                if (!anyText && !hasToUnicode) {
-                    font.glyphTextGuessed =
-                        MacOrderGlyphText(font, StandardFontFor(font.baseName, font.style), sfnt.glyphCount, glyphText);
-                }
-            } else if (cidSubtype == "CIDFontType0") {
-                Program::CffInfo cff;
-                const std::string_view table = isSfnt && !sfnt.cff.empty() ? std::string_view(sfnt.cff) : std::string_view(program);
-                if (Program::ReadCff(table, cff)) {
-                    if (!cff.cidKeyed) {
-                        // A name-keyed program: CIDs are glyph ids, glyph names give the text.
-                        glyphText.assign(cff.glyphCount, std::string());
-                        for (uint32_t g = 1; g < cff.glyphCount; ++g) {
-                            if (!GlyphNameToUnicode(cff.glyphNames.Name(g), glyphText[g]) || !UsableText(glyphText[g])) {
-                                glyphText[g].clear();
-                            }
-                        }
-                    } else if (isSfnt && !sfnt.cmaps.empty()) {
-                        // CID-keyed inside OpenType: CID -> glyph (charset), glyph -> text (cmap).
-                        GlyphTextFromSfnt(sfnt, cff.glyphCount, glyphText);
-                        uint32_t maxCid = 0;
-                        for (uint16_t cid : cff.glyphCids) maxCid = cid > maxCid ? cid : maxCid;
-                        font.cidToGid.assign(static_cast<size_t>(maxCid) + 1, 0);
-                        for (uint32_t g = 0; g < cff.glyphCids.size(); ++g) font.cidToGid[cff.glyphCids[g]] = static_cast<uint16_t>(g);
-                    }
-                }
-            }
-            RepairGlyphTexts(glyphText, repairContext);
-            font.glyphText.resize(glyphText.size());
-            bool any = false;
-            for (size_t g = 0; g < glyphText.size(); ++g) {
-                if (glyphText[g].empty()) continue;
-                font.glyphText[g] = Pool(font.pool, glyphText[g]);
-                any = true;
-            }
-            if (!any) font.glyphText.clear();
-        }
+        std::unique_ptr<Type0Load> load(new Type0Load());
+        load->doc = &doc;
+        load->desc = desc;
+        load->cidFont = &cidFont;
+        load->cidSubtype = cidSubtype;
+        load->repairContext = repairContext;
+        load->hasToUnicode = hasToUnicode;
+        load->collectionMaps = collectionMaps;
+        // An incomplete ToUnicode still maps most codes: the program waits for a code it lacks.
+        if (incomplete) font.pendingType0 = std::move(load);
+        else ReadType0Program(font, *load);
     }
+    // Pending (incomplete, so a ToUnicode) or not: glyphText decides only without a ToUnicode.
     font.unmappable = !hasToUnicode && !unicodeCMap && !collectionMaps && font.glyphText.empty();
-
-    // The space: a code whose text is U+0020.
-    font.spaceWidth = 0;
-    for (const UnicodeEntry& entry : font.toUnicode.entries) {
-        if (font.toUnicode.Text(entry) == " ") {
-            uint32_t cid = 0;
-            const float w = font.CidOf(entry.code, 0, cid) ? font.WidthOf(cid) : font.defaultWidth;
-            if (w > 0) {
-                font.spaceWidth = w;
-                break;
-            }
-        }
-    }
-    for (size_t g = 0; font.spaceWidth == 0 && g < font.glyphText.size(); ++g) {
-        const TextRef& ref = font.glyphText[g];
-        if (std::string_view(font.pool).substr(ref.offset, ref.length) != " ") continue;
-        uint32_t cid = static_cast<uint32_t>(g);
-        if (!font.cidToGid.empty()) {
-            cid = UINT32_MAX;
-            for (size_t c = 0; c < font.cidToGid.size(); ++c) {
-                if (font.cidToGid[c] == g) {
-                    cid = static_cast<uint32_t>(c);
-                    break;
-                }
-            }
-            if (cid == UINT32_MAX) break;
-        }
-        font.spaceWidth = font.WidthOf(cid);
-    }
-    // CID 1 is the proportional space of all four Adobe CJK collections.
-    if (font.spaceWidth == 0 && collectionMaps && FindByCid(font.widths, 1u)) font.spaceWidth = font.WidthOf(1);
+    if (!font.pendingType0) FinishSpaceWidthType0(font, collectionMaps);
 }
 
 // The font FontCache gives for anything it cannot read: single bytes as WinAnsi, width 0.5.
@@ -1475,6 +1602,26 @@ FontKind KindOf(std::string_view subtype) {
 }
 
 } // namespace
+
+void Font::Impl::Complete() {
+    if (std::unique_ptr<SimpleLoad> load = std::move(pendingSimple)) {
+        for (Slot& slot : slots) {
+            if (slot.state == SlotState::Pending) slot.state = SlotState::Pool;
+        }
+        late = true;
+        CompleteSimpleTexts(*this, *load);
+        late = false;
+        FinishSpaceWidthSimple(*this);
+    }
+    if (std::unique_ptr<Type0Load> load = std::move(pendingType0)) {
+        // Composite has handed out no view into `pool` yet: the glyph texts may extend it.
+        ReadType0Program(*this, *load);
+        FinishSpaceWidthType0(*this, load->collectionMaps);
+    }
+}
+
+Font::Font(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Font::~Font() = default;
 
 FontCache::FontCache(const Document& document) : document_(document) {}
 FontCache::~FontCache() = default;
