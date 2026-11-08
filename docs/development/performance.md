@@ -113,13 +113,47 @@ the filtered rows the compressor takes whole (about twice the pixels).
   (RayoMD measured 3 to 6 fewer faults; a fresh odl conversion takes 150 faults, 26 of them the
   empty program's); page-level parallelism (odl's documents are single pages).
 
+## Second round: images and scans (0.0.9 code, 2026-11-08)
+
+Base `99fcb3f` (0.0.9 code). Every gate run with `RAYOPDF_OCR` set to a missing path, so the OCR
+add-on is never found; the scanned suite (`benchmark-output/eval/scanned`, 398 PDFs: CCITT,
+JBIG2, Flate, JPEG and JPX pages at 200 and 300 dpi) joined G-bytes with images on and off
+(5,734 comparisons). A change that rewrites PNG files on purpose is checked by a pixel gate: both
+builds convert every corpus with images written, the image trees are compared PNG by PNG after
+decoding (any depth, palette, alpha), every other file and every report (without `ms`) byte by
+byte.
+
+|Finding (base2)|Number|
+|---|---|
+|SafeDocs 0000315, 416 pages, images written / off|11.2 s / 0.07 s; its images are JPEG 2000 gray (`JPXDecode`), and the time is the JPX decoder (T1 decoding 57 % of the cycles), not 1-bit images|
+|159 bitonal scanned items (CCITT, JBIG2), `--batch`, images written|20.8 s, peak 32.7 MiB: each 1-bit page widened to 8-bit gray (unpack 33 %, repack 26 % of the cycles) and compressed a byte a pixel|
+|odl 136 (4653 x 2334 RGB + soft mask), peak RSS|96.9 MiB: pixels, mask, the filtered rows and the compressed file whole|
+|odl warm, release, images off|0.846 ms/page median (0.0.8: 0.835 on the same day); fresh static 1.40 ms|
+
+|Step|Commit|Change|Result|
+|---|---|---|---|
+|10|`fc6981f`|gray of 1, 2 or 4 bits that is a PNG's, and stencils, kept packed and written at their depth; other gray at the fewest exact bits; `Deflate::ZlibStream` (the same bytes, a 32 KB window, a block and its lookahead held); the PNG writer filters a row at a time into it and streams the file through `Image::Sink` / `File::StagedFile` (IDAT length set in place, renamed at the end)|bitonal items 20.8 -> 4.4 s, peak 32.7 -> 9.0 MiB, images 29 -> 20 MB; scanned suite 87.5 -> 75.2 s, peak 309 -> 261 MiB; odl batch with images 1.06 -> 0.98 s, peak 122 -> 79 MiB; odl 136 peak 96.9 -> 55.6 MiB; Markdown unchanged, 1,356 gray PNGs rewritten with the same pixels, every other PNG byte-identical|
+
+G-warm for step 10: text fixtures (images off) 0.00 % instructions. Images written:
+syn-chromium-images +1.8 % user instructions (copying rows into the compressor's window; callgrind
+also counts `rep movsb` a byte at a time) with -12 % task-clock, odl 107 +1.6 % instructions with
+-35 % task-clock (no zero-filled image-sized buffers): kept, against the +0.3 % instruction gate,
+for the bounded buffers and the lower CPU time.
+
+What still grows with an image: its decoded pixels and its decoded mask (the samples are inflated
+whole, then converted; CCITT, JBIG2 and JPX decoders produce whole bitmaps), and the JPX decoder's
+own planes (the scanned suite's 261 MiB peak is a 300 dpi colour JPX page).
+
+Also tried in this round: a 10-bit literal/length root table in Inflate (cheaper table builds):
+text streams 1.60 -> 1.57 ns/byte, all streams 0.486 -> 0.496 ns/byte; not kept.
+
 ## Open candidates (measured, not done)
 
 - Writer (`StyleWords`, `Inline`) string building; table detector passes (`Columns`, `Borderless`).
 - The content lexer's string and name operands (`ParseValue`, 2.7 % of cycles).
-- Images: a compressor that takes the filtered rows as they come (bounded RSS instead of about
-  twice the largest image); the warm `--bench` loop over one image now maps glibc's inflate
-  buffers anew (odl 107 with images: -5.6 % instructions, +4.8 % time in that loop only).
+- Images: Flate samples inflated and converted a row at a time into the PNG writer (the decode side
+  of bounded RSS); the JPX decoder's T1 coding (57 % of SafeDocs 0000315); the warm `--bench` loop
+  over one image maps glibc's inflate buffers anew.
 
 ## Rerunning
 
