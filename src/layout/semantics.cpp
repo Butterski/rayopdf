@@ -259,6 +259,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
     bool numbering = line.chars <= 8;
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
+        if (letter && !numbering && !(g.flags & kGlyphMonospace)) continue;
         const uint32_t cp = FirstCodePoint(page.GlyphText(g));
         // Mathematical alphanumerics (𝑥, 𝐸) are math whatever the font's pitch: no code.
         if ((g.flags & kGlyphMonospace) && !(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
