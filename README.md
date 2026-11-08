@@ -151,6 +151,10 @@ unpack into the same folder. `tools/package.py` makes them byte for byte reprodu
   campaign, output byte-identical to 0.0.7.
 - [Performance](docs/development/performance.md): campaign method, findings, steps, results and
   rejected attempts.
+- [RayoPDF 0.0.9 on the harness](docs/benchmarks/v0.0.9-2026-11-08.md): the OCR add-on, scan
+  codecs, glyph-shape recovery and exact recovery; scanned documents.
+- [OCR engine](docs/development/ocr-engine.md) and [OCR protocol](docs/development/ocr-protocol.md):
+  the add-on's measurements, build and pipe protocol.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation
@@ -169,10 +173,13 @@ python3 tools/eval.py all
 python3 tools/eval.py images                      # build the Docker images
 python3 tools/eval.py fetch                       # download the public benchmarks
 python3 tools/eval.py corpus                      # render the synthetic corpus
+python3 tools/eval.py corpus --suite scanned      # image-only PDFs rendered from the corpus
 python3 tools/eval.py score --selftest            # check the construct scorer
 python3 tools/eval.py convert --tool T --suite S  # T: pdftotext, markitdown, pymupdf, opendataloader,
-                                                  #    liteparse, edgeparse, docling, cli
-                                                  # S: synthetic, odl, olmocr, readoc
+                                                  #    liteparse, edgeparse, docling, docling-ocr,
+                                                  #    tesseract, cli
+                                                  # S: synthetic, odl, olmocr, readoc, scanned,
+                                                  #    olmocr-scans
 python3 tools/eval.py score --suite S
 python3 tools/eval.py speed --tool T
 python3 tools/eval.py census

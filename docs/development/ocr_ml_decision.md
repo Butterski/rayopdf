@@ -239,6 +239,16 @@ cost is the text-layer cost on 89.3 % of pages plus the OCR cost on R core's 10.
 - **Re-run triggers** (§6.4): a new census corpus, a change to RayoPDF's font → Unicode chain (it
   lowers M2 and raises M3), new PP-OCR or Tesseract major versions.
 
+## After glyph-shape recovery (0.0.9)
+
+Re-run of 2026-11-08 with the 0.0.9 bundle (core plus the OCR add-on, which reads the shapes of
+glyphs whose font maps them to no or wrong text; `python3 tools/ocr_gate.py --root ...
+collect-rayopdf --bin <bundle>/rayopdf`, then `measure`): RayoPDF's broken pages fall from 152
+(1.71 %) to 130 (1.46 %), M3 rises from 156 to 177 of 307 (50.8 % → 57.7 %), and R core from
+10.68 % to 10.42 % (14.85 % with image regions). No census page got worse. The decision stands:
+R stays above 5 % and CJK is present. Of the 130 pages still broken, about 121 are Devanagari,
+Kannada and Tamil in legacy font encodings, which the shipped recognition model does not cover.
+
 ## Text in images of digital pages
 
 Decision of 2026-11-08 (plan row B6), taken by principle: text that region OCR reads in an image on
