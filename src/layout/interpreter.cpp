@@ -184,13 +184,41 @@ struct MarkedContent {
     uint8_t previousStream = 0;
 };
 
-// What a shown string's glyphs take from its font: extents (defaults when the font has none),
-// writing mode and the style's glyph flags.
-struct GlyphFont {
+// What every glyph of a shown string shares: the font's extents (defaults when it has none),
+// writing mode and style, and what the text rendering matrix's linear part gives, which stays the
+// same along the string (only its translation moves): the glyphs' size, baseline direction and
+// state flags, the terms of the box corners that do not depend on the glyph, and the clip test's
+// bounds. A run is made from its font, Trm's linear part, the render mode, alpha, artifact state
+// and clip; the next string reuses it when all of these have the same bits (the strings of a TJ
+// array, a line's Tj after Td).
+struct GlyphRun {
+    const Text::Font* font = nullptr;
+    double a = 0, b = 0, c = 0, d = 0;  // Trm without its translation
+    int render = 0;
+    bool transparent = false, artifact = false;
+    Box clip;
+
     double ascent = 0, descent = 0;
     bool vertical = false;
-    uint16_t flags = 0;
+    bool usable = false;                 // size and run length finite
+    uint8_t dir = 0;
+    uint16_t flags = 0;                  // style, render mode, shear and artifact flags
+    float size = 0;
+    // x·a and x·b of the box's left and right edges, y·c and y·d of its bottom and top: the
+    // glyph's own edge (its width, or its vertical advance) is filled in per glyph.
+    double xa[2] = {}, xb[2] = {}, yc[2] = {}, yd[2] = {};
+    // The clip widened by one unit, and whether it is empty.
+    double clipX0 = 0, clipY0 = 0, clipX1 = 0, clipY1 = 0;
+    bool clipEmpty = false;
 };
+
+// The same value bit for bit (a -0 is no 0).
+inline bool SameBits(double x, double y) {
+    uint64_t u, v;
+    std::memcpy(&u, &x, sizeof u);
+    std::memcpy(&v, &y, sizeof v);
+    return u == v;
+}
 
 class Interpreter {
 public:
@@ -205,7 +233,8 @@ private:
                  ContentLexer& lexer);
     bool ShowString(std::string_view bytes);
     bool ShowArray(const PdfValue& array);
-    void EmitGlyph(const Text::Code& code, const Matrix& trm, double width, const GlyphFont& face);
+    const GlyphRun& RunFor(const Text::Font& font, const Matrix& tm);
+    void EmitGlyph(const Text::Code& code, double e, double f, const GlyphRun& run);
     bool SetFont(const PdfValue& resources, std::string_view name, double size);
     void SetFontEntry(const PdfValue& entry, double size);
     void ApplyExtGState(const PdfValue& resources, std::string_view name);
@@ -245,6 +274,7 @@ private:
     int artifactDepth_ = 0;
     int32_t mcid_ = -1;
     uint8_t mcStream_ = 0;  // Glyph::mcStream of mcid_
+    GlyphRun run_;          // the last shown string's
 
     // Current path, in device space.
     Box pathBox_;
@@ -950,42 +980,91 @@ uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
     return flags;
 }
 
+const GlyphRun& Interpreter::RunFor(const Text::Font& font, const Matrix& tm) {
+    // Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm × CTM (§9.4.2), without its translation.
+    const double tfs = gs_.fontSize;
+    const double th = gs_.hScale;
+    const double a = tfs * th * tm.a, b = tfs * th * tm.b, c = tfs * tm.c, d = tfs * tm.d;
+    const bool artifact = artifactDepth_ > 0;
+    GlyphRun& run = run_;
+    if (run.font == &font && SameBits(run.a, a) && SameBits(run.b, b) && SameBits(run.c, c) && SameBits(run.d, d) &&
+        run.render == gs_.render && run.transparent == gs_.transparent && run.artifact == artifact &&
+        SameBits(run.clip.x0, gs_.clip.x0) && SameBits(run.clip.y0, gs_.clip.y0) &&
+        SameBits(run.clip.x1, gs_.clip.x1) && SameBits(run.clip.y1, gs_.clip.y1))
+        return run;
+    run.font = &font;
+    run.a = a, run.b = b, run.c = c, run.d = d;
+    run.render = gs_.render;
+    run.transparent = gs_.transparent;
+    run.artifact = artifact;
+    run.clip = gs_.clip;
+    run.vertical = font.Vertical();
+    run.ascent = font.Ascent();
+    run.descent = font.Descent();
+    if (!(run.ascent > run.descent)) run.ascent = 0.8, run.descent = -0.2;
+    const Text::FontStyle& style = font.Style();
+    uint16_t flags = 0;
+    if (style.bold) flags |= kGlyphBold;
+    if (style.italic) flags |= kGlyphItalic;
+    if (style.monospace) flags |= kGlyphMonospace;
+    if (style.symbolic) flags |= kGlyphSymbolic;
+    const double size = std::sqrt(run.c * run.c + run.d * run.d);
+    const double runLength = std::sqrt(run.a * run.a + run.b * run.b);
+    run.usable = std::isfinite(size) && std::isfinite(runLength);
+    run.size = float(size);
+    // Baseline direction from the text matrix's x axis, or the y axis turned when x is degenerate.
+    double bx = run.a, by = run.b;
+    if (runLength < 1e-9) bx = run.d, by = -run.c;
+    if (std::fabs(bx) >= std::fabs(by))
+        run.dir = bx >= 0 ? 0 : 2;
+    else
+        run.dir = by > 0 ? 1 : 3;
+    if (gs_.render == 2) flags |= kGlyphBold;
+    // A sheared text matrix is a synthetic oblique (algorithms §6.6).
+    if (runLength > 1e-9 && size > 1e-9) {
+        const double cosine = (run.a * run.c + run.b * run.d) / (runLength * size);
+        if (std::fabs(cosine) > 0.1) flags |= kGlyphItalic;
+    }
+    const int mode = gs_.render & 7;
+    if (mode == 3 || mode == 7 || gs_.transparent) flags |= kGlyphInvisible;
+    if (mode == 1 || mode == 5) flags |= kGlyphStrokeOnly;
+    if (artifact) flags |= kGlyphArtifact;
+    run.flags = flags;
+    // The box: x from 0 to the width, y from descent to ascent; vertically x from -0.5 to 0.5, y
+    // from the vertical advance (or -1) to 0.
+    const double x0 = run.vertical ? -0.5 : 0, x1 = 0.5, y1 = run.vertical ? 0 : run.ascent, y0 = run.descent;
+    run.xa[0] = x0 * run.a, run.xb[0] = x0 * run.b;
+    run.xa[1] = x1 * run.a, run.xb[1] = x1 * run.b;
+    run.yc[0] = y0 * run.c, run.yd[0] = y0 * run.d;
+    run.yc[1] = y1 * run.c, run.yd[1] = y1 * run.d;
+    const Box& clip = gs_.clip;
+    run.clipX0 = clip.x0 - 1, run.clipY0 = clip.y0 - 1, run.clipX1 = clip.x1 + 1, run.clipY1 = clip.y1 + 1;
+    run.clipEmpty = clip.Empty();
+    return run;
+}
+
 bool Interpreter::ShowString(std::string_view bytes) {
     const Text::Font* font = gs_.font;
     if (!font) return false;
-    // What every glyph of the string takes from its font, read once.
-    GlyphFont face;
-    face.vertical = font->Vertical();
-    face.ascent = font->Ascent();
-    face.descent = font->Descent();
-    if (!(face.ascent > face.descent)) face.ascent = 0.8, face.descent = -0.2;
-    const Text::FontStyle& style = font->Style();
-    if (style.bold) face.flags |= kGlyphBold;
-    if (style.italic) face.flags |= kGlyphItalic;
-    if (style.monospace) face.flags |= kGlyphMonospace;
-    if (style.symbolic) face.flags |= kGlyphSymbolic;
-    const bool vertical = face.vertical;
     const double tfs = gs_.fontSize;
     const double th = gs_.hScale;
     Matrix tm = Multiply(textMatrix_, gs_.ctm);
+    // What every glyph of the string shares, worked out once (or kept from the string before).
+    const GlyphRun& run = RunFor(*font, tm);
+    const bool vertical = run.vertical;
     size_t at = 0;
     Text::Code code;
     while (at < bytes.size() && font->Next(bytes, at, code)) {
-        // Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm × CTM (§9.4.2).
-        Matrix trm;
-        trm.a = tfs * th * tm.a;
-        trm.b = tfs * th * tm.b;
-        trm.c = tfs * tm.c;
-        trm.d = tfs * tm.d;
-        trm.e = gs_.rise * tm.c + tm.e;
-        trm.f = gs_.rise * tm.d + tm.f;
+        // Trm's translation; its linear part is the run's.
+        const double e = gs_.rise * tm.c + tm.e;
+        const double f = gs_.rise * tm.d + tm.f;
         double advance;
         if (vertical) {
             advance = code.verticalAdvance * tfs + gs_.charSpace + (code.wordSpace ? gs_.wordSpace : 0);
         } else {
             advance = (code.width * tfs + gs_.charSpace + (code.wordSpace ? gs_.wordSpace : 0)) * th;
         }
-        EmitGlyph(code, trm, code.width, face);
+        EmitGlyph(code, e, f, run);
         if (budgetHit_) return true;
         if (!std::isfinite(advance)) advance = 0;
         if (vertical) {
@@ -1003,7 +1082,7 @@ bool Interpreter::ShowString(std::string_view bytes) {
     return true;
 }
 
-void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double width, const GlyphFont& face) {
+void Interpreter::EmitGlyph(const Text::Code& code, double e, double f, const GlyphRun& run) {
     stats_.glyphs++;
     if (code.source == Text::UnicodeSource::None) stats_.unmapped++;
     if (code.source == Text::UnicodeSource::Guess) stats_.guessed++;
@@ -1011,29 +1090,23 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
         budgetHit_ = true;
         return;
     }
-    const double size = std::sqrt(trm.c * trm.c + trm.d * trm.d);
-    const double runLength = std::sqrt(trm.a * trm.a + trm.b * trm.b);
-    if (!std::isfinite(size) || !std::isfinite(runLength) || !std::isfinite(trm.e) || !std::isfinite(trm.f)) return;
+    if (!run.usable || !std::isfinite(e) || !std::isfinite(f)) return;
 
     Glyph g;
-    // Baseline direction from the text matrix's x axis, or the y axis turned when x is degenerate.
-    double bx = trm.a, by = trm.b;
-    if (runLength < 1e-9) bx = trm.d, by = -trm.c;
-    if (std::fabs(bx) >= std::fabs(by))
-        g.dir = bx >= 0 ? 0 : 2;
-    else
-        g.dir = by > 0 ? 1 : 3;
-
-    double x0 = 0, x1 = width, y0 = face.descent, y1 = face.ascent;
-    if (face.vertical) {
-        x0 = -0.5, x1 = 0.5, y0 = code.verticalAdvance < 0 ? code.verticalAdvance : -1, y1 = 0;
+    g.dir = run.dir;
+    // The corners [x y] × Trm: the run's terms with the glyph's own edge, its width (the right
+    // edge) or its vertical advance (the bottom edge).
+    double xa0 = run.xa[0], xa1 = run.xa[1], xb0 = run.xb[0], xb1 = run.xb[1];
+    double yc0 = run.yc[0], yc1 = run.yc[1], yd0 = run.yd[0], yd1 = run.yd[1];
+    if (run.vertical) {
+        const double y0 = code.verticalAdvance < 0 ? code.verticalAdvance : -1;
+        yc0 = y0 * run.c, yd0 = y0 * run.d;
+    } else {
+        const double x1 = code.width;
+        xa1 = x1 * run.a, xb1 = x1 * run.b;
     }
-    double dx[4], dy[4];
-    const double cx[4] = {x0, x1, x0, x1}, cy[4] = {y0, y0, y1, y1};
-    for (int i = 0; i < 4; ++i) {
-        dx[i] = cx[i] * trm.a + cy[i] * trm.c + trm.e;
-        dy[i] = cx[i] * trm.b + cy[i] * trm.d + trm.f;
-    }
+    const double dx[4] = {xa0 + yc0 + e, xa1 + yc0 + e, xa0 + yc1 + e, xa1 + yc1 + e};
+    const double dy[4] = {xb0 + yd0 + f, xb1 + yd0 + f, xb0 + yd1 + f, xb1 + yd1 + f};
     double bx0 = dx[0], bx1 = dx[0], by0 = dy[0], by1 = dy[0];
     double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
     const bool ordered = dx[0] == dx[0] && dx[1] == dx[1] && dx[2] == dx[2] && dx[3] == dx[3] && dy[0] == dy[0] &&
@@ -1042,10 +1115,12 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
         // No NaN: Fmin/Fmax are plain comparisons, each keeping the later of equal values. The
         // frame's coordinates are the device ones permuted and negated (ToFrame), so their extremes
         // are the device extremes, negated where the axis is: the same corner, the same value.
-        for (int i = 1; i < 4; ++i) {
-            bx0 = bx0 < dx[i] ? bx0 : dx[i], bx1 = bx1 > dx[i] ? bx1 : dx[i];
-            by0 = by0 < dy[i] ? by0 : dy[i], by1 = by1 > dy[i] ? by1 : dy[i];
-        }
+        bx0 = bx0 < dx[1] ? bx0 : dx[1], bx1 = bx1 > dx[1] ? bx1 : dx[1];
+        by0 = by0 < dy[1] ? by0 : dy[1], by1 = by1 > dy[1] ? by1 : dy[1];
+        bx0 = bx0 < dx[2] ? bx0 : dx[2], bx1 = bx1 > dx[2] ? bx1 : dx[2];
+        by0 = by0 < dy[2] ? by0 : dy[2], by1 = by1 > dy[2] ? by1 : dy[2];
+        bx0 = bx0 < dx[3] ? bx0 : dx[3], bx1 = bx1 > dx[3] ? bx1 : dx[3];
+        by0 = by0 < dy[3] ? by0 : dy[3], by1 = by1 > dy[3] ? by1 : dy[3];
         switch (g.dir) {
         case 1: fu0 = by0, fu1 = by1, fv0 = -bx1, fv1 = -bx0; break;
         case 2: fu0 = -bx1, fu1 = -bx0, fv0 = -by1, fv1 = -by0; break;
@@ -1064,29 +1139,18 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
         }
     }
     double ou, ov;
-    ToFrame(g.dir, trm.e, trm.f, ou, ov);
+    ToFrame(g.dir, e, f, ou, ov);
     g.x0 = float(bx0), g.y0 = float(by0), g.x1 = float(bx1), g.y1 = float(by1);
     g.u0 = float(fu0), g.u1 = float(fu1), g.vb = float(fv0), g.vt = float(fv1), g.v = float(ov);
-    g.size = float(size);
+    g.size = run.size;
     g.font = gs_.fontId;
     g.mcid = mcid_;
     g.mcStream = mcStream_;
 
-    uint16_t flags = face.flags;
-    if (gs_.render == 2) flags |= kGlyphBold;
-    // A sheared text matrix is a synthetic oblique (algorithms §6.6).
-    if (runLength > 1e-9 && size > 1e-9) {
-        const double cosine = (trm.a * trm.c + trm.b * trm.d) / (runLength * size);
-        if (std::fabs(cosine) > 0.1) flags |= kGlyphItalic;
-    }
-    const int mode = gs_.render & 7;
-    if (mode == 3 || mode == 7 || gs_.transparent) flags |= kGlyphInvisible;
-    if (mode == 1 || mode == 5) flags |= kGlyphStrokeOnly;
-    if (artifactDepth_ > 0) flags |= kGlyphArtifact;
+    uint16_t flags = run.flags;
     // Clipped away: the glyph's centre is outside the clip (which lies within the page).
     const double mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2;
-    const Box& clip = gs_.clip;
-    if (mx < clip.x0 - 1 || mx > clip.x1 + 1 || my < clip.y0 - 1 || my > clip.y1 + 1 || clip.Empty())
+    if (mx < run.clipX0 || mx > run.clipX1 || my < run.clipY0 || my > run.clipY1 || run.clipEmpty)
         flags |= kGlyphClipped;
     if (code.source == Text::UnicodeSource::None) flags |= kGlyphUnmapped;
     if (code.source == Text::UnicodeSource::Guess) flags |= kGlyphGuessed;
@@ -1105,7 +1169,7 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
         use.font = gs_.font;
         use.code = code.code;
         use.bytes = code.bytes;
-        const double m[6] = {trm.a, trm.b, trm.c, trm.d, trm.e, trm.f};
+        const double m[6] = {run.a, run.b, run.c, run.d, e, f};
         for (int i = 0; i < 6; ++i) use.matrix[i] = static_cast<float>(m[i]);
         stats_.uses->push_back(use);
     }
