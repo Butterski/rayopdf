@@ -767,6 +767,12 @@ struct Pixels {
     uint32_t height = 0;  // rows present (at most the declared height)
     uint32_t declaredHeight = 0;
     int channels = 1;
+    // Gray kept as stored, `packedBits` (1, 2 or 4) bits a sample in rows `packedRowBytes` apart:
+    // only when the caller allows it (SampleRequest::allowPacked) and the samples are a PNG's
+    // gray of that depth, or (`packedInvert`) its complement. 0: 8-bit pixels.
+    int packedBits = 0;
+    size_t packedRowBytes = 0;
+    bool packedInvert = false;
 
     uint8_t* Bytes() { return reinterpret_cast<uint8_t*>(&data[0]); }
     const uint8_t* Bytes() const { return reinterpret_cast<const uint8_t*>(data.data()); }
@@ -1077,8 +1083,9 @@ void ConvertPixels(const Layout& layout, uint32_t rows, std::string& data, const
     }
 }
 
-// A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere.
-Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out) {
+// A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere. With `packed`, kept as its
+// bits (gray bit * 255, complemented where 1 paints).
+Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out, bool packed = false) {
     const Filters::Kind stop = StopFilter(src);
     if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
     Layout layout;
@@ -1095,6 +1102,13 @@ Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out) {
     out.height = rows;
     out.declaredHeight = layout.height;
     out.channels = 1;
+    if (packed) {
+        out.data.swap(data);
+        out.packedBits = 1;
+        out.packedRowBytes = layout.rowBytes;
+        out.packedInvert = inverted;
+        return Status::Ok;
+    }
     out.data.resize(size_t(layout.width) * rows);
     const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
     for (uint32_t y = 0; y < rows; y++) {
@@ -1183,6 +1197,7 @@ struct SampleRequest {
     std::vector<uint8_t>* keyAlpha = nullptr;  // filled from a /Mask colour key, when given
     Pixels* inDataAlpha = nullptr;             // filled from a JPX opacity channel (/SMaskInData)
     uint32_t longerSide = 0;  // JPX: decode at a reduced resolution down to about this (0: full)
+    bool allowPacked = false; // gray of 1, 2 or 4 bits that is a PNG's may stay packed (Pixels)
 };
 
 // A JPX image's samples through the JPEG 2000 decoder (jpx.h): the layout is the decoded
@@ -1322,6 +1337,32 @@ Status DecodeSampled(const Source& src, const SampleRequest& req, Pixels& out, u
     if (req.keyAlpha) ColourKeyAlpha(src, layout, rows, data, *req.keyAlpha);
     DecodeMap map;
     MakeDecodeMap(src, space, layout.bpc, map, !jpx);
+    if (req.allowPacked && stop != Filters::Kind::Dct && !jpx && space.family == Family::Gray &&
+        space.components == 1 && space.channels == 1 && (layout.bpc == 1 || layout.bpc == 2 || layout.bpc == 4) &&
+        (!req.keyAlpha || req.keyAlpha->empty())) {
+        // The samples are a PNG's gray when every code's colour, as ConvertPixels makes it, is
+        // code * 255 / (2^bits - 1), or that of the complemented code: then they stay packed.
+        const unsigned top = (1u << layout.bpc) - 1, scale = 255u / top;
+        bool same = true, complement = true;
+        for (unsigned code = 0; code <= top; code++) {
+            const double v = map.Value(0, code);
+            uint8_t colour = 0;
+            Convert(space, &v, &colour);
+            same = same && colour == code * scale;
+            complement = complement && colour == (top - code) * scale;
+        }
+        if (same || complement) {
+            out.width = layout.width;
+            out.height = rows;
+            out.declaredHeight = layout.height;
+            out.channels = 1;
+            out.data.swap(data);
+            out.packedBits = layout.bpc;
+            out.packedRowBytes = layout.rowBytes;
+            out.packedInvert = !same;
+            return Status::Ok;
+        }
+    }
     ConvertPixels(layout, rows, data, space, map, out);
     return Status::Ok;
 }
@@ -1456,35 +1497,82 @@ bool Transparent(const Pixels& mask, MaskKind kind) {
     return false;
 }
 
-Status WritePng(const Pixels& image, const AlphaRows* alpha, Encoded& out) {
+// Where a PNG goes: Encoded::bytes, or the caller's Sink, opened at the first byte.
+class PngDestination final : public Png::Output {
+public:
+    PngDestination(Encoded& out, Sink* sink) : out_(out), sink_(sink) { out_.bytes.clear(); }
+
+    bool Append(const uint8_t* data, size_t size) override {
+        if (!sink_) {
+            out_.bytes.append(reinterpret_cast<const char*>(data), size);
+            return true;
+        }
+        if (!opened_) {
+            opened_ = true;
+            if (!sink_->Open("png")) return Fail();
+        }
+        return sink_->Append(data, size) || Fail();
+    }
+
+    bool Patch(uint64_t offset, const uint8_t* data, size_t size) override {
+        if (sink_) return sink_->Patch(offset, data, size) || Fail();
+        if (offset > out_.bytes.size() || size > out_.bytes.size() - offset) return false;
+        std::memcpy(&out_.bytes[static_cast<size_t>(offset)], data, size);
+        return true;
+    }
+
+    // The writer's result as a Status: a failed Sink is WriteFailed, anything else TooLarge.
+    Status Result(bool ok) {
+        if (ok) {
+            out_.streamed = sink_ != nullptr;
+            return Status::Ok;
+        }
+        out_.bytes.clear();
+        return failed_ ? Status::WriteFailed : Status::TooLarge;
+    }
+
+private:
+    bool Fail() {
+        failed_ = true;
+        return false;
+    }
+
+    Encoded& out_;
+    Sink* sink_;
+    bool opened_ = false;
+    bool failed_ = false;
+};
+
+Status WritePng(const Pixels& image, const AlphaRows* alpha, Encoded& out, Sink* sink) {
     const bool opaque = !alpha || alpha->Opaque();
     out.extension = "png";
     out.width = image.width;
     out.height = image.height;
+    PngDestination destination(out, sink);
     bool ok;
     if (opaque) {
-        ok = EncodePng(image.Bytes(), image.width, image.height, image.channels, out.bytes);
+        ok = Png::EncodePixels(image.Bytes(), image.width, image.height, image.channels, destination);
     } else {
         const size_t rowBytes = size_t(image.width) * static_cast<size_t>(image.channels + 1);
         InterleavedRows rows{&image, alpha, {std::vector<uint8_t>(rowBytes), std::vector<uint8_t>(rowBytes)},
                              std::vector<uint8_t>(image.width)};
-        ok = Png::EncodeRows(image.width, image.height, image.channels + 1, InterleavedRow, &rows, out.bytes);
+        ok = Png::EncodeRows(image.width, image.height, image.channels + 1, InterleavedRow, &rows, destination);
     }
-    return ok ? Status::Ok : Status::TooLarge;
+    return destination.Result(ok);
 }
 
 // `image` with its soft or stencil mask, as a PNG; `key` the colour-key alpha DecodeSampled made.
 Status WriteMasked(const Pixels& image, MaskKind kind, bool decoded, const Pixels& mask,
-                   const std::vector<uint8_t>& key, Encoded& out) {
+                   const std::vector<uint8_t>& key, Encoded& out, Sink* sink) {
     Status status;
     if ((kind == MaskKind::Soft || kind == MaskKind::Stencil) && decoded) {
         const AlphaRows alpha(image, &mask, kind == MaskKind::Stencil, nullptr);
-        status = WritePng(image, &alpha, out);
+        status = WritePng(image, &alpha, out, sink);
     } else if (!key.empty()) {
         const AlphaRows alpha(image, nullptr, false, &key);
-        status = WritePng(image, &alpha, out);
+        status = WritePng(image, &alpha, out, sink);
     } else {
-        status = WritePng(image, nullptr, out);
+        status = WritePng(image, nullptr, out, sink);
     }
     if (status == Status::Ok) out.maskDropped = kind != MaskKind::None && !decoded;
     return status;
@@ -1527,13 +1615,20 @@ struct DecodedImage {
 
 // `longerSide`: a JPX image may be decoded at a reduced resolution down to about this (0: full).
 // A JPX opacity channel (/SMaskInData) is the soft mask when there is no /SMask stream, which
-// takes precedence (ISO 32000-1 Table 89).
-Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint32_t longerSide = 0) {
-    if (src.Entry("ImageMask", "IM").Bool(false)) return DecodeStencil(src, maxPixels, d.image);
+// takes precedence (ISO 32000-1 Table 89). `allowPacked`: a stencil, or gray of 1, 2 or 4 bits
+// without a mask, may stay packed (Pixels::packedBits) for a PNG written from it.
+Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint32_t longerSide = 0,
+                   bool allowPacked = false) {
+    if (src.Entry("ImageMask", "IM").Bool(false)) return DecodeStencil(src, maxPixels, d.image, allowPacked);
     SampleRequest req;
     req.maxPixels = maxPixels;
     req.keyAlpha = &d.key;
     req.longerSide = longerSide;
+    if (allowPacked) {
+        const PdfValue& mask = src.doc.Get(src.dict, "Mask");
+        req.allowPacked = src.inlineImage ||
+                          !(src.doc.Get(src.dict, "SMask").IsStream() || mask.IsStream() || mask.IsArray());
+    }
     Pixels inData;
     if (!src.inlineImage && !src.doc.Get(src.dict, "SMask").IsStream()) req.inDataAlpha = &inData;
     const Status status = DecodeSampled(src, req, d.image, &d.fullWidth, &d.fullHeight);
@@ -1548,7 +1643,19 @@ Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint3
     return Status::Ok;
 }
 
-Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
+// A PNG of packed gray (Pixels::packedBits): the stored rows, complemented where needed, without
+// being widened to 8 bits a pixel and narrowed again (a 300 dpi scan page is 8 MB of 8-bit pixels
+// against 1 MB packed). The same pixels as WritePng of the 8-bit gray.
+Status WritePacked(const Pixels& image, Encoded& out, Sink* sink) {
+    out.extension = "png";
+    out.width = image.width;
+    out.height = image.height;
+    PngDestination destination(out, sink);
+    return destination.Result(Png::EncodeGray(image.Bytes(), image.packedRowBytes, image.width, image.height,
+                                              image.packedBits, image.packedInvert, destination));
+}
+
+Status Encode(const Source& src, Encoded& out, uint64_t maxPixels, Sink* sink) {
     out = Encoded();
     const Filters::Kind stop = StopFilter(src);
     const bool stencil = src.Entry("ImageMask", "IM").Bool(false);
@@ -1571,7 +1678,7 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
             jpxSrc.encoded = data;
             DecodedImage d;
             if (DecodeImage(jpxSrc, maxPixels, d) == Status::Ok) {
-                return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out);
+                return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out, sink);
             }
         }
         const MaskKind kind = stencil ? MaskKind::None : ReadMask(src, maxPixels, mask, maskDecoded);
@@ -1587,7 +1694,7 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
                 req.maxPixels = maxPixels;
                 req.keyAlpha = &key;
                 const Status status = DecodeSampled(jpegSrc, req, image);
-                if (status == Status::Ok) return WriteMasked(image, kind, maskDecoded, mask, key, out);
+                if (status == Status::Ok) return WriteMasked(image, kind, maskDecoded, mask, key, out, sink);
                 // A JPEG this decoder cannot read (arithmetic, 12-bit, damaged, too large to
                 // decode): as stored, which the pixel limit below still bounds.
             }
@@ -1608,10 +1715,11 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
     if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
 
     DecodedImage d;
-    const Status status = DecodeImage(src, maxPixels, d);
+    const Status status = DecodeImage(src, maxPixels, d, 0, true);
     if (status != Status::Ok) return status;
-    if (stencil) return WritePng(d.image, nullptr, out);
-    return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out);
+    if (d.image.packedBits != 0) return WritePacked(d.image, out, sink);
+    if (stencil) return WritePng(d.image, nullptr, out, sink);
+    return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out, sink);
 }
 
 // `d` as gray composited on white (image.h), reduced by area averaging to a longer side of at
@@ -1709,20 +1817,20 @@ Status Gray(const Source& src, uint32_t maxSide, uint64_t maxPixels, GrayImage& 
 } // namespace
 
 Status EncodeXObject(const Document& document, const PdfValue& image, const PdfValue& resources, Encoded& out,
-                     uint64_t maxPixels) {
+                     uint64_t maxPixels, Sink* sink) {
     out = Encoded();
     const PdfValue& stream = document.Resolve(image);
     if (!stream.IsStream()) return Status::Corrupt;
     const Source src{document, stream, document.Resolve(resources), false, {}, {}};
-    return Encode(src, out, maxPixels);
+    return Encode(src, out, maxPixels, sink);
 }
 
 Status EncodeInline(const Document& document, const PdfValue& dictionary, std::string_view data,
-                    const PdfValue& resources, Encoded& out, uint64_t maxPixels) {
+                    const PdfValue& resources, Encoded& out, uint64_t maxPixels, Sink* sink) {
     out = Encoded();
     if (!dictionary.IsDict()) return Status::Corrupt;
     const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
-    return Encode(src, out, maxPixels);
+    return Encode(src, out, maxPixels, sink);
 }
 
 Status GrayXObject(const Document& document, const PdfValue& image, const PdfValue& resources, GrayImage& out,

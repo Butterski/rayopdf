@@ -320,92 +320,243 @@ const uint8_t* PixelRow(void* context, uint32_t y) {
     return rows->first + size_t(y) * rows->second;
 }
 
-} // namespace
+// The layout of a PNG's rows: colour type, bit depth, bytes per complete pixel for the filters
+// (1 below 8 bits) and bytes a row.
+struct RowFormat {
+    uint8_t colorType = 0;
+    uint8_t bitDepth = 8;
+    size_t filterBpp = 1;
+    size_t rowBytes = 0;
+};
 
-namespace Png {
+// Gray values that a PNG of fewer bits holds exactly (PNG specification 13.12: a sample of depth
+// d stands for v * 255 / (2^d - 1)): bit 0 for 1 bit (0 and 255), bit 1 for 2 bits (multiples of
+// 85), bit 2 for 4 bits (multiples of 17).
+struct SubByteDepths {
+    uint8_t of[256] = {};
+    constexpr SubByteDepths() {
+        for (int v = 0; v < 256; v++) {
+            of[v] = static_cast<uint8_t>((v == 0 || v == 255 ? 1 : 0) | (v % 85 == 0 ? 2 : 0) | (v % 17 == 0 ? 4 : 0));
+        }
+    }
+};
+constexpr SubByteDepths kSubByteDepths;
 
-bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, std::string& out) {
-    out.clear();
+// The fewest bits a sample that holds every value of `pixels` exactly: 1, 2, 4 or 8.
+int GrayDepth(const uint8_t* pixels, size_t count) {
+    uint8_t allowed = 7;
+    for (size_t i = 0; i < count && allowed != 0; i++) allowed &= kSubByteDepths.of[pixels[i]];
+    return (allowed & 1) ? 1 : (allowed & 2) ? 2 : (allowed & 4) ? 4 : 8;
+}
+
+// Rows of 8-bit gray packed into `depth`-bit samples, most significant bits first (the values are
+// multiples of 255 / (2^depth - 1), GrayDepth): a value's sample from a table, no division.
+struct PackedRows {
+    const uint8_t* pixels;
+    uint32_t width;
+    int depth;
+    std::vector<uint8_t> rows[2];
+    uint8_t sampleOf[256];
+};
+
+const uint8_t* PackedRow(void* context, uint32_t y) {
+    PackedRows& r = *static_cast<PackedRows*>(context);
+    const uint8_t* in = r.pixels + size_t(y) * r.width;
+    uint8_t* out = r.rows[y & 1].data();
+    const unsigned depth = static_cast<unsigned>(r.depth);
+    const unsigned perByte = 8 / depth;
+    const uint32_t whole = r.width / perByte;
+    for (uint32_t o = 0; o < whole; o++, in += perByte) {
+        unsigned byte = 0;
+        for (unsigned k = 0; k < perByte; k++) byte = byte << depth | r.sampleOf[in[k]];
+        out[o] = static_cast<uint8_t>(byte);
+    }
+    const unsigned rest = r.width % perByte;
+    if (rest > 0) {
+        unsigned byte = 0;
+        for (unsigned k = 0; k < rest; k++) byte = byte << depth | r.sampleOf[in[k]];
+        out[whole] = static_cast<uint8_t>(byte << depth * (perByte - rest));
+    }
+    return out;
+}
+
+// Packed gray rows as they are, or complemented, with the padding bits cleared.
+struct GrayRows {
+    const uint8_t* rows;
+    size_t inBytes;      // bytes between rows in `rows`
+    size_t outBytes;     // bytes a PNG row
+    uint8_t lastMask;    // the bits of the last byte that hold samples
+    uint8_t flip;        // 0xFF to complement
+    std::vector<uint8_t> row[2];
+};
+
+const uint8_t* GrayRow(void* context, uint32_t y) {
+    GrayRows& r = *static_cast<GrayRows*>(context);
+    const uint8_t* in = r.rows + size_t(y) * r.inBytes;
+    uint8_t* out = r.row[y & 1].data();
+    for (size_t i = 0; i < r.outBytes; i++) out[i] = static_cast<uint8_t>(in[i] ^ r.flip);
+    out[r.outBytes - 1] &= r.lastMask;
+    return out;
+}
+
+// A PNG file in a string: appended to, its IDAT length set in place at the end.
+class StringOutput final : public Png::Output {
+public:
+    explicit StringOutput(std::string& out) : out_(out) {}
+    bool Append(const uint8_t* data, size_t size) override {
+        out_.append(reinterpret_cast<const char*>(data), size);
+        return true;
+    }
+    bool Patch(uint64_t offset, const uint8_t* data, size_t size) override {
+        if (offset > out_.size() || size > out_.size() - offset) return false;
+        std::memcpy(&out_[static_cast<size_t>(offset)], data, size);
+        return true;
+    }
+
+private:
+    std::string& out_;
+};
+
+struct IdatSink {
+    Png::Output* output;
+    uint32_t crc;
+    uint64_t size;
+};
+
+bool AppendIdat(void* context, const uint8_t* data, size_t size) {
+    IdatSink& sink = *static_cast<IdatSink*>(context);
+    sink.crc = Png::Crc32(data, size, sink.crc);
+    sink.size += size;
+    return sink.output->Append(data, size);
+}
+
+// The PNG of the rows `source` gives, written to `output` as it is made: each row filtered and
+// handed to the compressor, which keeps only its window, so no image-sized buffer is held but the
+// file's (a file, or a string). One IDAT chunk, whose length is set when the stream ends.
+bool EncodeFormatted(uint32_t width, uint32_t height, const RowFormat& format, Png::RowSource source, void* context,
+                     Png::Output& output) {
     // PNG caps both dimensions at 2^31 - 1; the filtered rows must fit the compressor.
-    if (!source || width == 0 || height == 0 || channels < 1 || channels > 4 || width > 0x7FFFFFFFu ||
-        height > 0x7FFFFFFFu) {
-        return false;
-    }
-    const size_t bpp = static_cast<size_t>(channels);
-    const uint64_t rowBytes64 = uint64_t(width) * bpp;
-    const uint64_t filtered64 = (rowBytes64 + 1) * height;
+    if (!source || width == 0 || height == 0 || width > 0x7FFFFFFFu || height > 0x7FFFFFFFu) return false;
+    const size_t bpp = format.filterBpp;
+    const size_t rowBytes = format.rowBytes;
+    const uint64_t filtered64 = (uint64_t(rowBytes) + 1) * height;
     if (filtered64 > Deflate::kMaxInput) return false;
-    const size_t rowBytes = static_cast<size_t>(rowBytes64);
-    const size_t filteredSize = static_cast<size_t>(filtered64);
 
-    // One filter byte, then the residuals, per row; the source's rows are asked for once each.
-    std::vector<uint8_t> filtered(filteredSize);
-    std::vector<uint8_t> zeros(rowBytes, 0);
-    const uint8_t* up = zeros.data();
-    for (uint32_t y = 0; y < height; y++) {
-        const uint8_t* row = source(context, y);
-        uint8_t* target = filtered.data() + size_t(y) * (rowBytes + 1);
-        const int filter = ChooseFilter(row, up, rowBytes, bpp);
-        target[0] = static_cast<uint8_t>(filter);
-        FilterRow(filter, row, up, rowBytes, bpp, target + 1);
-        up = row;
-    }
-
-    static constexpr uint8_t kSignature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-    static constexpr uint8_t kColorType[5] = {0, 0, 4, 2, 6};  // gray, gray + alpha, RGB, RGBA
-    const size_t bound = Deflate::ZlibBound(filteredSize);
-    // Signature, IHDR (8 + 13 + 4), IDAT header, data, IDAT CRC, IEND (12); the bound's 8 bytes of
-    // slack lie within the IDAT CRC and IEND that follow. The file is put together in a buffer
-    // kept per thread and left uninitialized, then copied: only the pages written count towards
-    // the process's memory (a zero-filled string of the bound holds as much again as the filtered
-    // rows), and a batch maps it once instead of for every image.
-    const size_t need = 8 + 25 + 8 + bound + 4 + 12;
-    thread_local std::unique_ptr<uint8_t[]> file;
-    thread_local size_t capacity = 0;
-    if (capacity < need) {
-        file.reset(new (std::nothrow) uint8_t[need]);
-        capacity = file ? need : 0;
-        if (!file) return false;
-    }
-    uint8_t* const base = file.get();
-    std::memcpy(base, kSignature, 8);
-    uint8_t* ihdr = base + 8;
+    // Signature, IHDR (8 + 13 + 4), then the IDAT chunk's length (set at the end) and type.
+    uint8_t head[8 + 25 + 8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    uint8_t* ihdr = head + 8;
     PutBe32(ihdr, 13);
     std::memcpy(ihdr + 4, "IHDR", 4);
     PutBe32(ihdr + 8, width);
     PutBe32(ihdr + 12, height);
-    ihdr[16] = 8;  // bit depth
-    ihdr[17] = kColorType[channels];
+    ihdr[16] = format.bitDepth;
+    ihdr[17] = format.colorType;
     ihdr[18] = 0;  // deflate
     ihdr[19] = 0;  // adaptive filtering
     ihdr[20] = 0;  // no interlace
-    PutBe32(ihdr + 21, Crc32(ihdr + 4, 17));
-
-    uint8_t* idat = base + 33;
+    PutBe32(ihdr + 21, Png::Crc32(ihdr + 4, 17));
+    uint8_t* idat = head + 33;
+    PutBe32(idat, 0);
     std::memcpy(idat + 4, "IDAT", 4);
-    thread_local Deflate::Scratch scratch;
-    const size_t compressed = Deflate::ZlibCompress(
-        std::string_view(reinterpret_cast<const char*>(filtered.data()), filteredSize), idat + 8, scratch);
-    PutBe32(idat, static_cast<uint32_t>(compressed));
-    PutBe32(idat + 8 + compressed, Crc32(idat + 4, 4 + compressed));
+    if (!output.Append(head, sizeof head)) return false;
 
-    uint8_t* iend = idat + 8 + compressed + 4;
-    PutBe32(iend, 0);
-    std::memcpy(iend + 4, "IEND", 4);
-    PutBe32(iend + 8, Crc32(iend + 4, 4));
-    out.assign(reinterpret_cast<const char*>(base), static_cast<size_t>(iend + 12 - base));
-    return true;
+    thread_local Deflate::Scratch scratch;
+    IdatSink sink{&output, Png::Crc32(idat + 4, 4), 0};
+    Deflate::ZlibStream stream(static_cast<size_t>(filtered64), scratch, AppendIdat, &sink);
+    // One filter byte, then the residuals, per row; the source's rows are asked for once each.
+    std::vector<uint8_t> filtered(rowBytes + 1);
+    std::vector<uint8_t> zeros(rowBytes, 0);
+    const uint8_t* up = zeros.data();
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t* row = source(context, y);
+        const int filter = Png::ChooseFilter(row, up, rowBytes, bpp);
+        filtered[0] = static_cast<uint8_t>(filter);
+        Png::FilterRow(filter, row, up, rowBytes, bpp, filtered.data() + 1);
+        if (!stream.Write(filtered.data(), filtered.size())) return false;
+        up = row;
+    }
+    if (!stream.Finish() || sink.size > 0x7FFFFFFFu) return false;
+
+    uint8_t length[4], tail[4 + 12];
+    PutBe32(length, static_cast<uint32_t>(sink.size));
+    PutBe32(tail, sink.crc);
+    PutBe32(tail + 4, 0);
+    std::memcpy(tail + 8, "IEND", 4);
+    PutBe32(tail + 12, Png::Crc32(tail + 8, 4));
+    return output.Patch(33, length, 4) && output.Append(tail, sizeof tail);
+}
+
+// A PNG into a string: `out` holds the file, or is empty when it could not be made.
+template <typename Encode>
+bool IntoString(std::string& out, Encode encode) {
+    out.clear();
+    StringOutput output(out);
+    if (encode(static_cast<Png::Output&>(output))) return true;
+    out.clear();
+    return false;
+}
+
+} // namespace
+
+namespace Png {
+
+bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, Output& out) {
+    static constexpr uint8_t kColorType[5] = {0, 0, 4, 2, 6};  // gray, gray + alpha, RGB, RGBA
+    if (channels < 1 || channels > 4 || uint64_t(width) * static_cast<size_t>(channels) > SIZE_MAX / 2) return false;
+    RowFormat format;
+    format.colorType = kColorType[channels];
+    format.filterBpp = static_cast<size_t>(channels);
+    format.rowBytes = static_cast<size_t>(uint64_t(width) * static_cast<size_t>(channels));
+    return EncodeFormatted(width, height, format, source, context, out);
+}
+
+bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, std::string& out) {
+    return IntoString(out, [&](Output& o) { return EncodeRows(width, height, channels, source, context, o); });
+}
+
+bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
+                Output& out) {
+    if (!rows || (depth != 1 && depth != 2 && depth != 4) || width == 0 || width > 0x7FFFFFFFu) return false;
+    RowFormat format;
+    format.bitDepth = static_cast<uint8_t>(depth);
+    format.rowBytes = (size_t(width) * static_cast<size_t>(depth) + 7) / 8;
+    if (rowBytes < format.rowBytes) return false;
+    const unsigned used = static_cast<unsigned>((size_t(width) * static_cast<size_t>(depth)) % 8);
+    const uint8_t lastMask = used == 0 ? 0xFF : static_cast<uint8_t>(0xFF00u >> used);
+    GrayRows source{rows, rowBytes, format.rowBytes, lastMask, static_cast<uint8_t>(invert ? 0xFF : 0),
+                    {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}};
+    return EncodeFormatted(width, height, format, GrayRow, &source, out);
+}
+
+bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
+                std::string& out) {
+    return IntoString(out, [&](Output& o) { return EncodeGray(rows, rowBytes, width, height, depth, invert, o); });
+}
+
+bool EncodePixels(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, Output& out) {
+    if (!pixels) return false;
+    if (channels == 1 && width > 0 && height > 0 && width <= 0x7FFFFFFFu && height <= 0x7FFFFFFFu) {
+        // Gray at the fewest bits that hold its values exactly: a stencil's 0 and 255 in 1 bit, an
+        // eighth of the bytes to filter and compress (same pixels when read back).
+        const int depth = GrayDepth(pixels, size_t(width) * height);
+        if (depth < 8) {
+            RowFormat format;
+            format.bitDepth = static_cast<uint8_t>(depth);
+            format.rowBytes = (size_t(width) * static_cast<size_t>(depth) + 7) / 8;
+            PackedRows rows{pixels, width, depth, {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}, {}};
+            const unsigned scale = 255u / ((1u << depth) - 1);
+            for (unsigned v = 0; v < 256; v++) rows.sampleOf[v] = static_cast<uint8_t>(v / scale);
+            return EncodeFormatted(width, height, format, PackedRow, &rows, out);
+        }
+    }
+    std::pair<const uint8_t*, size_t> rows{pixels, size_t(width) * static_cast<size_t>(channels)};
+    return EncodeRows(width, height, channels, PixelRow, &rows, out);
 }
 
 } // namespace Png
 
 bool EncodePng(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, std::string& out) {
-    if (!pixels) {
-        out.clear();
-        return false;
-    }
-    std::pair<const uint8_t*, size_t> rows{pixels, size_t(width) * static_cast<size_t>(channels)};
-    return Png::EncodeRows(width, height, channels, PixelRow, &rows, out);
+    return IntoString(out, [&](Png::Output& o) { return Png::EncodePixels(pixels, width, height, channels, o); });
 }
 
 } // namespace RayoPdf::Image

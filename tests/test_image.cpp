@@ -65,13 +65,15 @@ int PaethPredict(int a, int b, int c) {
     return pb <= pc ? b : c;
 }
 
-// An 8-bit, non-interlaced PNG: every chunk's CRC checked, the zlib stream's Adler-32 too.
+// A non-interlaced PNG of 8 bits, or of 1, 2 or 4 bits of gray (expanded to 8: v * 255 /
+// (2^depth - 1)): every chunk's CRC checked, the zlib stream's Adler-32 too.
 bool ReadPng(const std::string& file, Decoded& out) {
     const uint8_t* p = reinterpret_cast<const uint8_t*>(file.data());
     if (file.size() < 8 || std::memcmp(p, "\x89PNG\r\n\x1A\n", 8) != 0) return false;
     size_t at = 8;
     std::string idat;
     bool header = false, end = false;
+    int depth = 8;
     while (at + 12 <= file.size()) {
         const uint32_t length = Be32(p + at);
         if (length > file.size() - at - 12) return false;
@@ -79,12 +81,15 @@ bool ReadPng(const std::string& file, Decoded& out) {
         if (BitwiseCrc(p + at + 4, 4 + length) != Be32(p + at + 8 + length)) return false;
         const uint8_t* data = p + at + 8;
         if (type == "IHDR") {
-            if (length != 13 || data[8] != 8 || data[10] != 0 || data[11] != 0 || data[12] != 0) return false;
+            if (length != 13 || data[10] != 0 || data[11] != 0 || data[12] != 0) return false;
             out.width = Be32(data);
             out.height = Be32(data + 4);
             const int colorType = data[9];
             out.channels = colorType == 0 ? 1 : colorType == 4 ? 2 : colorType == 2 ? 3 : colorType == 6 ? 4 : 0;
-            if (out.channels == 0) return false;
+            depth = data[8];
+            if (out.channels == 0 || !(depth == 8 || (colorType == 0 && (depth == 1 || depth == 2 || depth == 4)))) {
+                return false;
+            }
             header = true;
         } else if (type == "IDAT") {
             idat.append(reinterpret_cast<const char*>(data), length);
@@ -95,7 +100,8 @@ bool ReadPng(const std::string& file, Decoded& out) {
     }
     if (!header || !end || at != file.size() || idat.size() < 6) return false;
     std::string raw;
-    const size_t rowBytes = size_t(out.width) * static_cast<size_t>(out.channels);
+    const size_t rowBytes = depth == 8 ? size_t(out.width) * static_cast<size_t>(out.channels)
+                                       : (size_t(out.width) * static_cast<size_t>(depth) + 7) / 8;
     const size_t expected = (rowBytes + 1) * out.height;
     if (Inflate::Inflate(idat, raw, expected + 1) != Inflate::Result::Ok || raw.size() != expected) return false;
     uint32_t a = 1, b = 0;
@@ -104,11 +110,11 @@ bool ReadPng(const std::string& file, Decoded& out) {
         b = (b + a) % 65521;
     }
     if (Be32(reinterpret_cast<const uint8_t*>(idat.data()) + idat.size() - 4) != (b << 16 | a)) return false;
-    out.pixels.assign(rowBytes * out.height, 0);
-    const size_t bpp = static_cast<size_t>(out.channels);
+    std::vector<uint8_t> packed(rowBytes * out.height, 0);
+    const size_t bpp = depth == 8 ? static_cast<size_t>(out.channels) : 1;
     for (uint32_t y = 0; y < out.height; y++) {
         const uint8_t* in = reinterpret_cast<const uint8_t*>(raw.data()) + size_t(y) * (rowBytes + 1);
-        uint8_t* row = out.pixels.data() + size_t(y) * rowBytes;
+        uint8_t* row = packed.data() + size_t(y) * rowBytes;
         const uint8_t* up = y > 0 ? row - rowBytes : nullptr;
         for (size_t x = 0; x < rowBytes; x++) {
             const int left = x >= bpp ? row[x - bpp] : 0;
@@ -124,6 +130,21 @@ bool ReadPng(const std::string& file, Decoded& out) {
             default: return false;
             }
             row[x] = static_cast<uint8_t>(in[1 + x] + predicted);
+        }
+    }
+    out.pixels.assign(size_t(out.width) * out.height * static_cast<size_t>(out.channels), 0);
+    for (uint32_t y = 0; y < out.height; y++) {
+        const uint8_t* row = packed.data() + size_t(y) * rowBytes;
+        uint8_t* target = out.pixels.data() + size_t(y) * out.width * static_cast<size_t>(out.channels);
+        if (depth == 8) {
+            std::memcpy(target, row, rowBytes);
+            continue;
+        }
+        const unsigned scale = 255u / ((1u << depth) - 1);
+        for (uint32_t x = 0; x < out.width; x++) {
+            const size_t bit = size_t(x) * static_cast<size_t>(depth);
+            const unsigned sample = (row[bit / 8] >> (8 - depth - bit % 8)) & ((1u << depth) - 1);
+            target[x] = static_cast<uint8_t>(sample * scale);
         }
     }
     return true;
@@ -257,10 +278,28 @@ void TestEncodePng() {
                     std::memcpy(to, r.pixels->data() + size_t(y) * r.rowBytes, r.rowBytes);
                     return to;
                 };
+                // (8-bit files only: EncodePng writes gray at a smaller depth when one holds it.)
                 std::string fromRows;
-                RAYOPDF_CHECK(Image::Png::EncodeRows(s.w, s.h, channels, rowOf, &rows, fromRows) && fromRows == out,
+                RAYOPDF_CHECK(Image::Png::EncodeRows(s.w, s.h, channels, rowOf, &rows, fromRows) &&
+                                  (fromRows == out || static_cast<uint8_t>(out[24]) != 8),
                               1000);
             }
+        }
+    }
+    // Gray whose values a smaller depth holds exactly is written at that depth, the same pixels.
+    for (int depth : {1, 2, 4}) {
+        const unsigned scale = 255u / ((1u << depth) - 1);
+        for (uint32_t w : {1u, 7u, 9u, 33u}) {
+            std::vector<uint8_t> pixels(size_t(w) * 5);
+            for (size_t i = 0; i < pixels.size(); i++) {
+                pixels[i] = static_cast<uint8_t>((RandomByte() % (1u << depth)) * scale);
+            }
+            pixels[0] = static_cast<uint8_t>(((1u << depth) - 1) * scale);  // the top value at least once
+            if (depth > 1) pixels[pixels.size() - 1] = static_cast<uint8_t>(scale);  // a value one bit lacks
+            RAYOPDF_CHECK(Image::EncodePng(pixels.data(), w, 5, 1, out), 1001);
+            Decoded png;
+            RAYOPDF_CHECK(ReadPng(out, png) && png.pixels == pixels && png.channels == 1, 1001);
+            RAYOPDF_CHECK(static_cast<uint8_t>(out[8 + 8 + 8]) == depth, 1002);  // IHDR bit depth
         }
     }
     // Compression: a gradient photo-like image far below its raw size, noise barely above it.

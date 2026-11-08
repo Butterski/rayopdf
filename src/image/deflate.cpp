@@ -503,100 +503,188 @@ uint32_t Adler32(const uint8_t* data, size_t size, uint32_t adler) {
     return b << 16 | a;
 }
 
-size_t ZlibCompress(std::string_view input, uint8_t* out, Scratch& scratch) {
-    const uint8_t* const in = reinterpret_cast<const uint8_t*>(input.data());
-    const size_t size = input.size();
-    out[0] = 0x78;  // deflate, 32 KB window
-    out[1] = 0x5E;  // FLEVEL 1, and (0x785E % 31) == 0
-    BitWriter writer{out + 2};
+namespace {
 
+// The window holds the last kWindow bytes before the next block, the block (at most kBlockStart
+// token starts, a match reaching kMaxMatch past them) and the 8 bytes a hash reads ahead.
+constexpr size_t kLookahead = kBlockStart + kMaxMatch + 8;
+constexpr size_t kWindowBytes = kWindow + 2 * kBlockStart;
+static_assert(kWindowBytes > kWindow + kLookahead, "the window holds a block and its lookahead");
+
+} // namespace
+
+ZlibStream::ZlibStream(size_t total, Scratch& scratch, Sink sink, void* context)
+    : total_(total), scratch_(scratch), sink_(sink), context_(context) {
     unsigned bits = 10;
-    const uint32_t base = PrepareTable(size, scratch, bits);
-    uint32_t* const table = scratch.table.data();
-    uint32_t* const tokens = scratch.tokens.data();
-    const unsigned shift = 64 - bits;
+    base_ = PrepareTable(total, scratch, bits);
+    shift_ = 64 - bits;
+    window_.resize(std::min(kWindowBytes, total + 8));
+    stage_.resize(ZlibBound(kBlockStart + kMaxMatch) + 16);
+    static constexpr uint8_t kHeader[2] = {0x78, 0x5E};  // deflate, 32 KB window; FLEVEL 1, 0x785E % 31 == 0
+    Emit(kHeader, 2);
+}
+
+bool ZlibStream::Emit(const uint8_t* data, size_t size) {
+    if (failed_ || (size > 0 && !sink_(context_, data, size))) failed_ = true;
+    return !failed_;
+}
+
+bool ZlibStream::Write(const uint8_t* data, size_t size) {
+    if (failed_ || size > total_ - filled_) {
+        failed_ = true;
+        return false;
+    }
+    adler_ = Adler32(data, size, adler_);
+    while (size > 0) {
+        const size_t room = window_.size() - (filled_ - origin_);
+        if (room == 0) {
+            if (!Advance()) return false;
+            continue;
+        }
+        const size_t n = std::min(room, size);
+        std::memcpy(window_.data() + (filled_ - origin_), data, n);
+        filled_ += n;
+        data += n;
+        size -= n;
+    }
+    return true;
+}
+
+// Parses every block whose lookahead the window holds, then drops what lies before the window
+// of the next block.
+bool ZlibStream::Advance() {
+    while (at_ < total_ && filled_ >= std::min(total_, at_ + kLookahead)) {
+        CompressBlock();
+        if (failed_) return false;
+    }
+    const size_t keep = at_ > kWindow ? at_ - kWindow : 0;
+    if (keep > origin_) {
+        std::memmove(window_.data(), window_.data() + (keep - origin_), filled_ - keep);
+        origin_ = keep;
+    }
+    return true;
+}
+
+bool ZlibStream::Finish() {
+    if (failed_ || filled_ != total_) return false;
+    while (!failed_ && (at_ < total_ || !anyBlock_)) CompressBlock();
+    if (failed_) return false;
+    BitWriter writer{stage_.data(), bits_, count_};
+    if (writer.count > 0) {
+        writer.Put(0, 8 - writer.count);
+        writer.Flush();
+    }
+    const uint8_t adler[4] = {static_cast<uint8_t>(adler_ >> 24), static_cast<uint8_t>(adler_ >> 16),
+                              static_cast<uint8_t>(adler_ >> 8), static_cast<uint8_t>(adler_)};
+    return Emit(stage_.data(), static_cast<size_t>(writer.out - stage_.data())) && Emit(adler, 4);
+}
+
+// One block from at_: greedy matching over the hash table (two candidates a position), then the
+// cheapest of a stored, fixed or dynamic block. Positions are absolute; the window holds position
+// p at p - origin_.
+void ZlibStream::CompressBlock() {
+    anyBlock_ = true;
+    const size_t size = total_;
+    // Position p's byte at window_[p - origin_]: `in` is the window's start moved back by origin_
+    // (made in integers), so the loop below reads in[p] exactly as over a whole input.
+    const uint8_t* const in = reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(window_.data()) - origin_);
+    uint32_t* const table = scratch_.table.data();
+    uint32_t* const tokens = scratch_.tokens.data();
+    const unsigned shift = shift_;
+    const uint32_t base = base_;
     const auto insert = [&](size_t at, uint64_t sequence) {
         uint32_t* const bucket = table + 2 * static_cast<size_t>((sequence * kMultiplier) >> shift);
         bucket[1] = bucket[0];
         bucket[0] = base + static_cast<uint32_t>(at);
     };
 
-    size_t at = 0;
-    do {
-        const size_t blockStart = at;
-        const size_t limit = std::min(size, blockStart + kBlockStart);
-        uint32_t litFreq[kLitLenSymbols] = {};
-        uint32_t distanceFreq[kDistanceSymbols] = {};
-        size_t count = 0;
-        size_t literals = 0;  // since the last match
-        while (at < limit) {
-            if (at + 8 > size) {
-                tokens[count++] = in[at];
-                litFreq[in[at++]]++;
-                continue;
-            }
-            const uint64_t sequence = Load64(in + at);
-            uint32_t* const bucket = table + 2 * static_cast<size_t>((sequence * kMultiplier) >> shift);
-            const uint32_t first = bucket[0];
-            const uint32_t second = bucket[1];
-            const uint32_t here = base + static_cast<uint32_t>(at);
-            bucket[1] = first;
-            bucket[0] = here;
+    size_t at = at_;
+    const size_t blockStart = at;
+    const size_t limit = std::min(size, blockStart + kBlockStart);
+    uint32_t litFreq[kLitLenSymbols] = {};
+    uint32_t distanceFreq[kDistanceSymbols] = {};
+    size_t count = 0;
+    size_t literals = 0;  // since the last match
+    while (at < limit) {
+        if (at + 8 > size) {
+            tokens[count++] = in[at];
+            litFreq[in[at++]]++;
+            continue;
+        }
+        const uint64_t sequence = Load64(in + at);
+        uint32_t* const bucket = table + 2 * static_cast<size_t>((sequence * kMultiplier) >> shift);
+        const uint32_t first = bucket[0];
+        const uint32_t second = bucket[1];
+        const uint32_t here = base + static_cast<uint32_t>(at);
+        bucket[1] = first;
+        bucket[0] = here;
 
-            const uint32_t limitLength = static_cast<uint32_t>(std::min<size_t>(kMaxMatch, size - at));
-            uint32_t best = 0;
-            uint32_t bestDistance = 0;
-            if (here - first - 1 < kWindow) {
-                best = MatchLength(in + (first - base), in + at, limitLength);
-                bestDistance = here - first;
-            }
-            if (here - second - 1 < kWindow) {
-                const uint32_t length = MatchLength(in + (second - base), in + at, limitLength);
-                if (length > best) {
-                    best = length;
-                    bestDistance = here - second;
-                }
-            }
-            if (best >= kMinMatch) {
-                tokens[count++] = best << 16 | (bestDistance - 1);
-                litFreq[257 + kLengthSymbol[best]]++;
-                distanceFreq[DistanceSymbol(bestDistance - 1)]++;
-                const size_t end = at + best;
-                const size_t insertEnd = std::min(end, size - 7);  // a position needs 8 bytes to hash
-                if (best <= kInsertAll) {
-                    for (size_t inside = at + 1; inside < insertEnd; inside++) insert(inside, Load64(in + inside));
-                } else {
-                    const size_t headEnd = std::min(at + 1 + kInsertEdge, insertEnd);
-                    for (size_t inside = at + 1; inside < headEnd; inside++) insert(inside, Load64(in + inside));
-                    for (size_t inside = std::max(headEnd, end - kInsertEdge); inside < insertEnd; inside++) {
-                        insert(inside, Load64(in + inside));
-                    }
-                }
-                at = end;
-                literals = 0;
-            } else {
-                tokens[count++] = in[at];
-                litFreq[in[at++]]++;
-                for (size_t skip = ++literals >> kSkipShift; skip > 0 && at < limit; skip--) {
-                    tokens[count++] = in[at];
-                    litFreq[in[at++]]++;
-                }
+        const uint32_t limitLength = static_cast<uint32_t>(std::min<size_t>(kMaxMatch, size - at));
+        uint32_t best = 0;
+        uint32_t bestDistance = 0;
+        if (here - first - 1 < kWindow) {
+            best = MatchLength(in + (first - base), in + at, limitLength);
+            bestDistance = here - first;
+        }
+        if (here - second - 1 < kWindow) {
+            const uint32_t length = MatchLength(in + (second - base), in + at, limitLength);
+            if (length > best) {
+                best = length;
+                bestDistance = here - second;
             }
         }
-        litFreq[256] = 1;  // end of block
-        EmitBlock(writer, in + blockStart, at - blockStart, tokens, count, litFreq, distanceFreq, at >= size);
-    } while (at < size);
-
-    if (writer.count > 0) {
-        writer.Put(0, 8 - writer.count);
-        writer.Flush();
+        if (best >= kMinMatch) {
+            tokens[count++] = best << 16 | (bestDistance - 1);
+            litFreq[257 + kLengthSymbol[best]]++;
+            distanceFreq[DistanceSymbol(bestDistance - 1)]++;
+            const size_t end = at + best;
+            const size_t insertEnd = std::min(end, size - 7);  // a position needs 8 bytes to hash
+            if (best <= kInsertAll) {
+                for (size_t inside = at + 1; inside < insertEnd; inside++) insert(inside, Load64(in + inside));
+            } else {
+                const size_t headEnd = std::min(at + 1 + kInsertEdge, insertEnd);
+                for (size_t inside = at + 1; inside < headEnd; inside++) insert(inside, Load64(in + inside));
+                for (size_t inside = std::max(headEnd, end - kInsertEdge); inside < insertEnd; inside++) {
+                    insert(inside, Load64(in + inside));
+                }
+            }
+            at = end;
+            literals = 0;
+        } else {
+            tokens[count++] = in[at];
+            litFreq[in[at++]]++;
+            for (size_t skip = ++literals >> kSkipShift; skip > 0 && at < limit; skip--) {
+                tokens[count++] = in[at];
+                litFreq[in[at++]]++;
+            }
+        }
     }
-    const uint32_t adler = Adler32(in, size);
-    writer.out[0] = static_cast<uint8_t>(adler >> 24);
-    writer.out[1] = static_cast<uint8_t>(adler >> 16);
-    writer.out[2] = static_cast<uint8_t>(adler >> 8);
-    writer.out[3] = static_cast<uint8_t>(adler);
-    return static_cast<size_t>(writer.out + 4 - out);
+    litFreq[256] = 1;  // end of block
+    BitWriter writer{stage_.data(), bits_, count_};
+    EmitBlock(writer, in + blockStart, at - blockStart, tokens, count, litFreq, distanceFreq, at >= size);
+    bits_ = writer.buffer;
+    count_ = writer.count;
+    at_ = at;
+    Emit(stage_.data(), static_cast<size_t>(writer.out - stage_.data()));
+}
+
+namespace {
+
+bool CopyOut(void* context, const uint8_t* data, size_t size) {
+    uint8_t*& at = *static_cast<uint8_t**>(context);
+    std::memcpy(at, data, size);
+    at += size;
+    return true;
+}
+
+} // namespace
+
+size_t ZlibCompress(std::string_view input, uint8_t* out, Scratch& scratch) {
+    uint8_t* at = out;
+    ZlibStream stream(input.size(), scratch, CopyOut, &at);
+    stream.Write(reinterpret_cast<const uint8_t*>(input.data()), input.size());
+    stream.Finish();
+    return static_cast<size_t>(at - out);
 }
 
 } // namespace RayoPdf::Image::Deflate

@@ -170,6 +170,69 @@ bool WriteAll(const std::string& path, std::string_view content) {
     return false;
 }
 
+StagedFile::~StagedFile() { Discard(); }
+
+void StagedFile::Discard() {
+    if (handle_ == -1) return;
+    CloseHandle(reinterpret_cast<HANDLE>(handle_));
+    handle_ = -1;
+    std::wstring temp;
+    if (Widen(temp_, temp)) DeleteFileW(temp.c_str());
+}
+
+bool StagedFile::Open(const std::string& path) {
+    Discard();
+    std::wstring target;
+    if (path.empty() || path == "-" || !Widen(path, target)) return false;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        const uint32_t count = gTemporaryCount.fetch_add(1, std::memory_order_relaxed);
+        const std::string temp =
+            path + ".tmp-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(count);
+        std::wstring wide;
+        if (!Widen(temp, wide)) return false;
+        const HANDLE file = CreateFileW(wide.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                                        nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_FILE_EXISTS) continue;
+            return false;
+        }
+        handle_ = reinterpret_cast<intptr_t>(file);
+        path_ = path;
+        temp_ = temp;
+        return true;
+    }
+    return false;
+}
+
+bool StagedFile::Write(std::string_view content) {
+    return handle_ != -1 && WriteHandle(reinterpret_cast<HANDLE>(handle_), content);
+}
+
+bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
+    if (handle_ == -1 || content.size() > (DWORD(1) << 30)) return false;
+    const HANDLE file = reinterpret_cast<HANDLE>(handle_);
+    OVERLAPPED at{};
+    at.Offset = static_cast<DWORD>(offset);
+    at.OffsetHigh = static_cast<DWORD>(offset >> 32);
+    DWORD put = 0;
+    const bool ok = WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &put, &at) &&
+                    put == content.size();
+    // A positioned write moves the file pointer of a synchronous handle: back to the end.
+    LARGE_INTEGER zero{};
+    return SetFilePointerEx(file, zero, nullptr, FILE_END) && ok;
+}
+
+bool StagedFile::Commit() {
+    if (handle_ == -1) return false;
+    bool ok = CloseHandle(reinterpret_cast<HANDLE>(handle_)) != 0;
+    handle_ = -1;
+    std::wstring temp, target;
+    if (!Widen(temp_, temp) || !Widen(path_, target)) return false;
+    if (ok && MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+    DeleteFileW(temp.c_str());
+    return false;
+}
+
 bool EnsureDirectory(const std::string& path) {
     std::wstring wide;
     if (path.empty() || !Widen(path, wide)) return false;
@@ -456,6 +519,56 @@ bool WriteAll(const std::string& path, std::string_view content) {
     ok = close(fd) == 0 && ok;
     if (ok && rename(temp.c_str(), path.c_str()) == 0) return true;
     unlink(temp.c_str());
+    return false;
+}
+
+StagedFile::~StagedFile() { Discard(); }
+
+void StagedFile::Discard() {
+    if (handle_ == -1) return;
+    close(static_cast<int>(handle_));
+    handle_ = -1;
+    unlink(temp_.c_str());
+}
+
+bool StagedFile::Open(const std::string& path) {
+    Discard();
+    if (path.empty() || path == "-") return false;
+    std::string temp = path + ".tmp-XXXXXX";
+    const int fd = mkostemp(temp.data(), O_CLOEXEC);
+    if (fd < 0) return false;
+    handle_ = fd;
+    path_ = path;
+    temp_ = temp;
+    return true;
+}
+
+bool StagedFile::Write(std::string_view content) {
+    return handle_ != -1 && WriteFd(static_cast<int>(handle_), content);
+}
+
+bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
+    if (handle_ == -1) return false;
+    size_t done = 0;
+    while (done < content.size()) {
+        const ssize_t put = pwrite(static_cast<int>(handle_), content.data() + done, content.size() - done,
+                                   static_cast<off_t>(offset + done));
+        if (put < 0 && errno == EINTR) continue;
+        if (put <= 0) return false;
+        done += static_cast<size_t>(put);
+    }
+    return true;
+}
+
+bool StagedFile::Commit() {
+    if (handle_ == -1) return false;
+    const int fd = static_cast<int>(handle_);
+    handle_ = -1;
+    // mkostemp creates 0600; give the result the usual permissions under the umask (as WriteAll).
+    bool ok = fchmod(fd, 0666 & ~Umask()) == 0;
+    ok = close(fd) == 0 && ok;
+    if (ok && rename(temp_.c_str(), path_.c_str()) == 0) return true;
+    unlink(temp_.c_str());
     return false;
 }
 

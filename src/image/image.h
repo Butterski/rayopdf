@@ -32,6 +32,21 @@ enum class Status : uint8_t {
                   // or function not handled
     Corrupt,      // missing or inconsistent /Width, /Height, /BitsPerComponent, or no usable data
     TooLarge,     // more than `maxPixels` pixels
+    WriteFailed,  // a PNG made as it was written: the Sink failed (Open or a write)
+};
+
+// Where a PNG goes while it is made, instead of Encoded::bytes: the image's file. Open comes
+// once the image is to be written as a PNG, before its first byte; then the bytes in order, and
+// Patch sets bytes already written (the IDAT chunk's length, known at its end). The file is only
+// as large as the PNG, and the process holds no copy of it.
+class Sink {
+public:
+    virtual bool Open(const char* extension) = 0;
+    virtual bool Append(const uint8_t* data, size_t size) = 0;
+    virtual bool Patch(uint64_t offset, const uint8_t* data, size_t size) = 0;
+
+protected:
+    ~Sink() = default;
 };
 
 // An image as file bytes.
@@ -43,20 +58,23 @@ struct Encoded {
     // The image has a mask the file lacks: a JPEG or JPEG 2000 image the decoders cannot read with
     // a mask that hides part of it, or a mask whose own data cannot be decoded.
     bool maskDropped = false;
+    // The PNG went to the Sink (`bytes` is empty); a JPEG or JPEG 2000 passed through never does.
+    bool streamed = false;
 };
 
 constexpr uint64_t kDefaultMaxPixels = uint64_t(1) << 28;
 
 // An image XObject (`image`, a stream, resolved or a reference). `resources` (the resources that
-// named it; may be null) resolves named colour spaces.
+// named it; may be null) resolves named colour spaces. With a `sink`, a PNG is made into it.
 Status EncodeXObject(const Document& document, const PdfValue& image, const PdfValue& resources, Encoded& out,
-                     uint64_t maxPixels = kDefaultMaxPixels);
+                     uint64_t maxPixels = kDefaultMaxPixels, Sink* sink = nullptr);
 
 // An inline image: its dictionary as the content lexer returns it (abbreviated keys and values
 // allowed: /W /H /BPC /CS /D /F /DP /IM /I, /G /RGB /CMYK /I for the colour spaces, /AHx /A85 /LZW
 // /Fl /RL /CCF /DCT for the filters) and the bytes between ID and EI.
 Status EncodeInline(const Document& document, const PdfValue& dictionary, std::string_view data,
-                    const PdfValue& resources, Encoded& out, uint64_t maxPixels = kDefaultMaxPixels);
+                    const PdfValue& resources, Encoded& out, uint64_t maxPixels = kDefaultMaxPixels,
+                    Sink* sink = nullptr);
 
 // An image as 8-bit gray pixels, for OCR: decoded like a PNG of EncodeXObject (colour space,
 // /Decode), then the luminance (77 R + 150 G + 29 B) / 256 of each pixel composited on white with

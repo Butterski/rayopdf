@@ -31,19 +31,70 @@ const char* Reason(Image::Status status) {
     case Image::Status::Unsupported: return "unsupported encoding";
     case Image::Status::Corrupt: return "corrupt image data";
     case Image::Status::TooLarge: return "too large";
+    case Image::Status::WriteFailed: return "the file cannot be written";
     case Image::Status::Ok: break;
     }
     return "unknown";
 }
 
-Image::Status Encode(const Document& document, const PageData& page, const ImageBox& image, Image::Encoded& out) {
-    if (!image.xobject.IsNull()) return Image::EncodeXObject(document, image.xobject, image.resources, out);
+// The file a PNG is made into while it is encoded (Image::Sink): named p<page>-<n>.png when the
+// encoder opens it (the image directory made then, once), staged beside that name and renamed
+// into place by Commit, so that no image-sized copy of the file is held.
+class ImageFile final : public Image::Sink {
+public:
+    ImageFile(const ImageOutput& output, bool& directoryReady, bool& directoryFailed)
+        : output_(output), directoryReady_(directoryReady), directoryFailed_(directoryFailed) {}
+
+    // The next image's place: its page and its number there.
+    void Prepare(uint32_t page, int number) {
+        page_ = page;
+        number_ = number;
+        name_.clear();
+    }
+
+    bool Open(const char* extension) override {
+        name_ = "p" + std::to_string(page_) + "-" + std::to_string(number_) + "." + extension;
+        if (!directoryReady_ && !directoryFailed_) {
+            directoryReady_ = File::EnsureDirectory(output_.directory);
+            directoryFailed_ = !directoryReady_;
+        }
+        if (directoryFailed_) return false;
+        std::string path = output_.directory;
+        if (!path.empty() && path.back() != '/') path.push_back('/');
+        path += name_;
+        return file_.Open(path);
+    }
+    bool Append(const uint8_t* data, size_t size) override {
+        return file_.Write(std::string_view(reinterpret_cast<const char*>(data), size));
+    }
+    bool Patch(uint64_t offset, const uint8_t* data, size_t size) override {
+        return file_.WriteAt(offset, std::string_view(reinterpret_cast<const char*>(data), size));
+    }
+    bool Commit() { return file_.Commit(); }
+    const std::string& Name() const { return name_; }
+
+private:
+    const ImageOutput& output_;
+    bool& directoryReady_;
+    bool& directoryFailed_;
+    uint32_t page_ = 0;
+    int number_ = 0;
+    std::string name_;
+    File::StagedFile file_;
+};
+
+Image::Status Encode(const Document& document, const PageData& page, const ImageBox& image, Image::Encoded& out,
+                     Image::Sink* sink) {
+    if (!image.xobject.IsNull()) {
+        return Image::EncodeXObject(document, image.xobject, image.resources, out, Image::kDefaultMaxPixels, sink);
+    }
     // An inline image: its source, BI to EI, read again.
     ContentLexer lexer(std::string_view(page.inlineImages).substr(image.inlineData, image.inlineLength));
     std::string_view op;
     std::vector<PdfValue> operands;
     if (!lexer.Next(op, operands) || op != "BI" || operands.empty()) return Image::Status::Corrupt;
-    return Image::EncodeInline(document, operands.back(), lexer.InlineImageData(), image.resources, out);
+    return Image::EncodeInline(document, operands.back(), lexer.InlineImageData(), image.resources, out,
+                               Image::kDefaultMaxPixels, sink);
 }
 
 void SetName(PageData& page, ImageBox& image, ImageState state, std::string_view name) {
@@ -200,6 +251,7 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
     std::unordered_map<uint64_t, Written> files;
     bool directoryReady = false, directoryFailed = false;
     Image::Encoded encoded;
+    ImageFile file(output, directoryReady, directoryFailed);
     std::string name, path;
     for (uint32_t p = 0; p < n; ++p) {
         PageData& page = pages[p];
@@ -217,10 +269,18 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
                 SetName(page, image, written.state, from.ImageName(written));
                 continue;
             }
-            const Image::Status status = Encode(*output.document, page, image, encoded);
+            // A PNG goes into its file while it is made; a JPEG or JPEG 2000 passed through is
+            // written whole.
+            file.Prepare(page.number, count + 1);
+            const Image::Status status = Encode(*output.document, page, image, encoded, &file);
             const char* failure = nullptr;
-            if (status != Image::Status::Ok) {
+            if (status == Image::Status::WriteFailed && directoryFailed) {
+                failure = "the image directory cannot be created";
+            } else if (status != Image::Status::Ok) {
                 failure = Reason(status);
+            } else if (encoded.streamed) {
+                name = file.Name();
+                if (!file.Commit()) failure = "the file cannot be written";
             } else {
                 if (!directoryReady && !directoryFailed) {
                     directoryReady = File::EnsureDirectory(output.directory);

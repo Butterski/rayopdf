@@ -33,7 +33,31 @@ void FilterRowScalar(int filter, const uint8_t* row, const uint8_t* up, size_t r
 // Row y (rowBytes bytes) of an image EncodeRows writes, asked for once each, top to bottom; the
 // pointer stays valid until the call after next (the filters read the row above).
 using RowSource = const uint8_t* (*)(void* context, uint32_t y);
-// EncodePng (image.h) of the rows `source` gives: the same file as of the whole image in memory.
+// Where a PNG file goes while it is made: bytes appended in order, and bytes already appended set
+// again in place (the IDAT chunk's length, known when the compressed data ends).
+class Output {
+public:
+    virtual bool Append(const uint8_t* data, size_t size) = 0;
+    virtual bool Patch(uint64_t offset, const uint8_t* data, size_t size) = 0;
+
+protected:
+    ~Output() = default;
+};
+
+// Each writer makes the file into an Output (false when it cannot be made, or the Output failed:
+// what was written is then no PNG), or into a string (empty on failure).
+//
+// A PNG of the rows `source` gives (8 bits, 1 to 4 channels, image.h's channel order).
+bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, Output& out);
 bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, std::string& out);
+// A gray image of `depth` bits (1, 2 or 4) from its packed rows (`rowBytes` apart, samples most
+// significant first, as PDF and PNG both store them): sample s stands for s * 255 / (2^depth - 1),
+// or for its complement with `invert`. Padding bits past the last sample are written as 0.
+bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
+                Output& out);
+bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
+                std::string& out);
+// EncodePng (image.h) into an Output.
+bool EncodePixels(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, Output& out);
 
 } // namespace RayoPdf::Image::Png

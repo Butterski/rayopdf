@@ -108,6 +108,29 @@ private:
     intptr_t handle_ = -1;  // a file descriptor, or a Windows HANDLE
 };
 
+// A file written in pieces, bytes already written set again in place (WriteAt), that appears under
+// its name only when Commit succeeds: as WriteAll, a temporary file beside it, renamed. Without a
+// Commit (or when it fails) the temporary file is removed.
+class StagedFile {
+public:
+    StagedFile() = default;
+    ~StagedFile();
+    StagedFile(const StagedFile&) = delete;
+    StagedFile& operator=(const StagedFile&) = delete;
+
+    bool Open(const std::string& path);
+    bool Write(std::string_view content);
+    bool WriteAt(uint64_t offset, std::string_view content);
+    bool Commit();
+
+private:
+    void Discard();
+
+    std::string path_;
+    std::string temp_;
+    intptr_t handle_ = -1;  // a file descriptor, or a Windows HANDLE
+};
+
 // The standard streams as bytes: no text-mode translation and no stdio buffer. A write is one
 // system call for the whole text (repeated only when the system takes part of it), so the lines of
 // several threads do not mix. ReadStandardInput returns what the input has, up to `size` bytes, as

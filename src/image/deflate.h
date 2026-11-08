@@ -38,8 +38,49 @@ inline size_t ZlibBound(size_t size) {
 
 // Compresses `input`, at most kMaxInput bytes, to `out`, which has room for
 // ZlibBound(input.size()) bytes; returns the number of bytes written (at most
-// ZlibBound(input.size()) - 8).
+// ZlibBound(input.size()) - 8). A ZlibStream fed the whole input.
 size_t ZlibCompress(std::string_view input, uint8_t* out, Scratch& scratch);
+
+// A zlib stream made as its input arrives, with ZlibCompress's bytes exactly: the input's whole
+// size is given first (it sets the hash table and where the input ends), and only the last 32 KB
+// window, the block being parsed and its lookahead are held, about 160 KB whatever the size. The
+// output goes to `sink` a block at a time.
+class ZlibStream {
+public:
+    // Receives the stream's bytes in order; false stops the stream.
+    using Sink = bool (*)(void* context, const uint8_t* data, size_t size);
+
+    ZlibStream(size_t total, Scratch& scratch, Sink sink, void* context);
+    ZlibStream(const ZlibStream&) = delete;
+    ZlibStream& operator=(const ZlibStream&) = delete;
+
+    // Adds input; false when the sink failed or the input would pass `total`.
+    bool Write(const uint8_t* data, size_t size);
+    // Ends the stream; false unless exactly `total` bytes came, or when the sink failed.
+    bool Finish();
+
+private:
+    bool Advance();
+    void CompressBlock();
+    bool Emit(const uint8_t* data, size_t size);
+
+    const size_t total_;
+    Scratch& scratch_;
+    Sink sink_;
+    void* context_;
+    uint32_t base_ = 0;
+    unsigned shift_ = 0;
+    std::vector<uint8_t> window_;  // input from position origin_ to filled_
+    std::vector<uint8_t> stage_;   // one block's output
+    size_t origin_ = 0;
+    size_t filled_ = 0;
+    size_t at_ = 0;                // where the next block starts
+    uint64_t bits_ = 0;            // bits not yet a whole byte, and how many
+    unsigned count_ = 0;
+    uint32_t adler_ = 1;
+    bool anyBlock_ = false;
+    bool failed_ = false;
+};
 
 // The Adler-32 checksum (RFC 1950) of `size` bytes, as zlib's adler32(adler, data, size). Start
 // with 1. SSE2 where the target has it.
