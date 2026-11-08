@@ -624,12 +624,22 @@ void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStat
     for (const UnicodeEntry& entry : map.entries) Repair::Count(map.Text(entry), first);
     context.thai = first.thai;
     std::string repaired;
+    bool repairedAny = false;
     for (UnicodeEntry& entry : map.entries) {
         if (!Repair::RepairText(map.Text(entry), context, repaired)) continue;
         if (map.text.size() + repaired.size() > UINT32_MAX) break;
         entry.offset = static_cast<uint32_t>(map.text.size());
         entry.length = static_cast<uint32_t>(repaired.size());
         map.text += repaired;
+        repairedAny = true;
+    }
+    // The texts as counted first when none was repaired (Count only adds up).
+    if (!repairedAny) {
+        stats.entries += first.entries;
+        stats.junk += first.junk;
+        stats.latinLetters += first.latinLetters;
+        stats.accented += first.accented;
+        stats.thai = stats.thai || first.thai;
     }
     // The most codes one text has (a map of many codes onto one character): equal texts counted
     // in an open-addressing table, so a CID font's map of tens of thousands of codes costs one
@@ -642,7 +652,7 @@ void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStat
     std::vector<uint32_t> counts(map.entries.size(), 0);
     for (size_t e = 0; e < map.entries.size(); ++e) {
         const std::string_view text = map.Text(map.entries[e]);
-        Repair::Count(text, stats);
+        if (repairedAny) Repair::Count(text, stats);
         if (text == " ") continue;
         uint64_t hash = 14695981039346656037ull;
         for (unsigned char c : text) hash = (hash ^ c) * 1099511628211ull;
