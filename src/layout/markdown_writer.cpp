@@ -26,9 +26,12 @@ constexpr std::string_view kDelimiters[kStyleCount] = {"**", "*", "`", "~~"};
 
 enum : uint8_t { kScriptNone = 0, kScriptSup = 1, kScriptSub = 2 };
 
+// A glyph of the block being written, with its text (in its page's text) at hand.
 struct GlyphRef {
+    const char* text;
     uint32_t page;
     uint32_t glyph;
+    uint16_t length;
     uint16_t flags;  // the glyph's flags
     uint8_t script;
 };
@@ -95,7 +98,7 @@ private:
         });
         return it != noteRefs_.end() && it->page == r.page && it->glyph == r.glyph && it->count == count ? it->number : 0;
     }
-    std::string_view Text(const GlyphRef& r) const { return pages_[r.page].GlyphText(pages_[r.page].glyphs[r.glyph]); }
+    static std::string_view Text(const GlyphRef& r) { return std::string_view(r.text, r.length); }
     std::string_view Uri(const Word& w) const {
         const PageData& page = pages_[static_cast<size_t>(w.linkPage)];
         return page.LinkUri(page.links[static_cast<size_t>(w.link)]);
@@ -161,7 +164,7 @@ void Writer::CollectWords(const Block& block) {
                 script = kScriptSup;
             else if (IsSubscript(g, line))
                 script = kScriptSub;
-            refs_.push_back(GlyphRef{ref.page, gi, g.flags, script});
+            refs_.push_back(GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), g.flags, script});
             words_.back().count++;
         }
         joinNext = false;
