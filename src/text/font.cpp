@@ -616,13 +616,28 @@ TextRef Pool(std::string& pool, std::string_view text) {
     return ref;
 }
 
-void SetSlot(Font::Impl& font, uint8_t code, std::string_view text, UnicodeSource source) {
-    const TextRef ref = Pool(font.late ? font.latePool : font.pool, text);
+// Points code's slot at `length` bytes at `offset` of the pool SetSlot writes, already there.
+void ViewSlot(Font::Impl& font, uint8_t code, uint32_t offset, size_t length, UnicodeSource source) {
     Slot& slot = font.slots[code];
-    slot.offset = ref.offset;
-    slot.length = static_cast<uint16_t>(text.size() < 0xFFFF ? text.size() : 0xFFFF);
+    slot.offset = offset;
+    slot.length = static_cast<uint16_t>(length < 0xFFFF ? length : 0xFFFF);
     slot.source = source;
     slot.state = font.late ? SlotState::LatePool : SlotState::Pool;
+}
+
+void SetSlot(Font::Impl& font, uint8_t code, std::string_view text, UnicodeSource source) {
+    const TextRef ref = Pool(font.late ? font.latePool : font.pool, text);
+    ViewSlot(font, code, ref.offset, text.size(), source);
+}
+
+// Appends `texts` (a pool of texts) to the pool SetSlot writes, once: where it starts there.
+uint32_t PoolOnce(Font::Impl& font, std::string_view texts, uint32_t& at) {
+    if (at == UINT32_MAX) {
+        std::string& pool = font.late ? font.latePool : font.pool;
+        at = static_cast<uint32_t>(pool.size());
+        pool.append(texts.data(), texts.size());
+    }
+    return at;
 }
 
 // Only the usable entries of a parsed ToUnicode map stay (algorithms §3.6).
@@ -996,18 +1011,25 @@ void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
 
     bool needProgram = false;
     const EncodingTexts* baseTexts = hasBase && !builtin ? &EncodingTextsFor(base, zapf) : nullptr;
+    uint32_t baseAt = UINT32_MAX;  // where the base texts start in the pool, once copied there
     for (int c = 0; c < 256; ++c) {
         if (font.slots[c].source == UnicodeSource::ToUnicode) continue;  // set by LoadSimple
         if (fromBase[c]) {
-            // The base encoding's name: its text and usability made once per process.
+            // The base encoding's name: its text and usability made once per process; the slot
+            // views the text in a copy of all the base texts unless it was repaired.
             if (baseTexts->named[c]) {
                 std::string_view named = baseTexts->Text(c);
                 bool usable = baseTexts->usable[c];
                 if (MayRepair(named) && Repair::RepairText(named, repairContext, repaired)) {
-                    named = repaired, usable = UsableText(named);
+                    if (UsableText(repaired)) {
+                        SetSlot(font, static_cast<uint8_t>(c), repaired, nameSource[c]);
+                        continue;
+                    }
+                    usable = false;
                 }
                 if (usable) {
-                    SetSlot(font, static_cast<uint8_t>(c), named, nameSource[c]);
+                    ViewSlot(font, static_cast<uint8_t>(c), PoolOnce(font, baseTexts->pool, baseAt) + baseTexts->offset[c],
+                             named.size(), nameSource[c]);
                     continue;
                 }
             }
@@ -1138,12 +1160,15 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     const bool trusted = load->hasToUnicode && !load->toUnicodeUntrusted;
     font.pool.reserve(512);
     if (trusted) {
+        // The map's texts copied to the pool once: each code's slot views its entry's text there.
+        uint32_t mapAt = UINT32_MAX;
         const UnicodeEntry* unicodeAt = load->toUnicode.entries.data();
         const UnicodeEntry* const unicodeEnd = unicodeAt + load->toUnicode.entries.size();
         for (int c = 0; c < 256 && unicodeAt != unicodeEnd; ++c) {
             while (unicodeAt != unicodeEnd && unicodeAt->code < static_cast<uint32_t>(c)) ++unicodeAt;
             if (unicodeAt != unicodeEnd && unicodeAt->code == static_cast<uint32_t>(c)) {
-                SetSlot(font, static_cast<uint8_t>(c), load->toUnicode.Text(*unicodeAt), UnicodeSource::ToUnicode);
+                ViewSlot(font, static_cast<uint8_t>(c), PoolOnce(font, load->toUnicode.text, mapAt) + unicodeAt->offset,
+                         unicodeAt->length, UnicodeSource::ToUnicode);
             }
         }
     }

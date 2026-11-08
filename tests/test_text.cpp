@@ -659,6 +659,25 @@ void TestOneByteTexts() {
                   1462);
 }
 
+// Slots viewing the pool's copies of a ToUnicode's texts and of the base encoding's texts, with a
+// text of its own after them (the WinAnsi guess), and the space found among them.
+void TestPooledTexts() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        const int toUnicode = b.AddStream("", "1 begincodespacerange <00> <FF> endcodespacerange\n"
+                                              "2 beginbfchar <41> <0058> <42> <00660069> endbfchar");
+        return "/F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding"
+               " /Differences [67 /g12] >> /ToUnicode " + Ref(toUnicode) + " >>";
+    }, 1463);
+    const Font& font = l.Get("F1");
+    const std::vector<Code> codes = Codes(font, "ABC\xE9 D");
+    RAYOPDF_CHECK(codes.size() == 6 && codes[0].unicode == "X" && codes[1].unicode == "fi" &&
+                      codes[2].unicode == "C" && codes[2].source == UnicodeSource::Guess &&
+                      codes[3].unicode == "\xC3\xA9" && codes[3].source == UnicodeSource::Encoding &&
+                      codes[4].unicode == " " && codes[5].unicode == "D" && Near(font.SpaceWidth(), 0.278),
+                  1463);
+}
+
 } // namespace
 
 int main() {
@@ -673,6 +692,7 @@ int main() {
     TestWidthRanges();
     TestRepairedTexts();
     TestOneByteTexts();
+    TestPooledTexts();
     std::puts("test_text: ok");
     return 0;
 }
