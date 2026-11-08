@@ -40,6 +40,19 @@ struct Fragment {
     bool marker = false; // holds only a list marker
 };
 
+// FoldDuplicates' probe table and filter, kept by each thread between pages of up to kScratchSlots
+// slots, so a page fills neither whole (eight bytes a slot, two to four slots a glyph): the table
+// empties by its base (FoldDuplicates), the filter by clearing the words the page set, or all of
+// its first words on a page of up to kRecordSlots slots (a few hundred bytes).
+constexpr size_t kScratchSlots = size_t(1) << 16, kRecordSlots = 512;
+struct FoldScratch {
+    std::vector<uint32_t> table;   // below `base` everywhere outside a call
+    std::vector<uint64_t> filter;  // 0 outside a call
+    std::vector<uint32_t> words;   // filter words set by the call
+    uint32_t base = 1;
+};
+thread_local FoldScratch tFold;
+
 // Folds overprinted duplicates (the same text drawn again within 0.15 em, algorithms §4.2) into one
 // glyph marked bold. `vis` keeps the survivors.
 //
@@ -63,18 +76,46 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     size_t capacity = 16;
     while (capacity < vis.size() * 2) capacity <<= 1;
     const uint64_t mask = capacity - 1;
-    std::vector<uint32_t> table(capacity, kEmpty);
+    // The filter: 32 bits a table slot, indexed by multiply-shift hashing of (key, cell x, cell y).
+    const size_t filterWords = capacity / 2;
+    // A slot holds base + glyph index; slots below `base` are empty, so moving the thread's base
+    // past this page's indices at the end empties its table without a fill.
+    std::vector<uint32_t> ownTable;
+    std::vector<uint64_t> ownFilter;
+    uint32_t* table;
+    uint64_t* filter;
+    uint32_t* setWords = nullptr;  // filter words this call sets, to clear at its end
+    uint32_t base = 1;
+    const bool scratch = capacity <= kScratchSlots;
+    // Pages up to kRecordSlots slots clear their filter whole: cheaper than recording the words.
+    const bool record = scratch && capacity > kRecordSlots;
+    if (scratch) {
+        if (tFold.table.size() < capacity || UINT32_MAX - tFold.base < glyphs.size()) {
+            tFold.table.assign(std::max(capacity, tFold.table.size()), 0);
+            tFold.base = 1;
+        }
+        if (tFold.filter.size() < filterWords) tFold.filter.assign(filterWords, 0);
+        if (record && tFold.words.size() < vis.size()) tFold.words.resize(vis.size());
+        table = tFold.table.data();
+        filter = tFold.filter.data();
+        setWords = tFold.words.data();
+        base = tFold.base;
+    } else {
+        ownTable.assign(capacity, 0);
+        ownFilter.assign(filterWords, 0);
+        table = ownTable.data();
+        filter = ownFilter.data();
+    }
+    size_t wordCount = 0;
     constexpr float kCell = 2.0f;
     // Read only for glyphs in the table, each written before it goes in: no fill needed.
     const std::unique_ptr<uint64_t[]> hashes(new uint64_t[glyphs.size()]);
-    // The filter: 32 bits a table slot, indexed by multiply-shift hashing of (key, cell x, cell y).
     constexpr double kFilterCell = 4.0;
     constexpr float kFilterReach = 1e7f;  // windows of glyphs beyond are not tested
     constexpr float kFilterKeep = 2e7f;   // kept glyphs beyond cannot be within reach + 8
     constexpr float kFilterTolerance = 8.0f;
     int filterLog = 5;
     while ((size_t(1) << filterLog) < capacity * 32) ++filterLog;
-    std::vector<uint64_t> filter((size_t(1) << filterLog) / 64, 0);
     const auto filterBit = [filterLog](uint64_t keyAndX, int64_t y) {
         const uint64_t k = keyAndX ^ (static_cast<uint64_t>(y) * 0xC2B2AE3D27D4EB4Full);
         return static_cast<size_t>((k * 0xBF58476D1CE4E5B9ull) >> (64 - filterLog));
@@ -97,7 +138,7 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     for (size_t k = 0; k < vis.size(); ++k) {
         const uint32_t i = vis[k];
         Glyph& g = glyphs[i];
-        if ((g.flags & kGlyphSpace) || g.textLength == 0) {
+        if (g.flags & kGlyphSpace) {
             vis[kept++] = i;
             continue;
         }
@@ -154,8 +195,8 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         for (int dx = -1; dx <= 1 && found == kEmpty && candidate; ++dx) {
             for (int dy = -1; dy <= 1 && found == kEmpty; ++dy) {
                 uint64_t slot = Mix(cx + dx, cy + dy, h) & mask;
-                for (size_t probes = 0; table[slot] != kEmpty && probes < capacity; ++probes) {
-                    const uint32_t j = table[slot];
+                for (size_t probes = 0; table[slot] >= base && probes < capacity; ++probes) {
+                    const uint32_t j = table[slot] - base;
                     const Glyph& o = glyphs[j];
                     if (hashes[j] == h && o.dir == g.dir && std::fabs(o.x0 - g.x0) < tolerance &&
                         std::fabs(o.y0 - g.y0) < tolerance && std::fabs(o.size - g.size) < tolerance &&
@@ -174,15 +215,24 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
             continue;
         }
         uint64_t slot = Mix(cx, cy, h) & mask;
-        while (table[slot] != kEmpty) slot = (slot + 1) & mask;
-        table[slot] = i;
-        if (std::fabs(g.x0) < kFilterKeep && std::fabs(g.y0) < kFilterKeep) {
+        while (table[slot] >= base) slot = (slot + 1) & mask;
+        table[slot] = base + i;
+        if (near || (std::fabs(g.x0) < kFilterKeep && std::fabs(g.y0) < kFilterKeep)) {
             const size_t b = filterBit(keyAndX(key, cx >> 1), cy >> 1);
             filter[b >> 6] |= uint64_t(1) << (b & 63);
+            if (record) setWords[wordCount++] = static_cast<uint32_t>(b >> 6);
         }
         vis[kept++] = i;
     }
     vis.resize(kept);
+    if (scratch) {
+        tFold.base = base + static_cast<uint32_t>(glyphs.size());
+        if (record) {
+            for (size_t s = 0; s < wordCount; ++s) filter[setWords[s]] = 0;
+        } else {
+            std::memset(filter, 0, filterWords * sizeof(uint64_t));
+        }
+    }
 }
 
 bool StartsWithCombiningMark(std::string_view text) {
