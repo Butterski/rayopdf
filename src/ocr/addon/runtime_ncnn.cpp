@@ -26,12 +26,14 @@ constexpr uint64_t kMaxNetworkBytes = uint64_t(1) << 30;
 
 class NcnnRuntime final : public Runtime {
 public:
-    bool Load(const ModelSet& set, std::string& detail) {
-        return LoadNet(set, "det", detParam_, detBin_, det_, detail) &&
+    bool Load(const ModelSet& set, Networks networks, std::string& detail) {
+        detector_ = networks == Networks::DetectAndRecognize;
+        return (!detector_ || LoadNet(set, "det", detParam_, detBin_, det_, detail)) &&
                LoadNet(set, "rec", recParam_, recBin_, rec_, detail);
     }
 
     RuntimeStatus Detect(const float* planes, uint32_t width, uint32_t height, std::vector<float>& prob) override {
+        if (!detector_) return RuntimeStatus::Failed;
         ncnn::Mat in(int(width), int(height), 3);
         if (in.empty()) return RuntimeStatus::Failed;
         const size_t plane = size_t(width) * height;
@@ -100,13 +102,14 @@ private:
     std::string detParam_, recParam_;
     File::InputFile detBin_, recBin_;
     ncnn::Net det_, rec_;
+    bool detector_ = false;
 };
 
 } // namespace
 
-std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, std::string& detail) {
+std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, std::string& detail) {
     std::unique_ptr<NcnnRuntime> runtime(new NcnnRuntime());
-    if (!runtime->Load(set, detail)) return nullptr;
+    if (!runtime->Load(set, networks, detail)) return nullptr;
     return runtime;
 }
 

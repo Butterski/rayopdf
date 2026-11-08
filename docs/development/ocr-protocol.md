@@ -81,18 +81,24 @@ The add-on's first frame, sent unprompted after start:
 ```json
 {"rayopdf-ocr":"0.0.9","protocol":1,"engine":"pp-ocrv6","tier":"small","runtime":"ncnn",
  "models":{"config.txt":"<sha256>","dict.txt":"<sha256>","det.ncnn.param":"<sha256>",
-           "det.ncnn.bin":"<sha256>","rec.ncnn.param":"<sha256>","rec.ncnn.bin":"<sha256>"},
- "scripts":["latin","greek","cyrillic","kana","han","hangul"]}
+           "det.ncnn.bin":"<sha256>","rec.ncnn.param":"<sha256>","rec.ncnn.bin":"<sha256>",
+           "tiny/config.txt":"<sha256>","tiny/dict.txt":"<sha256>","tiny/rec.ncnn.param":"<sha256>",
+           "tiny/rec.ncnn.bin":"<sha256>"},
+ "scripts":["latin","greek","kana","han"]}
 ```
 
 `rayopdf-ocr` (the add-on's version) and `protocol` are required; the core refuses any protocol
-other than 1. The others describe the engine for reports: `models` are the tier folder's files in
-the order `config.txt`, `dict.txt`, then the runtime's network files (`det.ort`, `rec.ort` for
-ONNX Runtime) with their SHA-256 from `models.txt`; `scripts` are the scripts with at least 20
-dictionary entries, in the order latin, greek, cyrillic, hebrew, arabic, devanagari, thai, kana,
-han, hangul. The Tesseract backend announces `"engine":"tesseract"`, its language as `tier`, its
-version as `runtime`, no `models` and its scripts. The handshake must arrive within 30 s (models
-are loaded before it).
+other than 1. The other members describe the engine for reports:
+- `models`: the model files the engine reads, with their SHA-256 from `models.txt`. First the tier
+  folder's: `config.txt`, `dict.txt`, then the runtime's network files (`det.ort` and `rec.ort` for
+  ONNX Runtime). With a tiny first pass (the default, [ocr-engine.md](ocr-engine.md)) the tiny
+  folder's `config.txt`, `dict.txt` and recognition network follow as `tiny/<file>`.
+- `scripts`: the scripts with at least 20 entries in the tier's dictionary, in the order latin,
+  greek, cyrillic, hebrew, arabic, devanagari, thai, kana, han, hangul.
+
+The Tesseract backend announces `"engine":"tesseract"`, its language as `tier`, its version as
+`runtime`, no `models` and its scripts. The handshake must arrive within 30 s (models are loaded
+before it).
 
 ## Requests
 
@@ -105,7 +111,8 @@ are loaded before it).
 
 - `id`: an unsigned integer, counted from 1 per add-on process; the response carries it back.
 - `op`: `page` = detect and recognise the text of one image; `lines` = recognise given line
-  images (glyph-shape recovery, plan Phase C); `quit` = answer, then exit 0.
+  images with the tier's recogniser, never a first pass (glyph-shape recovery, plan Phase C);
+  `quit` = answer, then exit 0.
 - Pixels: 8-bit gray (`channels` is always 1), rows top to bottom, no padding. `page`: `width` x
   `height` pixels. `lines`: the line images of `lines`, concatenated; `width` and `height` are 0.
 - `dpi`: the resolution of the pixels (0 when unknown), so that the engine can scale them. The

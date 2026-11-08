@@ -15,8 +15,8 @@ SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
 With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
 the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
-tier, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a models.txt listing just
-those) and the same documents:
+tier and the tiny first pass, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a
+models.txt listing just those) and the same documents:
 
   rayopdf-ocr-VERSION-linux-x64-static.tar.gz   build/ocr/addon/rayopdf-ocr (static-pie)
   rayopdf-ocr-VERSION-windows-x64.zip           build/ocr-windows/addon/rayopdf-ocr.exe
@@ -33,7 +33,7 @@ Usage:
                            [--out build/dist] [--only linux|windows|ocr-linux|ocr-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
-                           [--ocr-models build/ocr-models] [--ocr-tiers small]
+                           [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
                            [--repository URL]
 """
 
@@ -235,7 +235,8 @@ def main() -> int:
     parser.add_argument("--ocr-linux", default="build/ocr/addon/rayopdf-ocr", help="the linux add-on binary")
     parser.add_argument("--ocr-windows", default="build/ocr-windows/addon/rayopdf-ocr.exe", help="the windows add-on")
     parser.add_argument("--ocr-models", default="build/ocr-models", help="the model folder (/opt/ocr/models)")
-    parser.add_argument("--ocr-tiers", default="small", help="comma-separated tiers to ship (default small)")
+    parser.add_argument("--ocr-tiers", default="tiny,small",
+                        help="comma-separated tiers to ship (default tiny,small: small with its tiny first pass)")
     parser.add_argument("--repository", default=REPOSITORY_URL, help="where the README's links point")
     args = parser.parse_args()
 

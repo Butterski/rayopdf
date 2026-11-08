@@ -12,9 +12,11 @@
 //   rayopdf-ocr --verify [OPTIONS]                       check the model files' SHA-256
 //   rayopdf-ocr --version
 // Options: --models DIR (default: rayopdf-ocr-models beside the executable), --tier tiny|small|
-// medium, --engine pp-ocrv6|tesseract, --tesseract PROGRAM (default: tesseract on PATH), --lang L
-// (Tesseract's language, default eng), --det-side N (longest side of the detection input),
-// --space-threshold P (space recovery, recognize.h; above 1 turns it off).
+// medium, --first-pass tiny|none (default tiny: tiny's recogniser reads every line first, the
+// tier's reads again what tiny reads doubtfully; engine.h), --engine pp-ocrv6|tesseract, --tesseract
+// PROGRAM (default: tesseract on PATH), --lang L (Tesseract's language, default eng), --det-side N
+// (longest side of the detection input), --space-threshold P (space recovery, recognize.h; above 1
+// turns it off).
 #include "common/file.h"
 #include "common/ocr_protocol.h"
 #include "ocr/addon/runtime.h"
@@ -172,6 +174,7 @@ struct Options {
     std::string image;
     std::string models;
     std::string tier = RAYOPDF_OCR_TIER;
+    std::string firstPass = "tiny";
     std::string engine = kEngineName;
     std::string tesseract = "tesseract";
     std::string language = "eng";
@@ -183,8 +186,9 @@ struct Options {
 
 const char kUsage[] =
     "usage: rayopdf-ocr --serve | --image PAGE.pgm [--dpi N] [--repeat N] | --verify | --version\n"
-    "       [--models DIR] [--tier tiny|small|medium] [--engine pp-ocrv6|tesseract]\n"
-    "       [--tesseract PROGRAM] [--lang L] [--det-side N] [--space-threshold P]\n";
+    "       [--models DIR] [--tier tiny|small|medium] [--first-pass tiny|none]\n"
+    "       [--engine pp-ocrv6|tesseract] [--tesseract PROGRAM] [--lang L] [--det-side N]\n"
+    "       [--space-threshold P]\n";
 
 bool ParseOptions(const std::vector<std::string>& args, Options& options, std::string& error) {
     for (size_t i = 1; i < args.size(); ++i) {
@@ -204,6 +208,12 @@ bool ParseOptions(const std::vector<std::string>& args, Options& options, std::s
             options.tier = args[++i];
             if (options.tier != "tiny" && options.tier != "small" && options.tier != "medium") {
                 error = "unknown tier " + options.tier;
+                return false;
+            }
+        } else if (a == "--first-pass" && hasValue) {
+            options.firstPass = args[++i];
+            if (options.firstPass != "tiny" && options.firstPass != "none") {
+                error = "unknown first pass " + options.firstPass;
                 return false;
             }
         } else if (a == "--engine" && hasValue) {
@@ -281,6 +291,27 @@ int RunImage(const Options& options, Ocr::Engine& engine) {
     return kExitOk;
 }
 
+// Appends `set`'s files the engine reads to the handshake, each named `prefix` + file name, with
+// its SHA-256 from models.txt: config.txt, dict.txt, then the runtime's network files (the
+// detector's only when `detector`).
+bool HandshakeModels(const Ocr::ModelSet& set, const std::string& prefix, bool detector,
+                     OcrProtocol::Handshake& handshake, std::string& detail) {
+    for (const char* name : {"config.txt", "dict.txt"}) {
+        handshake.models.emplace_back(prefix + name, std::string(Ocr::ManifestHash(set, name)));
+    }
+    for (size_t i = 0; i < Ocr::kRuntimeFileCount; ++i) {
+        const std::string_view name = Ocr::kRuntimeFiles[i];
+        if (!detector && name.substr(0, 4) == "det.") continue;
+        const std::string_view hash = Ocr::ManifestHash(set, name);
+        if (hash.empty()) {
+            detail = set.directory + ": models.txt lacks " + std::string(name);
+            return false;
+        }
+        handshake.models.emplace_back(prefix + std::string(name), std::string(hash));
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -293,9 +324,12 @@ int main(int argc, char** argv) {
     std::string error;
     if (!ParseOptions(args, options, error)) return Fail(kExitUsage, error + "\n" + kUsage);
 
+    // Tiny's recogniser reads first unless tiny is the tier itself or the first pass is off.
+    const bool firstPass = options.firstPass == "tiny" && options.tier != "tiny";
     if (options.version) {
         File::WriteStandardOutput(std::string("rayopdf-ocr ") + RAYOPDF_VERSION + " (" + kEngineName + " " +
-                                  options.tier + ", " + Ocr::kRuntimeName + " " + Ocr::kRuntimeVersion + ")\n");
+                                  options.tier + (firstPass ? " with a tiny first pass" : "") + ", " +
+                                  Ocr::kRuntimeName + " " + Ocr::kRuntimeVersion + ")\n");
         return kExitOk;
     }
 
@@ -303,8 +337,8 @@ int main(int argc, char** argv) {
     handshake.version = RAYOPDF_VERSION;
     handshake.protocol = OcrProtocol::kProtocol;
     std::unique_ptr<Ocr::Engine> engine;
-    std::unique_ptr<Ocr::Runtime> runtime;
-    Ocr::ModelSet models;
+    std::unique_ptr<Ocr::Runtime> runtime, firstRuntime;
+    Ocr::ModelSet models, firstModels;
     if (options.engine == "tesseract") {
         std::unique_ptr<Ocr::TesseractEngine> tesseract(new Ocr::TesseractEngine(options.tesseract, options.language));
         std::string version;
@@ -315,43 +349,51 @@ int main(int argc, char** argv) {
         handshake.scripts.push_back("latin");
         engine = std::move(tesseract);
     } else {
-        std::string folder = options.models;
-        if (folder.empty()) {
-            folder = ExecutableFolder();
-            if (folder.empty()) return Fail(kExitModels, "cannot find the executable's folder; give --models");
-            folder += "/rayopdf-ocr-models";
+        std::string root = options.models;
+        if (root.empty()) {
+            root = ExecutableFolder();
+            if (root.empty()) return Fail(kExitModels, "cannot find the executable's folder; give --models");
+            root += "/rayopdf-ocr-models";
         }
-        folder += "/" + options.tier;
         std::string detail;
-        const Ocr::ModelStatus status = Ocr::LoadModelSet(folder, models, detail);
-        if (status != Ocr::ModelStatus::Ok) {
-            return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(status));
-        }
+        Ocr::ModelStatus status = Ocr::LoadModelSet(root + "/" + options.tier, models, detail);
+        if (status == Ocr::ModelStatus::Ok && firstPass) status = Ocr::LoadModelSet(root + "/tiny", firstModels, detail);
+        if (status != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(status));
         if (options.verify) {
-            const Ocr::ModelStatus verified = Ocr::VerifyModelSet(models, detail);
+            Ocr::ModelStatus verified = Ocr::VerifyModelSet(models, detail);
+            if (verified == Ocr::ModelStatus::Ok && firstPass) verified = Ocr::VerifyModelSet(firstModels, detail);
             if (verified != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(verified));
-            File::WriteStandardOutput(folder + ": " + std::to_string(models.files.size()) + " files verified\n");
+            std::string said = models.directory + ": " + std::to_string(models.files.size()) + " files verified\n";
+            if (firstPass) {
+                said += firstModels.directory + ": " + std::to_string(firstModels.files.size()) + " files verified\n";
+            }
+            File::WriteStandardOutput(said);
             return kExitOk;
         }
         handshake.engine = kEngineName;
         handshake.tier = options.tier;
         handshake.runtime = Ocr::kRuntimeName;
-        for (const char* name : {"config.txt", "dict.txt"}) {
-            handshake.models.emplace_back(name, std::string(Ocr::ManifestHash(models, name)));
-        }
-        for (size_t i = 0; i < Ocr::kRuntimeFileCount; ++i) {
-            const std::string_view hash = Ocr::ManifestHash(models, Ocr::kRuntimeFiles[i]);
-            if (hash.empty()) return Fail(kExitModels, folder + ": models.txt lacks " + Ocr::kRuntimeFiles[i]);
-            handshake.models.emplace_back(Ocr::kRuntimeFiles[i], std::string(hash));
+        // The files the engine reads: the tier's, then the first pass's (its recogniser alone), named
+        // "tiny/<file>".
+        if (!HandshakeModels(models, "", true, handshake, detail) ||
+            (firstPass && !HandshakeModels(firstModels, "tiny/", false, handshake, detail))) {
+            return Fail(kExitModels, detail);
         }
         handshake.scripts = Scripts(models.dictionary);
-        runtime = Ocr::CreateRuntime(models, detail);
+        runtime = Ocr::CreateRuntime(models, Ocr::Networks::DetectAndRecognize, detail);
         if (!runtime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
         Ocr::PpOcrSettings settings;
         settings.detect = models.detect;
         settings.detMaxSide = options.detSide;
         settings.spaceThreshold = options.spaceThreshold;
-        engine.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, settings));
+        if (firstPass) {
+            firstRuntime = Ocr::CreateRuntime(firstModels, Ocr::Networks::RecognizeOnly, detail);
+            if (!firstRuntime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
+            engine.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, *firstRuntime, firstModels.dictionary,
+                                              settings));
+        } else {
+            engine.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, settings));
+        }
     }
     if (options.verify) return Fail(kExitUsage, "--verify checks model files; the tesseract engine has none");
 

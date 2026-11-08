@@ -29,8 +29,23 @@ int32_t ToPixel(float value) {
 
 } // namespace
 
-EngineStatus PpOcrEngine::RecognizeCrop(const std::vector<uint8_t>& crop, uint32_t cropWidth, uint32_t cropHeight,
-                                        CropText& text) {
+bool HasCjk(std::string_view text) {
+    // Every code point at or above U+2E80 takes 3 or 4 UTF-8 bytes, led by 0xE2 0xBA or higher.
+    for (size_t i = 0; i + 2 < text.size(); ++i) {
+        const uint8_t b0 = uint8_t(text[i]);
+        if (b0 < 0xE2 || b0 > 0xEF) continue;
+        const uint32_t cp = (uint32_t(b0 & 0x0F) << 12) | (uint32_t(uint8_t(text[i + 1]) & 0x3F) << 6) |
+                            (uint32_t(uint8_t(text[i + 2]) & 0x3F));
+        if ((cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFF00 && cp <= 0xFFEF)) {
+            return true;
+        }
+        i += 2;
+    }
+    return false;
+}
+
+EngineStatus PpOcrEngine::RecognizeCrop(const Recognizer& recognizer, const std::vector<uint8_t>& crop,
+                                        uint32_t cropWidth, uint32_t cropHeight, CropText& text) {
     text.text.clear();
     text.x0.clear();
     text.x1.clear();
@@ -52,16 +67,17 @@ EngineStatus PpOcrEngine::RecognizeCrop(const std::vector<uint8_t>& crop, uint32
         }
     }
     uint32_t steps = 0, classes = 0;
-    if (runtime_.Recognize(planes_.data(), padded, probs_, steps, classes) != RuntimeStatus::Ok) {
+    if (recognizer.runtime->Recognize(planes_.data(), padded, probs_, steps, classes) != RuntimeStatus::Ok) {
         return EngineStatus::Failed;
     }
-    if (classes != dictionary_.Classes() || steps == 0 || probs_.size() != size_t(steps) * classes) {
+    const Dictionary& dictionary = *recognizer.dictionary;
+    if (classes != dictionary.Classes() || steps == 0 || probs_.size() != size_t(steps) * classes) {
         return EngineStatus::Failed;
     }
     DecodeCtc(probs_.data(), steps, classes, decoded_);
     InsertSpaces(probs_.data(), classes, classes - 1, settings_.spaceThreshold, decoded_);
     // The timesteps cover the padded input; one input pixel is cropWidth / width crop pixels.
-    AssembleText(decoded_, dictionary_, steps, float(padded) * float(cropWidth) / float(width), text);
+    AssembleText(decoded_, dictionary, steps, float(padded) * float(cropWidth) / float(width), text);
     return EngineStatus::Ok;
 }
 
@@ -75,7 +91,7 @@ EngineStatus PpOcrEngine::Page(const GrayView& page, uint32_t, std::vector<OcrPr
     const uint32_t width = RoundTo32(page.width * ratio), height = RoundTo32(page.height * ratio);
     Resize(page, width, height, resize_, small_);
     Normalise(small_.data(), small_.size(), kDetMean, kDetDeviation, planes_);
-    if (runtime_.Detect(planes_.data(), width, height, prob_) != RuntimeStatus::Ok ||
+    if (recognizer_.runtime->Detect(planes_.data(), width, height, prob_) != RuntimeStatus::Ok ||
         prob_.size() != size_t(width) * height) {
         return EngineStatus::Failed;
     }
@@ -84,6 +100,9 @@ EngineStatus PpOcrEngine::Page(const GrayView& page, uint32_t, std::vector<OcrPr
     SortIntoLines(boxes_);
     if (boxes_.size() > kMaxPageLines) boxes_.resize(kMaxPageLines);
 
+    // First pass: lines read so far, and how many of them went to the recogniser again.
+    uint32_t read = 0, reread = 0;
+    bool recognizerOnly = !firstPass_;
     for (const TextBox& box : boxes_) {
         const RotatedRect& rect = box.rect;
         const PixelBox bounds = Bounds(rect, page.width, page.height);
@@ -100,12 +119,26 @@ EngineStatus PpOcrEngine::Page(const GrayView& page, uint32_t, std::vector<OcrPr
         const uint32_t cropHeight = h < 1 ? 1 : uint32_t(h + 0.5f);
         SampleRect(page, rect, cropWidth, cropHeight, crop_);
         const bool vertical = float(cropHeight) >= kVerticalRatio * float(cropWidth);
-        EngineStatus status;
         if (vertical) {
             RotateCounterClockwise(crop_, cropWidth, cropHeight, turned_);
-            status = RecognizeCrop(turned_, cropHeight, cropWidth, text_);
+            crop_.swap(turned_);
+        }
+        const uint32_t readWidth = vertical ? cropHeight : cropWidth;
+        const uint32_t readHeight = vertical ? cropWidth : cropHeight;
+        EngineStatus status;
+        if (recognizerOnly) {
+            status = RecognizeCrop(recognizer_, crop_, readWidth, readHeight, text_);
         } else {
-            status = RecognizeCrop(crop_, cropWidth, cropHeight, text_);
+            status = RecognizeCrop(first_, crop_, readWidth, readHeight, text_);
+            if (status != EngineStatus::Ok) return status;
+            ++read;
+            if (text_.conf < settings_.rereadConf || HasCjk(text_.text)) {
+                ++reread;
+                status = RecognizeCrop(recognizer_, crop_, readWidth, readHeight, text_);
+            }
+            if (read >= settings_.switchAfter && double(reread) > double(settings_.switchShare) * read) {
+                recognizerOnly = true;
+            }
         }
         if (status != EngineStatus::Ok) return status;
         if (text_.text.empty()) continue;
@@ -153,9 +186,9 @@ EngineStatus PpOcrEngine::Line(const GrayView& image, OcrProtocol::Line& line) {
     EngineStatus status;
     if (vertical) {
         RotateCounterClockwise(crop_, image.width, image.height, turned_);
-        status = RecognizeCrop(turned_, image.height, image.width, text_);
+        status = RecognizeCrop(recognizer_, turned_, image.height, image.width, text_);
     } else {
-        status = RecognizeCrop(crop_, image.width, image.height, text_);
+        status = RecognizeCrop(recognizer_, crop_, image.width, image.height, text_);
     }
     if (status != EngineStatus::Ok) return status;
     line.text = text_.text;

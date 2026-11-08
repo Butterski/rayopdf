@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Core tests of src/ocr, the OCR add-on's own code without an inference runtime (codes 1250-1299):
-// the dictionary and CTC decoding, resampling, DB box detection and line order, the PP-OCR engine
-// and the protocol server on a model-free stand-in runtime (ocr_fake_runtime.h), the Tesseract TSV
-// reader, and the model folder's text files.
+// Core tests of src/ocr, the OCR add-on's own code without an inference runtime (codes 1250-1299
+// and 1500-1549): the dictionary and CTC decoding, resampling, DB box detection and line order, the
+// PP-OCR engine (with and without a first pass) and the protocol server on a model-free stand-in
+// runtime (ocr_fake_runtime.h), the Tesseract TSV reader, and the model folder's text files.
 #include "check.h"
 #include "common/ocr_protocol.h"
 #include "ocr/detect.h"
@@ -256,6 +256,94 @@ void TestEngine() {
     RAYOPDF_CHECK(mismatched.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Failed, 1282);
 }
 
+// Counts the recognitions a runtime runs.
+class CountingRuntime final : public Runtime {
+public:
+    explicit CountingRuntime(Runtime& inner) : inner_(inner) {}
+    uint32_t recognized = 0;
+    RuntimeStatus Detect(const float* planes, uint32_t width, uint32_t height, std::vector<float>& prob) override {
+        return inner_.Detect(planes, width, height, prob);
+    }
+    RuntimeStatus Recognize(const float* planes, uint32_t width, std::vector<float>& probs, uint32_t& steps,
+                            uint32_t& classes) override {
+        ++recognized;
+        return inner_.Recognize(planes, width, probs, steps, classes);
+    }
+
+private:
+    Runtime& inner_;
+};
+
+void TestFirstPass() {
+    RAYOPDF_CHECK(!HasCjk("abc \xc3\xa9 \xe2\x82\xac") && !HasCjk("") && !HasCjk("\xe2\xb9\xbf") &&
+                      HasCjk("\xe6\x97\xa5\xe6\x9c\xac") && HasCjk("a\xe3\x82\xa2") && HasCjk("\xef\xbc\xa1") &&
+                      !HasCjk("\xf0\x9f\x98\x80") && !HasCjk("\xe6\x97"),
+                  1500);
+    // The first pass's dictionary and the recogniser's differ, so the text tells who read a line.
+    Dictionary firstDictionary, recognizerDictionary;
+    RAYOPDF_CHECK(firstDictionary.Load("\xe4\xb8\xad\nb\nc\nd") && recognizerDictionary.Load("w\nx\ny\nz"), 1501);
+    Testing::FakeRuntime firstFake(firstDictionary.Classes()), recognizerFake(recognizerDictionary.Classes());
+    CountingRuntime first(firstFake), recognizer(recognizerFake);
+    // Three black bars: read "c" by the first pass, "y" by the recogniser, at confidence 0.9.
+    const std::vector<uint8_t> page = Page(400, 300, {{40, 40, 360, 70}, {40, 120, 360, 150}, {40, 200, 360, 230}});
+    const GrayView view{page.data(), 400, 300};
+    std::vector<OcrProtocol::Line> lines;
+    PpOcrSettings settings;
+    settings.rereadConf = 0;  // nothing is doubtful
+    PpOcrEngine sure(recognizer, recognizerDictionary, first, firstDictionary, settings);
+    RAYOPDF_CHECK(sure.Page(view, 300, lines) == EngineStatus::Ok && lines.size() == 3 &&
+                      lines[0].text.find('c') != std::string::npos && lines[2].text.find('y') == std::string::npos &&
+                      first.recognized == 3 && recognizer.recognized == 0,
+                  1502);
+    // Every line below the confidence threshold is read again, and the recogniser's reading is kept.
+    settings.rereadConf = kDefaultRereadConf;
+    first.recognized = recognizer.recognized = 0;
+    PpOcrEngine doubtful(recognizer, recognizerDictionary, first, firstDictionary, settings);
+    RAYOPDF_CHECK(doubtful.Page(view, 300, lines) == EngineStatus::Ok && lines.size() == 3 &&
+                      lines[0].text.find('y') != std::string::npos && lines[2].text.find('c') == std::string::npos &&
+                      first.recognized == 3 && recognizer.recognized == 3,
+                  1503);
+    // Once more than half of at least one line was read again, the rest go to the recogniser alone.
+    settings.switchAfter = 1;
+    first.recognized = recognizer.recognized = 0;
+    PpOcrEngine degraded(recognizer, recognizerDictionary, first, firstDictionary, settings);
+    std::vector<OcrProtocol::Line> switched;
+    RAYOPDF_CHECK(degraded.Page(view, 300, switched) == EngineStatus::Ok && first.recognized == 1 &&
+                      recognizer.recognized == 3,
+                  1504);
+    bool same = switched.size() == lines.size();
+    for (size_t i = 0; same && i < lines.size(); ++i) {
+        same = switched[i].text == lines[i].text && switched[i].conf == lines[i].conf &&
+               switched[i].x0 == lines[i].x0 && switched[i].chars.size() == lines[i].chars.size();
+    }
+    RAYOPDF_CHECK(same, 1505);
+    // A confident line holding a CJK character is read again: a mid-gray bar is class 1, "中".
+    settings = PpOcrSettings();
+    settings.rereadConf = 0;
+    first.recognized = recognizer.recognized = 0;
+    std::vector<uint8_t> mixed = Page(400, 200, {{40, 40, 360, 70}});
+    for (uint32_t y = 120; y < 150; ++y) {
+        for (uint32_t x = 40; x < 360; ++x) mixed[size_t(y) * 400 + x] = 100;
+    }
+    PpOcrEngine cjk(recognizer, recognizerDictionary, first, firstDictionary, settings);
+    RAYOPDF_CHECK(cjk.Page(GrayView{mixed.data(), 400, 200}, 300, lines) == EngineStatus::Ok && lines.size() == 2 &&
+                      lines[0].text.find('c') != std::string::npos && !HasCjk(lines[1].text) &&
+                      lines[1].text.find('w') != std::string::npos && first.recognized == 2 && recognizer.recognized == 1,
+                  1506);
+    // `lines` requests use the recogniser alone; a failing recogniser fails the page.
+    std::vector<uint8_t> line(size_t(320) * 48, 255);
+    for (uint32_t y = 0; y < 48; ++y) {
+        for (uint32_t x = 0; x < 16; ++x) line[size_t(y) * 320 + x] = 0;
+    }
+    OcrProtocol::Line result;
+    first.recognized = recognizer.recognized = 0;
+    RAYOPDF_CHECK(doubtful.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Ok && result.text == "y" &&
+                      first.recognized == 0 && recognizer.recognized == 1,
+                  1507);
+    recognizerFake.failRecognize = true;
+    RAYOPDF_CHECK(doubtful.Page(view, 300, lines) == EngineStatus::Failed, 1508);
+}
+
 struct Stream {
     std::string data;
     size_t at = 0;
@@ -464,6 +552,7 @@ int main() {
     TestRaster();
     TestDetect();
     TestEngine();
+    TestFirstPass();
     TestServer();
     TestTesseractTsv();
     TestModelFiles();

@@ -92,15 +92,26 @@ def main() -> int:
     proc = subprocess.Popen(base + ["--serve", "--models", args.models], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     _, hello = read_frame(proc.stdout)
-    manifest = {}
-    with open(f"{args.models}/{tier}/models.txt", encoding="ascii") as f:
-        for line in f:
-            digest, _, name = line.split()
-            manifest[name] = digest
+    # Model hashes: the tier's files by name, the first pass's as "tiny/<file>" (ocr-protocol.md).
+    manifests = {}
+    for folder in (tier, "tiny"):
+        try:
+            with open(f"{args.models}/{folder}/models.txt", encoding="ascii") as f:
+                manifests[folder] = dict((name, digest) for digest, _, name in (line.split() for line in f))
+        except FileNotFoundError:
+            pass
     check(hello.get("protocol") == 1 and hello.get("engine") == "pp-ocrv6" and hello.get("tier") == tier,
           f"handshake {hello}")
-    check(all(manifest.get(name) == digest for name, digest in hello["models"].items()) and
-          "dict.txt" in hello["models"], "handshake model hashes differ from models.txt")
+
+    def listed(name: str, digest: str) -> bool:
+        folder, _, file = name.rpartition("/")
+        return manifests.get(folder or tier, {}).get(file) == digest
+
+    first_pass = "with a tiny first pass" in out.stdout
+    check(all(listed(name, digest) for name, digest in hello["models"].items()) and
+          "dict.txt" in hello["models"] and ("tiny/rec.ncnn.bin" in hello["models"] or
+                                             "tiny/rec.ort" in hello["models"]) == first_pass,
+          "handshake model hashes differ from models.txt")
     check("latin" in hello.get("scripts", []), f"scripts {hello.get('scripts')}")
 
     width, height = 640, 160

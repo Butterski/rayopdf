@@ -31,7 +31,7 @@ public:
         if (env_) api_->ReleaseEnv(env_);
     }
 
-    bool Load(const ModelSet& set, std::string& detail) {
+    bool Load(const ModelSet& set, Networks networks, std::string& detail) {
         api_ = OrtGetApiBase()->GetApi(ORT_API_VERSION);
         detail = "onnxruntime: API version";
         if (!api_) return false;
@@ -44,14 +44,15 @@ public:
             !Ok(api_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memory_))) {
             return false;
         }
-        return LoadSession(set, "det.ort", det_, detail) && LoadSession(set, "rec.ort", rec_, detail);
+        return (networks == Networks::RecognizeOnly || LoadSession(set, "det.ort", det_, detail)) &&
+               LoadSession(set, "rec.ort", rec_, detail);
     }
 
     RuntimeStatus Detect(const float* planes, uint32_t width, uint32_t height, std::vector<float>& prob) override {
         const int64_t shape[4] = {1, 3, int64_t(height), int64_t(width)};
         int64_t dims[4] = {0, 0, 0, 0};
         size_t count = 0;
-        if (!Run(det_, planes, shape, prob, dims, count) || count != 4 || dims[0] != 1 || dims[1] != 1 ||
+        if (!det_ || !Run(det_, planes, shape, prob, dims, count) || count != 4 || dims[0] != 1 || dims[1] != 1 ||
             dims[2] != int64_t(height) || dims[3] != int64_t(width)) {
             return RuntimeStatus::Failed;
         }
@@ -134,9 +135,9 @@ private:
 
 } // namespace
 
-std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, std::string& detail) {
+std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, std::string& detail) {
     std::unique_ptr<OrtRuntime> runtime(new OrtRuntime());
-    if (!runtime->Load(set, detail)) return nullptr;
+    if (!runtime->Load(set, networks, detail)) return nullptr;
     return runtime;
 }
 

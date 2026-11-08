@@ -8,13 +8,14 @@ never links the add-on, the inference runtime or the models. The decision to use
 
 **Recommendation (measured below):**
 - runtime: **ncnn**;
-- tier: **PP-OCRv6 small**;
+- tier: **PP-OCRv6 small**, with **tiny's recogniser as a first pass**: small detects and re-reads
+  the lines tiny reads with less than 0.995 confidence or with CJK text (OCR speed, below);
 - detection input: longer side 1280;
-- no second engine on doubtful lines: measured in Phase D, it stays far below its gate.
+- no second engine for accuracy: measured in Phase D, it stays far below its gate.
 
 ONNX Runtime gives identical text and runs a few percent faster on Linux. It is not the default
-because it has no MinGW-w64 build, so it cannot give the Windows add-on. The `tiny` tier is the
-option for size and speed. The `medium` tier is not worth its cost.
+because it has no MinGW-w64 build, so it cannot give the Windows add-on. The `tiny` tier alone is
+the option for size. The `medium` tier is not worth its cost.
 
 ## Code
 
@@ -58,6 +59,18 @@ the networks.
 5. **Recognition.** The crop is resampled to height 48 (at most 3,200 wide). It is padded to at
    least 320 columns, as PaddleOCR does, and normalised to [−1, 1]. The output is decoded with
    greedy CTC; the lowest class index wins a tie.
+
+   **Tiny first pass** (the default; `--first-pass none` turns it off, `--tier tiny` has none).
+   Every line is read by tiny's recogniser first, in reading order. Small's recogniser reads the
+   line again, and its reading replaces tiny's, when:
+   - tiny's confidence is below 0.995; or
+   - tiny's text holds a CJK character (U+2E80–U+9FFF, U+F900–U+FAFF, U+FF00–U+FFEF), because
+     tiny's dictionary has no kana and only 6,174 of small's 15,565 Han.
+
+   Once at least 8 lines of a page are read and more than half of them were read again (a
+   degraded scan), the page's remaining lines go to small alone. Detection stays small's, so the
+   line boxes, with the bullets and indents the core reads from them, are the tier's own. `lines`
+   requests (glyph shapes) always use small's recogniser.
 6. **Space recovery.** Greedy decoding drops spaces whose probability is spread over several blank
    steps (PP-OCRv6 writes "andit", "revenueup"). Between two characters, a space is inserted when
    `1 − Π(1 − p_space)` over the gap's steps is at least 0.25. Inserted spaces do not count in the
@@ -89,13 +102,14 @@ python3 tools/dev.py test --config ocr            # static-pie build/ocr/addon/r
 python3 tools/dev.py test --config ocr-windows    # MinGW-w64 build/ocr-windows/addon/rayopdf-ocr.exe (ncnn), tests under Wine
 python3 tools/dev.py build --config ocr-ort       # the ONNX Runtime variant (Linux only)
 python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
-python3 tools/package.py --only ocr-linux         # or --ocr: rayopdf-ocr-VERSION-*.tar.gz/.zip with rayopdf-ocr-models/small/
+python3 tools/package.py --only ocr-linux         # or --ocr: rayopdf-ocr-VERSION-*.tar.gz/.zip with rayopdf-ocr-models/tiny/ and small/
 ```
 
-`rayopdf-ocr --serve [--models DIR] [--tier tiny|small|medium] [--engine pp-ocrv6|tesseract]`:
-- models default to `rayopdf-ocr-models/` beside the executable;
+`rayopdf-ocr --serve [--models DIR] [--tier tiny|small|medium] [--first-pass tiny|none] [--engine pp-ocrv6|tesseract]`:
+- models default to `rayopdf-ocr-models/` beside the executable; the default reads `small/` and,
+  for the first pass, `tiny/`;
 - `--image PAGE.pgm --repeat N` times one page;
-- `--verify` checks the model files' SHA-256 against `models.txt`.
+- `--verify` checks the model files' SHA-256 against `models.txt` (both folders with a first pass).
 
 Exit codes:
 
@@ -407,17 +421,112 @@ choice:
 - tiny-rec: 0.1312 / 0.0646, 0.9399, 0.8612;
 - tiny→small (confidence < 0.99): 0.1341 / 0.0646, 0.9409, 0.8636.
 
-**For OCR speed (plan B7, not this gate).** tiny→small with the trigger confidence < 0.99:
-- On the development items, word F1 is 0.001 lower than small alone, NID is level and pooled CER is
-  0.0006 higher. On the holdout, the aggregates are level with the default.
-- It takes 0.31× the default's time per page (mean, CPU 3) and 0.88× the model bytes.
-- On `old_scans` it costs 1.36× the default, because most lines trigger.
-- tiny's dictionary has no Japanese kana. Before tiny can be a first pass, Japanese lines need a
-  trigger of their own, such as script detection on the page.
+**For OCR speed (plan B7, not this gate).** A tiny first pass gives small's accuracy in a
+fraction of the time on these pages. It became the default (next section). The design measured
+here detected with tiny; the default keeps small's detection, because tiny's boxes lose bullets.
+
+## OCR speed (plan B7), 2026-11-08
+
+**Change.** Tiny's recogniser reads first, small re-reads the doubtful lines, and degraded pages
+switch to small alone (§ One page, step 5). The tier, the protocol and the core are unchanged. The
+handshake lists tiny's files as `tiny/<file>` ([ocr-protocol.md](ocr-protocol.md)). Releases ship
+`rayopdf-ocr-models/tiny/` beside `small/`.
+
+**Choices, from Phase D's per-line probe (development items; 29,020 lines).**
+- **Detection stays small's.** With tiny detecting as well (0.41× the time), the core lost 112
+  list items on the development items and construct F1 fell 0.011. Tiny's boxes start after the
+  bullet: on every third item, 322 lines began with a bullet glyph in small's boxes and 271 in
+  tiny's, both read by small.
+- **Trigger: confidence below 0.995.**
+  - Below 0.99, 9 of 659 "•" lines kept tiny's misreading of the bullet ("o", "。") and 137 lines
+    changed their first character.
+  - At 0.995, 2 bullet lines and 28 lines.
+  - Accuracy was equal in both cases.
+- **CJK trigger.** Tiny reads a Japanese line as look-alike Han ("力夕力" for "カタカナ"). Its
+  confidence then is about 0.76, but a short kana word could pass, so any CJK character sends the
+  line to small. Chinese lines are therefore read twice; the extra cost is tiny's read.
+- **Switch to small** after 8 lines when more than half were re-read. Without it, a tiny first
+  pass cost 1.36× the default on `old_scans` (Phase D), where most lines are doubtful. On the
+  development pages 27 % of the lines are read after a switch (short pages with tables and
+  numbers), and accuracy is unchanged.
+
+**Time per page** (CPU 3 alone, its SMT sibling idle, load average about 2; `--image --repeat 3`,
+median of the three per page; 41 development pages as in B2, and 25 `old_scans` pages, every
+fourth):
+
+|Build|Development median / mean (p95), ms|`old_scans` median / mean (p95), ms|Start-up ms|Peak RSS MiB|
+|---|---|---|---|---|
+|before: small|2,996 / 4,340 (12,072)|3,662 / 5,080 (13,024)|21|823|
+|after: small with a tiny first pass|**1,905 / 2,247 (3,581)**|**3,525 / 4,622 (10,421)**|23|843|
+|change|−36 % / −48 % (−70 %)|−4 % / −9 % (−20 %)|+2|+20|
+
+Through the harness (`rayopdf --convert` per document, fresh process, work CPUs under load), the
+wall time per scanned page fell from 8,245 to 4,587 ms (development) and from 7,387 to 2,916 ms
+(holdout).
+
+Where the time goes now (probe, CPU 3, the same 41 pages, mean per page):
+- small's detection: 894 ms (34 %);
+- tiny's reads: 634 ms (24 %);
+- small's re-reads: 1,119 ms (42 %).
+
+The networks take over 90 % of the add-on's profile. The add-on's own code is small: CTC decoding
+1.3 %, crops 0.9 %, resampling 0.6 %, normalising 0.2 % (perf, one page).
+
+**Accuracy.** Gates: through the core, NID and construct F1 at most 0.002 lower; the add-on's
+word F1 at most 0.002 lower and CER at most 1 % higher; `old_scans` not lower.
+
+|Measure|Before|After|
+|---|---|---|
+|Add-on text, development (362 items): CER mean / pooled|0.1245 / 0.0947|0.1245 / 0.0946|
+|Add-on text: word F1|0.9397|0.9404|
+|Add-on text: NID|0.8699|0.8699|
+|Core + add-on, development: NID|0.9064|0.9068|
+|Core + add-on: construct F1|0.6197|0.6193|
+|Core + add-on: TEDS / MHS|0.7356 / 0.8393|0.7372 / 0.8368|
+|Core + add-on: heading-level accuracy|0.604|0.611|
+|Core + add-on, `old_scans` (526 tests)|20.7 % (109)|20.5 % (108)|
+|Core + add-on, holdout (36 items, once, aggregate only): NID / construct F1|0.8991 / 0.5642|0.8989 / 0.5635|
+
+- The before and after rows use the same core build (the tree at 2026-11-08).
+- The one `old_scans` test lost is an absence test for the running foot "JANUARY 1920 69" on
+  page 64. Both outputs contain that foot. Before, the page number happened to be set as a code
+  block, which broke the match; after, it is a plain paragraph.
+- The other changes on that page are two misreadings ("frst", "afmliation").
+
+**Sizes.**
+- Executable (stripped, Linux): 7,314,160 B, up from 7,310,064.
+- Models shipped: tiny 6,185,082 B + small 30,987,999 B. Tiny's detector (1,732,760 B) is used
+  only by `--tier tiny`.
+- Archives: 35,137,525 B (`linux-x64-static.tar.gz`, was 29,441,566) and 34,971,810 B
+  (`windows-x64.zip`, was 29,275,719).
+
+**Measured and not adopted.**
+- Detection side 1024 instead of 1280, with tiny detecting: development time −4.6 % (work CPUs).
+  CER mean 0.1250 against 0.1246, word F1 −0.0002, `old_scans` +2 tests. A small gain against an
+  untested risk to structure (footnote marks, small type), so it was not adopted.
+- Winograd and im2col-sgemm convolution for the recognition networks only: identical text on three
+  pages, and no time difference beyond noise (±10 %).
+- **Core side (plan item 3, the client).** The core's own work per OCR page, timed with the instant
+  stand-in add-on (`tests/ocr_mock_addon.cpp`, CPU 3): 105 ms median / 131 mean on the development
+  documents, and 132 / 193 on `old_scans`. That covers decoding, the canvas, the protocol and the
+  OCR text layer's typography, and it is about 6 % and 4 % of the add-on's time per page after the
+  change.
+  - Pipelining page N+1's canvas with page N's recognition could hide at most that much wall time,
+    and only with a second core. It changes nothing on one core.
+  - Several pages per request would need a protocol change, and ncnn runs one image at a time, so
+    it saves no compute.
+  - The canvas resolution does not set the cost: recognition reads each crop at 48 rows whatever
+    the dpi, and detection resamples to 1280. Rendering the canvas at the detector's ~116 dpi
+    would starve recognition.
+
+  None of the three was built.
 
 ## Open items
 
 - **Windows ONNX Runtime.** ONNX Runtime has no MinGW-w64 build; MSYS2 patches about 80 files for
   1.29. ncnn covers Windows, so the ONNX Runtime variant stays Linux-only.
 - **Reading order of multi-column pages** is left to the core.
-- **Right-to-left scripts** (c12-rtl) are not in PP-OCRv6's dictionaries. Cyrillic is covered.
+- **Scripts.** Right-to-left scripts (c12-rtl), Cyrillic and Hangul are not in the PP-OCRv6
+  dictionaries shipped: small has no Cyrillic or Hangul entries (Latin 491, Greek 76, kana 180,
+  Han 15,565), and tiny has no kana either. Russian and Korean lines come out as punctuation or
+  look-alikes.

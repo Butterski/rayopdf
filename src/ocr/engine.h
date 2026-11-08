@@ -16,6 +16,13 @@
 //     kMaxRecWidth), padded to at least 320 columns as PaddleOCR does, normalised to [-1, 1];
 //     DecodeCtc + InsertSpaces + AssembleText give text, confidence and character spans, mapped
 //     back onto the page's x axis.
+// With a first pass (a cheaper recogniser: tiny's in front of small's), the tier's network still
+// detects, so line boxes, and with them bullets and indents, stay the tier's. The first-pass
+// recogniser reads every line in reading order; a line it reads below `rereadConf`, or with a CJK
+// character (tiny's dictionary lacks the kana and most Han), is read again by the tier's
+// recogniser, whose reading replaces it. Once at least `switchAfter` lines are read and more than
+// `switchShare` of them were read again (a degraded scan), every further line of the page goes to
+// the tier's recogniser alone. `lines` requests (Line) always use the tier's recogniser.
 // Lines with no text are left out. At most kMaxPageLines lines per page. Inference is single-
 // threaded (the runtimes are set up so), and every step is deterministic: the same page gives the
 // same lines on every run on a machine. Buffers are kept between calls.
@@ -27,6 +34,7 @@
 #include "ocr/recognize.h"
 
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace RayoPdf::Ocr {
@@ -39,7 +47,8 @@ constexpr uint32_t kMaxDetSide = 4096;
 
 enum class RuntimeStatus : uint8_t { Ok, Failed };
 
-// One inference runtime with a detection and a recognition network loaded.
+// One inference runtime with a recognition network, and a detection network unless it was loaded
+// for recognition only (then Detect fails).
 class Runtime {
 public:
     virtual ~Runtime() = default;
@@ -61,26 +70,47 @@ public:
     virtual EngineStatus Line(const GrayView& image, OcrProtocol::Line& line) = 0;
 };
 
+// A recognition network and the dictionary of its classes.
+struct Recognizer {
+    Runtime* runtime = nullptr;
+    const Dictionary* dictionary = nullptr;
+};
+
+// First-pass settings, measured on the scanned development pages (docs/development/ocr-engine.md).
+constexpr uint16_t kDefaultRereadConf = 9950;  // per myriad
+constexpr uint32_t kDefaultSwitchAfter = 8;
+constexpr float kDefaultSwitchShare = 0.5f;
+
 struct PpOcrSettings {
-    DetectParams detect;
+    DetectParams detect;  // the tier's
     uint32_t detMaxSide = kDefaultDetMaxSide;
     float spaceThreshold = kDefaultSpaceThreshold;  // InsertSpaces (recognize.h)
+    uint16_t rereadConf = kDefaultRereadConf;
+    uint32_t switchAfter = kDefaultSwitchAfter;
+    float switchShare = kDefaultSwitchShare;
 };
 
 class PpOcrEngine final : public Engine {
 public:
+    // One tier: `runtime` detects and recognises.
     PpOcrEngine(Runtime& runtime, const Dictionary& dictionary, const PpOcrSettings& settings)
-        : runtime_(runtime), dictionary_(dictionary), settings_(settings) {}
+        : recognizer_{&runtime, &dictionary}, first_{&runtime, &dictionary}, firstPass_(false), settings_(settings) {}
+    // A first pass: `runtime` detects and reads again what `first` reads doubtfully.
+    PpOcrEngine(Runtime& runtime, const Dictionary& dictionary, Runtime& first, const Dictionary& firstDictionary,
+                const PpOcrSettings& settings)
+        : recognizer_{&runtime, &dictionary}, first_{&first, &firstDictionary}, firstPass_(true),
+          settings_(settings) {}
     EngineStatus Page(const GrayView& page, uint32_t dpi, std::vector<OcrProtocol::Line>& lines) override;
     EngineStatus Line(const GrayView& image, OcrProtocol::Line& line) override;
 
 private:
-    // Recognises `crop` (cropWidth x cropHeight gray) into `text`, spans in crop pixels.
-    EngineStatus RecognizeCrop(const std::vector<uint8_t>& crop, uint32_t cropWidth, uint32_t cropHeight,
-                               CropText& text);
+    // Recognises `crop` (cropWidth x cropHeight gray) with `recognizer` into `text`, spans in crop
+    // pixels.
+    EngineStatus RecognizeCrop(const Recognizer& recognizer, const std::vector<uint8_t>& crop, uint32_t cropWidth,
+                               uint32_t cropHeight, CropText& text);
 
-    Runtime& runtime_;
-    const Dictionary& dictionary_;
+    Recognizer recognizer_, first_;  // recognizer_ also detects
+    bool firstPass_;
     PpOcrSettings settings_;
     ResizeScratch resize_;
     DetectScratch detect_;
@@ -90,5 +120,9 @@ private:
     std::vector<DecodedChar> decoded_;
     CropText text_;
 };
+
+// True when `text` holds a CJK character (U+2E80-U+9FFF, U+F900-U+FAFF, U+FF00-U+FFEF): the
+// first pass re-reads such lines (tiny's dictionary has no kana and fewer Han).
+bool HasCjk(std::string_view text);
 
 } // namespace RayoPdf::Ocr
