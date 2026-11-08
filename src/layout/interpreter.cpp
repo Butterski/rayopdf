@@ -603,9 +603,12 @@ void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect
     if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx) || !std::isfinite(by)) return;
     // Straight pieces count only when axis-aligned on the page (within a hundredth of a point).
     if (!rect && std::fabs(ax - bx) > 0.01 && std::fabs(ay - by) > 0.01) return;
-    pieces_.push_back(PathPiece{Fmin(ax, bx), Fmin(ay, by), Fmax(ax, bx), Fmax(ay, by), rect});
+    // Both ends finite: Fmin and Fmax are the plain comparisons.
+    pieces_.push_back(PathPiece{ax < bx ? ax : bx, ay < by ? ay : by, ax > bx ? ax : bx, ay > by ? ay : by, rect});
 }
 
+// The path's box holds finite device points only, so its bounds grow by plain comparisons, the
+// values Fmin and Fmax give without a NaN.
 void Interpreter::PathPoint(double x, double y, bool curve) {
     const Matrix& m = gs_.ctm;
     const double dx = x * m.a + y * m.c + m.e;
@@ -615,10 +618,10 @@ void Interpreter::PathPoint(double x, double y, bool curve) {
         pathBox_ = Box{dx, dy, dx, dy};
         pathEmpty_ = false;
     } else {
-        pathBox_.x0 = Fmin(pathBox_.x0, dx);
-        pathBox_.y0 = Fmin(pathBox_.y0, dy);
-        pathBox_.x1 = Fmax(pathBox_.x1, dx);
-        pathBox_.y1 = Fmax(pathBox_.y1, dy);
+        pathBox_.x0 = pathBox_.x0 < dx ? pathBox_.x0 : dx;
+        pathBox_.y0 = pathBox_.y0 < dy ? pathBox_.y0 : dy;
+        pathBox_.x1 = pathBox_.x1 > dx ? pathBox_.x1 : dx;
+        pathBox_.y1 = pathBox_.y1 > dy ? pathBox_.y1 : dy;
     }
     if (curve) pathCurved_ = true;
 }
