@@ -264,17 +264,10 @@ bool IsSymbolName(std::string_view name) {
     return name.substr(0, 6) == "Symbol";
 }
 
-// Where a simple font's slot text lives: the font's pool, the pool of texts completed after
-// loading (Font::Impl::Complete), or not known yet (the font's program is still unread).
-enum class SlotState : uint8_t { Pool, LatePool, Pending };
-
-struct Slot {
-    float width = 0;
-    uint32_t offset = 0;
-    uint16_t length = 0;
-    UnicodeSource source = UnicodeSource::None;
-    SlotState state = SlotState::Pool;
-};
+// A simple font's code (font.h): Pool texts are in Font::Impl::pool, LatePool ones in latePool
+// (set by Font::Impl::Complete), Pending ones wait for Complete.
+using SlotState = FontSlotState;
+using Slot = FontSlot;
 
 struct TextRef {
     uint32_t offset = 0;
@@ -571,7 +564,7 @@ bool Font::Impl::NextComposite(std::string_view bytes, size_t& at, Code& out) co
     return true;
 }
 
-bool Font::Next(std::string_view bytes, size_t& at, Code& out) const {
+bool Font::NextSlow(std::string_view bytes, size_t& at, Code& out) const {
     return impl_->kind == FontKind::Type0 ? impl_->NextComposite(bytes, at, out) : impl_->NextSimple(bytes, at, out);
 }
 FontKind Font::Kind() const { return impl_->kind; }
@@ -1658,6 +1651,11 @@ const Font& FontCache::Get(const PdfValue& fontEntry) {
         break;
     }
     std::unique_ptr<Font> font(new Font(std::move(impl)));
+    // A simple font's slots for the inline Next: its pool is final (Complete writes latePool).
+    if (font->impl_->kind != FontKind::Type0) {
+        font->simple_ = font->impl_->slots;
+        font->simplePool_ = font->impl_->pool.data();
+    }
     const Font& result = *font;
     fonts_.emplace(key, std::move(font));
     return result;

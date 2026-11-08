@@ -7,6 +7,7 @@
 // Advances come from /Widths, /W, the standard 14 fonts' metrics, or /MissingWidth.
 #pragma once
 
+#include "common/compiler.h"
 #include "pdf/document.h"
 #include "raster/path.h"
 
@@ -53,6 +54,19 @@ struct Code {
                                 // valid while the Font lives
 };
 
+// Where a simple font's slot text lives: the font's pool, the pool of texts completed after
+// loading, or not known yet (the font's program is still unread). Font internals.
+enum class FontSlotState : uint8_t { Pool, LatePool, Pending };
+
+// A simple font's code: its advance and text (Font internals, here so Next can be inline).
+struct FontSlot {
+    float width = 0;
+    uint32_t offset = 0;
+    uint16_t length = 0;
+    UnicodeSource source = UnicodeSource::None;
+    FontSlotState state = FontSlotState::Pool;
+};
+
 class Font {
 public:
     ~Font();
@@ -60,8 +74,26 @@ public:
     Font& operator=(const Font&) = delete;
 
     // Reads the next code of `bytes` from `at`, which moves past it. False at the end; a trailing
-    // partial code of a multi-byte font is read as one code of the remaining bytes.
-    bool Next(std::string_view bytes, size_t& at, Code& out) const;
+    // partial code of a multi-byte font is read as one code of the remaining bytes. A simple
+    // font's code whose text is in its pool is one inline lookup.
+    bool Next(std::string_view bytes, size_t& at, Code& out) const {
+        if (RAYOPDF_LIKELY(simple_ != nullptr) && at < bytes.size()) {
+            const uint8_t c = static_cast<uint8_t>(bytes[at]);
+            const FontSlot& slot = simple_[c];
+            if (RAYOPDF_LIKELY(slot.state == FontSlotState::Pool)) {
+                ++at;
+                out.code = c;
+                out.bytes = 1;
+                out.width = slot.width;
+                out.verticalAdvance = 0;
+                out.wordSpace = c == 32;
+                out.source = slot.source;
+                out.unicode = std::string_view(simplePool_ + slot.offset, slot.length);
+                return true;
+            }
+        }
+        return NextSlow(bytes, at, out);
+    }
 
     FontKind Kind() const;
     // /BaseFont without a subset tag ("ABCDEF+"); "" for Type 3 fonts without a name.
@@ -92,7 +124,12 @@ public:
 private:
     friend class FontCache;
     explicit Font(std::unique_ptr<Impl> impl);
+    bool NextSlow(std::string_view bytes, size_t& at, Code& out) const;
     std::unique_ptr<Impl> impl_;
+    // A simple font's 256 slots and the pool their Pool texts are in (fixed once loaded); null
+    // for Type0 fonts.
+    const FontSlot* simple_ = nullptr;
+    const char* simplePool_ = nullptr;
 };
 
 // The fonts of one document, each loaded once: keyed by the object number of the font
