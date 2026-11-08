@@ -460,22 +460,17 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
     }
 }
 
-// The characters AppendEscaped may escape; text without them it writes as it is.
-bool MayEscape(char c) {
-    switch (c) {
-    case '\\':
-    case '*':
-    case '`':
-    case '_':
-    case '<':
-    case ']':
-    case '~':
-    case '&':
-        return true;
-    default:
-        return false;
+// The characters AppendEscaped may escape, by byte value; text without them it writes as it is.
+struct EscapeTable {
+    bool may[256] = {};
+    constexpr EscapeTable() {
+        constexpr char kChars[] = "\\*`_<]~&";
+        for (size_t i = 0; i + 1 < sizeof(kChars); ++i) may[static_cast<unsigned char>(kChars[i])] = true;
     }
-}
+};
+constexpr EscapeTable kEscape;
+
+bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 
 // Escapes only what would change the structure (D6): emphasis delimiters, code spans, HTML and
 // autolink openers, entity references, and block markers at the start of the block.
@@ -634,15 +629,18 @@ void Writer::Inline(const Block& block, bool styles) {
                 // characters it escapes as it is, so only a run with one of them, or one at the
                 // start of the block, is taken out again and escaped.
                 const size_t mark = out_.size();
+                bool escapes = false;
                 for (uint32_t j = k; j < runEnd; ++j) {
                     const std::string_view t = Text(refs_[j]);
-                    if (t.size() == 1)
+                    if (t.size() == 1) {
                         out_.push_back(t[0]);
-                    else
+                        escapes |= MayEscape(t[0]);
+                    } else {
                         out_.append(t.data(), t.size());
+                        for (const char c : t) escapes |= MayEscape(c);
+                    }
                 }
-                bool plain = !(blockStart && script == kScriptNone);
-                for (size_t i = mark; i < out_.size() && plain; ++i) plain = !MayEscape(out_[i]);
+                const bool plain = !(blockStart && script == kScriptNone) && !escapes;
                 if (!plain) {
                     other_.assign(out_, mark, std::string::npos);
                     out_.resize(mark);
