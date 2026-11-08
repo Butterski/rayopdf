@@ -1214,6 +1214,25 @@ void TestSyntaxReaders() {
                       value.Array().size() == 3 && value.Array()[0].real == -0.5 && value.Array()[1].real == 3.0 &&
                       value.Array()[2].type == PdfValue::Type::Real && value.Array()[2].real == 12345678901234567890.0,
                   254);
+    // The reference look-ahead: comments and line ends between the tokens; and what is no
+    // reference (a six-digit generation, "Rx", a generation past 65535, a name after).
+    const struct {
+        const char* text;
+        bool ref;
+        size_t end;
+        uint16_t gen;
+    } refs[] = {
+        {"7 0 R]", true, 5, 0},           {"7\r\n2 % c\n R/F", true, 11, 2}, {"7 %c\n00012 R", true, 12, 12},
+        {"7 000012 R", false, 1, 0},      {"7 0 Rx", false, 1, 0},           {"7 65536 R", false, 1, 0},
+        {"7 65535 R", true, 9, 65535},    {"7 0/R", false, 1, 0},            {"7 0", false, 1, 0},
+        {"7 0 R", true, 5, 0},            {"7 0a R", false, 1, 0},           {"7 0 %R\n", false, 1, 0},
+    };
+    for (const auto& r : refs) {
+        Cursor at{r.text, 0};
+        RAYOPDF_CHECK(Syntax::ParseValue(at, Syntax::Mode::File, 0, copies, value) && value.IsRef() == r.ref &&
+                          at.pos == r.end && (!r.ref || (value.refNum == 7 && value.refGen == r.gen)),
+                      260);
+    }
 }
 
 } // namespace

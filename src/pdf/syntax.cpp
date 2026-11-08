@@ -389,8 +389,8 @@ bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
 namespace {
 
 // "n g R" after the Int `out` (all digits, at most UINT32_MAX): read ahead, the cursor and `out`
-// moved to the reference only when it is one.
-void ReadReference(Cursor& c, PdfValue& out) {
+// moved to the reference only when it is one. The general form, for comments in between.
+void ReadReferenceTokens(Cursor& c, PdfValue& out) {
     Cursor ahead = c;
     SkipSpace(ahead);
     const std::string_view generation = ReadToken(ahead);
@@ -405,6 +405,32 @@ void ReadReference(Cursor& c, PdfValue& out) {
     out.refNum = num;
     out.refGen = static_cast<uint16_t>(gen);
     c = ahead;
+}
+
+// The same test byte by byte: white space, a token of at most five digits, white space, the
+// token "R". Most numbers (array items) fail at the second token's end; a '%' goes to the
+// general form.
+void ReadReference(Cursor& c, PdfValue& out) {
+    const char* const data = c.data.data();
+    const size_t size = c.data.size();
+    size_t at = c.pos;
+    while (at < size && IsWhite(static_cast<unsigned char>(data[at]))) ++at;
+    if (at < size && data[at] == '%') return ReadReferenceTokens(c, out);
+    const size_t first = at;
+    uint32_t gen = 0;
+    while (at < size && at - first <= 5 && data[at] >= '0' && data[at] <= '9') gen = gen * 10 + static_cast<uint32_t>(data[at++] - '0');
+    // The token is all digits only if it ends here (a sixth digit or another regular byte: not).
+    if (at == first || at - first > 5 || (at < size && IsRegular(static_cast<unsigned char>(data[at])))) return;
+    if (gen > 65535) return;
+    while (at < size && IsWhite(static_cast<unsigned char>(data[at]))) ++at;
+    if (at < size && data[at] == '%') return ReadReferenceTokens(c, out);
+    if (at >= size || data[at] != 'R' || (at + 1 < size && IsRegular(static_cast<unsigned char>(data[at + 1])))) return;
+    const uint32_t num = static_cast<uint32_t>(out.integer);
+    out = PdfValue();
+    out.type = PdfValue::Type::Ref;
+    out.refNum = num;
+    out.refGen = static_cast<uint16_t>(gen);
+    c.pos = at + 1;
 }
 
 } // namespace
