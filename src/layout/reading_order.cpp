@@ -124,6 +124,16 @@ struct Rule {
 // lines: larger regions are cut row by row instead.
 constexpr size_t kTopologicalMax = 200;
 
+// Cut's vectors for one depth of its recursion, kept by each thread between pages so that a cut
+// allocates none of them anew: a Cut frame uses its depth's only, the cuts it recurses into
+// deeper ones.
+constexpr int kMaxCutDepth = 48;
+struct CutLevel {
+    std::vector<size_t> xCuts, yCuts, ruleCuts;
+    std::vector<uint32_t> byY, byRule, soft, part;
+};
+thread_local CutLevel tCutLevels[kMaxCutDepth + 1];
+
 struct Orderer {
     PageData& page;
     std::vector<uint32_t>& out;
@@ -339,21 +349,25 @@ struct Orderer {
     }
 
     void Cut(std::vector<uint32_t>& items, int depth) {
-        if (items.size() <= 1 || depth > 48) {
+        if (items.size() <= 1 || depth > kMaxCutDepth) {
             Fallback(items);
             return;
         }
+        CutLevel& level = tCutLevels[depth];
         const float size = MedianSize(items);
-        std::vector<size_t> xCuts, yCuts;
-        std::vector<uint32_t> byY(items);
+        std::vector<size_t>& xCuts = level.xCuts;
+        std::vector<size_t>& yCuts = level.yCuts;
+        std::vector<uint32_t>& byY = level.byY;
+        byY.assign(items.begin(), items.end());
         SplitY(byY, yCuts);
         // LaTeX's 10 pt gutter narrows to 7 pt where hyphens protrude: half an em suffices, since
         // word gaps never reach this stage (lines are whole runs of words).
         SplitX(items, Fmax(3.0f, 0.5f * size), xCuts);
         DropLabelCuts(items, xCuts, size);
         if (!xCuts.empty() && (yCuts.empty() || ColumnsLike(items, xCuts, size))) {
-            std::vector<size_t> ruleCuts;
-            std::vector<uint32_t> byRule(items);
+            std::vector<size_t>& ruleCuts = level.ruleCuts;
+            std::vector<uint32_t>& byRule = level.byRule;
+            byRule.assign(items.begin(), items.end());
             if (SplitAtRules(byRule, ruleCuts)) {
                 Recurse(byRule, ruleCuts, depth);
                 return;
@@ -362,7 +376,8 @@ struct Orderer {
             return;
         }
         if (xCuts.empty() && items.size() >= 6) {
-            std::vector<uint32_t> soft(items);
+            std::vector<uint32_t>& soft = level.soft;
+            soft.assign(items.begin(), items.end());
             SplitXSoft(soft, size, xCuts);
             DropLabelCuts(soft, xCuts, size);
             if (!xCuts.empty() && ColumnsLike(soft, xCuts, size)) {
@@ -534,7 +549,7 @@ struct Orderer {
 
     void Recurse(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, int depth) {
         size_t begin = 0;
-        std::vector<uint32_t> part;
+        std::vector<uint32_t>& part = tCutLevels[depth].part;
         for (size_t c = 0; c <= cuts.size(); ++c) {
             const size_t end = c < cuts.size() ? cuts[c] : items.size();
             part.assign(items.begin() + static_cast<std::ptrdiff_t>(begin), items.begin() + static_cast<std::ptrdiff_t>(end));
