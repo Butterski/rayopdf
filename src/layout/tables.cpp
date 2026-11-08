@@ -340,6 +340,12 @@ private:
     std::vector<uint8_t> wordUsed_;  // inside an accepted grid
     std::vector<uint32_t> events_;   // Columns: bin events, 2 * bin + 1 an ink start, 2 * bin an ink end
     std::vector<int> bins_;          // Columns: ink starts minus ends per bin
+    // Borderless: the rows of all words not in a grid, built when marks_ (MarkUsed calls) was
+    // pageRowsMarks_.
+    std::vector<Row> pageRows_;
+    std::vector<uint32_t> pageRowWords_;
+    uint32_t marks_ = 0;
+    uint32_t pageRowsMarks_ = UINT32_MAX;
     float bodySize_ = 10;
     float wordSpace_ = 0.3f;  // the page's median space between words of a line, in ems
     int restored_ = 0;
@@ -1717,6 +1723,7 @@ void Detector::Continue() {
 }
 
 void Detector::MarkUsed(const Grid& g) {
+    marks_++;
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
     for (size_t i = static_cast<size_t>(it - words_.begin()); i < words_.size() && words_[i].base >= g.y0 - 20; ++i) {
         const TWord& w = words_[i];
@@ -1729,9 +1736,13 @@ void Detector::MarkUsed(const Grid& g) {
 // Confidence comes from Camelot-style stream evidence (algorithms §6.7): several rows, filled cells,
 // column edges aligned left, right or centred, numeric cells, an even row pitch.
 void Detector::Borderless(float gapFactor) {
-    std::vector<Row> rows;
-    std::vector<uint32_t> rowWords;
-    BuildRows(-INFINITY, INFINITY, -INFINITY, INFINITY, rows, rowWords);
+    // The rows of all words left: the second pass reuses the first's while no grid took words.
+    if (pageRowsMarks_ != marks_) {
+        BuildRows(-INFINITY, INFINITY, -INFINITY, INFINITY, pageRows_, pageRowWords_);
+        pageRowsMarks_ = marks_;
+    }
+    const std::vector<Row>& rows = pageRows_;
+    const std::vector<uint32_t>& rowWords = pageRowWords_;
     if (rows.size() < 3 || rows.size() > 4000) return;
     // Rows that split at a column gap (gapFactor ems: wider than any word space) and hold no code
     // are candidates.
