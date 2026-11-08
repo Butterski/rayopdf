@@ -86,9 +86,23 @@ std::string SampleText() {
     return text;
 }
 
+// Filters::Decode, checked against Filters::Decoder: the same bytes, a piece at a time, and the
+// same status.
 StreamStatus Decode(Filters::Kind kind, std::string_view in, std::string& out, size_t limit = size_t(1) << 30,
                     const Filters::Params& params = Filters::Params()) {
-    return Filters::Decode(kind, params, in, out, limit);
+    const StreamStatus status = Filters::Decode(kind, params, in, out, limit);
+    Filters::Decoder decoder;
+    for (int pass = 0; pass < 2; pass++) {
+        decoder.Start(kind, params, in, limit);
+        std::string pieces;
+        std::string_view piece;
+        while (decoder.Next(piece)) {
+            RAYOPDF_CHECK(!piece.empty(), 252);
+            pieces.append(piece.data(), piece.size());
+        }
+        RAYOPDF_CHECK(pieces == out && decoder.Status() == status, 252);
+    }
+    return status;
 }
 
 // Bits for a deflate stream, least significant first; Huffman codes most significant bit first.
@@ -302,6 +316,12 @@ void TestFlate() {
                   203);
     const std::string big = Noise(200000, 7);
     RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(big), out) == StreamStatus::Ok && out == big, 204);
+    // Stored blocks across the pieces Filters::Decoder gives (Inflate::Stream::kPiece).
+    const std::string large = Noise(700000, 9);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(large), out) == StreamStatus::Ok && out == large, 204);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(large).substr(0, 500000), out) == StreamStatus::Salvaged &&
+                      large.compare(0, out.size(), out) == 0,
+                  206);
     RAYOPDF_CHECK(Decode(Filters::Kind::Flate, "", out) == StreamStatus::Corrupt && out.empty(), 205);
     // A bad Adler-32 is ignored; a stray end of line before the header is skipped.
     std::string badAdler = Unhex(kZlibHex);
@@ -361,6 +381,12 @@ void TestLzw() {
     RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, Unhex("800b6050220c0c8501"), out, 4) == StreamStatus::TooLarge &&
                       out == "----",
                   211);
+    // More than one piece of output (64 KB), and cut inside a later one.
+    const std::string many = Noise(150000, 5) + std::string(100000, 'q');
+    RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, LzwEncode(many, 1), out) == StreamStatus::Ok && out == many, 211);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Lzw, LzwEncode(many, 1), out, 200000) == StreamStatus::TooLarge &&
+                      out == many.substr(0, 200000),
+                  211);
 }
 
 void TestAscii() {
@@ -393,6 +419,11 @@ void TestAscii() {
     RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, std::string("\x81" "y", 2), out, 10) == StreamStatus::TooLarge &&
                       out == std::string(10, 'y'),
                   214);
+    std::string runs;
+    for (int i = 0; i < 1000; i++) runs += std::string("\x81", 1) + static_cast<char>('a' + i % 26) + "\x01" "xy";
+    RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, runs, out) == StreamStatus::Ok && out.size() == 1000 * 130, 214);
+    RAYOPDF_CHECK(Decode(Filters::Kind::RunLength, runs, out, 70000) == StreamStatus::TooLarge && out.size() == 70000,
+                  214);
 }
 
 void TestPredictors() {
@@ -401,13 +432,16 @@ void TestPredictors() {
     struct Shape {
         int colors, bpc, columns;
     };
-    for (const Shape shape : {Shape{3, 8, 5}, Shape{2, 16, 7}, Shape{1, 1, 13}, Shape{4, 8, 1}, Shape{5, 8, 9}}) {
+    for (const Shape shape :
+         {Shape{3, 8, 5}, Shape{2, 16, 7}, Shape{1, 1, 13}, Shape{4, 8, 1}, Shape{5, 8, 9}, Shape{3, 8, 1000}}) {
         const size_t rowBytes = (static_cast<size_t>(shape.colors * shape.bpc * shape.columns) + 7) / 8;
         const size_t bpp = std::max<size_t>(1, static_cast<size_t>(shape.colors * shape.bpc) / 8);
         std::string image;
         std::string filtered;
         std::string up(rowBytes, '\0');
-        for (int row = 0; row < 10; row++) {
+        // The wide shape's rows pass the pieces of Filters::Decoder's inflate output.
+        const int rows = shape.columns >= 1000 ? 150 : 10;
+        for (int row = 0; row < rows; row++) {
             const std::string data = Noise(rowBytes, static_cast<uint32_t>(row * 31 + shape.columns));
             filtered += PngFilterRow(row % 5, data, up, bpp);
             image += data;
@@ -432,6 +466,17 @@ void TestPredictors() {
         RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(filtered), out, rowBytes * 3, params) ==
                               StreamStatus::TooLarge &&
                           out == image.substr(0, rowBytes * 3),
+                      217);
+        // A filter byte alone at the end, and a row of an unknown filter type, kept as it stands.
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(filtered + "\x02"), out, size_t(1) << 30, params) ==
+                              StreamStatus::Salvaged &&
+                          out == image,
+                      217);
+        std::string unknown = filtered;
+        unknown[rowBytes + 1] = 9;
+        RAYOPDF_CHECK(Decode(Filters::Kind::Flate, ZlibStored(unknown), out, size_t(1) << 30, params) ==
+                              StreamStatus::Salvaged &&
+                          out.size() == image.size(),
                       217);
     }
     // TIFF predictor 2.
@@ -720,6 +765,94 @@ void TestStreams() {
     RAYOPDF_CHECK(doc->Resolve(ref).IsNull() && doc->StreamData(ref, out) == StreamStatus::NotStream, 240);
 }
 
+// Document::StreamReader against StreamData: the same bytes, status and report counts, however the
+// reader is read (to its end, twice, one piece and then dropped, or not read at all).
+void TestStreamReader() {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    std::string truncated = ZlibStored(SampleText());
+    truncated.resize(truncated.size() / 2);
+    const std::vector<int> streams = {
+        b.AddStream("/Filter /FlateDecode", DeflateZeros(5000)),  // 1.3 MB: several pieces
+        b.AddStream("/Filter /FlateDecode", truncated),
+        b.AddStream("/Filter /FlateDecode", "no deflate data"),
+        b.AddStream("/Filter [/A85 /Fl]", Ascii85Encode(ZlibStored(SampleText())) + "~>"),
+        b.AddStream("/Filter [/AHx /DCTDecode]", "4142>"),
+        b.AddStream("/Filter [/AHx /Fl] /DecodeParms [null << /Predictor 12 /Columns 3 >>]",
+                    Hex(ZlibStored(std::string("\x00" "ET " "\x02" "\x00\x00\x00" "\x09", 9))) + ">"),
+        b.AddStream("", SampleText()),
+        b.Add("<< /NotA /Stream >>"),
+    };
+    const int page = b.Add("<< /Type /Page /Parent 2 0 R >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] >>");
+    const std::string file = b.Build(catalog);
+    const auto sameReport = [](const DocumentReport& x, const DocumentReport& y) {
+        return x.salvagedStreams == y.salvagedStreams && x.failedStreams == y.failedStreams &&
+               x.limitHits == y.limitHits && x.brokenObjects == y.brokenObjects;
+    };
+    for (const size_t limit : {size_t(1) << 30, size_t(1000)}) {
+        for (const int stream : streams) {
+            PdfValue ref;
+            ref.type = PdfValue::Type::Ref;
+            ref.refNum = static_cast<uint32_t>(stream);
+            for (int mode = 0; mode < 4; mode++) {
+                const auto whole = OpenOk(file, 253);
+                const auto read = OpenOk(file, 253);
+                std::string expected;
+                const StreamStatus status = whole->StreamData(ref, expected, limit);
+                {
+                    Document::StreamReader reader;
+                    const StreamStatus open = reader.Open(*read, ref, limit);
+                    std::string_view piece;
+                    if (open != StreamStatus::Ok) {
+                        RAYOPDF_CHECK(open == status && expected.empty() && !reader.Next(piece), 253);
+                        RAYOPDF_CHECK(reader.Finish() == status, 253);
+                    } else if (mode < 2) {
+                        // To the end; mode 1 a second time from the start.
+                        for (int pass = 0; pass <= mode; pass++) {
+                            if (pass > 0) reader.Restart();
+                            std::string got;
+                            while (reader.Next(piece)) got.append(piece.data(), piece.size());
+                            RAYOPDF_CHECK(got == expected && reader.Size() == expected.size(), 254);
+                            RAYOPDF_CHECK(sameReport(read->Report(), whole->Report()), 255);
+                        }
+                        RAYOPDF_CHECK(reader.Finish() == status, 254);
+                    } else if (mode == 2) {
+                        // One piece, then the reader goes: it reads the rest and counts the stream then.
+                        if (reader.Next(piece)) RAYOPDF_CHECK(expected.compare(0, piece.size(), piece) == 0, 254);
+                    }
+                }
+                RAYOPDF_CHECK(sameReport(read->Report(), whole->Report()), 255);
+            }
+        }
+    }
+    // Readers held open while other streams decode: every count comes once.
+    const auto whole = OpenOk(file, 256);
+    const auto read = OpenOk(file, 256);
+    std::string out;
+    for (const int stream : streams) {
+        PdfValue ref;
+        ref.type = PdfValue::Type::Ref;
+        ref.refNum = static_cast<uint32_t>(stream);
+        whole->StreamData(ref, out);
+        whole->StreamData(ref, out);
+    }
+    {
+        std::vector<std::unique_ptr<Document::StreamReader>> readers;
+        for (const int stream : streams) {
+            PdfValue ref;
+            ref.type = PdfValue::Type::Ref;
+            ref.refNum = static_cast<uint32_t>(stream);
+            readers.push_back(std::make_unique<Document::StreamReader>());
+            readers.back()->Open(*read, ref);
+            read->StreamData(ref, out);
+        }
+    }
+    RAYOPDF_CHECK(sameReport(read->Report(), whole->Report()), 256);
+}
+
 void TestNesting() {
     // Arrays nested past the limit: the object is broken, the document still opens.
     PdfBuilder b;
@@ -972,6 +1105,7 @@ int main() {
     TestPrevChain();
     TestGarbageAndRepair();
     TestStreams();
+    TestStreamReader();
     TestNesting();
     TestPageTree();
     TestXrefQuirks();

@@ -144,10 +144,7 @@ struct ScanSlot {
     bool present = false;
 };
 
-struct Stage {
-    Filters::Kind kind = Filters::Kind::Unknown;
-    Filters::Params params;
-};
+using Stage = Filters::Stage;
 
 } // namespace
 
@@ -227,6 +224,8 @@ struct Document::Impl {
     std::string scratch2;
     std::string decrypted;
     std::string piece;
+    // Streams being read that are not counted yet (StreamReader), in the order they were opened.
+    std::vector<StreamReader*> uncounted;
 
     // ---------------------------------------------------------------- values
 
@@ -631,8 +630,12 @@ struct Document::Impl {
         return true;
     }
 
-    StreamStatus StreamData(const PdfValue& value, std::string& out, size_t limit) {
-        out.clear();
+    // StreamData up to its filters: the stream's stages (`count` of them) and the data they read,
+    // `raw` (decrypted into `buffer` when the document is encrypted), with `start` the status of
+    // that data, and `limit` cut to what the decode budget leaves. A status other than Ok ends the
+    // read with nothing, counted.
+    StreamStatus Prepare(const PdfValue& value, size_t& limit, Stage* stages, size_t& count, std::string& buffer,
+                         std::string_view& raw, StreamStatus& start) {
         const PdfValue& stream = Resolve(value);
         if (!stream.IsStream()) return StreamStatus::NotStream;
         if (stream.streamOffset > bytes.size() || stream.streamLength > bytes.size() - stream.streamOffset) {
@@ -641,8 +644,6 @@ struct Document::Impl {
         }
         // Everything that resolves references first: resolving may load an object stream, which
         // decodes through here and uses the scratch buffers.
-        Stage stages[kMaxFilters];
-        size_t count = 0;
         std::string_view cryptName;
         if (!GatherStages(stream, true, stages, count, cryptName)) {
             report.limitHits++;
@@ -669,26 +670,63 @@ struct Document::Impl {
                 }
             }
         }
+        CountUncounted(limit);
         if (decoded >= kDocumentDecodeBudget) {
             report.limitHits++;
             return StreamStatus::TooLarge;
         }
         limit = static_cast<size_t>(std::min<uint64_t>(limit, kDocumentDecodeBudget - decoded));
-        std::string_view raw = bytes.substr(stream.streamOffset, stream.streamLength);
-        StreamStatus status = StreamStatus::Ok;
+        raw = bytes.substr(stream.streamOffset, stream.streamLength);
+        start = StreamStatus::Ok;
         if (decrypt) {
             const uint32_t num = static_cast<uint32_t>(id >> 16);
             const uint16_t gen = static_cast<uint16_t>(id & 0xFFFF);
-            const bool clean = useExplicit ? security.DecryptWith(explicitFilter, num, gen, raw, scratch)
-                                           : security.Decrypt(num, gen, true, raw, scratch);
-            if (!clean) status = StreamStatus::Salvaged;
-            raw = scratch;
+            const bool clean = useExplicit ? security.DecryptWith(explicitFilter, num, gen, raw, buffer)
+                                           : security.Decrypt(num, gen, true, raw, buffer);
+            if (!clean) start = StreamStatus::Salvaged;
+            raw = buffer;
         }
-        status = Worse(status, RunStages(raw, stages, count, out, limit));
-        decoded += out.size();
+        return StreamStatus::Ok;
+    }
+
+    // A decoded stream in the budget and the report.
+    void Count(StreamStatus status, uint64_t size) {
+        decoded += size;
         if (status == StreamStatus::Salvaged) report.salvagedStreams++;
         else if (status == StreamStatus::Corrupt) report.failedStreams++;
         else if (status == StreamStatus::TooLarge) report.limitHits++;
+    }
+
+    // Before a decode of at most `limit` bytes: when the streams being read but not counted yet
+    // could change its budget check or its limit (the budget left is not more than their limits
+    // and this one together), each is read to its end and counted now, in the order they were
+    // opened, as StreamData would have counted them before this decode.
+    void CountUncounted(size_t limit) {
+        if (uncounted.empty()) return;
+        uint64_t held = std::min<uint64_t>(limit, kDocumentDecodeBudget);
+        for (const StreamReader* reader : uncounted) held += reader->limit_;
+        if (decoded < kDocumentDecodeBudget && kDocumentDecodeBudget - decoded > held) return;
+        std::vector<StreamReader*> readers;
+        readers.swap(uncounted);
+        for (StreamReader* reader : readers) {
+            Filters::Chain chain;
+            chain.Start(reader->stages_.data(), reader->stages_.size(), reader->raw_, reader->limit_);
+            std::string_view piece;
+            while (chain.Next(piece)) {}
+            reader->Count(Worse(reader->start_, chain.Status()), chain.Size());
+        }
+    }
+
+    StreamStatus StreamData(const PdfValue& value, std::string& out, size_t limit) {
+        out.clear();
+        Stage stages[kMaxFilters];
+        size_t count = 0;
+        std::string_view raw;
+        StreamStatus start = StreamStatus::Ok;
+        const StreamStatus prepared = Prepare(value, limit, stages, count, scratch, raw, start);
+        if (prepared != StreamStatus::Ok) return prepared;
+        const StreamStatus status = Worse(start, RunStages(raw, stages, count, out, limit));
+        Count(status, out.size());
         return status;
     }
 
@@ -1430,6 +1468,55 @@ bool Document::Rect(const PdfValue& value, PdfRect& out) const { return impl_->R
 
 StreamStatus Document::StreamData(const PdfValue& stream, std::string& out, size_t limit) const {
     return impl_->StreamData(stream, out, limit);
+}
+
+Document::StreamReader::~StreamReader() {
+    if (reading_ && !counted_) Finish();
+}
+
+StreamStatus Document::StreamReader::Open(const Document& document, const PdfValue& stream, size_t limit) {
+    if (reading_ && !counted_) Finish();
+    impl_ = document.impl_.get();
+    reading_ = false;
+    counted_ = false;
+    Stage stages[kMaxFilters];
+    size_t count = 0;
+    status_ = impl_->Prepare(stream, limit, stages, count, decrypted_, raw_, start_);
+    if (status_ != StreamStatus::Ok) {
+        counted_ = true;
+        return status_;
+    }
+    stages_.assign(stages, stages + count);
+    limit_ = limit;
+    chain_.Start(stages_.data(), stages_.size(), raw_, limit_);
+    reading_ = true;
+    impl_->uncounted.push_back(this);
+    return StreamStatus::Ok;
+}
+
+bool Document::StreamReader::Next(std::string_view& piece) {
+    if (!reading_) return false;
+    if (chain_.Next(piece)) return true;
+    if (!counted_) Count(Worse(start_, chain_.Status()), chain_.Size());
+    return false;
+}
+
+void Document::StreamReader::Restart() {
+    if (reading_) chain_.Restart();
+}
+
+StreamStatus Document::StreamReader::Finish() {
+    if (!reading_) return status_;
+    std::string_view piece;
+    while (Next(piece)) {}
+    return Worse(start_, chain_.Status());
+}
+
+void Document::StreamReader::Count(StreamStatus status, uint64_t size) {
+    counted_ = true;
+    std::vector<StreamReader*>& uncounted = impl_->uncounted;
+    uncounted.erase(std::remove(uncounted.begin(), uncounted.end(), this), uncounted.end());
+    impl_->Count(status, size);
 }
 
 int Document::PageCount() const { return static_cast<int>(impl_->pages.size()); }

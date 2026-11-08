@@ -37,8 +37,10 @@ enum class Status : uint8_t {
 
 // Where a PNG goes while it is made, instead of Encoded::bytes: the image's file. Open comes
 // once the image is to be written as a PNG, before its first byte; then the bytes in order, and
-// Patch sets bytes already written (the IDAT chunk's length, known at its end). The file is only
-// as large as the PNG, and the process holds no copy of it.
+// Patch sets bytes already written (the IDAT chunk's length, known at its end). Open may come
+// again: the PNG begun anew, what was written before dropped (image data that ends before the
+// image's height, known only once read). The file is only as large as the PNG, and the process
+// holds no copy of it.
 class Sink {
 public:
     virtual bool Open(const char* extension) = 0;

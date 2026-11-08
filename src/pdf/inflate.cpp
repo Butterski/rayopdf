@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
 #include <emmintrin.h>
@@ -303,7 +304,49 @@ public:
         return o_ > 0 ? Result::Salvaged : Result::Corrupt;
     }
 
+    // Streaming (Stream): the buffer holds the 32 KB window before the output not yet given out
+    // and room for a piece (or the whole output, when that is less); it never grows.
+    void BeginStream(size_t piece) {
+        SkipHeader();
+        growable_ = false;
+        room_ = std::min(kWindow + piece, Cap());
+        if (out_.size() < room_ + kSlack) out_.resize(room_ + kSlack);
+        buf_ = reinterpret_cast<uint8_t*>(&out_[0]);
+        cap_ = room_;
+    }
+
+    // The next piece of output, as Run would have it: false at its end, `result_` then set.
+    bool NextPiece(const uint8_t*& data, size_t& size) {
+        for (;;) {
+            // base_ (the output moved out of the buffer) never passes maxOut_.
+            const size_t end = std::min(o_, maxOut_ - base_);
+            if (delivered_ < end) {
+                data = buf_ + delivered_;
+                size = end - delivered_;
+                delivered_ = end;
+                return true;
+            }
+            if (ended_) return false;
+            if (o_ > maxOut_ - base_) {
+                result_ = Result::TooLarge;
+                ended_ = true;
+                continue;
+            }
+            if (o_ >= cap_) Slide();
+            const Step step = Pump();
+            if (step == Step::Full) continue;
+            ended_ = true;
+            if (o_ > maxOut_ - base_) result_ = Result::TooLarge;
+            else if (step == Step::Ok) result_ = Result::Ok;
+            else result_ = base_ + o_ > 0 ? Result::Salvaged : Result::Corrupt;
+        }
+    }
+
+    Result StreamResult() const { return result_; }
+
 private:
+    static constexpr size_t kWindow = size_t(1) << 15;
+
     // The buffer's size beyond which output is too large: one byte past the limit tells "more".
     size_t Cap() const { return maxOut_ + 1; }
 
@@ -315,8 +358,36 @@ private:
     }
 
     bool Grow() {
-        if (cap_ >= Cap()) return false;
+        if (!growable_ || cap_ >= Cap()) return false;
         return Resize(std::min(Cap(), std::max<size_t>(cap_ * 2, size_t(64) << 10)));
+    }
+
+    // Decodes blocks until the buffer is full (Full), the final block has ended (Ok), or the data
+    // is truncated or corrupt; resumes where the last call stopped.
+    Step Pump() {
+        for (;;) {
+            if (!inBlock_) {
+                if (final_) return Step::Ok;
+                const Step header = ReadBlockHeader();
+                if (header != Step::Ok) return header;
+                inBlock_ = true;
+            }
+            const Step step = stored_ ? CopyStored() : DecodeCodes();
+            if (step != Step::Ok) return step;
+            inBlock_ = false;
+        }
+    }
+
+    // Keeps the last 32 KB of a full buffer (every byte of it given out) at its start: what a
+    // match can reach back to. Matches then never reach before the buffer's start.
+    void Slide() {
+        const size_t keep = std::min(o_, kWindow);
+        const size_t drop = o_ - keep;
+        std::memmove(buf_, buf_ + drop, keep);
+        base_ += drop;
+        delivered_ -= drop;
+        o_ = keep;
+        cap_ = std::min(room_, Cap() - base_);
     }
 
     // A zlib header (with a preset dictionary's id skipped over: references into it fail later,
@@ -617,8 +688,16 @@ private:
     std::string& out_;
     uint8_t* buf_ = nullptr;
     size_t cap_ = 0;  // bytes of buf_ before the slack
-    size_t o_ = 0;    // bytes of output
+    size_t o_ = 0;    // bytes of output (in the buffer, when streaming)
     const size_t maxOut_;
+    // Streaming only.
+    bool growable_ = true;
+    bool inBlock_ = false;
+    bool ended_ = false;
+    Result result_ = Result::Corrupt;
+    size_t room_ = 0;       // the buffer's bytes before the slack
+    size_t base_ = 0;       // output moved out of the buffer before buf_[0]
+    size_t delivered_ = 0;  // bytes of the buffer given out
 
     bool final_ = false;
     bool stored_ = false;
@@ -636,6 +715,30 @@ Result Inflate(std::string_view in, std::string& out, size_t limit) {
     limit = std::min(limit, (size_t(1) << 40));
     Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, limit);
     return inflater.Run();
+}
+
+struct Stream::State {
+    std::string buffer;
+    std::unique_ptr<Inflater> inflater;
+};
+
+Stream::Stream() = default;
+Stream::~Stream() = default;
+
+void Stream::Start(std::string_view in, size_t limit) {
+    limit = std::min(limit, (size_t(1) << 40));
+    if (!state_) state_ = std::make_unique<State>();
+    state_->inflater = std::make_unique<Inflater>(reinterpret_cast<const uint8_t*>(in.data()), in.size(),
+                                                  state_->buffer, limit);
+    state_->inflater->BeginStream(kPiece);
+}
+
+bool Stream::Next(const uint8_t*& data, size_t& size) {
+    return state_ && state_->inflater && state_->inflater->NextPiece(data, size);
+}
+
+Result Stream::Finish() const {
+    return state_ && state_->inflater ? state_->inflater->StreamResult() : Result::Corrupt;
 }
 
 } // namespace RayoPdf::Inflate

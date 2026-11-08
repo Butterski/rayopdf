@@ -31,7 +31,8 @@ void FilterRow(int filter, const uint8_t* row, const uint8_t* up, size_t rowByte
 void FilterRowScalar(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out);
 
 // Row y (rowBytes bytes) of an image EncodeRows writes, asked for once each, top to bottom; the
-// pointer stays valid until the call after next (the filters read the row above).
+// pointer stays valid until the call after next (the filters read the row above). Null ends the
+// image early: the writer then fails.
 using RowSource = const uint8_t* (*)(void* context, uint32_t y);
 // Where a PNG file goes while it is made: bytes appended in order, and bytes already appended set
 // again in place (the IDAT chunk's length, known when the compressed data ends).
@@ -50,14 +51,22 @@ protected:
 // A PNG of the rows `source` gives (8 bits, 1 to 4 channels, image.h's channel order).
 bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, Output& out);
 bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source, void* context, std::string& out);
-// A gray image of `depth` bits (1, 2 or 4) from its packed rows (`rowBytes` apart, samples most
-// significant first, as PDF and PNG both store them): sample s stands for s * 255 / (2^depth - 1),
-// or for its complement with `invert`. Padding bits past the last sample are written as 0.
-bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
-                Output& out);
-bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
-                std::string& out);
-// EncodePng (image.h) into an Output.
+// A gray image of `depth` bits (1, 2 or 4) from the packed rows `source` gives (samples most
+// significant first, as PDF and PNG both store them, at least the PNG row's bytes): sample s stands
+// for s * 255 / (2^depth - 1), or for its complement with `invert`. Padding bits past the last
+// sample are written as 0.
+bool EncodePackedGray(uint32_t width, uint32_t height, int depth, bool invert, RowSource source, void* context,
+                      Output& out);
+// The gray depths that hold every value of `pixels` (8-bit gray) exactly, as a set: bit 0 for 1
+// bit (0 and 255), bit 1 for 2 bits (multiples of 85), bit 2 for 4 bits (multiples of 17).
+// `allowed` is the set of the pixels before (7 at the start); 0 once only 8 bits will do.
+uint8_t GrayDepths(const uint8_t* pixels, size_t count, uint8_t allowed);
+// The fewest bits a set of GrayDepths allows: 1, 2, 4 or 8.
+int GrayDepthOf(uint8_t allowed);
+// A gray image of `depth` bits (1, 2, 4 or 8) from the 8-bit gray rows `source` gives, whose
+// values that depth holds exactly (GrayDepths).
+bool EncodeGray(uint32_t width, uint32_t height, int depth, RowSource source, void* context, Output& out);
+// EncodePng (image.h) into an Output: gray at the fewest exact bits.
 bool EncodePixels(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, Output& out);
 
 } // namespace RayoPdf::Image::Png

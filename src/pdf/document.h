@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace RayoPdf {
 
@@ -102,6 +103,8 @@ public:
     // image filter (Unsupported, `out` holding the data that filter would read).
     StreamStatus StreamData(const PdfValue& stream, std::string& out, size_t limit = kDefaultStreamLimit) const;
 
+    class StreamReader;
+
     int PageCount() const;
     // Page `index` (0-based) as the page tree orders the leaves; null for an index out of range.
     const PdfValue& PageDict(int index) const;
@@ -119,6 +122,52 @@ private:
     struct Impl;
     explicit Document(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
+};
+
+// StreamData's output a piece at a time, for data too large to hold whole (an image's samples):
+// the same bytes in order, the same status, and the same counts in the report and the decode
+// budget, made once per Open whatever the passes. Only the last filter's output is never held
+// whole (Filters::Chain); decrypted data and the output of the filters before it are.
+//
+// A stream is counted when a pass reaches its end, or by Finish (which reads it to the end). Meanwhile
+// it holds back its limit from the budget: a decode that the stream's count could change (the
+// budget nearly spent) first reads and counts every stream held back, in the order they were
+// opened, so every count and limit is as if StreamData had read each stream whole when it was opened.
+class Document::StreamReader {
+public:
+    StreamReader() = default;
+    ~StreamReader();
+    StreamReader(const StreamReader&) = delete;
+    StreamReader& operator=(const StreamReader&) = delete;
+
+    // StreamData(stream, ·, limit) begun: NotStream, Corrupt, Unsupported or TooLarge when it ends
+    // at once (with nothing to read, counted as StreamData counts it), else Ok and the output follows.
+    StreamStatus Open(const Document& document, const PdfValue& stream, size_t limit = Document::kDefaultStreamLimit);
+    // The next piece (at least one byte), valid until the next call; false at the end of the output.
+    bool Next(std::string_view& piece);
+    // The output again from its first byte (a second pass reads the same bytes, counted once).
+    void Restart();
+    // Reads to the end of the output (counting the stream, once) and returns StreamData's status.
+    StreamStatus Finish();
+    // The bytes given since the start of this pass.
+    uint64_t Size() const { return chain_.Size(); }
+
+private:
+    friend struct Document::Impl;
+
+    // Counts the stream in the document as StreamData does, once.
+    void Count(StreamStatus status, uint64_t size);
+
+    Document::Impl* impl_ = nullptr;
+    std::vector<Filters::Stage> stages_;
+    std::string_view raw_;
+    std::string decrypted_;
+    Filters::Chain chain_;
+    size_t limit_ = 0;
+    StreamStatus start_ = StreamStatus::Ok;   // the status before the filters (decryption)
+    StreamStatus status_ = StreamStatus::Ok;  // the status of a read that ended at once
+    bool reading_ = false;  // Open found data to decode
+    bool counted_ = false;
 };
 
 } // namespace RayoPdf

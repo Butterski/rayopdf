@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -26,5 +27,30 @@ enum class Result : uint8_t {
 
 // Inflates `in` into `out` (replaced), at most `limit` bytes.
 Result Inflate(std::string_view in, std::string& out, size_t limit);
+
+// Inflate's output a piece at a time, holding the 32 KB window and one piece (kPiece bytes) of
+// output instead of all of it: the same bytes in order, and the same Result.
+class Stream {
+public:
+    static constexpr size_t kPiece = size_t(224) << 10;
+
+    Stream();
+    ~Stream();
+    Stream(const Stream&) = delete;
+    Stream& operator=(const Stream&) = delete;
+
+    // Starts inflating `in` (alive and unchanged while it is read), at most `limit` bytes; again
+    // from the start when called again.
+    void Start(std::string_view in, size_t limit);
+    // The next piece of output (at least one byte), valid until the next call; false once the
+    // output is complete.
+    bool Next(const uint8_t*& data, size_t& size);
+    // How the output ended, once Next has returned false: Inflate's Result for `in` and `limit`.
+    Result Finish() const;
+
+private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 
 } // namespace RayoPdf::Inflate

@@ -8,6 +8,7 @@
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "image/deflate.h"
 #include "image/image.h"
 #include "image/jpeg.h"
 #include "image/png.h"
@@ -1311,6 +1312,144 @@ void TestJpxImages() {
                   1022);
 }
 
+// Inflate::Stream against Inflate on deflate data with matches back to 32 KB across its pieces:
+// whole, truncated and cut by limits.
+void TestInflateStream() {
+    std::string data;
+    while (data.size() < 3000000) {
+        const size_t n = 50 + size_t(RandomByte()) * 4;
+        if (data.size() > 40000 && RandomByte() < 200) {
+            const size_t back = 1 + ((size_t(RandomByte()) << 8 | RandomByte()) % 32768);
+            for (size_t i = 0; i < n; i++) data.push_back(data[data.size() - back]);
+        } else {
+            for (size_t i = 0; i < n; i++) data.push_back(static_cast<char>(RandomByte() & 0x1F));
+        }
+    }
+    std::vector<uint8_t> buffer(Image::Deflate::ZlibBound(data.size()));
+    Image::Deflate::Scratch scratch;
+    const size_t size = Image::Deflate::ZlibCompress(data, buffer.data(), scratch);
+    const std::string zlib(reinterpret_cast<const char*>(buffer.data()), size);
+    Inflate::Stream stream;
+    for (const size_t cut : {size, size - 3, size / 2, size_t(7), size_t(1)}) {
+        for (const size_t limit : {size_t(1) << 30, data.size(), size_t(1000000), size_t(100)}) {
+            const std::string_view in = std::string_view(zlib).substr(0, cut);
+            std::string whole;
+            const Inflate::Result result = Inflate::Inflate(in, whole, limit);
+            stream.Start(in, limit);
+            std::string pieces;
+            const uint8_t* piece = nullptr;
+            size_t n = 0;
+            while (stream.Next(piece, n)) {
+                RAYOPDF_CHECK(n > 0, 1023);
+                pieces.append(reinterpret_cast<const char*>(piece), n);
+            }
+            RAYOPDF_CHECK(pieces == whole && stream.Finish() == result, 1023);
+            if (cut == size && limit >= data.size()) RAYOPDF_CHECK(result == Inflate::Result::Ok && whole == data, 1023);
+        }
+    }
+}
+
+// A Sink in memory that counts the times it is opened.
+class MemorySink final : public Image::Sink {
+public:
+    bool Open(const char*) override {
+        opens++;
+        bytes.clear();
+        return true;
+    }
+    bool Append(const uint8_t* data, size_t size) override {
+        bytes.append(reinterpret_cast<const char*>(data), size);
+        return true;
+    }
+    bool Patch(uint64_t offset, const uint8_t* data, size_t size) override {
+        if (offset > bytes.size() || size > bytes.size() - offset) return false;
+        std::memcpy(&bytes[static_cast<size_t>(offset)], data, size);
+        return true;
+    }
+    std::string bytes;
+    int opens = 0;
+};
+
+// An image of `f` (its object `image`) written through a Sink and into Encoded::bytes: the same
+// PNG; read back. `opens`: how often the Sink was opened (2: the PNG begun again).
+Decoded EncodeBothWays(Fixture& f, int image, int opens, int code) {
+    Image::Encoded viaString, viaSink;
+    MemorySink sink;
+    RAYOPDF_CHECK(Image::EncodeXObject(*f.doc, f.Obj(image), kNull, viaString) == Image::Status::Ok, code);
+    RAYOPDF_CHECK(Image::EncodeXObject(*f.doc, f.Obj(image), kNull, viaSink, Image::kDefaultMaxPixels, &sink) ==
+                      Image::Status::Ok,
+                  code);
+    RAYOPDF_CHECK(viaSink.streamed && viaSink.bytes.empty() && sink.bytes == viaString.bytes && sink.opens == opens,
+                  code);
+    RAYOPDF_CHECK(viaSink.width == viaString.width && viaSink.height == viaString.height, code);
+    Decoded png;
+    RAYOPDF_CHECK(ReadPng(viaString.bytes, png) && png.height == viaString.height, code);
+    return png;
+}
+
+// Flate images decoded a row at a time: larger than the decoder's pieces, with soft masks, and
+// with data that ends before the image's height (the PNG begun again when that is found late).
+void TestStreamedImages() {
+    const auto rgb = [](uint32_t width, uint32_t rows) {
+        std::string data;
+        for (uint32_t y = 0; y < rows; y++) {
+            for (uint32_t x = 0; x < width; x++) {
+                data += Bytes({static_cast<int>((x + y) & 255), static_cast<int>((2 * x) & 255), static_cast<int>((3 * y) & 255)});
+            }
+        }
+        return data;
+    };
+    Fixture f;
+    // 700 x 400 RGB (840 KB of samples) with a soft mask of half the size: alpha written.
+    std::string mask;
+    for (uint32_t y = 0; y < 200; y++) {
+        for (uint32_t x = 0; x < 350; x++) mask.push_back(static_cast<char>((x + y) & 255));
+    }
+    const int soft = f.b.AddFlateStream("/Width 350 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8", mask);
+    const int large = f.b.AddFlateStream("/Width 700 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask " +
+                                             std::to_string(soft) + " 0 R",
+                                         rgb(700, 400));
+    // 50 x 40 RGB of which 25.5 rows are present; its mask hides only rows 30 on: opaque where
+    // the data is, so RGB (which the PNG begun with every row, as RGBA, finds only at the end).
+    std::string late(50 * 40, '\xFF');
+    std::fill(late.begin() + 30 * 50, late.end(), '\0');
+    const int lateMask = f.b.AddFlateStream("/Width 50 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 8", late);
+    const std::string shortData = rgb(50, 26).substr(0, 50 * 3 * 25 + 75);
+    const int cut = f.b.AddFlateStream("/Width 50 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask " +
+                                           std::to_string(lateMask) + " 0 R",
+                                       shortData);
+    // Gray of 4 levels, 30 of 40 rows present: 2 bits, decided on the rows there are.
+    std::string levels;
+    for (int i = 0; i < 20 * 30; i++) levels.push_back(static_cast<char>(85 * (i % 4)));
+    const int gray = f.b.AddFlateStream("/Width 20 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 8", levels);
+    // A colour key (0 transparent), 20 of 40 rows present.
+    std::string keyed(10 * 20, '\x40');
+    keyed[5 * 10 + 3] = '\0';
+    const int key = f.b.AddFlateStream("/Width 10 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 8 /Mask [0 0]",
+                                       keyed);
+    f.Open();
+
+    Decoded png = EncodeBothWays(f, large, 1, 1024);
+    RAYOPDF_CHECK(png.width == 700 && png.height == 400 && png.channels == 4, 1024);
+    RAYOPDF_CHECK(Pixel(png, 699, 399, {(699 + 399) & 255, (2 * 699) & 255, (3 * 399) & 255, (349 + 199) & 255}) &&
+                      Pixel(png, 3, 5, {8, 6, 15, (1 + 2) & 255}),
+                  1024);
+    png = EncodeBothWays(f, cut, 2, 1025);
+    RAYOPDF_CHECK(png.height == 26 && png.channels == 3 && Pixel(png, 10, 24, {34, 20, 72}) &&
+                      Pixel(png, 24, 25, {49, 48, 75}) && Pixel(png, 25, 25, {0, 0, 0}),
+                  1025);
+    png = EncodeBothWays(f, gray, 1, 1026);
+    RAYOPDF_CHECK(png.height == 30 && png.channels == 1 && Pixel(png, 3, 0, {255}) && Pixel(png, 1, 29, {85}), 1026);
+    png = EncodeBothWays(f, key, 2, 1027);
+    RAYOPDF_CHECK(png.height == 20 && png.channels == 2 && Pixel(png, 3, 5, {0, 0}) && Pixel(png, 4, 5, {64, 255}),
+                  1027);
+    // The gray for OCR: rows the data lacks are white.
+    Image::GrayImage g;
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(cut), kNull, g) == Image::Status::Ok && g.height == 40 &&
+                      static_cast<uint8_t>(g.pixels[39 * 50]) == 255 && g.sourceHeight == 40,
+                  1028);
+}
+
 } // namespace
 
 int main() {
@@ -1329,6 +1468,8 @@ int main() {
     TestCcittImages();
     TestJbig2Images();
     TestJpxImages();
+    TestInflateStream();
+    TestStreamedImages();
     std::printf("test_image: ok\n");
     return 0;
 }

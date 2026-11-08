@@ -3,11 +3,17 @@
 // - /ImageMask stencils come out as opaque gray: black where the stencil paints, white elsewhere
 //   (the fill colour is the content stream's, unknown here; black on white reads in any viewer).
 // - A data stream shorter than the image keeps the rows present: the height shrinks to them (a
-//   last partial row is completed with zero bytes), so memory follows the data that exists; no
-//   complete or partial row at all is Corrupt. CCITT and JBIG2 data are the exception: their
-//   decoders' output is read as the filter's byte stream in rows of the image's own (as poppler
-//   does, whatever /Columns or the JBIG2 page width says), what a damaged stream decoded before
-//   the damage is kept, and missing rows are white, as poppler shows them.
+//   last partial row is completed with zero bytes); no complete or partial row at all is Corrupt.
+//   CCITT and JBIG2 data are the exception: their decoders' output is read as the filter's byte
+//   stream in rows of the image's own (as poppler does, whatever /Columns or the JBIG2 page width
+//   says), what a damaged stream decoded before the damage is kept, and missing rows are white,
+//   as poppler shows them.
+// - Flate-family data (Flate, LZW, RunLength, ASCII85, ASCIIHex, predictors) is decoded a row at
+//   a time as the PNG is written, and its soft or stencil mask alongside: only a few rows, the
+//   inflate window and the compressor's window are held, whatever the image's size. A decision
+//   that needs every row first (alpha opaque everywhere, gray that fewer bits hold) reads the data
+//   once more; the PNG is begun with the declared height and begun again when the data ends
+//   before it. DCT, JPX, CCITT and JBIG2 samples come whole from their decoders.
 // - 16-bit samples are rounded to 8 bits; CMYK becomes RGB by the naive formula
 //   R = 255 (1 - C)(1 - K); CalGray and CalRGB are taken as DeviceGray and DeviceRGB; Lab goes
 //   through XYZ to sRGB with its white point mapped onto D65 by scaling.
@@ -581,9 +587,9 @@ Filters::Kind StopFilter(const Source& src) {
     return Filters::Kind::Flate;
 }
 
-// An inline image's data run through its general-purpose filters (up to the first image filter),
-// at most `limit` bytes.
-StreamStatus InlineData(const Source& src, std::string& out, size_t limit) {
+// The general-purpose filters of an inline image as stages, with their parameters; false past
+// kMaxFilters.
+bool InlineStages(const Source& src, Filters::Stage* stages, size_t& count) {
     const PdfValue& filter = src.Entry("Filter", "F");
     const PdfValue& parms = src.Entry("DecodeParms", "DP");
     const PdfValue* items = &filter;
@@ -592,46 +598,40 @@ StreamStatus InlineData(const Source& src, std::string& out, size_t limit) {
         items = filter.Array().begin();
         n = filter.Array().size();
     }
-    if (n > kMaxFilters) return StreamStatus::Unsupported;
-    std::string scratch;
-    std::string_view data = src.inlineData;
-    bool decoded = false;
-    StreamStatus status = StreamStatus::Ok;
+    if (n > kMaxFilters) return false;
+    count = n;
     for (size_t i = 0; i < n; i++) {
-        const Filters::Kind kind = Filters::KindOf(src.doc.Resolve(items[i]).Name());
-        if (kind == Filters::Kind::Crypt) continue;
-        if (kind != Filters::Kind::Flate && kind != Filters::Kind::Lzw && kind != Filters::Kind::Ascii85 &&
-            kind != Filters::Kind::AsciiHex && kind != Filters::Kind::RunLength) {
-            status = StreamStatus::Unsupported;
-            break;
-        }
+        Filters::Stage& stage = stages[i];
+        stage = Filters::Stage();
+        stage.kind = Filters::KindOf(src.doc.Resolve(items[i]).Name());
         const PdfValue& p = parms.IsArray() ? (i < parms.Array().size() ? src.doc.Resolve(parms.Array()[i]) : parms)
                                             : parms;
-        Filters::Params params;
-        if (p.IsDict()) {
-            const auto number = [&](std::string_view key, int fallback) {
-                const int64_t x = src.doc.Get(p, key).Int(fallback);
-                return x < -1000000000 || x > 1000000000 ? fallback : static_cast<int>(x);
-            };
-            params.predictor = number("Predictor", 1);
-            params.colors = number("Colors", 1);
-            params.bitsPerComponent = number("BitsPerComponent", 8);
-            params.columns = number("Columns", 1);
-            params.earlyChange = number("EarlyChange", 1);
-        }
-        const StreamStatus step = Filters::Decode(kind, params, data, scratch, limit);
-        if (step == StreamStatus::Corrupt) {
-            out.clear();
-            return StreamStatus::Corrupt;
-        }
-        out.swap(scratch);
-        data = out;
-        decoded = true;
-        if (step != StreamStatus::Ok) status = step;
-        if (step == StreamStatus::TooLarge) return status;
+        if (!p.IsDict()) continue;
+        const auto number = [&](std::string_view key, int fallback) {
+            const int64_t x = src.doc.Get(p, key).Int(fallback);
+            return x < -1000000000 || x > 1000000000 ? fallback : static_cast<int>(x);
+        };
+        stage.params.predictor = number("Predictor", 1);
+        stage.params.colors = number("Colors", 1);
+        stage.params.bitsPerComponent = number("BitsPerComponent", 8);
+        stage.params.columns = number("Columns", 1);
+        stage.params.earlyChange = number("EarlyChange", 1);
     }
-    if (!decoded) out.assign(data.data(), std::min(data.size(), limit));
-    return status;
+    return true;
+}
+
+// An inline image's data run through its general-purpose filters (up to the first image filter),
+// at most `limit` bytes.
+StreamStatus InlineData(const Source& src, std::string& out, size_t limit) {
+    out.clear();
+    Filters::Stage stages[kMaxFilters];
+    size_t count = 0;
+    if (!InlineStages(src, stages, count)) return StreamStatus::Unsupported;
+    Filters::Chain chain;
+    chain.Start(stages, count, src.inlineData, limit);
+    std::string_view piece;
+    while (chain.Next(piece)) out.append(piece.data(), piece.size());
+    return chain.Status();
 }
 
 StreamStatus ReadData(const Source& src, std::string& out, size_t limit) {
@@ -758,25 +758,6 @@ Status PassJpx(std::string_view data, uint32_t width, uint32_t height, Encoded& 
 }
 
 // ---------------------------------------------------------------- samples to pixels
-
-// Decoded pixels, rows top to bottom. A string, so that samples already in pixel form are taken
-// over without a copy.
-struct Pixels {
-    std::string data;
-    uint32_t width = 0;
-    uint32_t height = 0;  // rows present (at most the declared height)
-    uint32_t declaredHeight = 0;
-    int channels = 1;
-    // Gray kept as stored, `packedBits` (1, 2 or 4) bits a sample in rows `packedRowBytes` apart:
-    // only when the caller allows it (SampleRequest::allowPacked) and the samples are a PNG's
-    // gray of that depth, or (`packedInvert`) its complement. 0: 8-bit pixels.
-    int packedBits = 0;
-    size_t packedRowBytes = 0;
-    bool packedInvert = false;
-
-    uint8_t* Bytes() { return reinterpret_cast<uint8_t*>(&data[0]); }
-    const uint8_t* Bytes() const { return reinterpret_cast<const uint8_t*>(data.data()); }
-};
 
 struct Layout {
     uint32_t width = 0;
@@ -909,21 +890,133 @@ Status DecodeBitonal(const Source& src, Filters::Kind stop, const Layout& layout
     return Status::Ok;
 }
 
-// The samples of `layout` as whole rows: those the data holds, the last partial one completed
-// with zeros; Corrupt for none. `rows` is how many. CCITT and JBIG2 data go through their
-// decoders (DecodeBitonal).
-Status ReadSamples(const Source& src, const Layout& layout, std::string& data, uint32_t& rows) {
+// The rows of an image's samples, top to bottom, one at a time: decoded from its data a piece at a
+// time (Flate-family data: no whole copy of it held), or from samples a decoder made whole (DCT,
+// JPX, CCITT, JBIG2). The rows present are those the data holds, at most the image's height, a
+// last partial one completed with zero bytes; how many is known once a pass has read them all.
+class SampleRows {
+public:
+    // Samples made whole: `rows` rows of `rowBytes` bytes.
+    void SetWhole(std::string data, size_t rowBytes, uint32_t rows) {
+        whole_ = std::move(data);
+        streamed_ = false;
+        rowBytes_ = rowBytes;
+        height_ = rows;
+        known_ = true;
+        rows_ = rows;
+        next_ = 0;
+    }
+
+    // The data of `src` (no image filter) in rows of `layout`: Unsupported, TooLarge or Corrupt
+    // when there are none (as the data read whole gave them), else Ok.
+    Status Open(const Source& src, const Layout& layout) {
+        streamed_ = true;
+        inline_ = src.inlineImage;
+        rowBytes_ = layout.rowBytes;
+        height_ = layout.height;
+        known_ = false;
+        rows_ = 0;
+        next_ = 0;
+        ended_ = false;
+        piece_ = std::string_view();
+        // Slack past the samples, so that data a little longer than needed is no limit hit.
+        const size_t limit = layout.rowBytes * layout.height + 4096;
+        StreamStatus open = StreamStatus::Ok;
+        if (inline_) {
+            Filters::Stage stages[kMaxFilters];
+            size_t count = 0;
+            if (!InlineStages(src, stages, count)) return Status::Unsupported;
+            chain_.Start(stages, count, src.inlineData, limit);
+        } else {
+            open = reader_.Open(src.doc, src.dict, limit);
+        }
+        if (open == StreamStatus::Unsupported) return Status::Unsupported;
+        if (open != StreamStatus::Ok) return open == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+        if (!NextPiece()) {
+            const StreamStatus read = inline_ ? chain_.Status() : reader_.Finish();
+            if (read == StreamStatus::Unsupported) return Status::Unsupported;
+            return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+        }
+        rowBuffers_[0].resize(rowBytes_);
+        rowBuffers_[1].resize(rowBytes_);
+        return Status::Ok;
+    }
+
+    // The next row, valid until the call after next; null past the rows present.
+    const uint8_t* Next() {
+        if (!streamed_) {
+            if (next_ >= rows_) return nullptr;
+            return reinterpret_cast<const uint8_t*>(whole_.data()) + size_t(next_++) * rowBytes_;
+        }
+        if (ended_ || next_ >= height_) return End();
+        uint8_t* row = rowBuffers_[next_ & 1].data();
+        size_t fill = 0;
+        while (fill < rowBytes_) {
+            if (piece_.empty() && !NextPiece()) break;
+            const size_t take = std::min(rowBytes_ - fill, piece_.size());
+            std::memcpy(row + fill, piece_.data(), take);
+            fill += take;
+            piece_.remove_prefix(take);
+        }
+        if (fill == 0) return End();
+        if (fill < rowBytes_) {
+            std::memset(row + fill, 0, rowBytes_ - fill);
+            ended_ = true;
+        }
+        next_++;
+        return row;
+    }
+
+    // From the first row again (a second pass over the data).
+    void Rewind() {
+        next_ = 0;
+        if (!streamed_) return;
+        ended_ = false;
+        piece_ = std::string_view();
+        if (inline_) chain_.Restart();
+        else reader_.Restart();
+    }
+
+    bool RowsKnown() const { return known_; }
+    uint32_t Rows() const { return rows_; }
+
+private:
+    bool NextPiece() { return inline_ ? chain_.Next(piece_) : reader_.Next(piece_); }
+
+    const uint8_t* End() {
+        ended_ = true;
+        if (!known_) {
+            known_ = true;
+            rows_ = next_;
+        }
+        return nullptr;
+    }
+
+    std::string whole_;
+    bool streamed_ = false;
+    bool inline_ = false;
+    Document::StreamReader reader_;  // an XObject's data, counted in the document's report
+    Filters::Chain chain_;           // an inline image's data
+    std::string_view piece_;         // decoded data not yet in a row
+    std::vector<uint8_t> rowBuffers_[2];
+    size_t rowBytes_ = 0;
+    uint32_t height_ = 0;
+    uint32_t next_ = 0;   // rows given in this pass
+    uint32_t rows_ = 0;   // rows present, once known
+    bool known_ = false;
+    bool ended_ = false;
+};
+
+// The samples of `layout` as rows (SampleRows): CCITT and JBIG2 data through their decoders
+// (DecodeBitonal), other data decoded as it is read.
+Status OpenSamples(const Source& src, const Layout& layout, SampleRows& rows) {
     const Filters::Kind stop = StopFilter(src);
-    if (Bitonal(stop)) return DecodeBitonal(src, stop, layout, data, rows);
-    const size_t expected = layout.rowBytes * layout.height;
-    // Slack past the samples, so that data a little longer than needed is no limit hit.
-    const StreamStatus read = ReadData(src, data, expected + 4096);
-    if (read == StreamStatus::Unsupported) return Status::Unsupported;
-    if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
-    const uint64_t present = (uint64_t(data.size()) + layout.rowBytes - 1) / layout.rowBytes;
-    rows = static_cast<uint32_t>(std::min<uint64_t>(present, layout.height));
-    data.resize(size_t(rows) * layout.rowBytes, '\0');
-    return Status::Ok;
+    if (!Bitonal(stop)) return rows.Open(src, layout);
+    std::string data;
+    uint32_t count = 0;
+    const Status status = DecodeBitonal(src, stop, layout, data, count);
+    if (status == Status::Ok) rows.SetWhole(std::move(data), layout.rowBytes, count);
+    return status;
 }
 
 // The samples of one row as codes of at most 8 bits: 16-bit samples rounded to 8.
@@ -991,169 +1084,257 @@ void MakeDecodeMap(const Source& src, const Space& space, int bpc, DecodeMap& ma
     for (int i = 0; i < n && map.identity; i++) map.identity = map.low[i] == 0 && map.high[i] == 1;
 }
 
-// `data` (whole rows of `layout`, `rows` of them) to pixels of `space`; `data` may be taken over.
-void ConvertPixels(const Layout& layout, uint32_t rows, std::string& data, const Space& space, const DecodeMap& map,
-                   Pixels& out) {
-    const size_t width = layout.width;
-    const size_t n = static_cast<size_t>(space.components);
-    const size_t ch = static_cast<size_t>(space.channels);
-    out.width = layout.width;
-    out.height = rows;
-    out.declaredHeight = layout.height;
-    out.channels = space.channels;
-    if (map.identity && layout.bpc == 8) {
-        out.data.swap(data);
-        return;
-    }
-    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
-    out.data.resize(width * ch * rows);
-    std::vector<uint8_t> codes(width * n);
-    const size_t codeCount = size_t(1) << map.codeBits;
-    if (n == 1) {
-        // Every code's colour once.
-        std::vector<uint8_t> lut(codeCount * ch);
-        for (size_t code = 0; code < codeCount; code++) {
-            const double v = map.Value(0, static_cast<unsigned>(code));
-            Convert(space, &v, lut.data() + code * ch);
+// Rows of samples to rows of 8-bit pixels of a colour space under /Decode, one at a time: a code's
+// colour from a table made once, Lab and DeviceN a pixel at a time with a run of equal samples
+// converted once; 8-bit gray and RGB samples under the default /Decode are their own pixels. Or a
+// stencil's bits as gray.
+class Converter {
+public:
+    void Init(const Layout& layout, const Space& space, const DecodeMap& map) {
+        layout_ = layout;
+        space_ = &space;
+        n_ = static_cast<size_t>(space.components);
+        ch_ = static_cast<size_t>(space.channels);
+        if (map.identity && layout.bpc == 8) {
+            mode_ = Mode::AsIs;
+            return;
         }
-        for (uint32_t y = 0; y < rows; y++) {
-            UnpackRow(in + size_t(y) * layout.rowBytes, width, layout.bpc, codes.data());
-            uint8_t* target = out.Bytes() + size_t(y) * width * ch;
-            if (ch == 1) {
-                for (size_t x = 0; x < width; x++) target[x] = lut[codes[x]];
-            } else {
-                for (size_t x = 0; x < width; x++) std::memcpy(target + 3 * x, lut.data() + 3 * codes[x], 3);
+        mode_ = n_ == 1 ? Mode::Single
+                : space.family == Family::Rgb || space.family == Family::Cmyk ? Mode::Components
+                                                                               : Mode::Values;
+        Prepare();
+        codes_.resize(size_t(layout.width) * n_);
+        codeCount_ = size_t(1) << map.codeBits;
+        if (mode_ == Mode::Single) {
+            // Every code's colour once.
+            lut_.resize(codeCount_ * ch_);
+            for (size_t code = 0; code < codeCount_; code++) {
+                const double v = map.Value(0, static_cast<unsigned>(code));
+                Convert(space, &v, lut_.data() + code * ch_);
             }
-        }
-        return;
-    }
-    if (space.family == Family::Rgb || space.family == Family::Cmyk) {
-        // Per component, each code's 8-bit value.
-        std::vector<uint8_t> lut(n * codeCount);
-        for (size_t c = 0; c < n; c++) {
-            for (size_t code = 0; code < codeCount; code++) {
-                lut[c * codeCount + code] = To8(map.Value(static_cast<int>(c), static_cast<unsigned>(code)));
-            }
-        }
-        for (uint32_t y = 0; y < rows; y++) {
-            UnpackRow(in + size_t(y) * layout.rowBytes, width * n, layout.bpc, codes.data());
-            uint8_t* target = out.Bytes() + size_t(y) * width * 3;
-            const uint8_t* code = codes.data();
-            if (n == 3) {
-                for (size_t x = 0; x < width; x++, code += 3, target += 3) {
-                    target[0] = lut[code[0]];
-                    target[1] = lut[codeCount + code[1]];
-                    target[2] = lut[2 * codeCount + code[2]];
-                }
-            } else {
-                for (size_t x = 0; x < width; x++, code += 4, target += 3) {
-                    const unsigned white = 255u - lut[3 * codeCount + code[3]];
-                    target[0] = static_cast<uint8_t>(((255u - lut[code[0]]) * white + 127) / 255);
-                    target[1] = static_cast<uint8_t>(((255u - lut[codeCount + code[1]]) * white + 127) / 255);
-                    target[2] = static_cast<uint8_t>(((255u - lut[2 * codeCount + code[2]]) * white + 127) / 255);
+        } else if (mode_ == Mode::Components) {
+            // Per component, each code's 8-bit value.
+            lut_.resize(n_ * codeCount_);
+            for (size_t c = 0; c < n_; c++) {
+                for (size_t code = 0; code < codeCount_; code++) {
+                    lut_[c * codeCount_ + code] = To8(map.Value(static_cast<int>(c), static_cast<unsigned>(code)));
                 }
             }
-        }
-        return;
-    }
-    // Lab, DeviceN: per pixel, a run of equal samples converted once.
-    std::vector<double> values(n * codeCount);
-    for (size_t c = 0; c < n; c++) {
-        for (size_t code = 0; code < codeCount; code++) {
-            values[c * codeCount + code] = map.Value(static_cast<int>(c), static_cast<unsigned>(code));
-        }
-    }
-    std::vector<uint8_t> last(n, 0);
-    uint8_t lastPixel[3] = {0, 0, 0};
-    bool haveLast = false;
-    for (uint32_t y = 0; y < rows; y++) {
-        UnpackRow(in + size_t(y) * layout.rowBytes, width * n, layout.bpc, codes.data());
-        uint8_t* target = out.Bytes() + size_t(y) * width * ch;
-        for (size_t x = 0; x < width; x++) {
-            const uint8_t* code = codes.data() + x * n;
-            if (!haveLast || std::memcmp(code, last.data(), n) != 0) {
-                double v[kMaxComponents];
-                for (size_t c = 0; c < n; c++) v[c] = values[c * codeCount + code[c]];
-                Convert(space, v, lastPixel);
-                std::memcpy(last.data(), code, n);
-                haveLast = true;
+        } else {
+            values_.resize(n_ * codeCount_);
+            for (size_t c = 0; c < n_; c++) {
+                for (size_t code = 0; code < codeCount_; code++) {
+                    values_[c * codeCount_ + code] = map.Value(static_cast<int>(c), static_cast<unsigned>(code));
+                }
             }
-            std::memcpy(target + x * ch, lastPixel, ch);
+            last_.assign(n_, 0);
         }
     }
-}
 
-// A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere. With `packed`, kept as its
-// bits (gray bit * 255, complemented where 1 paints).
-Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out, bool packed = false) {
-    const Filters::Kind stop = StopFilter(src);
-    if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
+    // A stencil's bits as gray: 0 where the bit is `painted`, 255 elsewhere.
+    void InitStencil(const Layout& layout, uint8_t painted) {
+        layout_ = layout;
+        ch_ = 1;
+        mode_ = Mode::Stencil;
+        painted_ = painted;
+        Prepare();
+    }
+
+    // Samples that are their own pixels.
+    void InitAsIs() { mode_ = Mode::AsIs; }
+
+    // The pixels of a row of samples: the row itself, or a row of the converter's that stays valid
+    // until the call after next.
+    const uint8_t* Row(const uint8_t* row) {
+        if (mode_ == Mode::AsIs) return row;
+        parity_ ^= 1;
+        uint8_t* target = rows_[parity_].data();
+        const size_t width = layout_.width;
+        switch (mode_) {
+        case Mode::Stencil:
+            for (size_t x = 0; x < width; x++) {
+                const uint8_t bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
+                target[x] = bit == painted_ ? 0 : 255;
+            }
+            break;
+        case Mode::Single:
+            UnpackRow(row, width, layout_.bpc, codes_.data());
+            if (ch_ == 1) {
+                for (size_t x = 0; x < width; x++) target[x] = lut_[codes_[x]];
+            } else {
+                for (size_t x = 0; x < width; x++) std::memcpy(target + 3 * x, lut_.data() + 3 * codes_[x], 3);
+            }
+            break;
+        case Mode::Components: {
+            UnpackRow(row, width * n_, layout_.bpc, codes_.data());
+            const uint8_t* code = codes_.data();
+            const size_t count = codeCount_;
+            uint8_t* out = target;
+            if (n_ == 3) {
+                for (size_t x = 0; x < width; x++, code += 3, out += 3) {
+                    out[0] = lut_[code[0]];
+                    out[1] = lut_[count + code[1]];
+                    out[2] = lut_[2 * count + code[2]];
+                }
+            } else {
+                for (size_t x = 0; x < width; x++, code += 4, out += 3) {
+                    const unsigned white = 255u - lut_[3 * count + code[3]];
+                    out[0] = static_cast<uint8_t>(((255u - lut_[code[0]]) * white + 127) / 255);
+                    out[1] = static_cast<uint8_t>(((255u - lut_[count + code[1]]) * white + 127) / 255);
+                    out[2] = static_cast<uint8_t>(((255u - lut_[2 * count + code[2]]) * white + 127) / 255);
+                }
+            }
+            break;
+        }
+        default:
+            UnpackRow(row, width * n_, layout_.bpc, codes_.data());
+            for (size_t x = 0; x < width; x++) {
+                const uint8_t* code = codes_.data() + x * n_;
+                if (!haveLast_ || std::memcmp(code, last_.data(), n_) != 0) {
+                    double v[kMaxComponents];
+                    for (size_t c = 0; c < n_; c++) v[c] = values_[c * codeCount_ + code[c]];
+                    Convert(*space_, v, lastPixel_);
+                    std::memcpy(last_.data(), code, n_);
+                    haveLast_ = true;
+                }
+                std::memcpy(target + x * ch_, lastPixel_, ch_);
+            }
+            break;
+        }
+        return target;
+    }
+
+private:
+    enum class Mode : uint8_t { AsIs, Stencil, Single, Components, Values };
+
+    void Prepare() {
+        rows_[0].resize(size_t(layout_.width) * ch_);
+        rows_[1].resize(size_t(layout_.width) * ch_);
+    }
+
+    Mode mode_ = Mode::AsIs;
+    Layout layout_;
+    const Space* space_ = nullptr;
+    size_t n_ = 1;
+    size_t ch_ = 1;
+    size_t codeCount_ = 0;
+    uint8_t painted_ = 0;
+    std::vector<uint8_t> codes_;
+    std::vector<uint8_t> lut_;
+    std::vector<double> values_;
+    std::vector<uint8_t> last_;
+    uint8_t lastPixel_[3] = {0, 0, 0};
+    bool haveLast_ = false;
+    std::vector<uint8_t> rows_[2];
+    unsigned parity_ = 0;
+};
+
+// An image's pixels a row at a time, top to bottom: its samples (SampleRows) through its
+// Converter, or as stored when packed; a soft mask in colour gives its luminance. What
+// DecodeSampled and DecodeStencil decode, so that no image-sized buffer of samples or pixels is
+// held for Flate-family data.
+struct ImageRows {
+    SampleRows samples;
     Layout layout;
-    Status status = ReadLayout(src, true, 1, maxPixels, layout);
-    if (status != Status::Ok) return status;
-    std::string data;
-    uint32_t rows = 0;
-    if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
-    // /Decode [0 1] (the default): 0 paints. [1 0]: 1 paints.
-    double decode[2];
-    const bool inverted = Numbers(src.doc, src.Entry("Decode", "D"), decode, 2) && decode[0] > decode[1];
-    const uint8_t painted = inverted ? 1 : 0;
-    out.width = layout.width;
-    out.height = rows;
-    out.declaredHeight = layout.height;
-    out.channels = 1;
-    if (packed) {
-        out.data.swap(data);
-        out.packedBits = 1;
-        out.packedRowBytes = layout.rowBytes;
-        out.packedInvert = inverted;
-        return Status::Ok;
-    }
-    out.data.resize(size_t(layout.width) * rows);
-    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
-    for (uint32_t y = 0; y < rows; y++) {
-        const uint8_t* row = in + size_t(y) * layout.rowBytes;
-        uint8_t* target = out.Bytes() + size_t(y) * layout.width;
-        for (uint32_t x = 0; x < layout.width; x++) {
-            const uint8_t bit = (row[x >> 3] >> (7 - (x & 7))) & 1;
-            target[x] = bit == painted ? 0 : 255;
-        }
-    }
-    return Status::Ok;
-}
+    Space space;
+    Converter converter;
+    uint32_t width = 0;  // 0: nothing decoded
+    uint32_t declaredHeight = 0;
+    int channels = 1;
+    // Gray kept as stored, `packedBits` (1, 2 or 4) bits a sample: only when the caller allows it
+    // (SampleRequest::allowPacked) and the samples are a PNG's gray of that depth, or
+    // (`packedInvert`) its complement. 0: 8-bit pixels.
+    int packedBits = 0;
+    bool packedInvert = false;
+    bool luminance = false;  // RGB pixels given as their luminance (a soft mask in colour)
+    // A /Mask colour key (ISO 32000-1 8.9.6.4): per component the range of samples as stored
+    // (before /Decode) where the image is transparent.
+    bool keyed = false;
+    double key[2 * kMaxComponents] = {};
 
-// Alpha from a /Mask colour key (ISO 32000-1 8.9.6.4): 0 where every sample as stored (before
-// /Decode) lies in its component's range, else 255. Left empty without such a /Mask array.
-void ColourKeyAlpha(const Source& src, const Layout& layout, uint32_t rows, const std::string& data,
-                    std::vector<uint8_t>& alpha) {
-    const PdfValue& mask = src.doc.Get(src.dict, "Mask");
-    const size_t n = static_cast<size_t>(layout.components);
-    double key[2 * kMaxComponents];
-    if (!mask.IsArray() || NumberPairs(src.doc, mask, key) != 2 * n) return;
-    const size_t width = layout.width;
-    alpha.assign(width * rows, 255);
-    const uint8_t* in = reinterpret_cast<const uint8_t*>(data.data());
-    const unsigned sampleMask = layout.bpc == 16 ? 0xFFFFu : (1u << layout.bpc) - 1;
-    for (uint32_t y = 0; y < rows; y++) {
-        const uint8_t* row = in + size_t(y) * layout.rowBytes;
+    // The next row's pixels (width x channels bytes; packed: the stored row), valid until the call
+    // after next; null past the rows the data holds.
+    const uint8_t* Next() {
+        current = samples.Next();
+        if (!current || packedBits != 0) return current;
+        const uint8_t* pixels = converter.Row(current);
+        if (!luminance) return pixels;
+        parity ^= 1;
+        std::vector<uint8_t>& gray = grayRows[parity];
+        gray.resize(width);
+        for (uint32_t x = 0; x < width; x++) {
+            const uint8_t* p = pixels + 3 * size_t(x);
+            gray[x] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
+        }
+        return gray.data();
+    }
+
+    // The colour key's alpha of the row Next gave last: 0 where every sample lies in its
+    // component's range, else 255.
+    const uint8_t* KeyAlpha() {
+        keyRow.resize(width);
+        const size_t n = static_cast<size_t>(layout.components);
+        const unsigned sampleMask = layout.bpc == 16 ? 0xFFFFu : (1u << layout.bpc) - 1;
         for (size_t x = 0; x < width; x++) {
             bool inside = true;
             for (size_t c = 0; c < n && inside; c++) {
                 const size_t i = x * n + c;
                 unsigned sample;
                 if (layout.bpc == 16) {
-                    sample = Be16(row + 2 * i);
+                    sample = Be16(current + 2 * i);
                 } else if (layout.bpc == 8) {
-                    sample = row[i];
+                    sample = current[i];
                 } else {
                     const size_t bit = i * static_cast<size_t>(layout.bpc);
-                    sample = (row[bit >> 3] >> (8 - static_cast<size_t>(layout.bpc) - (bit & 7))) & sampleMask;
+                    sample = (current[bit >> 3] >> (8 - static_cast<size_t>(layout.bpc) - (bit & 7))) & sampleMask;
                 }
                 inside = sample >= key[2 * c] && sample <= key[2 * c + 1];
             }
-            if (inside) alpha[size_t(y) * width + x] = 0;
+            keyRow[x] = inside ? 0 : 255;
         }
+        return keyRow.data();
     }
+
+    // From the first row again.
+    void Rewind() { samples.Rewind(); }
+    bool RowsKnown() const { return samples.RowsKnown(); }
+    uint32_t Rows() const { return samples.Rows(); }
+
+    const uint8_t* current = nullptr;  // the samples of the row Next gave last
+    std::vector<uint8_t> grayRows[2];
+    unsigned parity = 0;
+    std::vector<uint8_t> keyRow;
+};
+
+// A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere. With `packed`, kept as its
+// bits (gray bit * 255, complemented where 1 paints).
+Status DecodeStencil(const Source& src, uint64_t maxPixels, ImageRows& out, bool packed = false) {
+    const Filters::Kind stop = StopFilter(src);
+    if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
+    Layout& layout = out.layout;
+    Status status = ReadLayout(src, true, 1, maxPixels, layout);
+    if (status != Status::Ok) return status;
+    if ((status = OpenSamples(src, layout, out.samples)) != Status::Ok) return status;
+    // /Decode [0 1] (the default): 0 paints. [1 0]: 1 paints.
+    double decode[2];
+    const bool inverted = Numbers(src.doc, src.Entry("Decode", "D"), decode, 2) && decode[0] > decode[1];
+    out.width = layout.width;
+    out.declaredHeight = layout.height;
+    out.channels = 1;
+    if (packed) {
+        out.packedBits = 1;
+        out.packedInvert = inverted;
+        return Status::Ok;
+    }
+    out.converter.InitStencil(layout, inverted ? 1 : 0);
+    return Status::Ok;
+}
+
+// The /Mask colour key of `src` for `layout`'s components into `key` (two numbers a component);
+// false without such a /Mask array.
+bool ColourKey(const Source& src, const Layout& layout, double* key) {
+    const PdfValue& mask = src.doc.Get(src.dict, "Mask");
+    return mask.IsArray() && NumberPairs(src.doc, mask, key) == 2 * static_cast<size_t>(layout.components);
 }
 
 // A DCT image's samples through the JPEG decoder (jpeg.h): the layout is the JPEG's (8 bits, its
@@ -1193,11 +1374,11 @@ Status DecodeJpegSamples(const Source& src, uint64_t maxPixels, Space& space, La
 // What a sampled image's decode is asked for, besides the samples.
 struct SampleRequest {
     uint64_t maxPixels = kDefaultMaxPixels;
-    bool softMask = false;                     // a /SMask: DeviceGray when it has no /ColorSpace
-    std::vector<uint8_t>* keyAlpha = nullptr;  // filled from a /Mask colour key, when given
-    Pixels* inDataAlpha = nullptr;             // filled from a JPX opacity channel (/SMaskInData)
+    bool softMask = false;                // a /SMask: DeviceGray when it has no /ColorSpace
+    bool colourKey = false;               // alpha from a /Mask colour key (ImageRows::KeyAlpha)
+    ImageRows* inDataAlpha = nullptr;     // given a JPX opacity channel (/SMaskInData)
     uint32_t longerSide = 0;  // JPX: decode at a reduced resolution down to about this (0: full)
-    bool allowPacked = false; // gray of 1, 2 or 4 bits that is a PNG's may stay packed (Pixels)
+    bool allowPacked = false; // gray of 1, 2 or 4 bits that is a PNG's may stay packed (ImageRows)
 };
 
 // A JPX image's samples through the JPEG 2000 decoder (jpx.h): the layout is the decoded
@@ -1262,19 +1443,14 @@ Status DecodeJpxSamples(const Source& src, const SampleRequest& req, bool spaceG
         return Status::Ok;
     }
     // The opacity channel, last, apart: 8 bits of alpha, and the colour without it.
-    Pixels& alpha = *req.inDataAlpha;
     const size_t pixels = size_t(image.width) * image.height;
     const size_t in = (static_cast<size_t>(n) + 1) * depth, colour = static_cast<size_t>(n) * depth;
     if (image.samples.size() < pixels * in) return Status::Corrupt;
-    alpha.width = image.width;
-    alpha.height = image.height;
-    alpha.declaredHeight = image.height;
-    alpha.channels = 1;
-    alpha.data.resize(pixels);
+    std::string opacityPlane(pixels, '\0');
     samples.resize(pixels * colour);
     const uint8_t* source = reinterpret_cast<const uint8_t*>(image.samples.data());
     uint8_t* target = reinterpret_cast<uint8_t*>(&samples[0]);
-    uint8_t* opacity = alpha.Bytes();
+    uint8_t* opacity = reinterpret_cast<uint8_t*>(&opacityPlane[0]);
     const uint32_t full = depth == 2 ? 65535u : 255u;
     for (size_t i = 0; i < pixels; i++, source += in, target += colour) {
         std::memcpy(target, source, colour);
@@ -1292,18 +1468,30 @@ Status DecodeJpxSamples(const Source& src, const SampleRequest& req, bool spaceG
             }
         }
     }
+    ImageRows& alpha = *req.inDataAlpha;
+    Layout alphaLayout;
+    alphaLayout.width = image.width;
+    alphaLayout.height = image.height;
+    alphaLayout.rowBytes = image.width;
+    alpha.layout = alphaLayout;
+    alpha.width = image.width;
+    alpha.declaredHeight = image.height;
+    alpha.channels = 1;
+    alpha.samples.SetWhole(std::move(opacityPlane), image.width, image.height);
+    alpha.converter.InitAsIs();
     return Status::Ok;
 }
 
 // The pixels of a sampled image (no stencil; Flate-family, CCITT, JBIG2, DCT or JPX data):
-// colour space, samples, /Decode (not for JPX). `fullWidth` x `fullHeight` (when given): the
-// image's size before a reduced-resolution JPX decode.
-Status DecodeSampled(const Source& src, const SampleRequest& req, Pixels& out, uint32_t* fullWidth = nullptr,
+// colour space, samples, /Decode (not for JPX), made a row at a time. `fullWidth` x `fullHeight`
+// (when given): the image's size before a reduced-resolution JPX decode.
+Status DecodeSampled(const Source& src, const SampleRequest& req, ImageRows& out, uint32_t* fullWidth = nullptr,
                      uint32_t* fullHeight = nullptr) {
     const Filters::Kind stop = StopFilter(src);
     const bool jpx = stop == Filters::Kind::Jpx;
     if (stop != Filters::Kind::Flate && stop != Filters::Kind::Dct && !jpx && !Bitonal(stop)) return Status::Unsupported;
-    Space space;
+    Space& space = out.space;
+    space = Space();
     const SpaceContext ctx{src.doc, src.resources, src.inlineImage};
     const PdfValue& csValue = src.Entry("ColorSpace", "CS");
     Status status = Status::Ok;
@@ -1315,32 +1503,35 @@ Status DecodeSampled(const Source& src, const SampleRequest& req, Pixels& out, u
     } else if ((status = ParseSpace(ctx, csValue, 0, space)) != Status::Ok) {
         return status;
     }
-    Layout layout;
-    std::string data;
-    uint32_t rows = 0;
+    Layout& layout = out.layout;
     if (stop == Filters::Kind::Dct) {
+        std::string data;
         if ((status = DecodeJpegSamples(src, req.maxPixels, space, layout, data)) != Status::Ok) return status;
-        rows = layout.height;
+        out.samples.SetWhole(std::move(data), layout.rowBytes, layout.height);
     } else if (jpx) {
+        std::string data;
         uint32_t width = 0, height = 0;
         status = DecodeJpxSamples(src, req, !csValue.IsNull() || req.softMask, space, layout, data, width, height);
         if (status != Status::Ok) return status;
         if (fullWidth) *fullWidth = width;
         if (fullHeight) *fullHeight = height;
-        rows = layout.height;
+        out.samples.SetWhole(std::move(data), layout.rowBytes, layout.height);
     } else {
         // CCITT and JBIG2 decode to one bit a pixel of one component, whatever /BitsPerComponent says.
         if (Bitonal(stop) && space.components != 1) return Status::Corrupt;
         if ((status = ReadLayout(src, Bitonal(stop), space.components, req.maxPixels, layout)) != Status::Ok) return status;
-        if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
+        if ((status = OpenSamples(src, layout, out.samples)) != Status::Ok) return status;
     }
-    if (req.keyAlpha) ColourKeyAlpha(src, layout, rows, data, *req.keyAlpha);
+    out.keyed = req.colourKey && ColourKey(src, layout, out.key);
+    out.width = layout.width;
+    out.declaredHeight = layout.height;
+    out.channels = space.channels;
     DecodeMap map;
     MakeDecodeMap(src, space, layout.bpc, map, !jpx);
     if (req.allowPacked && stop != Filters::Kind::Dct && !jpx && space.family == Family::Gray &&
         space.components == 1 && space.channels == 1 && (layout.bpc == 1 || layout.bpc == 2 || layout.bpc == 4) &&
-        (!req.keyAlpha || req.keyAlpha->empty())) {
-        // The samples are a PNG's gray when every code's colour, as ConvertPixels makes it, is
+        !out.keyed) {
+        // The samples are a PNG's gray when every code's colour, as Converter makes it, is
         // code * 255 / (2^bits - 1), or that of the complemented code: then they stay packed.
         const unsigned top = (1u << layout.bpc) - 1, scale = 255u / top;
         bool same = true, complement = true;
@@ -1352,98 +1543,67 @@ Status DecodeSampled(const Source& src, const SampleRequest& req, Pixels& out, u
             complement = complement && colour == (top - code) * scale;
         }
         if (same || complement) {
-            out.width = layout.width;
-            out.height = rows;
-            out.declaredHeight = layout.height;
-            out.channels = 1;
-            out.data.swap(data);
             out.packedBits = layout.bpc;
-            out.packedRowBytes = layout.rowBytes;
             out.packedInvert = !same;
             return Status::Ok;
         }
     }
-    ConvertPixels(layout, rows, data, space, map, out);
+    out.converter.Init(layout, space, map);
     return Status::Ok;
 }
 
-// The alpha of an image, a row at a time: a soft or stencil mask (gray) resampled to the image's
-// width x rows by nearest neighbour (`invert` for a stencil, whose 0, painted, is opaque; rows
-// the mask's data lacks are opaque), or a colour key's alpha (one byte a pixel). Made a row at a
-// time, so that no whole alpha plane, nor an image with it interleaved, is held.
+// The alpha of an image's rows from its soft or stencil mask (gray, at the mask's own size),
+// resampled to the image's width and declared height by nearest neighbour (`invert` for a
+// stencil, whose 0, painted, is opaque; rows the mask's data lacks are opaque). Rows are asked
+// for top to bottom and the mask's rows read as they are needed, so that no whole alpha plane,
+// nor an image with it interleaved, is held.
 class AlphaRows {
 public:
-    AlphaRows(const Pixels& image, const Pixels* mask, bool invert, const std::vector<uint8_t>* key)
-        : image_(image), mask_(mask), invert_(invert), key_(key) {
-        if (mask_) {
-            columns_.resize(image.width);
-            for (uint32_t x = 0; x < image.width; x++) {
-                columns_[x] = static_cast<uint32_t>(uint64_t(x) * mask_->width / image.width);
-            }
+    AlphaRows(const ImageRows& image, ImageRows& mask, bool invert)
+        : width_(image.width), declaredHeight_(image.declaredHeight), mask_(mask), invert_(invert) {
+        columns_.resize(width_);
+        for (uint32_t x = 0; x < width_; x++) {
+            columns_[x] = static_cast<uint32_t>(uint64_t(x) * mask_.width / width_);
         }
     }
 
-    // Row y's alpha, image.width bytes, into `out`.
-    void Row(uint32_t y, uint8_t* out) const {
-        const uint32_t width = image_.width;
-        if (key_) {
-            std::memcpy(out, key_->data() + size_t(y) * width, width);
+    // Row y's alpha, the image's width in bytes, into `out`; y no lower than the row before.
+    void Row(uint32_t y, uint8_t* out) {
+        const uint32_t my = static_cast<uint32_t>(uint64_t(y) * mask_.declaredHeight / declaredHeight_);
+        while (fetched_ <= my && !ended_) {
+            current_ = mask_.Next();
+            if (current_) fetched_++;
+            else ended_ = true;
+        }
+        if (fetched_ <= my) {
+            std::fill(out, out + width_, uint8_t(255));
             return;
         }
-        const uint32_t my = static_cast<uint32_t>(uint64_t(y) * mask_->declaredHeight / image_.declaredHeight);
-        if (my >= mask_->height) {
-            std::fill(out, out + width, uint8_t(255));
-            return;
-        }
-        const size_t ch = static_cast<size_t>(mask_->channels);
-        const uint8_t* row = mask_->Bytes() + size_t(my) * mask_->width * ch;
-        for (uint32_t x = 0; x < width; x++) {
-            const uint8_t v = row[size_t(columns_[x]) * ch];
+        const size_t ch = static_cast<size_t>(mask_.channels);
+        for (uint32_t x = 0; x < width_; x++) {
+            const uint8_t v = current_[size_t(columns_[x]) * ch];
             out[x] = invert_ ? static_cast<uint8_t>(255 - v) : v;
         }
     }
 
-    // Whether every pixel's alpha is 255.
-    bool Opaque() const {
-        std::vector<uint8_t> row(image_.width);
-        for (uint32_t y = 0; y < image_.height; y++) {
-            Row(y, row.data());
-            for (uint8_t a : row) {
-                if (a != 255) return false;
-            }
-        }
-        return true;
+    // From the mask's first row again.
+    void Rewind() {
+        mask_.Rewind();
+        current_ = nullptr;
+        fetched_ = 0;
+        ended_ = false;
     }
 
 private:
-    const Pixels& image_;
-    const Pixels* mask_;
+    uint32_t width_;
+    uint32_t declaredHeight_;
+    ImageRows& mask_;
     bool invert_;
-    const std::vector<uint8_t>* key_;
     std::vector<uint32_t> columns_;
+    const uint8_t* current_ = nullptr;  // the mask's row fetched_ - 1
+    uint32_t fetched_ = 0;
+    bool ended_ = false;
 };
-
-// The rows of an image with its alpha interleaved, for Png::EncodeRows: two row buffers in turn.
-struct InterleavedRows {
-    const Pixels* image;
-    const AlphaRows* alpha;
-    std::vector<uint8_t> rows[2];
-    std::vector<uint8_t> alphaRow;
-};
-
-const uint8_t* InterleavedRow(void* context, uint32_t y) {
-    InterleavedRows& r = *static_cast<InterleavedRows*>(context);
-    const size_t width = r.image->width;
-    const size_t ch = static_cast<size_t>(r.image->channels);
-    uint8_t* target = r.rows[y & 1].data();
-    r.alpha->Row(y, r.alphaRow.data());
-    const uint8_t* pixels = r.image->Bytes() + size_t(y) * width * ch;
-    for (size_t x = 0; x < width; x++) {
-        std::memcpy(target + x * (ch + 1), pixels + x * ch, ch);
-        target[x * (ch + 1) + ch] = r.alphaRow[x];
-    }
-    return target;
-}
 
 enum class MaskKind : uint8_t {
     None,
@@ -1454,7 +1614,7 @@ enum class MaskKind : uint8_t {
 
 // The mask of `src` (an /SMask stream before a /Mask, as ISO 32000-1 11.6.5.3 orders them),
 // decoded at its own size into `mask`; `decoded` false when its data cannot be decoded.
-MaskKind ReadMask(const Source& src, uint64_t maxPixels, Pixels& mask, bool& decoded) {
+MaskKind ReadMask(const Source& src, uint64_t maxPixels, ImageRows& mask, bool& decoded) {
     decoded = false;
     if (src.inlineImage) return MaskKind::None;  // inline images have neither (ISO 32000-1 Table 93)
     const PdfValue& smask = src.doc.Get(src.dict, "SMask");
@@ -1465,11 +1625,7 @@ MaskKind ReadMask(const Source& src, uint64_t maxPixels, Pixels& mask, bool& dec
         req.softMask = true;
         decoded = DecodeSampled(maskSrc, req, mask) == Status::Ok;
         if (decoded && mask.channels == 3) {  // not the DeviceGray it must be: its luminance
-            uint8_t* bytes = mask.Bytes();
-            for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
-                const uint8_t* p = bytes + 3 * i;
-                bytes[i] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
-            }
+            mask.luminance = true;
             mask.channels = 1;
         }
         return MaskKind::Soft;
@@ -1487,14 +1643,18 @@ MaskKind ReadMask(const Source& src, uint64_t maxPixels, Pixels& mask, bool& dec
     return MaskKind::None;
 }
 
-// Whether a decoded soft or stencil mask hides any part of its image.
-bool Transparent(const Pixels& mask, MaskKind kind) {
+// Whether a decoded soft or stencil mask hides any part of its image; the mask is read from its
+// first row again after.
+bool Transparent(ImageRows& mask, MaskKind kind) {
     const uint8_t opaque = kind == MaskKind::Stencil ? 0 : 255;
-    const uint8_t* bytes = mask.Bytes();
-    for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
-        if (bytes[i] != opaque) return true;
+    bool transparent = false;
+    while (!transparent) {
+        const uint8_t* row = mask.Next();
+        if (!row) break;
+        for (uint32_t x = 0; x < mask.width && !transparent; x++) transparent = row[x] != opaque;
     }
-    return false;
+    mask.Rewind();
+    return transparent;
 }
 
 // Where a PNG goes: Encoded::bytes, or the caller's Sink, opened at the first byte.
@@ -1521,6 +1681,15 @@ public:
         return true;
     }
 
+    // The PNG begun again: what was written is dropped (the Sink opened anew at the next byte).
+    void Restart() {
+        out_.bytes.clear();
+        opened_ = false;
+    }
+
+    // Whether the Sink failed.
+    bool Failed() const { return failed_; }
+
     // The writer's result as a Status: a failed Sink is WriteFailed, anything else TooLarge.
     Status Result(bool ok) {
         if (ok) {
@@ -1542,41 +1711,6 @@ private:
     bool opened_ = false;
     bool failed_ = false;
 };
-
-Status WritePng(const Pixels& image, const AlphaRows* alpha, Encoded& out, Sink* sink) {
-    const bool opaque = !alpha || alpha->Opaque();
-    out.extension = "png";
-    out.width = image.width;
-    out.height = image.height;
-    PngDestination destination(out, sink);
-    bool ok;
-    if (opaque) {
-        ok = Png::EncodePixels(image.Bytes(), image.width, image.height, image.channels, destination);
-    } else {
-        const size_t rowBytes = size_t(image.width) * static_cast<size_t>(image.channels + 1);
-        InterleavedRows rows{&image, alpha, {std::vector<uint8_t>(rowBytes), std::vector<uint8_t>(rowBytes)},
-                             std::vector<uint8_t>(image.width)};
-        ok = Png::EncodeRows(image.width, image.height, image.channels + 1, InterleavedRow, &rows, destination);
-    }
-    return destination.Result(ok);
-}
-
-// `image` with its soft or stencil mask, as a PNG; `key` the colour-key alpha DecodeSampled made.
-Status WriteMasked(const Pixels& image, MaskKind kind, bool decoded, const Pixels& mask,
-                   const std::vector<uint8_t>& key, Encoded& out, Sink* sink) {
-    Status status;
-    if ((kind == MaskKind::Soft || kind == MaskKind::Stencil) && decoded) {
-        const AlphaRows alpha(image, &mask, kind == MaskKind::Stencil, nullptr);
-        status = WritePng(image, &alpha, out, sink);
-    } else if (!key.empty()) {
-        const AlphaRows alpha(image, nullptr, false, &key);
-        status = WritePng(image, &alpha, out, sink);
-    } else {
-        status = WritePng(image, nullptr, out, sink);
-    }
-    if (status == Status::Ok) out.maskDropped = kind != MaskKind::None && !decoded;
-    return status;
-}
 
 // Whether a JPEG written as stored shows what the PDF shows: 1 or 3 components in a gray or RGB
 // space of as many (or none), the default /Decode. A CMYK JPEG never does: stand-alone viewers
@@ -1601,14 +1735,13 @@ bool JpegAsStored(const Source& src, std::string_view jpeg) {
     return true;
 }
 
-// An image of `src` decoded to pixels whatever its filter (of those decoded here), with its
+// An image of `src` decoded a row at a time whatever its filter (of those decoded here), with its
 // mask: what Encode writes as a PNG, and what Gray composes on white.
 struct DecodedImage {
-    Pixels image;
+    ImageRows image;
     MaskKind kind = MaskKind::None;
-    Pixels mask;
+    ImageRows mask;
     bool maskDecoded = false;
-    std::vector<uint8_t> key;  // colour-key alpha, one byte a pixel, when /Mask is an array
     uint32_t fullWidth = 0;    // the size before a reduced-resolution JPX decode (0: as decoded)
     uint32_t fullHeight = 0;
 };
@@ -1616,26 +1749,24 @@ struct DecodedImage {
 // `longerSide`: a JPX image may be decoded at a reduced resolution down to about this (0: full).
 // A JPX opacity channel (/SMaskInData) is the soft mask when there is no /SMask stream, which
 // takes precedence (ISO 32000-1 Table 89). `allowPacked`: a stencil, or gray of 1, 2 or 4 bits
-// without a mask, may stay packed (Pixels::packedBits) for a PNG written from it.
+// without a mask, may stay packed (ImageRows::packedBits) for a PNG written from it.
 Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint32_t longerSide = 0,
                    bool allowPacked = false) {
     if (src.Entry("ImageMask", "IM").Bool(false)) return DecodeStencil(src, maxPixels, d.image, allowPacked);
     SampleRequest req;
     req.maxPixels = maxPixels;
-    req.keyAlpha = &d.key;
+    req.colourKey = true;
     req.longerSide = longerSide;
     if (allowPacked) {
         const PdfValue& mask = src.doc.Get(src.dict, "Mask");
         req.allowPacked = src.inlineImage ||
                           !(src.doc.Get(src.dict, "SMask").IsStream() || mask.IsStream() || mask.IsArray());
     }
-    Pixels inData;
-    if (!src.inlineImage && !src.doc.Get(src.dict, "SMask").IsStream()) req.inDataAlpha = &inData;
+    if (!src.inlineImage && !src.doc.Get(src.dict, "SMask").IsStream()) req.inDataAlpha = &d.mask;
     const Status status = DecodeSampled(src, req, d.image, &d.fullWidth, &d.fullHeight);
     if (status != Status::Ok) return status;
-    if (!inData.data.empty()) {
+    if (d.mask.width > 0) {  // the JPX opacity channel
         d.kind = MaskKind::Soft;
-        d.mask = std::move(inData);
         d.maskDecoded = true;
         return Status::Ok;
     }
@@ -1643,24 +1774,139 @@ Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint3
     return Status::Ok;
 }
 
-// A PNG of packed gray (Pixels::packedBits): the stored rows, complemented where needed, without
-// being widened to 8 bits a pixel and narrowed again (a 300 dpi scan page is 8 MB of 8-bit pixels
-// against 1 MB packed). The same pixels as WritePng of the 8-bit gray.
-Status WritePacked(const Pixels& image, Encoded& out, Sink* sink) {
-    out.extension = "png";
-    out.width = image.width;
-    out.height = image.height;
+// Whether the alpha of the image's first `rows` rows is 255 everywhere: from `alpha` (a soft or
+// stencil mask), else from the image's colour key. What it read is read again from the start after.
+bool Opaque(ImageRows& image, AlphaRows* alpha, uint32_t rows) {
+    std::vector<uint8_t> row(alpha ? image.width : 0);
+    bool opaque = true;
+    for (uint32_t y = 0; y < rows && opaque; y++) {
+        const uint8_t* a = row.data();
+        if (alpha) {
+            alpha->Row(y, row.data());
+        } else {
+            if (!image.Next()) break;
+            a = image.KeyAlpha();
+        }
+        for (uint32_t x = 0; x < image.width; x++) {
+            if (a[x] != 255) {
+                opaque = false;
+                break;
+            }
+        }
+    }
+    if (alpha) alpha->Rewind();
+    else image.Rewind();
+    return opaque;
+}
+
+// The fewest bits that hold the gray of the image's first `rows` rows exactly (Png::GrayDepths),
+// read from the image's first row; read again from the start after.
+int GrayDepth(ImageRows& image, uint32_t rows) {
+    uint8_t allowed = 7;
+    for (uint32_t y = 0; y < rows && allowed != 0; y++) {
+        const uint8_t* row = image.Next();
+        if (!row) break;
+        allowed = Png::GrayDepths(row, image.width, allowed);
+    }
+    image.Rewind();
+    return Png::GrayDepthOf(allowed);
+}
+
+// The rows of an image for the PNG writer: its pixels or packed gray as they are, or its pixels
+// with alpha interleaved. A row the data lacks ends the image early (`ended`).
+struct PngRows {
+    ImageRows* image;
+    AlphaRows* alpha;  // the alpha of a soft or stencil mask, else of the colour key
+    std::vector<uint8_t> rows[2];
+    std::vector<uint8_t> alphaRow;
+    bool ended = false;
+};
+
+const uint8_t* PlainRow(void* context, uint32_t) {
+    PngRows& r = *static_cast<PngRows*>(context);
+    const uint8_t* row = r.image->Next();
+    if (!row) r.ended = true;
+    return row;
+}
+
+const uint8_t* InterleavedRow(void* context, uint32_t y) {
+    PngRows& r = *static_cast<PngRows*>(context);
+    const uint8_t* pixels = r.image->Next();
+    if (!pixels) {
+        r.ended = true;
+        return nullptr;
+    }
+    const uint8_t* alpha = r.alphaRow.data();
+    if (r.alpha) r.alpha->Row(y, r.alphaRow.data());
+    else alpha = r.image->KeyAlpha();
+    const size_t width = r.image->width;
+    const size_t ch = static_cast<size_t>(r.image->channels);
+    uint8_t* target = r.rows[y & 1].data();
+    for (size_t x = 0; x < width; x++) {
+        std::memcpy(target + x * (ch + 1), pixels + x * ch, ch);
+        target[x * (ch + 1) + ch] = alpha[x];
+    }
+    return target;
+}
+
+// The PNG of `d` from its first row: packed gray as stored, else its pixels with the alpha of its
+// soft or stencil mask or of its colour key (left out when opaque everywhere), gray at the fewest
+// exact bits. How many rows the data holds is known only once it has been read to its end: the
+// PNG is begun with the image's every row unless a pass over the data has found fewer, and made
+// again (once) with the rows there are when the data ends before them.
+Status WriteImage(DecodedImage& d, Encoded& out, Sink* sink) {
+    ImageRows& image = d.image;
+    const bool masked = (d.kind == MaskKind::Soft || d.kind == MaskKind::Stencil) && d.maskDecoded;
+    std::unique_ptr<AlphaRows> alpha;
+    if (masked) alpha = std::make_unique<AlphaRows>(image, d.mask, d.kind == MaskKind::Stencil);
     PngDestination destination(out, sink);
-    return destination.Result(Png::EncodeGray(image.Bytes(), image.packedRowBytes, image.width, image.height,
-                                              image.packedBits, image.packedInvert, destination));
+    for (int attempt = 0; attempt < 3; attempt++) {
+        const uint32_t rows = image.RowsKnown() ? image.Rows() : image.declaredHeight;
+        bool opaque = true;
+        int depth = 8;
+        if (image.packedBits == 0) {
+            if (alpha || image.keyed) opaque = Opaque(image, alpha.get(), rows);
+            if (opaque && image.channels == 1) depth = GrayDepth(image, rows);
+            // A pass to the end of the data found fewer rows: decide again on those.
+            if (image.RowsKnown() && image.Rows() != rows) continue;
+        }
+        out.extension = "png";
+        out.width = image.width;
+        out.height = rows;
+        PngRows source{&image, alpha.get(), {}, {}};
+        bool ok;
+        if (image.packedBits != 0) {
+            ok = Png::EncodePackedGray(image.width, rows, image.packedBits, image.packedInvert, PlainRow, &source,
+                                       destination);
+        } else if (!opaque) {
+            const size_t rowBytes = size_t(image.width) * static_cast<size_t>(image.channels + 1);
+            source.rows[0].resize(rowBytes);
+            source.rows[1].resize(rowBytes);
+            source.alphaRow.resize(image.width);
+            ok = Png::EncodeRows(image.width, rows, image.channels + 1, InterleavedRow, &source, destination);
+        } else if (image.channels == 1) {
+            ok = Png::EncodeGray(image.width, rows, depth, PlainRow, &source, destination);
+        } else {
+            ok = Png::EncodeRows(image.width, rows, image.channels, PlainRow, &source, destination);
+        }
+        if (!ok && source.ended && !destination.Failed()) {
+            // The data ended before `rows` rows, which are known now: again with them.
+            destination.Restart();
+            image.Rewind();
+            if (alpha) alpha->Rewind();
+            continue;
+        }
+        const Status status = destination.Result(ok);
+        if (status == Status::Ok) out.maskDropped = d.kind != MaskKind::None && !d.maskDecoded;
+        return status;
+    }
+    return destination.Result(false);
 }
 
 Status Encode(const Source& src, Encoded& out, uint64_t maxPixels, Sink* sink) {
     out = Encoded();
     const Filters::Kind stop = StopFilter(src);
     const bool stencil = src.Entry("ImageMask", "IM").Bool(false);
-    Pixels mask;
-    bool maskDecoded = false;
     if (stop == Filters::Kind::Dct || stop == Filters::Kind::Jpx) {
         const int64_t w = src.Entry("Width", "W").Int(0);
         const int64_t h = src.Entry("Height", "H").Int(0);
@@ -1677,24 +1923,23 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels, Sink* sink) {
             Source jpxSrc = src;
             jpxSrc.encoded = data;
             DecodedImage d;
-            if (DecodeImage(jpxSrc, maxPixels, d) == Status::Ok) {
-                return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out, sink);
-            }
+            if (DecodeImage(jpxSrc, maxPixels, d) == Status::Ok) return WriteImage(d, out, sink);
         }
-        const MaskKind kind = stencil ? MaskKind::None : ReadMask(src, maxPixels, mask, maskDecoded);
+        // The mask, decoded at its own size, and later the JPEG's pixels when they are written.
+        DecodedImage m;
+        m.kind = stencil ? MaskKind::None : ReadMask(src, maxPixels, m.mask, m.maskDecoded);
         // A mask that hides something, decoded; only pixels can carry it.
-        const bool maskShows = kind == MaskKind::ColourKey || (kind != MaskKind::None && maskDecoded && Transparent(mask, kind));
+        const bool maskShows = m.kind == MaskKind::ColourKey ||
+                               (m.kind != MaskKind::None && m.maskDecoded && Transparent(m.mask, m.kind));
         if (stop == Filters::Kind::Dct && !stencil) {
             Source jpegSrc = src;
             jpegSrc.encoded = JpegStart(data);
             if (!jpegSrc.encoded.empty() && (maskShows || !JpegAsStored(src, jpegSrc.encoded))) {
-                Pixels image;
-                std::vector<uint8_t> key;
                 SampleRequest req;
                 req.maxPixels = maxPixels;
-                req.keyAlpha = &key;
-                const Status status = DecodeSampled(jpegSrc, req, image);
-                if (status == Status::Ok) return WriteMasked(image, kind, maskDecoded, mask, key, out, sink);
+                req.colourKey = true;
+                const Status status = DecodeSampled(jpegSrc, req, m.image);
+                if (status == Status::Ok) return WriteImage(m, out, sink);
                 // A JPEG this decoder cannot read (arithmetic, 12-bit, damaged, too large to
                 // decode): as stored, which the pixel limit below still bounds.
             }
@@ -1709,7 +1954,7 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels, Sink* sink) {
             out = Encoded();
             return status;
         }
-        out.maskDropped = maskShows || (kind != MaskKind::None && !maskDecoded);
+        out.maskDropped = maskShows || (m.kind != MaskKind::None && !m.maskDecoded);
         return status;
     }
     if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
@@ -1717,23 +1962,20 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels, Sink* sink) {
     DecodedImage d;
     const Status status = DecodeImage(src, maxPixels, d, 0, true);
     if (status != Status::Ok) return status;
-    if (d.image.packedBits != 0) return WritePacked(d.image, out, sink);
-    if (stencil) return WritePng(d.image, nullptr, out, sink);
-    return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out, sink);
+    return WriteImage(d, out, sink);
 }
 
 // `d` as gray composited on white (image.h), reduced by area averaging to a longer side of at
 // most `maxSide` (0: none), a source row at a time. Rows the data lacks (up to the image's
 // declared height) are white, so that the pixels always cover the whole of image space.
-void ComposeGray(const DecodedImage& d, uint32_t maxSide, GrayImage& out) {
-    const Pixels& image = d.image;
-    const uint32_t width = image.width, height = std::max(image.height, image.declaredHeight);
+void ComposeGray(DecodedImage& d, uint32_t maxSide, GrayImage& out) {
+    ImageRows& image = d.image;
+    const uint32_t width = image.width, height = image.declaredHeight;
     std::unique_ptr<AlphaRows> alpha;
     if ((d.kind == MaskKind::Soft || d.kind == MaskKind::Stencil) && d.maskDecoded) {
-        alpha = std::make_unique<AlphaRows>(image, &d.mask, d.kind == MaskKind::Stencil, nullptr);
-    } else if (!d.key.empty()) {
-        alpha = std::make_unique<AlphaRows>(image, nullptr, false, &d.key);
+        alpha = std::make_unique<AlphaRows>(image, d.mask, d.kind == MaskKind::Stencil);
     }
+    const bool keyed = !alpha && image.keyed;
     const uint32_t longer = std::max(width, height);
     uint32_t outWidth = width, outHeight = height;
     if (maxSide > 0 && longer > maxSide) {
@@ -1772,23 +2014,27 @@ void ComposeGray(const DecodedImage& d, uint32_t maxSide, GrayImage& out) {
     };
     std::vector<uint8_t> gray(width), alphaRow(alpha ? width : 0);
     const size_t ch = static_cast<size_t>(image.channels);
+    bool present = true;  // the data holds row y
     for (uint32_t y = 0; y < height; y++) {
-        if (y >= image.height) {
+        const uint8_t* pixels = present ? image.Next() : nullptr;
+        present = pixels != nullptr;
+        if (!pixels) {
             std::fill(gray.begin(), gray.end(), uint8_t(255));
         } else if (ch == 1) {
-            std::memcpy(gray.data(), image.Bytes() + size_t(y) * width, width);
+            std::memcpy(gray.data(), pixels, width);
         } else {
-            const uint8_t* pixels = image.Bytes() + size_t(y) * width * ch;
             for (uint32_t x = 0; x < width; x++) {
                 const uint8_t* p = pixels + 3 * size_t(x);
                 gray[x] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
             }
         }
-        if (alpha && y < image.height) {
-            alpha->Row(y, alphaRow.data());
+        if (pixels && (alpha || keyed)) {
+            const uint8_t* a = alphaRow.data();
+            if (alpha) alpha->Row(y, alphaRow.data());
+            else a = image.KeyAlpha();
             for (uint32_t x = 0; x < width; x++) {
-                const uint32_t a = alphaRow[x];
-                gray[x] = static_cast<uint8_t>((gray[x] * a + 255 * (255 - a) + 127) / 255);
+                const uint32_t v = a[x];
+                gray[x] = static_cast<uint8_t>((gray[x] * v + 255 * (255 - v) + 127) / 255);
             }
         }
         if (!reduce) {

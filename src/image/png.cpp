@@ -342,17 +342,12 @@ struct SubByteDepths {
 };
 constexpr SubByteDepths kSubByteDepths;
 
-// The fewest bits a sample that holds every value of `pixels` exactly: 1, 2, 4 or 8.
-int GrayDepth(const uint8_t* pixels, size_t count) {
-    uint8_t allowed = 7;
-    for (size_t i = 0; i < count && allowed != 0; i++) allowed &= kSubByteDepths.of[pixels[i]];
-    return (allowed & 1) ? 1 : (allowed & 2) ? 2 : (allowed & 4) ? 4 : 8;
-}
-
-// Rows of 8-bit gray packed into `depth`-bit samples, most significant bits first (the values are
-// multiples of 255 / (2^depth - 1), GrayDepth): a value's sample from a table, no division.
+// Rows of 8-bit gray from `source` packed into `depth`-bit samples, most significant bits first
+// (the values are multiples of 255 / (2^depth - 1), GrayDepths): a value's sample from a table, no
+// division.
 struct PackedRows {
-    const uint8_t* pixels;
+    Png::RowSource source;
+    void* context;
     uint32_t width;
     int depth;
     std::vector<uint8_t> rows[2];
@@ -361,7 +356,8 @@ struct PackedRows {
 
 const uint8_t* PackedRow(void* context, uint32_t y) {
     PackedRows& r = *static_cast<PackedRows*>(context);
-    const uint8_t* in = r.pixels + size_t(y) * r.width;
+    const uint8_t* in = r.source(r.context, y);
+    if (!in) return nullptr;
     uint8_t* out = r.rows[y & 1].data();
     const unsigned depth = static_cast<unsigned>(r.depth);
     const unsigned perByte = 8 / depth;
@@ -380,10 +376,10 @@ const uint8_t* PackedRow(void* context, uint32_t y) {
     return out;
 }
 
-// Packed gray rows as they are, or complemented, with the padding bits cleared.
+// Packed gray rows from `source` as they are, or complemented, with the padding bits cleared.
 struct GrayRows {
-    const uint8_t* rows;
-    size_t inBytes;      // bytes between rows in `rows`
+    Png::RowSource source;
+    void* context;
     size_t outBytes;     // bytes a PNG row
     uint8_t lastMask;    // the bits of the last byte that hold samples
     uint8_t flip;        // 0xFF to complement
@@ -392,7 +388,8 @@ struct GrayRows {
 
 const uint8_t* GrayRow(void* context, uint32_t y) {
     GrayRows& r = *static_cast<GrayRows*>(context);
-    const uint8_t* in = r.rows + size_t(y) * r.inBytes;
+    const uint8_t* in = r.source(r.context, y);
+    if (!in) return nullptr;
     uint8_t* out = r.row[y & 1].data();
     for (size_t i = 0; i < r.outBytes; i++) out[i] = static_cast<uint8_t>(in[i] ^ r.flip);
     out[r.outBytes - 1] &= r.lastMask;
@@ -469,6 +466,7 @@ bool EncodeFormatted(uint32_t width, uint32_t height, const RowFormat& format, P
     const uint8_t* up = zeros.data();
     for (uint32_t y = 0; y < height; y++) {
         const uint8_t* row = source(context, y);
+        if (!row) return false;
         const int filter = Png::ChooseFilter(row, up, rowBytes, bpp);
         filtered[0] = static_cast<uint8_t>(filter);
         Png::FilterRow(filter, row, up, rowBytes, bpp, filtered.data() + 1);
@@ -514,42 +512,47 @@ bool EncodeRows(uint32_t width, uint32_t height, int channels, RowSource source,
     return IntoString(out, [&](Output& o) { return EncodeRows(width, height, channels, source, context, o); });
 }
 
-bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
-                Output& out) {
-    if (!rows || (depth != 1 && depth != 2 && depth != 4) || width == 0 || width > 0x7FFFFFFFu) return false;
+bool EncodePackedGray(uint32_t width, uint32_t height, int depth, bool invert, RowSource source, void* context,
+                      Output& out) {
+    if (!source || (depth != 1 && depth != 2 && depth != 4) || width == 0 || width > 0x7FFFFFFFu) return false;
     RowFormat format;
     format.bitDepth = static_cast<uint8_t>(depth);
     format.rowBytes = (size_t(width) * static_cast<size_t>(depth) + 7) / 8;
-    if (rowBytes < format.rowBytes) return false;
     const unsigned used = static_cast<unsigned>((size_t(width) * static_cast<size_t>(depth)) % 8);
     const uint8_t lastMask = used == 0 ? 0xFF : static_cast<uint8_t>(0xFF00u >> used);
-    GrayRows source{rows, rowBytes, format.rowBytes, lastMask, static_cast<uint8_t>(invert ? 0xFF : 0),
-                    {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}};
-    return EncodeFormatted(width, height, format, GrayRow, &source, out);
+    GrayRows rows{source, context, format.rowBytes, lastMask, static_cast<uint8_t>(invert ? 0xFF : 0),
+                  {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}};
+    return EncodeFormatted(width, height, format, GrayRow, &rows, out);
 }
 
-bool EncodeGray(const uint8_t* rows, size_t rowBytes, uint32_t width, uint32_t height, int depth, bool invert,
-                std::string& out) {
-    return IntoString(out, [&](Output& o) { return EncodeGray(rows, rowBytes, width, height, depth, invert, o); });
+uint8_t GrayDepths(const uint8_t* pixels, size_t count, uint8_t allowed) {
+    for (size_t i = 0; i < count && allowed != 0; i++) allowed &= kSubByteDepths.of[pixels[i]];
+    return allowed;
+}
+
+int GrayDepthOf(uint8_t allowed) { return (allowed & 1) ? 1 : (allowed & 2) ? 2 : (allowed & 4) ? 4 : 8; }
+
+bool EncodeGray(uint32_t width, uint32_t height, int depth, RowSource source, void* context, Output& out) {
+    if (depth == 8) return EncodeRows(width, height, 1, source, context, out);
+    if (!source || (depth != 1 && depth != 2 && depth != 4)) return false;
+    RowFormat format;
+    format.bitDepth = static_cast<uint8_t>(depth);
+    format.rowBytes = (size_t(width) * static_cast<size_t>(depth) + 7) / 8;
+    PackedRows rows{source, context, width, depth, {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}, {}};
+    const unsigned scale = 255u / ((1u << depth) - 1);
+    for (unsigned v = 0; v < 256; v++) rows.sampleOf[v] = static_cast<uint8_t>(v / scale);
+    return EncodeFormatted(width, height, format, PackedRow, &rows, out);
 }
 
 bool EncodePixels(const uint8_t* pixels, uint32_t width, uint32_t height, int channels, Output& out) {
     if (!pixels) return false;
+    std::pair<const uint8_t*, size_t> rows{pixels, size_t(width) * static_cast<size_t>(channels)};
     if (channels == 1 && width > 0 && height > 0 && width <= 0x7FFFFFFFu && height <= 0x7FFFFFFFu) {
         // Gray at the fewest bits that hold its values exactly: a stencil's 0 and 255 in 1 bit, an
         // eighth of the bytes to filter and compress (same pixels when read back).
-        const int depth = GrayDepth(pixels, size_t(width) * height);
-        if (depth < 8) {
-            RowFormat format;
-            format.bitDepth = static_cast<uint8_t>(depth);
-            format.rowBytes = (size_t(width) * static_cast<size_t>(depth) + 7) / 8;
-            PackedRows rows{pixels, width, depth, {std::vector<uint8_t>(format.rowBytes), std::vector<uint8_t>(format.rowBytes)}, {}};
-            const unsigned scale = 255u / ((1u << depth) - 1);
-            for (unsigned v = 0; v < 256; v++) rows.sampleOf[v] = static_cast<uint8_t>(v / scale);
-            return EncodeFormatted(width, height, format, PackedRow, &rows, out);
-        }
+        const int depth = GrayDepthOf(GrayDepths(pixels, size_t(width) * height, 7));
+        if (depth < 8) return EncodeGray(width, height, depth, PixelRow, &rows, out);
     }
-    std::pair<const uint8_t*, size_t> rows{pixels, size_t(width) * static_cast<size_t>(channels)};
     return EncodeRows(width, height, channels, PixelRow, &rows, out);
 }
 

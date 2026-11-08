@@ -128,97 +128,189 @@ StreamStatus AsciiHex(std::string_view in, std::string& out, size_t limit) {
     return StreamStatus::Ok;
 }
 
-StreamStatus RunLength(std::string_view in, std::string& out, size_t limit) {
-    out.clear();
-    size_t i = 0;
-    while (i < in.size()) {
-        const unsigned length = static_cast<unsigned char>(in[i++]);
-        if (length == 128) return StreamStatus::Ok;
+// RunLength (ISO 32000-1 section 7.4.5), resumable: Run appends output a piece at a time.
+class RunLengthReader {
+public:
+    void Start(std::string_view in, size_t limit) {
+        in_ = in;
+        limit_ = limit;
+        i_ = 0;
+        total_ = 0;
+        ended_ = false;
+        status_ = StreamStatus::Ok;
+    }
+
+    // Appends output to `out` until it has grown by at least `chunk` bytes or the data ends;
+    // false once it has ended (Status then set).
+    bool Run(std::string& out, size_t chunk) {
+        const size_t start = out.size();
+        while (!ended_ && out.size() - start < chunk) Step(out);
+        return !ended_;
+    }
+
+    StreamStatus Status() const { return status_; }
+
+private:
+    void End(StreamStatus status) {
+        ended_ = true;
+        status_ = status;
+    }
+
+    // One run.
+    void Step(std::string& out) {
+        if (i_ >= in_.size()) return End(StreamStatus::Ok);  // no end-of-data byte: the data ends with the stream
+        const unsigned length = static_cast<unsigned char>(in_[i_++]);
+        if (length == 128) return End(StreamStatus::Ok);
         if (length < 128) {
             size_t n = length + 1;
-            const bool truncated = n > in.size() - i;
-            if (truncated) n = in.size() - i;
-            if (out.size() + n > limit) {
-                out.append(in.data() + i, limit - out.size());
-                return StreamStatus::TooLarge;
+            const bool truncated = n > in_.size() - i_;
+            if (truncated) n = in_.size() - i_;
+            if (total_ + n > limit_) {
+                out.append(in_.data() + i_, limit_ - total_);
+                return End(StreamStatus::TooLarge);
             }
-            out.append(in.data() + i, n);
-            i += n;
-            if (truncated) return Stopped(out);
-        } else {
-            if (i >= in.size()) return Stopped(out);
-            const size_t n = 257 - length;
-            if (out.size() + n > limit) {
-                out.append(limit - out.size(), in[i]);
-                return StreamStatus::TooLarge;
-            }
-            out.append(n, in[i++]);
+            out.append(in_.data() + i_, n);
+            total_ += n;
+            i_ += n;
+            if (truncated) End(Stopped());
+            return;
         }
+        if (i_ >= in_.size()) return End(Stopped());
+        const size_t n = 257 - length;
+        if (total_ + n > limit_) {
+            out.append(limit_ - total_, in_[i_]);
+            return End(StreamStatus::TooLarge);
+        }
+        out.append(n, in_[i_++]);
+        total_ += n;
     }
-    return StreamStatus::Ok;  // no end-of-data byte: the data ends with the stream
+
+    // The status of a decoder that stopped at bad data: what came before is kept when there is any.
+    StreamStatus Stopped() const { return total_ == 0 ? StreamStatus::Corrupt : StreamStatus::Salvaged; }
+
+    std::string_view in_;
+    size_t limit_ = 0;
+    size_t i_ = 0;
+    size_t total_ = 0;
+    bool ended_ = false;
+    StreamStatus status_ = StreamStatus::Ok;
+};
+
+StreamStatus RunLength(std::string_view in, std::string& out, size_t limit) {
+    out.clear();
+    RunLengthReader reader;
+    reader.Start(in, limit);
+    reader.Run(out, SIZE_MAX);
+    return reader.Status();
 }
 
 // LZW with 9 to 12-bit codes (ISO 32000-1 section 7.4.4.2): 256 clears the table, 257 ends the
-// data; with EarlyChange 1 the code width grows one code early.
-StreamStatus Lzw(std::string_view in, std::string& out, size_t limit, int earlyChange) {
-    out.clear();
+// data; with EarlyChange 1 the code width grows one code early. Resumable, as RunLengthReader.
+class LzwReader {
+public:
+    void Start(std::string_view in, size_t limit, int earlyChange) {
+        in_ = in;
+        limit_ = limit;
+        early_ = earlyChange == 0 ? 0 : 1;
+        table_.resize(4096);
+        for (unsigned c = 0; c < 256; c++) table_[c] = {0, 1, static_cast<uint8_t>(c), static_cast<uint8_t>(c)};
+        next_ = 258;
+        width_ = 9;
+        previous_ = -1;
+        bits_ = 0;
+        have_ = 0;
+        i_ = 0;
+        total_ = 0;
+        ended_ = false;
+        status_ = StreamStatus::Ok;
+    }
+
+    bool Run(std::string& out, size_t chunk) {
+        const size_t start = out.size();
+        while (!ended_ && out.size() - start < chunk) Step(out);
+        return !ended_;
+    }
+
+    StreamStatus Status() const { return status_; }
+
+private:
     struct Code {
         uint16_t prefix;
         uint16_t length;
         uint8_t last;
         uint8_t first;
     };
-    std::vector<Code> table(4096);
-    for (unsigned c = 0; c < 256; c++) table[c] = {0, 1, static_cast<uint8_t>(c), static_cast<uint8_t>(c)};
-    const unsigned early = earlyChange == 0 ? 0 : 1;
-    unsigned next = 258;
-    unsigned width = 9;
-    int previous = -1;
-    uint32_t bits = 0;
-    unsigned have = 0;
-    size_t i = 0;
-    for (;;) {
-        while (have < width && i < in.size()) {
-            bits = (bits << 8) | static_cast<unsigned char>(in[i++]);
-            have += 8;
+
+    void End(StreamStatus status) {
+        ended_ = true;
+        status_ = status;
+    }
+
+    // One code.
+    void Step(std::string& out) {
+        while (have_ < width_ && i_ < in_.size()) {
+            bits_ = (bits_ << 8) | static_cast<unsigned char>(in_[i_++]);
+            have_ += 8;
         }
-        if (have < width) break;  // no end-of-data code: the data ends with the stream
-        const unsigned code = (bits >> (have - width)) & ((1u << width) - 1);
-        have -= width;
+        if (have_ < width_) return End(StreamStatus::Ok);  // no end-of-data code: the data ends with the stream
+        const unsigned code = (bits_ >> (have_ - width_)) & ((1u << width_) - 1);
+        have_ -= width_;
         if (code == 256) {
-            next = 258;
-            width = 9;
-            previous = -1;
-            continue;
+            next_ = 258;
+            width_ = 9;
+            previous_ = -1;
+            return;
         }
-        if (code == 257) break;
-        if (code > next || (code == next && previous < 0)) {
-            return Stopped(out);
+        if (code == 257) return End(StreamStatus::Ok);
+        if (code > next_ || (code == next_ && previous_ < 0)) {
+            return End(total_ == 0 ? StreamStatus::Corrupt : StreamStatus::Salvaged);
         }
         // The string of `code`; for the code being defined, the previous string plus its first byte.
-        const bool defining = code == next;
-        const unsigned source = defining ? static_cast<unsigned>(previous) : code;
-        const size_t length = table[source].length + (defining ? 1 : 0);
+        const bool defining = code == next_;
+        const unsigned source = defining ? static_cast<unsigned>(previous_) : code;
+        const size_t length = table_[source].length + (defining ? 1 : 0);
         const size_t at = out.size();
         out.resize(at + length);
         char* const p = &out[0] + at;
-        size_t k = table[source].length;
-        if (defining) p[k] = static_cast<char>(table[source].first);
-        for (unsigned c = source; k > 0; c = table[c].prefix) p[--k] = static_cast<char>(table[c].last);
-        if (out.size() > limit) {
-            out.resize(limit);
-            return StreamStatus::TooLarge;
+        size_t k = table_[source].length;
+        if (defining) p[k] = static_cast<char>(table_[source].first);
+        for (unsigned c = source; k > 0; c = table_[c].prefix) p[--k] = static_cast<char>(table_[c].last);
+        if (total_ + length > limit_) {
+            out.resize(at + (limit_ - total_));
+            return End(StreamStatus::TooLarge);
         }
-        if (previous >= 0 && next < 4096) {
+        total_ += length;
+        if (previous_ >= 0 && next_ < 4096) {
             const uint8_t first = static_cast<uint8_t>(p[0]);
-            table[next] = {static_cast<uint16_t>(previous), static_cast<uint16_t>(table[previous].length + 1), first,
-                           table[previous].first};
-            next++;
+            table_[next_] = {static_cast<uint16_t>(previous_), static_cast<uint16_t>(table_[previous_].length + 1),
+                             first, table_[previous_].first};
+            next_++;
         }
-        previous = static_cast<int>(code);
-        if (next + early >= (1u << width) && width < 12) width++;
+        previous_ = static_cast<int>(code);
+        if (next_ + early_ >= (1u << width_) && width_ < 12) width_++;
     }
-    return StreamStatus::Ok;
+
+    std::string_view in_;
+    size_t limit_ = 0;
+    unsigned early_ = 1;
+    std::vector<Code> table_;
+    unsigned next_ = 258;
+    unsigned width_ = 9;
+    int previous_ = -1;
+    uint32_t bits_ = 0;
+    unsigned have_ = 0;
+    size_t i_ = 0;
+    size_t total_ = 0;
+    bool ended_ = false;
+    StreamStatus status_ = StreamStatus::Ok;
+};
+
+StreamStatus Lzw(std::string_view in, std::string& out, size_t limit, int earlyChange) {
+    out.clear();
+    LzwReader reader;
+    reader.Start(in, limit, earlyChange);
+    reader.Run(out, SIZE_MAX);
+    return reader.Status();
 }
 
 // The Paeth predictor (whichever of a, b, c is nearest to p = a + b - c, in that order on ties).
@@ -295,40 +387,43 @@ StreamStatus UnpredictPng(std::string& data, size_t rowBytes, size_t bpp) {
     return status;
 }
 
-// TIFF predictor 2: every sample is the difference to the same component of the pixel before.
+// TIFF predictor 2 on one row of `n` bytes (a last row may be short): every sample is the
+// difference to the same component of the pixel before.
+void UnpredictTiffRow(uint8_t* row, size_t n, int colors, int bpc, int columns) {
+    if (bpc == 8) {
+        for (size_t x = static_cast<size_t>(colors); x < n; x++) {
+            row[x] = static_cast<uint8_t>(row[x] + row[x - colors]);
+        }
+    } else if (bpc == 16) {
+        const size_t step = static_cast<size_t>(colors) * 2;
+        for (size_t x = step; x + 1 < n; x += 2) {
+            const unsigned sum = ((row[x] << 8) | row[x + 1]) + ((row[x - step] << 8) | row[x - step + 1]);
+            row[x] = static_cast<uint8_t>(sum >> 8);
+            row[x + 1] = static_cast<uint8_t>(sum);
+        }
+    } else {
+        // 1, 2 or 4 bits a sample, most significant first.
+        const size_t samples = std::min(static_cast<size_t>(colors) * static_cast<size_t>(columns), n * 8 / bpc);
+        const unsigned mask = (1u << bpc) - 1;
+        const auto get = [&](size_t s) {
+            const size_t bit = s * bpc;
+            return (row[bit >> 3] >> (8 - bpc - (bit & 7))) & mask;
+        };
+        for (size_t s = static_cast<size_t>(colors); s < samples; s++) {
+            const unsigned value = (get(s) + get(s - colors)) & mask;
+            const size_t bit = s * bpc;
+            const unsigned shift = 8 - bpc - (bit & 7);
+            row[bit >> 3] = static_cast<uint8_t>((row[bit >> 3] & ~(mask << shift)) | (value << shift));
+        }
+    }
+}
+
 StreamStatus UnpredictTiff(std::string& data, size_t rowBytes, int colors, int bpc, int columns) {
     uint8_t* const base = reinterpret_cast<uint8_t*>(&data[0]);
     const size_t size = data.size();
     const StreamStatus status = size % rowBytes == 0 ? StreamStatus::Ok : StreamStatus::Salvaged;
     for (size_t start = 0; start < size; start += rowBytes) {
-        uint8_t* const row = base + start;
-        const size_t n = std::min(rowBytes, size - start);
-        if (bpc == 8) {
-            for (size_t x = static_cast<size_t>(colors); x < n; x++) {
-                row[x] = static_cast<uint8_t>(row[x] + row[x - colors]);
-            }
-        } else if (bpc == 16) {
-            const size_t step = static_cast<size_t>(colors) * 2;
-            for (size_t x = step; x + 1 < n; x += 2) {
-                const unsigned sum = ((row[x] << 8) | row[x + 1]) + ((row[x - step] << 8) | row[x - step + 1]);
-                row[x] = static_cast<uint8_t>(sum >> 8);
-                row[x + 1] = static_cast<uint8_t>(sum);
-            }
-        } else {
-            // 1, 2 or 4 bits a sample, most significant first.
-            const size_t samples = std::min(static_cast<size_t>(colors) * static_cast<size_t>(columns), n * 8 / bpc);
-            const unsigned mask = (1u << bpc) - 1;
-            const auto get = [&](size_t s) {
-                const size_t bit = s * bpc;
-                return (row[bit >> 3] >> (8 - bpc - (bit & 7))) & mask;
-            };
-            for (size_t s = static_cast<size_t>(colors); s < samples; s++) {
-                const unsigned value = (get(s) + get(s - colors)) & mask;
-                const size_t bit = s * bpc;
-                const unsigned shift = 8 - bpc - (bit & 7);
-                row[bit >> 3] = static_cast<uint8_t>((row[bit >> 3] & ~(mask << shift)) | (value << shift));
-            }
-        }
+        UnpredictTiffRow(base + start, std::min(rowBytes, size - start), colors, bpc, columns);
     }
     return status;
 }
@@ -430,6 +525,291 @@ StreamStatus Decode(Kind kind, const Params& params, std::string_view in, std::s
         status = StreamStatus::TooLarge;
     }
     return status;
+}
+
+// ---------------------------------------------------------------- a piece at a time
+
+struct Decoder::State {
+    // LZW and RunLength pieces of about this many bytes.
+    static constexpr size_t kPiece = size_t(64) << 10;
+
+    Kind kind = Kind::Unknown;
+    Params params;
+    std::string_view in;
+    size_t limit = 0;
+
+    // The filter's own output (before a predictor).
+    Inflate::Stream inflate;
+    LzwReader lzw;
+    RunLengthReader runLength;
+    std::string buffer;  // an LZW or RunLength piece; the whole output of ASCII85 and ASCIIHex
+    bool wholeGiven = false;
+    StreamStatus rawStatus = StreamStatus::Ok;
+
+    // The predictor: 0 none, 2 TIFF, 10 PNG.
+    int predictor = 0;
+    size_t rowBytes = 0;
+    size_t bpp = 1;
+    std::vector<uint8_t> raw;      // a row as it arrives (PNG: its filter byte first)
+    size_t rawFill = 0;
+    std::vector<uint8_t> rows[2];  // PNG: the row above and the row being made
+    int current = 0;
+    std::string_view pending;      // filter output not yet taken into a row
+    StreamStatus predictorStatus = StreamStatus::Ok;
+
+    uint64_t given = 0;
+    bool ended = false;
+    StreamStatus status = StreamStatus::Ok;
+
+    // The filter's next piece; false at its end, rawStatus then set.
+    bool RawNext(std::string_view& piece) {
+        switch (kind) {
+        case Kind::Flate: {
+            const uint8_t* data = nullptr;
+            size_t size = 0;
+            if (inflate.Next(data, size)) {
+                piece = std::string_view(reinterpret_cast<const char*>(data), size);
+                return true;
+            }
+            switch (inflate.Finish()) {
+            case Inflate::Result::Ok: rawStatus = StreamStatus::Ok; break;
+            case Inflate::Result::Salvaged: rawStatus = StreamStatus::Salvaged; break;
+            case Inflate::Result::TooLarge: rawStatus = StreamStatus::TooLarge; break;
+            case Inflate::Result::Corrupt: rawStatus = StreamStatus::Corrupt; break;
+            }
+            return false;
+        }
+        case Kind::Lzw:
+        case Kind::RunLength: {
+            buffer.clear();
+            if (kind == Kind::Lzw) {
+                lzw.Run(buffer, kPiece);
+                rawStatus = lzw.Status();
+            } else {
+                runLength.Run(buffer, kPiece);
+                rawStatus = runLength.Status();
+            }
+            piece = buffer;
+            return !buffer.empty();
+        }
+        default:
+            // ASCII85, ASCIIHex and the filters not decoded: the whole output, once.
+            if (wholeGiven) return false;
+            wholeGiven = true;
+            piece = kind == Kind::Ascii85 || kind == Kind::AsciiHex ? std::string_view(buffer) : in;
+            return !piece.empty();
+        }
+    }
+
+    // Gives `n` bytes of `row`, or as many as the limit leaves (then the output is TooLarge).
+    bool Give(const uint8_t* row, size_t n, std::string_view& piece) {
+        if (n > limit - given) {
+            n = static_cast<size_t>(limit - given);
+            End(StreamStatus::TooLarge);
+        }
+        if (n == 0) return false;
+        piece = std::string_view(reinterpret_cast<const char*>(row), n);
+        given += n;
+        return true;
+    }
+
+    void End(StreamStatus final) {
+        ended = true;
+        status = final;
+    }
+
+    // The predictor's next row; false at the end.
+    bool NextRow(std::string_view& piece) {
+        const size_t need = predictor >= 10 ? rowBytes + 1 : rowBytes;
+        bool more = true;
+        while (rawFill < need) {
+            if (pending.empty() && !(more = RawNext(pending))) break;
+            const size_t take = std::min(need - rawFill, pending.size());
+            std::memcpy(raw.data() + rawFill, pending.data(), take);
+            rawFill += take;
+            pending.remove_prefix(take);
+        }
+        size_t n = predictor >= 10 ? rawFill - (rawFill > 0 ? 1 : 0) : rawFill;
+        if (!more) {
+            // The filter's output ended: a short last row is kept as far as it goes.
+            if (rawStatus == StreamStatus::Corrupt) {
+                End(StreamStatus::Corrupt);
+                return false;
+            }
+            if (rawFill > 0) predictorStatus = StreamStatus::Salvaged;
+            End(Worse(rawStatus, predictorStatus));
+            if (n == 0) return false;
+        }
+        rawFill = 0;
+        uint8_t* row = raw.data();
+        if (predictor >= 10) {
+            row = rows[current].data();
+            const uint8_t* up = rows[current ^ 1].data();
+            if (!UnfilterBytes(raw[0], raw.data() + 1, up, n, bpp, row)) {
+                // An unknown filter type: the row as it stands.
+                std::memcpy(row, raw.data() + 1, n);
+                predictorStatus = StreamStatus::Salvaged;
+                if (ended) status = Worse(rawStatus, predictorStatus);
+            }
+            current ^= 1;
+        } else {
+            UnpredictTiffRow(row, n, params.colors, params.bitsPerComponent, params.columns);
+        }
+        return Give(row, n, piece);
+    }
+};
+
+Decoder::Decoder() = default;
+Decoder::~Decoder() = default;
+
+void Decoder::Start(Kind kind, const Params& params, std::string_view in, size_t limit) {
+    if (!state_) state_ = std::make_unique<State>();
+    State& s = *state_;
+    s.kind = kind;
+    s.params = params;
+    s.in = in;
+    s.limit = limit;
+    s.wholeGiven = false;
+    s.rawStatus = StreamStatus::Ok;
+    s.predictor = 0;
+    s.rawFill = 0;
+    s.current = 0;
+    s.pending = std::string_view();
+    s.predictorStatus = StreamStatus::Ok;
+    s.given = 0;
+    s.ended = false;
+    s.status = StreamStatus::Ok;
+    switch (kind) {
+    case Kind::Ascii85: s.rawStatus = Ascii85(in, s.buffer, limit); return;
+    case Kind::AsciiHex: s.rawStatus = AsciiHex(in, s.buffer, limit); return;
+    case Kind::RunLength: s.runLength.Start(in, limit); return;
+    case Kind::Flate:
+    case Kind::Lzw: break;
+    default: s.rawStatus = StreamStatus::Unsupported; return;
+    }
+    // As Decode: predictor 2 is TIFF, 10 and above PNG, whose rows carry a filter byte each.
+    const bool png = params.predictor >= 10;
+    const bool tiff = params.predictor == 2;
+    size_t decodeLimit = limit;
+    if (png || tiff) {
+        if (!RowShape(params, s.rowBytes, s.bpp)) {
+            s.End(StreamStatus::Corrupt);
+            return;
+        }
+        s.predictor = png ? 10 : 2;
+        if (png) decodeLimit = SaturatingAdd(SaturatingAdd(limit, limit / s.rowBytes), s.rowBytes + 1);
+    }
+    size_t rawLimit = decodeLimit;
+    if (kind == Kind::Flate) {
+        rawLimit = std::min(decodeLimit, SaturatingAdd(SaturatingMul(in.size(), kMaxFlateRatio), kFlateAllowance));
+        s.inflate.Start(in, rawLimit);
+    } else {
+        s.lzw.Start(in, decodeLimit, params.earlyChange);
+    }
+    if (s.predictor != 0) {
+        // Rows as long as /Columns says, or as all the data the filter can give, when less.
+        const size_t row = std::min(s.rowBytes, rawLimit);
+        s.raw.assign(row + 1, 0);
+        if (png) {
+            s.rows[0].assign(row, 0);
+            s.rows[1].assign(row, 0);
+        }
+    }
+}
+
+bool Decoder::Next(std::string_view& piece) {
+    if (!state_) return false;
+    State& s = *state_;
+    if (s.ended) return false;
+    if (s.predictor != 0) return s.NextRow(piece);
+    if (s.RawNext(piece)) {
+        s.given += piece.size();
+        return true;
+    }
+    s.End(s.rawStatus);
+    return false;
+}
+
+StreamStatus Decoder::Status() const { return state_ ? state_->status : StreamStatus::Ok; }
+
+void Chain::Start(const Stage* stages, size_t count, std::string_view in, size_t limit) {
+    limit_ = limit;
+    streamed_ = false;
+    before_ = StreamStatus::Ok;
+    // The last filter decoded: the last general-purpose one before any other kind.
+    size_t last = count;
+    for (size_t i = 0; i < count; i++) {
+        const Kind kind = stages[i].kind;
+        if (kind == Kind::Crypt) continue;  // handled before (a Crypt filter comes first)
+        if (kind != Kind::Flate && kind != Kind::Lzw && kind != Kind::Ascii85 && kind != Kind::AsciiHex &&
+            kind != Kind::RunLength) {
+            before_ = StreamStatus::Unsupported;
+            break;
+        }
+        last = i;
+    }
+    std::string_view data = in;
+    bool decodedAny = false;
+    int buffer = 0;
+    for (size_t i = 0; i < last && last < count; i++) {
+        if (stages[i].kind == Kind::Crypt) continue;
+        const StreamStatus step = Decode(stages[i].kind, stages[i].params, data, whole_[buffer], limit);
+        data = whole_[buffer];
+        buffer ^= 1;
+        decodedAny = true;
+        if (step == StreamStatus::Corrupt) {
+            input_ = std::string_view();
+            before_ = StreamStatus::Corrupt;
+            Restart();
+            return;
+        }
+        before_ = Worse(before_, step);
+        if (step == StreamStatus::TooLarge) {
+            input_ = data;
+            Restart();
+            return;
+        }
+    }
+    if (last < count) {
+        last_ = stages[last];
+        streamed_ = true;
+        input_ = data;
+    } else if (!decodedAny && data.size() > limit) {
+        // No filter: the data itself, cut at the limit.
+        input_ = data.substr(0, limit);
+        before_ = Worse(before_, StreamStatus::TooLarge);
+    } else {
+        input_ = data;
+    }
+    Restart();
+}
+
+void Chain::Restart() {
+    given_ = false;
+    ended_ = false;
+    size_ = 0;
+    status_ = before_;
+    if (streamed_) decoder_.Start(last_.kind, last_.params, input_, limit_);
+}
+
+bool Chain::Next(std::string_view& piece) {
+    if (ended_) return false;
+    if (streamed_) {
+        if (decoder_.Next(piece)) {
+            size_ += piece.size();
+            return true;
+        }
+        status_ = Worse(before_, decoder_.Status());
+    } else if (!given_) {
+        given_ = true;
+        if (!input_.empty()) {
+            piece = input_;
+            size_ += piece.size();
+            return true;
+        }
+    }
+    ended_ = true;
+    return false;
 }
 
 } // namespace RayoPdf::Filters
