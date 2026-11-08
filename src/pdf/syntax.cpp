@@ -104,8 +104,7 @@ void* PdfArena::Allocate(size_t bytes) {
     return block;
 }
 
-void PdfArena::Reset() {
-    if (!head_) return;
+void PdfArena::Rewind() {
     Chunk* rest = head_->next;
     while (rest) {
         Chunk* next = rest->next;

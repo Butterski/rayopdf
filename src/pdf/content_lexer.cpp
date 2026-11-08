@@ -2,6 +2,8 @@
 // Forked from rayomd-gui src/pdf/content.cpp at 9fbbfaf (Apache-2.0, same author).
 #include "pdf/content_lexer.h"
 
+#include "common/compiler.h"
+
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -11,9 +13,12 @@ namespace {
 
 using Syntax::Cursor;
 
+// Past kMaxOperands only the operand just added stays.
+RAYOPDF_COLD void DropOlder(std::vector<PdfValue>& operands) { operands.erase(operands.begin(), operands.end() - 1); }
+
 // The operand just added stays; past kMaxOperands it is the only one.
-void Kept(std::vector<PdfValue>& operands) {
-    if (operands.size() > ContentLexer::kMaxOperands) operands.erase(operands.begin(), operands.end() - 1);
+RAYOPDF_HOT_INLINE void Kept(std::vector<PdfValue>& operands) {
+    if (RAYOPDF_UNLIKELY(operands.size() > ContentLexer::kMaxOperands)) DropOlder(operands);
 }
 
 // An inline image entry under its abbreviation or its full name.
@@ -73,26 +78,44 @@ bool ContentLexer::Next(std::string_view& op, std::vector<PdfValue>& operands) {
         if (c.AtEnd()) return false;
         const unsigned char ch = c.Peek();
         if (Syntax::IsRegular(ch)) {
-            // Read into a new last operand, dropped again for an operator.
-            PdfValue& value = operands.emplace_back();
-            if (Syntax::StartsNumber(ch) && Syntax::ReadSimpleNumber(c, value)) {
-                Kept(operands);
-                continue;
+            if (Syntax::StartsNumber(ch)) {
+                // The common number, read into a new last operand.
+                PdfValue& value = operands.emplace_back();
+                if (Syntax::ReadSimpleNumber(c, value)) {
+                    Kept(operands);
+                    continue;
+                }
+                operands.pop_back();
             }
             const size_t start = c.pos;
             while (c.pos < c.data.size() && Syntax::IsRegular(static_cast<unsigned char>(c.data[c.pos]))) c.pos++;
             const std::string_view token = c.data.substr(start, c.pos - start);
-            if (token == "true" || token == "false") {
-                value.type = PdfValue::Type::Bool;
-                value.boolean = token == "true";
-            } else if (token != "null" && !(Syntax::StartsNumber(ch) && Syntax::ParseNumber(token, value))) {
-                operands.pop_back();
-                op = token;
-                if (token == "BI") ReadInlineImage(operands);
-                return true;
+            // The operands among the tokens: true, false, null and the numbers left above; the
+            // first byte tells which one a token can be.
+            PdfValue value;
+            bool operand = false;
+            switch (ch) {
+            case 't':
+            case 'f':
+                operand = token == "true" || token == "false";
+                value.type = operand ? PdfValue::Type::Bool : PdfValue::Type::Null;
+                value.boolean = ch == 't';
+                break;
+            case 'n':
+                operand = token == "null";
+                break;
+            default:
+                operand = Syntax::StartsNumber(ch) && Syntax::ParseNumber(token, value);
+                break;
             }
-            Kept(operands);
-            continue;
+            if (operand) {
+                operands.push_back(value);
+                Kept(operands);
+                continue;
+            }
+            op = token;
+            if (token == "BI") ReadInlineImage(operands);
+            return true;
         }
         if (ch == '/' || ch == '(' || ch == '<' || ch == '[') {
             const size_t start = c.pos;

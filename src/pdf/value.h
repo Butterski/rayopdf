@@ -111,12 +111,17 @@ public:
     // `bytes` of storage that stays put until Reset or the arena goes; nullptr when it cannot be
     // had.
     void* Allocate(size_t bytes);
-    // Forgets every block; the newest chunk is kept for what comes next.
-    void Reset();
+    // Forgets every block; the newest chunk is kept for what comes next. Nothing to do when no block
+    // was handed out since the last Reset (the lexer's arena, most operators).
+    void Reset() {
+        if (head_ && (head_->next || at_ != reinterpret_cast<char*>(head_ + 1))) Rewind();
+    }
     // Bytes of the chunks held.
     size_t Capacity() const { return capacity_; }
 
 private:
+    void Rewind();
+
     struct Chunk {
         Chunk* next;
         size_t size;
