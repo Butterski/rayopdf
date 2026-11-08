@@ -158,15 +158,17 @@ bool StartsWithCombiningMark(std::string_view text) {
     return (a == 0xCC && b >= 0x80) || (a == 0xCD && b <= 0xAF);
 }
 
-// Whether the line holds a strong right-to-left character (bidi class R or AL). Only lead bytes
-// D6-DF (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary) can
-// start one.
+// Lead bytes that can start a character from U+0590 up that may be right-to-left: D6-DF
+// (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary).
+bool RightToLeftLead(unsigned char b) { return (b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0; }
+
+// Whether the line holds a strong right-to-left character (bidi class R or AL), which only a
+// RightToLeftLead byte can start.
 bool HoldsRightToLeft(const PageData& page, const Line& line) {
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (g.textLength == 0) continue;
-        const unsigned char b = static_cast<unsigned char>(page.text[g.text]);
-        if (!((b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0)) continue;
+        if (!RightToLeftLead(static_cast<unsigned char>(page.text[g.text]))) continue;
         uint32_t cp = 0;
         size_t length = 0;
         if (!Utf8::Decode(page.GlyphText(g), 0, cp, length)) continue;
@@ -197,14 +199,13 @@ struct BidiScratch {
 // True when the line's paragraph direction is right-to-left.
 bool ToLogicalOrder(PageData& page, const Line& line, BidiScratch& s, int direction) {
     if (line.dir != 0) return false;
-    // Only lines with a character from U+0590 up can hold right-to-left text: lead bytes D6-DF
-    // (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary).
+    // Only lines with a character that starts with a RightToLeftLead byte can hold right-to-left
+    // text.
     bool candidate = false;
     for (uint32_t k = 0; k < line.count && !candidate; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (g.textLength == 0) continue;
-        const unsigned char b = static_cast<unsigned char>(page.text[g.text]);
-        candidate = (b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0;
+        candidate = RightToLeftLead(static_cast<unsigned char>(page.text[g.text]));
     }
     if (!candidate) return false;
     s.classes.resize(line.count);
@@ -570,10 +571,11 @@ void BuildLines(PageData& page) {
     for (const Glyph& g : glyphs) {
         if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
         if (g.flags & kGlyphClipped || g.size < 1.0f) continue;
-        if (g.flags & kGlyphInvisible)
-            invisibleText = true;
-        else
+        if (!(g.flags & kGlyphInvisible)) {
             visibleText = true;
+            break;
+        }
+        invisibleText = true;
     }
     const bool keepInvisible = !visibleText && invisibleText;
     std::vector<uint32_t> vis;
@@ -788,10 +790,9 @@ void BuildLines(PageData& page) {
             });
         }
         // Explicit spaces decide the word breaks of lines that have them (algorithms §4.1).
-        uint32_t spaces = 0;
-        for (uint32_t i : lineVis)
-            if (glyphs[i].flags & kGlyphSpace) spaces++;
-        const float wordGap = spaces > 0 ? kWordGapWithSpaces : kWordGap;
+        const bool spaces =
+            std::any_of(lineVis.begin(), lineVis.end(), [&](uint32_t i) { return (glyphs[i].flags & kGlyphSpace) != 0; });
+        const float wordGap = spaces ? kWordGapWithSpaces : kWordGap;
         Proto p;
         p.first = static_cast<uint32_t>(proto.size());
         p.segFirst = static_cast<uint32_t>(segments.size());
@@ -988,6 +989,10 @@ void BuildLines(PageData& page) {
     // final punctuation on the right), whatever most of its characters are. When the page sets
     // right-to-left text that way only (short lines flush left, none flush right), its full lines
     // with right-to-left text are left-to-right paragraphs too: they wrap into those short lines.
+    // A page whose text has none of the lead bytes such a character starts with has no line to
+    // reorder.
+    if (!std::any_of(page.text.begin(), page.text.end(), [](char c) { return RightToLeftLead(static_cast<unsigned char>(c)); }))
+        return;
     float left = INFINITY, right = -INFINITY;
     for (const Line& line : page.lines)
         if (line.dir == 0) left = Fmin(left, line.u0), right = Fmax(right, line.u1);
