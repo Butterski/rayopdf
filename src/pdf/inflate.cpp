@@ -75,40 +75,52 @@ constexpr uint8_t kDistanceExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4, 
                                         6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 constexpr uint8_t kPrecodeOrder[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
-struct LitLenEntry {
-    uint32_t operator()(unsigned symbol, unsigned bits) const {
-        if (symbol < 256) return Entry(symbol, 0, kLiteral, bits);
-        if (symbol == 256) return Entry(0, 0, kEnd, bits);
-        if (symbol < 286) return Entry(kLengthBase[symbol - 257], bits, kLength, bits + kLengthExtra[symbol - 257]);
-        return Entry(0, 0, kInvalid, bits);  // 286 and 287 have fixed codes but no meaning
-    }
+// A code's entry, from the symbol and the code's length: a base for the symbol plus the length
+// times a step (1 for the bits to take; 0x101 also for the field of a length or distance).
+template <unsigned kCount>
+struct EntryTable {
+    uint32_t base[kCount] = {};
+    uint16_t step[kCount] = {};
+    uint32_t operator()(unsigned symbol, unsigned bits) const { return base[symbol] + bits * step[symbol]; }
 };
 
-struct DistanceEntry {
-    uint32_t operator()(unsigned symbol, unsigned bits) const {
-        if (symbol < 30) return Entry(kDistanceBase[symbol], bits, kLiteral, bits + kDistanceExtra[symbol]);
-        return Entry(0, 0, kInvalid, bits);
+struct LitLenEntries : EntryTable<288> {
+    constexpr LitLenEntries() {
+        for (unsigned symbol = 0; symbol < 288; symbol++) {
+            step[symbol] = 1;
+            if (symbol < 256) {
+                base[symbol] = Entry(symbol, 0, kLiteral, 0);
+            } else if (symbol == 256) {
+                base[symbol] = Entry(0, 0, kEnd, 0);
+            } else if (symbol < 286) {
+                base[symbol] = Entry(kLengthBase[symbol - 257], 0, kLength, kLengthExtra[symbol - 257]);
+                step[symbol] = 0x101;
+            } else {
+                base[symbol] = Entry(0, 0, kInvalid, 0);  // 286 and 287 have fixed codes but no meaning
+            }
+        }
     }
 };
+constexpr LitLenEntries kLitLenEntries;
+
+struct DistanceEntries : EntryTable<32> {
+    constexpr DistanceEntries() {
+        for (unsigned symbol = 0; symbol < 32; symbol++) {
+            step[symbol] = 1;
+            if (symbol < 30) {
+                base[symbol] = Entry(kDistanceBase[symbol], 0, kLiteral, kDistanceExtra[symbol]);
+                step[symbol] = 0x101;
+            } else {
+                base[symbol] = Entry(0, 0, kInvalid, 0);
+            }
+        }
+    }
+};
+constexpr DistanceEntries kDistanceEntries;
 
 struct PrecodeEntry {
     uint32_t operator()(unsigned symbol, unsigned bits) const { return Entry(symbol, 0, kLiteral, bits); }
 };
-
-struct ByteReversal {
-    uint8_t of[256] = {};
-    constexpr ByteReversal() {
-        for (unsigned byte = 0; byte < 256; byte++) {
-            for (unsigned bit = 0; bit < 8; bit++) of[byte] |= static_cast<uint8_t>(((byte >> bit) & 1) << (7 - bit));
-        }
-    }
-};
-constexpr ByteReversal kReversed;
-
-// The low `bits` bits of `code` in reverse order, `bits` at most 16.
-inline unsigned Reverse(unsigned code, unsigned bits) {
-    return (static_cast<unsigned>(kReversed.of[code & 255]) << 8 | kReversed.of[(code >> 8) & 255]) >> (16 - bits);
-}
 
 inline unsigned HighestBit(uint32_t value) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -145,23 +157,35 @@ inline void DoubleTable(uint32_t* table, size_t size) {
     for (size_t index = 0; index < size; index++) to[index] = table[index];
 }
 
+// `use(symbol)` for every symbol but those in runs of eight unused ones, skipped a word at a time.
+template <typename Use>
+RAYOPDF_HOT_INLINE void ForUsedSymbols(const uint8_t* lengths, unsigned count, Use use) {
+    unsigned symbol = 0;
+    for (; symbol + 8 <= count; symbol += 8) {
+        uint64_t word;
+        std::memcpy(&word, lengths + symbol, 8);
+        if (word == 0) continue;
+        for (unsigned at = symbol; at < symbol + 8; at++) use(at);
+    }
+    for (; symbol < count; symbol++) use(symbol);
+}
+
 // The decode table of the canonical code with `lengths` (0 for an unused symbol, at most 15),
 // as zlib builds it: false for an over-subscribed code, and for an incomplete one unless it has a
 // single code of one bit or, where `allowEmpty`, no code at all. `incompleteAllowed` false refuses
 // every incomplete code (the code length code). False also when the subtables would pass
 // `tableSize` entries (which the bound above rules out).
 //
-// A complete code's root is filled in canonical order (by length, then symbol): the codes of one
-// length go into the first 2^length entries, which are then doubled for the next length, so every
-// entry is written once and the copies go 16 bytes at a time. The codes longer than the root then
-// fill their subtables in symbol order, which places the subtables where a symbol-order build
-// would.
+// A complete code is filled in canonical order (by length, then symbol), `code` running through
+// the codes bit-reversed (an index). The codes of one length up to the root go into the first
+// 2^length entries, which are then doubled for the next length, so that every root entry is
+// written once and the copies go 16 bytes at a time. The longer codes follow, those under one root
+// prefix one after another, each prefix's subtable after the last one's.
 template <typename EntryOf>
 bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
-                bool incompleteAllowed, bool allowEmpty, EntryOf entryOf) {
+                bool incompleteAllowed, bool allowEmpty, const EntryOf& entryOf) {
     unsigned counts[16] = {};
-    for (unsigned symbol = 0; symbol < count; symbol++) counts[lengths[symbol]]++;
-    const unsigned unused = counts[0];
+    ForUsedSymbols(lengths, count, [&](unsigned symbol) { counts[lengths[symbol]]++; });
     counts[0] = 0;
     int left = 1;
     unsigned codes = 0;
@@ -183,20 +207,15 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
         }
         return true;
     }
-    // The symbols sorted by length, then symbol: those of the codes up to the root first, then the
-    // unused and the longer ones (not read).
+    // The symbols sorted by length, then symbol, the unused ones last (not read).
     unsigned offsets[16];
     offsets[1] = 0;
-    for (unsigned bits = 1; bits < root; bits++) offsets[bits + 1] = offsets[bits] + counts[bits];
-    offsets[0] = offsets[root] + counts[root];
-    for (unsigned bits = root + 1, at = offsets[0] + unused; bits <= 15; bits++) {
-        offsets[bits] = at;
-        at += counts[bits];
-    }
+    for (unsigned bits = 1; bits < 15; bits++) offsets[bits + 1] = offsets[bits] + counts[bits];
+    offsets[0] = codes;
     uint16_t sorted[288];
-    for (unsigned symbol = 0; symbol < count; symbol++) sorted[offsets[lengths[symbol]]++] = static_cast<uint16_t>(symbol);
-    // The root, by length: `code` is the next code of `length` bits, bit-reversed (its index), and
-    // the first `filled` entries hold the codes so far, repeated.
+    ForUsedSymbols(lengths, count,
+                   [&](unsigned symbol) { sorted[offsets[lengths[symbol]]++] = static_cast<uint16_t>(symbol); });
+    // The root: its first `filled` entries hold the codes so far, repeated.
     const uint16_t* nextSymbol = sorted;
     unsigned length = 1;
     while (counts[length] == 0) length++;
@@ -219,31 +238,28 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
             code = (code & (bit - 1)) | bit;
         }
     }
-    // Codes longer than the root (only they are left): each root prefix of them leads to a subtable.
-    unsigned next[16] = {};
-    for (unsigned bits = 1, first = 0; bits <= 15; bits++) {
-        first = (first + counts[bits - 1]) << 1;
-        next[bits] = first;
-    }
+    // Codes longer than the root (the root holds all others): a subtable for each root prefix.
     const unsigned subBits = 15 - root;
+    const size_t subSize = size_t(1) << subBits;
+    const unsigned rootMask = static_cast<unsigned>(rootSize - 1);
     size_t subNext = rootSize;
-    uint16_t subOf[1 << 11];  // the subtable of each root prefix, 0 for none
-    std::memset(subOf, 0, sizeof(uint16_t) << root);
-    for (unsigned symbol = 0; symbol < count; symbol++) {
-        const unsigned bits = lengths[symbol];
-        if (bits <= root) continue;
-        const unsigned reversed = Reverse(next[bits]++, bits);
-        const uint32_t entry = entryOf(symbol, bits);
-        const unsigned prefix = reversed & static_cast<unsigned>(rootSize - 1);
-        if (subOf[prefix] == 0) {
-            if (subNext + (size_t(1) << subBits) > tableSize) return false;
-            subOf[prefix] = static_cast<uint16_t>(subNext);
-            table[prefix] = Entry(static_cast<uint32_t>(subNext), subBits, kSubtable, 0);  // takes no bits itself
-            subNext += size_t(1) << subBits;
-        }
-        uint32_t* const sub = table + subOf[prefix];
-        for (size_t index = reversed >> root; index < (size_t(1) << subBits); index += size_t(1) << (bits - root)) {
-            sub[index] = entry;
+    unsigned prefix = ~0u;
+    uint32_t* sub = nullptr;
+    for (; length <= 15; length++) {
+        const unsigned last = (1u << length) - 1;
+        for (unsigned remaining = counts[length]; remaining > 0; remaining--) {
+            if ((code & rootMask) != prefix) {
+                prefix = code & rootMask;
+                if (subNext + subSize > tableSize) return false;
+                table[prefix] = Entry(static_cast<uint32_t>(subNext), subBits, kSubtable, 0);  // takes no bits itself
+                sub = table + subNext;
+                subNext += subSize;
+            }
+            const uint32_t entry = entryOf(*nextSymbol++, length);
+            for (size_t index = code >> root; index < subSize; index += size_t(1) << (length - root)) sub[index] = entry;
+            if (code == last) return true;
+            const unsigned bit = 1u << HighestBit(code ^ last);
+            code = (code & (bit - 1)) | bit;
         }
     }
     return true;
@@ -318,9 +334,9 @@ struct FixedTables {
         std::memset(lengths + 144, 9, 112);
         std::memset(lengths + 256, 7, 24);
         std::memset(lengths + 280, 8, 8);
-        BuildTable(lengths, 288, kLitLenRoot, litlen, kFixedLitLenTableSize, false, false, LitLenEntry());
+        BuildTable(lengths, 288, kLitLenRoot, litlen, kFixedLitLenTableSize, false, false, kLitLenEntries);
         std::memset(lengths, 5, 32);
-        BuildTable(lengths, 32, kDistRoot, distance, kFixedDistTableSize, false, false, DistanceEntry());
+        BuildTable(lengths, 32, kDistRoot, distance, kFixedDistTableSize, false, false, kDistanceEntries);
     }
 };
 
@@ -590,9 +606,9 @@ private:
         if (!Within()) return Step::Truncated;
         if (lengths[256] == 0) return Step::Corrupt;
         if (!BuildTable(lengths, litlenCount, kLitLenRoot, dynamicLitlen_, kLitLenTableSize, true, false,
-                        LitLenEntry()) ||
+                        kLitLenEntries) ||
             !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamicDistance_, kDistTableSize, true, true,
-                        DistanceEntry())) {
+                        kDistanceEntries)) {
             return Step::Corrupt;
         }
         litlen_ = dynamicLitlen_;
