@@ -20,20 +20,28 @@ public:
     // At most this many operands are kept for one operator; more drop all before them.
     static constexpr size_t kMaxOperands = 256;
 
-    explicit ContentLexer(std::string_view data) : cursor_{data, 0}, builder_(arena_, true) {}
+    explicit ContentLexer(std::string_view data);
     ContentLexer(const ContentLexer&) = delete;
     ContentLexer& operator=(const ContentLexer&) = delete;
 
-    // The next operator and the operands before it (numbers, names, strings, arrays,
-    // dictionaries, booleans, null; no references). False at the end of the data; operands left
-    // without an operator there are dropped.
+    // The next operator; Operands() and Numbers() give the operands before it (numbers, names,
+    // strings, arrays, dictionaries, booleans, null; no references). False at the end of the
+    // data; operands left without an operator there are dropped.
     //
     // An inline image comes as the operator "BI" with one operand, its dictionary (keys as
     // written, abbreviations included), and InlineImageData() holding the bytes between "ID"
     // and "EI"; the lexer continues after "EI". `op`, InlineImageData() and the operands' names and
-    // strings that need no decoding point into the data; the other strings and the items and
-    // entries live in the lexer until its next call of Next.
+    // strings that need no decoding point into the data; the operands themselves, the other
+    // strings and the items and entries live in the lexer until its next call of Next.
+    bool Next(std::string_view& op);
+    // Next with the operands copied into `operands`.
     bool Next(std::string_view& op, std::vector<PdfValue>& operands);
+
+    // The operands of the operator Next just returned.
+    PdfSpan<PdfValue> Operands() const { return PdfSpan<PdfValue>(values_.data(), count_); }
+    // The last `n` operands as doubles (PdfValue::Number) when there are `n` or more and each of
+    // the last `n` is a finite number; nullptr otherwise.
+    const double* Numbers(size_t n) const { return n <= numeric_ ? numbers_.data() + count_ - n : nullptr; }
 
     // The data of the inline image Next just returned, empty after any other operator.
     std::string_view InlineImageData() const { return inlineData_; }
@@ -46,9 +54,24 @@ public:
     }
 
 private:
-    void ReadInlineImage(std::vector<PdfValue>& operands);
+    // Operand slots to start with; they double as needed up to kMaxOperands + 1.
+    static constexpr size_t kFirstSlots = 8;
+
+    // Next's operand writes with its locals: `values` and `numbers` are the slots' data, `slots`
+    // their number, `count` the operands, `numeric` the finite numbers at their end.
+    void Added(PdfValue*& values, double*& numbers, size_t& slots, size_t& count, size_t& numeric);
+    void Add(PdfValue*& values, double*& numbers, size_t& slots, size_t& count, size_t& numeric, const PdfValue& value);
+    void Grow();
+    void ReadInlineImage();
 
     Syntax::Cursor cursor_;
+    // Numbers starting before this offset end before it: the byte there is no digit, sign or point.
+    size_t numbersEnd_ = 0;
+    // The operands, and beside each number its value as a double.
+    std::vector<PdfValue> values_;
+    std::vector<double> numbers_;
+    size_t count_ = 0;    // operands
+    size_t numeric_ = 0;  // finite numbers at the end of the operands
     std::string_view inlineData_;
     PdfArena arena_;
     Syntax::Builder builder_;

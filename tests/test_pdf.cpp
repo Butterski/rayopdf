@@ -12,6 +12,7 @@
 #include "pdf/filters.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1159,6 +1160,35 @@ void TestInlineImageAtEnd() {
     }
 }
 
+// The lexer's operands and their numbers: Numbers gives the last ones only when all are finite
+// numbers; a number at the data's very end reads as anywhere else; past kMaxOperands only the
+// newest operand stays, its number with it.
+void TestContentOperands() {
+    const std::string infinite = "1" + std::string(400, '0') + " 2 l 1 2 m -.5 3. 7";
+    ContentLexer lexer(infinite);
+    std::string_view op;
+    RAYOPDF_CHECK(lexer.Next(op) && op == "l" && lexer.Operands().size() == 2, 261);
+    RAYOPDF_CHECK(std::isinf(lexer.Operands()[0].real) && lexer.Numbers(2) == nullptr && *lexer.Numbers(1) == 2, 261);
+    RAYOPDF_CHECK(lexer.Next(op) && op == "m" && lexer.Numbers(2) && lexer.Numbers(2)[0] == 1 && !lexer.Numbers(3), 261);
+    std::vector<PdfValue> rest;
+    RAYOPDF_CHECK(!lexer.Next(op, rest) && rest.size() == 3 && rest[2].type == PdfValue::Type::Int &&
+                      rest[2].integer == 7 && rest[1].real == 3.0 && lexer.Numbers(3)[0] == -0.5,
+                  261);
+    ContentLexer mixed("/F1 12 Tf 1 true 2 (x) 0.25 Tj");
+    RAYOPDF_CHECK(mixed.Next(op) && op == "Tf" && *mixed.Numbers(1) == 12 && !mixed.Numbers(2), 261);
+    RAYOPDF_CHECK(mixed.Next(op) && op == "Tj" && mixed.Operands().size() == 5 && *mixed.Numbers(1) == 0.25 &&
+                      !mixed.Numbers(2) && mixed.Operands()[3].String() == "x",
+                  261);
+
+    std::string many;
+    for (size_t i = 0; i < ContentLexer::kMaxOperands; i++) many += "/N ";
+    many += "5 4 re";
+    ContentLexer overflow(many);
+    RAYOPDF_CHECK(overflow.Next(op) && op == "re" && overflow.Operands().size() == 2 && overflow.Numbers(2) &&
+                      overflow.Numbers(2)[0] == 5 && overflow.Numbers(2)[1] == 4,
+                  262);
+}
+
 // The string, name and number readers: hex strings with white space and an odd last digit, the
 // cursor after a failure, literal strings with and without escapes, names and strings viewing the
 // data with Builder::views, and numbers read at once with the reference test of File mode.
@@ -1255,6 +1285,7 @@ int main() {
     TestXrefQuirks();
     TestEncryption();
     TestInlineImageAtEnd();
+    TestContentOperands();
     TestSyntaxReaders();
     std::puts("test_pdf: all checks passed");
     return 0;

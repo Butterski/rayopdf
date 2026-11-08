@@ -25,6 +25,7 @@ public:
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
     const T& operator[](size_t i) const { return data_[i]; }
+    const T& back() const { return data_[size_ - 1]; }
 
 private:
     const T* data_ = nullptr;

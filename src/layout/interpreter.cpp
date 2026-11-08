@@ -229,8 +229,7 @@ public:
 
 private:
     void RunStream(std::string_view content, const PdfValue& resources, int depth);
-    bool Execute(Op op, const std::vector<PdfValue>& operands, const PdfValue& resources, int depth,
-                 ContentLexer& lexer);
+    bool Execute(Op op, const ContentLexer& lexer, const PdfValue& resources, int depth);
     bool ShowString(std::string_view bytes);
     bool ShowArray(const PdfValue& array);
     const GlyphRun& RunFor(const Text::Font& font, const Matrix& tm);
@@ -338,11 +337,10 @@ void Interpreter::Run(int index, bool withLinks) {
 void Interpreter::RunStream(std::string_view content, const PdfValue& resources, int depth) {
     ContentLexer lexer(content);
     std::string_view op;
-    std::vector<PdfValue> operands;
     const size_t stackBase = stack_.size();
     bool error = false;
     size_t next = lexer.Offset();
-    while (lexer.Next(op, operands)) {
+    while (lexer.Next(op)) {
         opSource_ = content.substr(next, lexer.Offset() - next);
         next = lexer.Offset();
         if (++operators_ > kMaxOperatorsPerPage) {
@@ -351,7 +349,7 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
         }
         const Op code = OpOf(op);
         if (code == Op::Unknown) continue;
-        if (!Execute(code, operands, resources, depth, lexer)) error = true;
+        if (!Execute(code, lexer, resources, depth)) error = true;
         if (budgetHit_) break;
     }
     // A stream restores the state stack it started with (forms run inside q/Q, §8.10.1).
@@ -362,22 +360,16 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
     if (error) page_.contentErrors++;
 }
 
-// Numbers of the operands; false when there are fewer than `n` or one is not a number.
-bool Numbers(const std::vector<PdfValue>& operands, size_t n, double* out) {
-    if (operands.size() < n) return false;
-    const size_t base = operands.size() - n;
-    for (size_t i = 0; i < n; ++i) {
-        const PdfValue& v = operands[base + i];
-        if (!v.IsNumber()) return false;
-        out[i] = v.Number();
-        if (!std::isfinite(out[i])) return false;
-    }
-    return true;
+// The last `n` operands as doubles; false when there are fewer than `n` or one is not a finite
+// number.
+bool Numbers(const ContentLexer& lexer, size_t n, const double*& out) {
+    out = lexer.Numbers(n);
+    return out != nullptr;
 }
 
-bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const PdfValue& resources, int depth,
-                          ContentLexer& lexer) {
-    double n[6];
+bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& resources, int depth) {
+    const PdfSpan<PdfValue> operands = lexer.Operands();
+    const double* n = nullptr;
     switch (op) {
     case Op::q:
         if (stack_.size() >= static_cast<size_t>(kMaxStateDepth)) return false;
@@ -389,7 +381,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         stack_.pop_back();
         return true;
     case Op::cm: {
-        if (!Numbers(operands, 6, n)) return false;
+        if (!Numbers(lexer, 6, n)) return false;
         const Matrix m = Multiply(Matrix{n[0], n[1], n[2], n[3], n[4], n[5]}, gs_.ctm);
         if (!Finite(m)) return false;
         gs_.ctm = m;
@@ -401,19 +393,19 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
     case Op::ET:
         return true;
     case Op::Tc:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.charSpace = n[0];
         return true;
     case Op::Tw:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.wordSpace = n[0];
         return true;
     case Op::Tz:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.hScale = n[0] / 100;
         return true;
     case Op::TL:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.leading = n[0];
         return true;
     case Op::Tf:
@@ -421,26 +413,26 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
             return false;
         return SetFont(resources, operands[operands.size() - 2].Name(), operands.back().Number());
     case Op::Tr:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         // Modes are 0-7; anything else (out of int range included) is malformed.
         if (!(n[0] >= 0 && n[0] <= 7)) return false;
         gs_.render = static_cast<int>(n[0]);
         return true;
     case Op::Ts:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.rise = n[0];
         return true;
     case Op::Td:
-        if (!Numbers(operands, 2, n)) return false;
+        if (!Numbers(lexer, 2, n)) return false;
         NextLine(n[0], n[1]);
         return true;
     case Op::TD:
-        if (!Numbers(operands, 2, n)) return false;
+        if (!Numbers(lexer, 2, n)) return false;
         gs_.leading = -n[1];
         NextLine(n[0], n[1]);
         return true;
     case Op::Tm: {
-        if (!Numbers(operands, 6, n)) return false;
+        if (!Numbers(lexer, 6, n)) return false;
         const Matrix m{n[0], n[1], n[2], n[3], n[4], n[5]};
         textMatrix_ = lineMatrix_ = m;
         return true;
@@ -500,11 +492,10 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         image.identity = hash | 1;
         page_.inlineImages.append(opSource_);
         page_.images.push_back(image);
-        (void)lexer;
         return true;
     }
     case Op::re: {
-        if (!Numbers(operands, 4, n)) return false;
+        if (!Numbers(lexer, 4, n)) return false;
         const bool wasEmpty = pathEmpty_;
         PathPoint(n[0], n[1], false);
         PathPoint(n[0] + n[2], n[1] + n[3], false);
@@ -522,7 +513,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         return true;
     }
     case Op::m:
-        if (!Numbers(operands, 2, n)) return false;
+        if (!Numbers(lexer, 2, n)) return false;
         startX_ = curX_ = n[0];
         startY_ = curY_ = n[1];
         pathSubpaths_++;
@@ -530,7 +521,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         PathPoint(n[0], n[1], false);
         return true;
     case Op::l:
-        if (!Numbers(operands, 2, n)) return false;
+        if (!Numbers(lexer, 2, n)) return false;
         if (pathEmpty_) return false;
         AddPiece(curX_, curY_, n[0], n[1], false);
         curX_ = n[0];
@@ -539,7 +530,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         if (pathSegments_ < 60000) pathSegments_++;
         return true;
     case Op::c:
-        if (!Numbers(operands, 6, n)) return false;
+        if (!Numbers(lexer, 6, n)) return false;
         if (pathEmpty_) return false;
         PathPoint(n[0], n[1], true);
         PathPoint(n[2], n[3], true);
@@ -550,7 +541,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         return true;
     case Op::v:
     case Op::y:
-        if (!Numbers(operands, 4, n)) return false;
+        if (!Numbers(lexer, 4, n)) return false;
         if (pathEmpty_) return false;
         PathPoint(n[0], n[1], true);
         PathPoint(n[2], n[3], true);
@@ -578,7 +569,7 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
         pendingClip_ = 1;
         return true;
     case Op::w:
-        if (!Numbers(operands, 1, n)) return false;
+        if (!Numbers(lexer, 1, n)) return false;
         gs_.lineWidth = n[0];
         return true;
     case Op::gs:
