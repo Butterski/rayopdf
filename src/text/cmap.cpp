@@ -137,6 +137,23 @@ void AppendUtf16(const uint16_t* units, size_t count, std::string& out) {
     }
 }
 
+// One UTF-16 unit as UTF-8 onto `out`: AppendUtf16 of a single unit (a surrogate alone is U+FFFD).
+inline void AppendUnit(uint32_t u, std::string& out) {
+    if (u < 0x80) {
+        out.push_back(static_cast<char>(u));
+        return;
+    }
+    if (u >= 0xD800 && u <= 0xDFFF) u = Utf8::kReplacement;
+    if (u < 0x800) {
+        const char bytes[2] = {static_cast<char>(0xC0 | (u >> 6)), static_cast<char>(0x80 | (u & 0x3F))};
+        out.append(bytes, 2);
+    } else {
+        const char bytes[3] = {static_cast<char>(0xE0 | (u >> 12)), static_cast<char>(0x80 | ((u >> 6) & 0x3F)),
+                               static_cast<char>(0x80 | (u & 0x3F))};
+        out.append(bytes, 3);
+    }
+}
+
 // The UTF-16 units of a destination string; a single byte is read as one unit (producers write
 // <41> for "A"), an odd last byte is dropped. At most 256 units: longer ones are cut.
 size_t UnitsOf(std::string_view bytes, uint16_t* units, size_t max) {
@@ -322,7 +339,16 @@ public:
 
     void Char(uint32_t code, const Token& destination) override {
         const size_t start = map_.text.size();
-        if (destination.kind == TokenKind::String) {
+        if (destination.kind == TokenKind::String && destination.text.size() <= 2) {
+            // One unit (UnitsOf: a single byte is a unit itself), the common destination.
+            const std::string_view bytes = destination.text;
+            if (bytes.size() == 1) {
+                AppendUnit(static_cast<unsigned char>(bytes[0]), map_.text);
+            } else if (bytes.size() == 2) {
+                AppendUnit(static_cast<uint32_t>(static_cast<unsigned char>(bytes[0])) << 8 | static_cast<unsigned char>(bytes[1]),
+                           map_.text);
+            }
+        } else if (destination.kind == TokenKind::String) {
             uint16_t units[kMaxUnits];
             AppendUtf16(units, UnitsOf(destination.text, units, kMaxUnits), map_.text);
         } else if (destination.kind == TokenKind::Name) {
@@ -353,6 +379,16 @@ public:
         const size_t count = UnitsOf(destination.text, units, kMaxUnits);
         if (count == 0) return;
         const uint16_t last = units[count - 1];
+        if (count == 1) {
+            // One unit counting up, the common range.
+            for (uint32_t code = low; code <= high && !Full(); ++code) {
+                const size_t start = map_.text.size();
+                AppendUnit(static_cast<uint16_t>(last + (code - low)), map_.text);
+                Add(code, start);
+                if (code == UINT32_MAX) break;
+            }
+            return;
+        }
         for (uint32_t code = low; code <= high && !Full(); ++code) {
             units[count - 1] = static_cast<uint16_t>(last + (code - low));
             const size_t start = map_.text.size();

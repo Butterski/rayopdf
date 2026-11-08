@@ -150,6 +150,22 @@ void TestToUnicode() {
         same = fast.entries[i].code == general.entries[i].code && fast.Text(fast.entries[i]) == general.Text(general.entries[i]);
     }
     RAYOPDF_CHECK(same, 1454);
+    // One-unit destinations: a single byte, two- and three-byte UTF-8, lone surrogates (U+FFFD),
+    // and one-unit ranges running into the surrogates and wrapping past U+FFFF to U+0000.
+    ToUnicodeMap units;
+    ParseToUnicode("beginbfchar <01> <41> <02> <00E9> <03> <20AC> <04> <D800> <05> <DC00> endbfchar"
+                   " beginbfrange <10> <12> <D7FF> <20> <21> <FFFF> endbfrange",
+                   units);
+    const auto unitText = [&](uint32_t c) {
+        const UnicodeEntry* e = units.Find(c);
+        return e ? std::string(units.Text(*e)) : std::string("<none>");
+    };
+    const std::string replacement = "\xEF\xBF\xBD";
+    RAYOPDF_CHECK(unitText(1) == "A" && unitText(2) == "\xC3\xA9" && unitText(3) == "\xE2\x82\xAC" &&
+                      unitText(4) == replacement && unitText(5) == replacement && unitText(0x10) == "\xED\x9F\xBF" &&
+                      unitText(0x11) == replacement && unitText(0x12) == replacement &&
+                      unitText(0x20) == "\xEF\xBF\xBF" && unitText(0x21) == std::string(1, '\0'),
+                  1460);
 }
 
 void TestEncodingCMap() {
