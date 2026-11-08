@@ -266,8 +266,11 @@ codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs. Harness results
   rayomd-pdfua, chromium's title heading, `<sup>`/`<sub>` math).
 - **M7 Product:** `--batch`, `--serve --json`, `--workers`, the record, Windows build, packaging
   done. First performance campaign done (0.0.8: −30 % in-process, −13 % fresh, peak RSS with
-  images halved, output byte-identical). Open: the release bar's speed items (≥ 2,000 pages/s
-  warm, ≤ 1 ms/page fresh) and peak RSS bounded independently of image size.
+  images halved, output byte-identical); third round (2026-11-08, output byte-identical): odl warm
+  0.505 ms/page median (static 0.493), 1,563 pages/s, fresh static 1.061 ms, peak RSS no longer
+  growing with Flate images, JPEG 2000 decoding faster than OpenJPEG's release build. Open: ≥ 2,000
+  pages/s warm, ≤ 1 ms/page fresh, and JPEG/JPEG 2000/CCITT/JBIG2 decoded whole
+  ([performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) (R = 10.4 % of census
   pages after glyph-shape recovery, CJK present → linked OCR; no table ML, no reading-order or
   heading ML) and built as the add-on `rayopdf-ocr` (PP-OCRv6 small on ncnn, Linux and Windows):
