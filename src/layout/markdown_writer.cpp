@@ -476,6 +476,23 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
     }
 }
 
+// The characters AppendEscaped may escape; text without them it writes as it is.
+bool MayEscape(char c) {
+    switch (c) {
+    case '\\':
+    case '*':
+    case '`':
+    case '_':
+    case '<':
+    case ']':
+    case '~':
+    case '&':
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Escapes only what would change the structure (D6): emphasis delimiters, code spans, HTML and
 // autolink openers, entity references, and block markers at the start of the block.
 void Writer::AppendEscaped(std::string_view t, bool blockStart) {
@@ -627,11 +644,26 @@ void Writer::Inline(const Block& block, bool styles) {
                 for (uint32_t j = k; j < runEnd; ++j)
                     for (char c : Text(refs_[j])) out_.push_back(c == '`' ? '\'' : c);
             } else {
-                other_.clear();
-                for (uint32_t j = k; j < runEnd; ++j) other_.append(Text(refs_[j]));
                 if (script == kScriptSup) out_.append("<sup>");
                 if (script == kScriptSub) out_.append("<sub>");
-                AppendEscaped(other_, blockStart && script == kScriptNone);
+                // The run's text goes straight into out_. AppendEscaped writes text without the
+                // characters it escapes as it is, so only a run with one of them, or one at the
+                // start of the block, is taken out again and escaped.
+                const size_t mark = out_.size();
+                for (uint32_t j = k; j < runEnd; ++j) {
+                    const std::string_view t = Text(refs_[j]);
+                    if (t.size() == 1)
+                        out_.push_back(t[0]);
+                    else
+                        out_.append(t.data(), t.size());
+                }
+                bool plain = !(blockStart && script == kScriptNone);
+                for (size_t i = mark; i < out_.size() && plain; ++i) plain = !MayEscape(out_[i]);
+                if (!plain) {
+                    other_.assign(out_, mark, std::string::npos);
+                    out_.resize(mark);
+                    AppendEscaped(other_, blockStart && script == kScriptNone);
+                }
                 if (script == kScriptSup) out_.append("</sup>");
                 if (script == kScriptSub) out_.append("</sub>");
             }
