@@ -934,7 +934,7 @@ struct SimpleLoad {
     ToUnicodeMap toUnicode;
     bool hasToUnicode = false;
     bool toUnicodeUntrusted = false;
-    size_t resolvedDifferences = 0;  // /Differences names with a usable text
+    std::vector<std::string_view> differenceNames;  // the /Differences names other than .notdef
     SimpleNames names;               // the declared names; CompleteSimpleTexts adds the base names
 };
 
@@ -952,13 +952,22 @@ void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
     const bool (&fromBase)[256] = simple.fromBase;
     const Tables::Encoding base = simple.base;
     const bool hasBase = simple.hasBase, builtin = simple.builtin;
-    const size_t differences = simple.differences, resolvedDifferences = load.resolvedDifferences;
+    const size_t differences = simple.differences;
     const Repair::Context& repairContext = load.repairContext;
     const ToUnicodeMap& toUnicode = load.toUnicode;
     const bool hasToUnicode = load.hasToUnicode, toUnicodeUntrusted = load.toUnicodeUntrusted;
+    std::string text, repaired;
+    // The /Differences names with a usable text: only the numeric-name test (four names or more)
+    // and, without a ToUnicode, the unmappable test ask.
+    size_t resolvedDifferences = 0;
+    if (differences >= 4 || (!hasToUnicode && differences > 0)) {
+        for (const std::string_view name : load.differenceNames) {
+            text.clear();
+            if (GlyphNameToUnicode(name, zapf, text) && UsableText(text)) ++resolvedDifferences;
+        }
+    }
 
     bool needProgram = false;
-    std::string text, repaired;
     const EncodingTexts* baseTexts = hasBase && !builtin ? &EncodingTextsFor(base, zapf) : nullptr;
     for (int c = 0; c < 256; ++c) {
         if (font.slots[c].source == UnicodeSource::ToUnicode) continue;  // set by LoadSimple
@@ -1083,17 +1092,13 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     SimpleNames& simple = load->names;
     ReadDeclaredNames(doc, dict, kind, font.baseName, desc, simple);
     const int standard = simple.standard;
-    // The /Differences names that mean something (numeric names, unmappable fonts).
+    // The /Differences names (counted in CompleteSimpleTexts).
     const PdfValue& encoding = *simple.encoding;
     if (encoding.IsDict() && simple.differences > 0) {
-        std::string text;
         const PdfSpan<PdfValue> diff = doc.Get(encoding, "Differences").Array();
         for (const PdfValue& item : diff) {
             const PdfValue& v = doc.Resolve(item);
-            if (v.IsName() && v.Name() != ".notdef") {
-                text.clear();
-                if (GlyphNameToUnicode(v.Name(), simple.zapf, text) && UsableText(text)) ++load->resolvedDifferences;
-            }
+            if (v.IsName() && v.Name() != ".notdef") load->differenceNames.push_back(v.Name());
         }
     }
 
@@ -1116,7 +1121,7 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     // The other codes' texts need the base names and may need the program. With a trusted
     // ToUnicode and /Widths (no width needs a name) they wait until a shown code lacks a text.
     const PdfValue& widthsValue = doc.Get(dict, "Widths");
-    const bool pending = trusted && widthsValue.IsArray() && desc.fontFile != nullptr;
+    const bool pending = trusted && widthsValue.IsArray();
     if (!pending) CompleteSimpleTexts(font, *load);
 
     // Widths (§9.6.2, §9.6.5): /FirstChar + /Widths with /MissingWidth beyond; the standard 14
