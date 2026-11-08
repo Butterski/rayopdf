@@ -130,6 +130,26 @@ void TestToUnicode() {
     ToUnicodeMap huge;
     ParseToUnicode("beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange", huge);
     RAYOPDF_CHECK(huge.truncated && huge.entries.size() == kMaxRangeCodes, 332);
+    // Entries of plain hex strings take a scanner of their own: the same map as the general lexer
+    // gives, which reads them when every string has white space inside.
+    const std::string plain = "beginbfchar <41> <0041> <42> <D840DC3E> <043> <0066006> <44> <> <0102030405> <41>\n"
+                              "<45> <46> % comment\n<47> <48>\n<49>/Euro <4A> 66 endbfchar beginbfrange <20> <22> <00FF>"
+                              " <30> <2F> <41> <50> <5> <0050> <60> <62> [<41> <42>] <70> <0170> <0041> <8> <8F> <0041>"
+                              " endbfrange beginbfchar <10> <0041>";
+    std::string spaced;
+    for (size_t i = 0; i < plain.size(); ++i) {
+        spaced += plain[i];
+        if (plain[i] == '<') spaced += ' ';
+    }
+    ToUnicodeMap fast, general;
+    ParseToUnicode(plain, fast);
+    ParseToUnicode(spaced, general);
+    bool same = fast.entries.size() == general.entries.size() && fast.entries.size() > 10 &&
+                fast.truncated == general.truncated;
+    for (size_t i = 0; same && i < fast.entries.size(); ++i) {
+        same = fast.entries[i].code == general.entries[i].code && fast.Text(fast.entries[i]) == general.Text(general.entries[i]);
+    }
+    RAYOPDF_CHECK(same, 1454);
 }
 
 void TestEncodingCMap() {

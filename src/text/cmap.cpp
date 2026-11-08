@@ -79,6 +79,38 @@ public:
     // Forgets the bytes of the tokens read so far.
     void Release() { arena_.Reset(); }
 
+    // A plain hex string at the cursor after white space: '<', hex digits only, '>'. Its bytes
+    // decoded (as ReadHexString does: an odd last digit is its byte's high half) into `out`,
+    // `size` at most `capacity`; the cursor moves past it. False, the cursor unmoved, for anything
+    // else (a comment, white space inside, too long, the end), which the general lexer reads.
+    bool PlainHex(char* out, size_t capacity, size_t& size) {
+        const char* const data = cursor_.data.data();
+        const size_t end = cursor_.data.size();
+        size_t at = cursor_.pos;
+        while (at < end && Syntax::IsWhite(static_cast<unsigned char>(data[at]))) ++at;
+        if (at >= end || data[at] != '<') return false;
+        size = 0;
+        int high = -1;
+        for (++at; at < end; ++at) {
+            const unsigned char ch = static_cast<unsigned char>(data[at]);
+            const int d = Syntax::kHexValues.of[ch];
+            if (d < 0) break;
+            if (high < 0) {
+                if (size == capacity) return false;
+                high = d;
+            } else {
+                out[size++] = static_cast<char>(high << 4 | d);
+                high = -1;
+            }
+        }
+        if (at >= end || data[at] != '>') return false;
+        if (high >= 0) out[size++] = static_cast<char>(high << 4);
+        cursor_.pos = at + 1;
+        return true;
+    }
+    size_t Position() const { return cursor_.pos; }
+    void Rewind(size_t pos) { cursor_.pos = pos; }
+
 private:
     Syntax::Cursor cursor_;
     PdfArena arena_;
@@ -150,6 +182,37 @@ public:
     virtual void Cut() = 0;
 };
 
+// A bfchar or bfrange entry of plain hex strings (nearly every entry), read without tokens: the
+// sink gets the calls Parse's token loop makes for it. False, nothing read, for any other entry
+// (a name, number or array destination, a comment, a code of no 1-4 bytes), which the loop reads.
+bool FastEntry(Lexer& lexer, Section section, Sink& sink) {
+    const size_t start = lexer.Position();
+    char low[4], high[4], destination[kMaxUnits * 2];
+    size_t lowSize = 0, highSize = 0, destinationSize = 0;
+    const bool read = lexer.PlainHex(low, sizeof low, lowSize) && lowSize > 0 &&
+                      (section == Section::BfChar || lexer.PlainHex(high, sizeof high, highSize)) &&
+                      lexer.PlainHex(destination, sizeof destination, destinationSize);
+    if (!read) {
+        lexer.Rewind(start);
+        return false;
+    }
+    uint32_t lowCode = 0, highCode = 0;
+    CodeOf(std::string_view(low, lowSize), lowCode);
+    Token token;
+    token.kind = TokenKind::String;
+    token.text = std::string_view(destination, destinationSize);
+    if (section == Section::BfChar) {
+        sink.Char(lowCode, token);
+    } else if (CodeOf(std::string_view(high, highSize), highCode) && highCode >= lowCode) {
+        if (highCode - lowCode >= kMaxRangeCodes) {
+            highCode = lowCode + kMaxRangeCodes - 1;
+            sink.Cut();
+        }
+        sink.Range(lowCode, highCode, token, section);
+    }
+    return true;
+}
+
 void Parse(std::string_view data, Sink& sink) {
     Lexer lexer(data);
     Token token;
@@ -158,7 +221,13 @@ void Parse(std::string_view data, Sink& sink) {
     Section section = Section::None;
     bool lastWasWMode = false;
     std::string lastName;
-    while (!sink.Full() && lexer.Next(token)) {
+    while (!sink.Full()) {
+        if (operands == 0 && (section == Section::BfChar || section == Section::BfRange) &&
+            FastEntry(lexer, section, sink)) {
+            lexer.Release();
+            continue;
+        }
+        if (!lexer.Next(token)) break;
         if (token.kind == TokenKind::Keyword) {
             const Section begins = SectionOf(token.text);
             if (begins != Section::None) {
@@ -415,15 +484,19 @@ bool ParseToUnicode(std::string_view data, ToUnicodeMap& out) {
     out = ToUnicodeMap();
     UnicodeSink sink(out);
     Parse(data, sink);
-    std::stable_sort(out.entries.begin(), out.entries.end(),
-                     [](const UnicodeEntry& a, const UnicodeEntry& b) { return a.code < b.code; });
-    // One entry per code: the last definition.
-    size_t kept = 0;
-    for (size_t i = 0; i < out.entries.size(); ++i) {
-        if (i + 1 < out.entries.size() && out.entries[i + 1].code == out.entries[i].code) continue;
-        out.entries[kept++] = out.entries[i];
+    // Most maps list their codes in increasing order, each once: then they are kept as read.
+    const auto before = [](const UnicodeEntry& a, const UnicodeEntry& b) { return a.code < b.code; };
+    const auto unordered = [](const UnicodeEntry& a, const UnicodeEntry& b) { return a.code >= b.code; };
+    if (std::adjacent_find(out.entries.begin(), out.entries.end(), unordered) != out.entries.end()) {
+        std::stable_sort(out.entries.begin(), out.entries.end(), before);
+        // One entry per code: the last definition.
+        size_t kept = 0;
+        for (size_t i = 0; i < out.entries.size(); ++i) {
+            if (i + 1 < out.entries.size() && out.entries[i + 1].code == out.entries[i].code) continue;
+            out.entries[kept++] = out.entries[i];
+        }
+        out.entries.resize(kept);
     }
-    out.entries.resize(kept);
     if (sink.Full()) out.truncated = true;
     return !out.entries.empty();
 }
