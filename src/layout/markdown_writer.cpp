@@ -29,6 +29,7 @@ enum : uint8_t { kScriptNone = 0, kScriptSup = 1, kScriptSub = 2 };
 struct GlyphRef {
     uint32_t page;
     uint32_t glyph;
+    uint16_t flags;  // the glyph's flags
     uint8_t script;
 };
 
@@ -176,7 +177,7 @@ void Writer::CollectWords(const Block& block) {
                 script = kScriptSup;
             else if (IsSubscript(g, line))
                 script = kScriptSub;
-            refs_.push_back(GlyphRef{ref.page, gi, script});
+            refs_.push_back(GlyphRef{ref.page, gi, g.flags, script});
             words_.back().count++;
         }
         joinNext = false;
@@ -223,15 +224,16 @@ void Writer::StyleWords(bool styles) {
         w.linkPage = -1;
         w.linkTrim = 0;
         if (!styles) continue;
+        // A link annotation over the word's centre (algorithms §6.8).
+        const uint32_t page = refs_[w.first].page;
+        const std::vector<LinkArea>& links = pages_[page].links;
+        if (links.empty()) continue;
         float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
             const Glyph& g = pages_[refs_[k].page].glyphs[refs_[k].glyph];
             x0 = Fmin(x0, g.x0), y0 = Fmin(y0, g.y0), x1 = Fmax(x1, g.x1), y1 = Fmax(y1, g.y1);
         }
-        // A link annotation over the word's centre (algorithms §6.8).
-        const uint32_t page = refs_[w.first].page;
         const float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-        const std::vector<LinkArea>& links = pages_[page].links;
         for (size_t l = 0; l < links.size(); ++l) {
             const LinkArea& a = links[l];
             if (cx >= a.x0 - 1 && cx <= a.x1 + 1 && cy >= a.y0 - 1 && cy <= a.y1 + 1) {
@@ -307,11 +309,26 @@ void Writer::StyleWords(bool styles) {
     if (!styles || n == 0) return;
     constexpr uint8_t kLetter = 0x80;  // a letter or digit, while the styles are worked out
     constexpr uint8_t kStyles = kStyleBold | kStyleItalic | kStyleCode | kStyleStrike;
+    // A glyph is written in a style only when some glyph of the block is set in it: a block set in
+    // none (most body text) has every glyph's styles 0 and needs none of the passes below.
+    uint8_t set = 0;
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint16_t f = refs_[k].flags;
+        if (f & kGlyphImage) continue;
+        if ((f & kGlyphMonospace) && !monoIsBody_) {
+            const uint32_t cp = FirstOf(Text(refs_[k]));
+            if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) set |= kStyleCode;
+        }
+        if ((f & kGlyphBold) && !boldIsBody_) set |= kStyleBold;
+        if ((f & kGlyphItalic) && !italicIsBody_) set |= kStyleItalic;
+        if (f & kGlyphStrike) set |= kStyleStrike;
+    }
+    if (set == 0) return;
     wordOf_.resize(n);
     for (uint32_t i = 0; i < words_.size(); ++i)
         for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) wordOf_[k] = i;
     for (uint32_t k = 0; k < n; ++k) {
-        const uint16_t f = pages_[refs_[k].page].glyphs[refs_[k].glyph].flags;
+        const uint16_t f = refs_[k].flags;
         if (f & kGlyphImage) continue;
         const uint32_t cp = FirstOf(Text(refs_[k]));
         uint8_t s = IsLetterOrDigit(cp) ? kLetter : 0;
@@ -330,6 +347,10 @@ void Writer::StyleWords(bool styles) {
     constexpr uint8_t kUpright = 0, kPhrase = 1, kMath = 2;
     const auto kindOf = [&](size_t i) -> uint8_t {
         const Word& w = words_[i];
+        // No italic glyph: no italic letter.
+        bool anyItalic = false;
+        for (uint32_t k = w.first; k < w.first + w.count; ++k) anyItalic = anyItalic || (styles_[k] & kStyleItalic);
+        if (!anyItalic) return kUpright;
         uint32_t letters = 0, italic = 0, brackets = 0, ops = 0, scripts = 0;
         bool pronoun = false;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
@@ -352,7 +373,7 @@ void Writer::StyleWords(bool styles) {
         const bool math = (letters == 1 && !pronoun) || scripts > 0 || ops > 0 || (letters <= 3 && brackets > 0);
         return math ? kMath : kPhrase;
     };
-    {
+    if (set & kStyleItalic) {
         uint8_t prev = kUpright, here = words_.empty() ? kUpright : kindOf(0), next = kUpright;
         for (size_t i = 0; i < words_.size(); ++i) {
             next = i + 1 < words_.size() ? kindOf(i + 1) : kUpright;
@@ -409,12 +430,18 @@ void Writer::StyleWords(bool styles) {
         }
         styles_[k] = static_cast<uint8_t>(result | (s & kLetter));
     }
-    for (uint32_t k = 0; k < n; ++k) styles_[k] &= kStyles;
-    // Where each style's run from each glyph ends: styles that run longer open first.
+    uint8_t written = 0;
+    for (uint32_t k = 0; k < n; ++k) {
+        styles_[k] &= kStyles;
+        written |= styles_[k];
+    }
+    // Where each style's run from each glyph ends: styles that run longer open first. SetStyle
+    // reads it only for styles some glyph is written in.
     runEnd_.resize(kStyleCount * size_t(n));
     for (int s = 0; s < kStyleCount; ++s) {
         uint32_t* end = runEnd_.data() + size_t(s) * n;
         const uint8_t bit = static_cast<uint8_t>(1u << s);
+        if (!(written & bit)) continue;
         for (uint32_t k = n; k-- > 0;)
             end[k] = !(styles_[k] & bit) ? k : k + 1 < n && (styles_[k + 1] & bit) ? end[k + 1] : k + 1;
     }
@@ -581,7 +608,7 @@ void Writer::Inline(const Block& block, bool styles) {
                 }
             }
             // An inline image glyph holds its Markdown link.
-            if (pages_[refs_[k].page].glyphs[refs_[k].glyph].flags & kGlyphImage) {
+            if (refs_[k].flags & kGlyphImage) {
                 SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                 out_.append(Text(refs_[k]));
                 blockStart = false;
@@ -590,7 +617,7 @@ void Writer::Inline(const Block& block, bool styles) {
             }
             uint32_t runEnd = k + 1;
             while (runEnd < stop && refs_[runEnd].script == script && styles_[runEnd] == styles_[k] &&
-                   !(pages_[refs_[runEnd].page].glyphs[refs_[runEnd].glyph].flags & kGlyphImage))
+                   !(refs_[runEnd].flags & kGlyphImage))
                 ++runEnd;
             SetStyle(styles_[k], k);
             if (depth_ > 0) blockStart = false;
