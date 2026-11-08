@@ -688,6 +688,16 @@ void TestHybrid() {
     const auto doc = OpenOk(HybridDocument(true), 223);
     RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Hyb) Tj ET" && !doc->Report().repaired, 223);
     RAYOPDF_CHECK(doc->Report().xrefSections == 2 && doc->Version() == "1.5", 223);
+    // Names read from the file view its bytes; an object stream's are copies (FullRepair drops the
+    // streams' data).
+    const auto inFile = [&](std::string_view text) {
+        const auto at = reinterpret_cast<uintptr_t>(text.data()), begin = reinterpret_cast<uintptr_t>(doc->Bytes().data());
+        return at >= begin && at + text.size() <= begin + doc->Bytes().size();
+    };
+    const PdfValue& type = doc->Get(doc->Catalog(), "Type");
+    RAYOPDF_CHECK(doc->Object(4).Entries().size() == 1 && doc->Object(4).Entries()[0].key == "Length" &&
+                      inFile(doc->Object(4).Entries()[0].key) && type.IsName("Catalog") && !inFile(type.Name()),
+                  281);
     // Without /XRefStm the compressed objects are free: found again by repair.
     const auto repaired = OpenOk(HybridDocument(false), 223);
     RAYOPDF_CHECK(repaired->PageCount() == 1 && repaired->Report().repaired, 223);

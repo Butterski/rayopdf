@@ -149,7 +149,7 @@ using Stage = Filters::Stage;
 } // namespace
 
 struct Document::Impl {
-    explicit Impl(std::string_view data) : bytes(data), builder(arena) {}
+    explicit Impl(std::string_view data) : bytes(data), builder(arena, true), streamBuilder(arena) {}
 
     struct ObjectStream {
         bool ok = false;
@@ -190,7 +190,10 @@ struct Document::Impl {
 
     std::vector<Slot> slots;
     PdfArena arena;
+    // Values read from the file view its names and plain strings (`bytes` outlives the document);
+    // values read from an object stream copy theirs, as FullRepair drops the streams' data.
     Syntax::Builder builder;
+    Syntax::Builder streamBuilder;
     PdfValue trailer;
     const PdfValue* catalog = nullptr;
     bool chainIncomplete = false;  // an older section could not be read
@@ -459,7 +462,7 @@ struct Document::Impl {
         if (at < stream->first || at >= stream->data.size()) return false;
         Cursor c{stream->data, at};
         Syntax::SkipSpace(c);
-        if (!Syntax::ParseValue(c, Syntax::Mode::File, 0, builder, out)) return false;
+        if (!Syntax::ParseValue(c, Syntax::Mode::File, 0, streamBuilder, out)) return false;
         return true;
     }
 
