@@ -290,11 +290,56 @@ struct Progression {
     }
 };
 
+// A word's sort key (Detector::SortWords).
+struct WordKey {
+    float base, x0;
+    uint32_t word;
+};
+
+// The detector's vectors, kept by each thread between pages and directions so that a page grows
+// none of them anew: one detector runs at a time (DetectTables runs them one after another), and
+// Run() empties what it does not refill.
+struct TableScratch {
+    std::vector<TWord> words, ordered;
+    std::vector<WordKey> keys;
+    std::vector<Edge> h, v, rules;
+    std::vector<Grid> grids;
+    std::vector<uint8_t> wordUsed;
+    std::vector<uint32_t> events;
+    std::vector<int> bins;
+    std::vector<Row> pageRows;
+    std::vector<uint32_t> pageRowWords;
+    std::vector<float> sizes, spaces, lefts, rights, centres, pitches;
+    std::vector<uint8_t> split, label;
+    std::vector<Gap> gaps, trial;
+};
+thread_local TableScratch tTables;
+constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
+
 class Detector {
 public:
-    // Tables of the text of baseline direction `dir`, in that direction's frame (page.h).
+    // Tables of the text of baseline direction `dir`, in that direction's frame (page.h). The
+    // vectors come from the thread's scratch and go back to it, their capacity with them.
     Detector(PageData& page, TableContinuation& continuation, uint8_t dir)
-        : page_(page), continuation_(continuation), dir_(dir) {}
+        : page_(page), continuation_(continuation), dir_(dir), words_(std::move(tTables.words)),
+          h_(std::move(tTables.h)), v_(std::move(tTables.v)), rules_(std::move(tTables.rules)),
+          grids_(std::move(tTables.grids)), wordUsed_(std::move(tTables.wordUsed)),
+          events_(std::move(tTables.events)), bins_(std::move(tTables.bins)),
+          pageRows_(std::move(tTables.pageRows)), pageRowWords_(std::move(tTables.pageRowWords)) {}
+    ~Detector() {
+        tTables.words = std::move(words_);
+        tTables.h = std::move(h_);
+        tTables.v = std::move(v_);
+        tTables.rules = std::move(rules_);
+        tTables.grids = std::move(grids_);
+        tTables.wordUsed = std::move(wordUsed_);
+        tTables.events = std::move(events_);
+        tTables.bins = std::move(bins_);
+        tTables.pageRows = std::move(pageRows_);
+        tTables.pageRowWords = std::move(pageRowWords_);
+    }
+    Detector(const Detector&) = delete;
+    Detector& operator=(const Detector&) = delete;
     int Run();  // the running header and footer lines taken back into tables
 
 private:
@@ -334,7 +379,7 @@ private:
     PageData& page_;
     TableContinuation& continuation_;  // in: from the previous page; out: for the next (upright only)
     uint8_t dir_ = 0;
-    std::vector<TWord> words_;    // by baseline descending, then x
+    std::vector<TWord> words_;  // by baseline descending, then x
     std::vector<Edge> h_, v_;
     std::vector<Edge> rules_;     // horizontal edges left for partially ruled tables
     std::vector<Grid> grids_;
@@ -354,7 +399,10 @@ private:
 
 void Detector::CollectWords() {
     words_.clear();
-    std::vector<float> sizes, spaces;
+    std::vector<float>& sizes = tTables.sizes;
+    std::vector<float>& spaces = tTables.spaces;
+    sizes.clear();
+    spaces.clear();
     for (uint32_t li = 0; li < page_.lines.size(); ++li) {
         const Line& line = page_.lines[li];
         // Lines taken for running headers and footers count too: a table's numbers in the page's
@@ -416,17 +464,14 @@ void Detector::CollectWords() {
 // baseline (no key sorts strictly before or after it) or too many moves leave the words to
 // std::sort as before.
 void Detector::SortWords() {
-    struct Key {
-        float base, x0;
-        uint32_t word;
-    };
+    using Key = WordKey;
     const auto before = [](const Key& a, const Key& b) {
         if (a.base != b.base) return a.base > b.base;
         return a.x0 < b.x0;
     };
     const size_t n = words_.size();
-    std::vector<Key> keys;
-    keys.reserve(n);
+    std::vector<Key>& keys = tTables.keys;
+    keys.clear();
     for (size_t i = 0; i < n; ++i) keys.push_back(Key{words_[i].base, words_[i].x0, static_cast<uint32_t>(i)});
     size_t moves = 8 * n + 256;
     bool sorted = true;
@@ -450,8 +495,8 @@ void Detector::SortWords() {
         });
         return;
     }
-    std::vector<TWord> ordered;
-    ordered.reserve(n);
+    std::vector<TWord>& ordered = tTables.ordered;
+    ordered.clear();
     for (const Key& k : keys) ordered.push_back(words_[k.word]);
     words_.swap(ordered);
 }
@@ -1805,7 +1850,8 @@ void Detector::Borderless(float gapFactor) {
     if (rows.size() < 3 || rows.size() > 4000) return;
     // Rows that split at a column gap (gapFactor ems: wider than any word space) and hold no code
     // are candidates.
-    std::vector<uint8_t> split(rows.size(), 0);
+    std::vector<uint8_t>& split = tTables.split;
+    split.assign(rows.size(), 0);
     for (size_t r = 0; r < rows.size(); ++r) {
         int segments = 1;
         bool mono = false;
@@ -1818,10 +1864,15 @@ void Detector::Borderless(float gapFactor) {
         }
         split[r] = segments >= 2 && !mono;
     }
-    std::vector<Gap> gaps, trial;
+    std::vector<Gap>& gaps = tTables.gaps;
+    std::vector<Gap>& trial = tTables.trial;
     std::string scratch, cellText;
-    std::vector<float> lefts, rights, centres, pitches;
-    std::vector<uint8_t> label(rows.size(), 0);  // a one-cell row of the first column inside a run
+    std::vector<float>& lefts = tTables.lefts;
+    std::vector<float>& rights = tTables.rights;
+    std::vector<float>& centres = tTables.centres;
+    std::vector<float>& pitches = tTables.pitches;
+    std::vector<uint8_t>& label = tTables.label;  // a one-cell row of the first column inside a run
+    label.assign(rows.size(), 0);
     size_t r = 0;
     while (r < rows.size() && grids_.size() < static_cast<size_t>(kMaxTablesPerPage)) {
         if (!split[r]) {
@@ -2181,6 +2232,10 @@ void Detector::Commit() {
 }
 
 int Detector::Run() {
+    // The scratch vectors keep the previous detector's contents: those not refilled before use
+    // are emptied here.
+    grids_.clear();
+    rules_.clear();
     CollectWords();
     if (words_.empty()) {
         if (dir_ == 0) continuation_.valid = false;
@@ -2287,8 +2342,7 @@ int DetectTables(PageData& page, TableContinuation& continuation) {
         continuation.valid = false;
         return 0;
     }
-    Detector detector(page, continuation, 0);
-    int restored = detector.Run();
+    int restored = Detector(page, continuation, 0).Run();
     // Tables turned on the page (a landscape table on a portrait page): each other direction with
     // lines enough for a table of its own, in its frame.
     uint32_t turned[4] = {0, 0, 0, 0};
@@ -2300,6 +2354,8 @@ int DetectTables(PageData& page, TableContinuation& continuation) {
         Detector other(page, none, dir);
         restored += other.Run();
     }
+    // A huge page's words leave the thread's scratch with it.
+    if (tTables.words.capacity() > kKeptWords) tTables = TableScratch();
     return restored;
 }
 
