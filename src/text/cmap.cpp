@@ -20,14 +20,15 @@ enum class TokenKind : uint8_t { String, Name, Number, Keyword, ArrayOpen, Array
 
 struct Token {
     TokenKind kind = TokenKind::Other;
-    std::string_view text;  // String and Name bytes (in the lexer's arena), Keyword bytes (in the data)
+    std::string_view text;  // String and Name bytes (in the lexer's arena or the data), Keyword bytes (in the data)
     int64_t number = 0;
 };
 
-// Tokens of a CMap. String and name bytes live in the arena until Release.
+// Tokens of a CMap. Names and strings that need no decoding view the data; the other string and
+// name bytes live in the arena until Release.
 class Lexer {
 public:
-    explicit Lexer(std::string_view data) : builder_(arena_) { cursor_.data = data; }
+    explicit Lexer(std::string_view data) : builder_(arena_, true) { cursor_.data = data; }
 
     bool Next(Token& token) {
         Syntax::SkipSpace(cursor_);

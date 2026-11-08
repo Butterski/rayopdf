@@ -20,7 +20,7 @@ public:
     // At most this many operands are kept for one operator; more drop all before them.
     static constexpr size_t kMaxOperands = 256;
 
-    explicit ContentLexer(std::string_view data) : cursor_{data, 0}, builder_(arena_) {}
+    explicit ContentLexer(std::string_view data) : cursor_{data, 0}, builder_(arena_, true) {}
     ContentLexer(const ContentLexer&) = delete;
     ContentLexer& operator=(const ContentLexer&) = delete;
 
@@ -30,8 +30,9 @@ public:
     //
     // An inline image comes as the operator "BI" with one operand, its dictionary (keys as
     // written, abbreviations included), and InlineImageData() holding the bytes between "ID"
-    // and "EI"; the lexer continues after "EI". `op` and InlineImageData() point into the data;
-    // the operands' strings, items and entries live in the lexer until its next call of Next.
+    // and "EI"; the lexer continues after "EI". `op`, InlineImageData() and the operands' names and
+    // strings that need no decoding point into the data; the other strings and the items and
+    // entries live in the lexer until its next call of Next.
     bool Next(std::string_view& op, std::vector<PdfValue>& operands);
 
     // The data of the inline image Next just returned, empty after any other operator.

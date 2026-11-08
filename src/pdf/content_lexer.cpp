@@ -2,8 +2,6 @@
 // Forked from rayomd-gui src/pdf/content.cpp at 9fbbfaf (Apache-2.0, same author).
 #include "pdf/content_lexer.h"
 
-#include "common/compiler.h"
-
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -12,52 +10,6 @@ namespace RayoPdf {
 namespace {
 
 using Syntax::Cursor;
-
-// The common operand at the cursor: [+-]digits[.digits] or [+-].digits with at most 19 digits,
-// ending at a white-space or delimiter byte (or the end). Reads it into `value` (a default
-// PdfValue) and moves the cursor past it, with exactly the value Syntax::ParseNumber gives the
-// token: up to 19 digits all count, so its mantissa, fraction count and Int/Real choice are the
-// same, and 10^fraction comes from the same exact powers. False, with the cursor and `value`
-// untouched, for anything else (longer numbers, a second point, letters): the general path reads
-// those.
-RAYOPDF_HOT_INLINE bool ReadSimpleNumber(Cursor& c, PdfValue& value) {
-    static constexpr double kPowers[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
-                                         1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19};
-    const char* p = c.data.data() + c.pos;
-    const char* const end = c.data.data() + c.data.size();
-    bool negative = false;
-    if (p < end && (*p == '+' || *p == '-')) negative = *p++ == '-';
-    // The integer digits, then after a point the fraction digits: two loops with one test a byte.
-    // Past 19 digits the mantissa wraps, but such a number is left to the general path.
-    uint64_t mantissa = 0;
-    const char* const first = p;
-    for (unsigned d; p < end && (d = static_cast<unsigned>(static_cast<unsigned char>(*p)) - '0') < 10; ++p) {
-        mantissa = mantissa * 10 + d;
-    }
-    size_t digits = static_cast<size_t>(p - first);
-    size_t fraction = 0;
-    const bool point = p < end && *p == '.';
-    if (point) {
-        const char* const after = ++p;
-        for (unsigned d; p < end && (d = static_cast<unsigned>(static_cast<unsigned char>(*p)) - '0') < 10; ++p) {
-            mantissa = mantissa * 10 + d;
-        }
-        fraction = static_cast<size_t>(p - after);
-        digits += fraction;
-    }
-    if (digits == 0 || digits > 19 || (p < end && Syntax::IsRegular(static_cast<unsigned char>(*p)))) return false;
-    if (!point && mantissa <= static_cast<uint64_t>(INT64_MAX)) {
-        value.type = PdfValue::Type::Int;
-        value.integer = negative ? -static_cast<int64_t>(mantissa) : static_cast<int64_t>(mantissa);
-    } else {
-        double real = static_cast<double>(mantissa);
-        if (fraction > 0) real /= kPowers[fraction];
-        value.type = PdfValue::Type::Real;
-        value.real = negative ? -real : real;
-    }
-    c.pos = static_cast<size_t>(p - c.data.data());
-    return true;
-}
 
 // The operand just added stays; past kMaxOperands it is the only one.
 void Kept(std::vector<PdfValue>& operands) {
@@ -123,7 +75,7 @@ bool ContentLexer::Next(std::string_view& op, std::vector<PdfValue>& operands) {
         if (Syntax::IsRegular(ch)) {
             // Read into a new last operand, dropped again for an operator.
             PdfValue& value = operands.emplace_back();
-            if (Syntax::StartsNumber(ch) && ReadSimpleNumber(c, value)) {
+            if (Syntax::StartsNumber(ch) && Syntax::ReadSimpleNumber(c, value)) {
                 Kept(operands);
                 continue;
             }

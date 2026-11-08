@@ -121,12 +121,7 @@ void PdfArena::Reset() {
 namespace Syntax {
 namespace {
 
-int HexDigit(unsigned char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
+int HexDigit(unsigned char c) { return kHexValues.of[c]; }
 
 // 10^n for n >= 0, exact up to 10^22; larger powers multiply up and saturate to infinity.
 double PowerOfTen(size_t n) {
@@ -235,6 +230,14 @@ bool Store(Builder& b, std::string_view bytes, std::string_view& out) {
     return true;
 }
 
+// `bytes` copied into the arena, or with Builder::views the bytes themselves.
+bool Keep(Builder& b, std::string_view bytes, std::string_view& out) {
+    if (!b.views) return Store(b, bytes, out);
+    if (bytes.size() > UINT32_MAX) return false;
+    out = bytes.empty() ? std::string_view() : bytes;
+    return true;
+}
+
 } // namespace
 
 bool ReadName(Cursor& c, Builder& b, std::string_view& out) {
@@ -249,7 +252,7 @@ bool ReadName(Cursor& c, Builder& b, std::string_view& out) {
         c.pos++;
     }
     const std::string_view run = c.data.substr(start, c.pos - start);
-    if (!escaped) return Store(b, run, out);
+    if (!escaped) return Keep(b, run, out);
     std::string& decoded = b.scratch;
     decoded.clear();
     for (size_t i = 0; i < run.size(); i++) {
@@ -267,11 +270,25 @@ bool ReadName(Cursor& c, Builder& b, std::string_view& out) {
 }
 
 bool ReadLiteralString(Cursor& c, Builder& b, std::string_view& out) {
-    std::string& text = b.scratch;
-    text.clear();
     c.pos++;  // '('
-    int depth = 1;
     const size_t size = c.data.size();
+    // Most strings hold no escape, nested parenthesis or line end before their closing one: the
+    // bytes up to it, read at once.
+    size_t end = c.pos;
+    while (end < size) {
+        const char ch = c.data[end];
+        if (ch == '\\' || ch == '(' || ch == ')' || ch == '\r') break;
+        end++;
+    }
+    if (end < size && c.data[end] == ')') {
+        const std::string_view run = c.data.substr(c.pos, end - c.pos);
+        c.pos = end + 1;
+        return Keep(b, run, out);
+    }
+    std::string& text = b.scratch;
+    text.assign(c.data.data() + c.pos, end - c.pos);
+    c.pos = end;
+    int depth = 1;
     while (c.pos < size) {
         // The run up to the next byte that needs a look, at once.
         const size_t runStart = c.pos;
@@ -323,28 +340,75 @@ bool ReadLiteralString(Cursor& c, Builder& b, std::string_view& out) {
 }
 
 bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
-    std::string& text = b.scratch;
-    text.clear();
-    c.pos++;  // '<'
-    int high = -1;
-    while (c.pos < c.data.size()) {
-        const unsigned char ch = static_cast<unsigned char>(c.data[c.pos++]);
-        if (ch == '>') {
-            if (high >= 0) text.push_back(static_cast<char>(high << 4));
-            return Store(b, text, out);
+    const char* const data = c.data.data();
+    const size_t size = c.data.size();
+    const size_t first = c.pos + 1;  // after '<'
+    // To the closing '>', every byte a hex digit or white space; the digits counted.
+    size_t at = first;
+    size_t digits = 0;
+    for (;;) {
+        if (at >= size) {
+            c.pos = size;
+            return false;
         }
+        const unsigned char ch = static_cast<unsigned char>(data[at++]);
+        if (ch == '>') break;
         if (IsWhite(ch)) continue;
-        const int d = HexDigit(ch);
-        if (d < 0) return false;
+        if (kHexValues.of[ch] < 0) {
+            c.pos = at;
+            return false;
+        }
+        digits++;
+    }
+    c.pos = at;
+    // Two digits a byte; an odd last digit is its byte's high half.
+    const size_t bytes = (digits + 1) / 2;
+    if (bytes == 0) {
+        out = {};
+        return true;
+    }
+    if (bytes > UINT32_MAX) return false;
+    char* const block = static_cast<char*>(b.arena.Allocate(bytes));
+    if (!block) return false;
+    size_t n = 0;
+    int high = -1;
+    for (size_t i = first; i + 1 < at; ++i) {
+        const int d = kHexValues.of[static_cast<unsigned char>(data[i])];
+        if (d < 0) continue;  // white space
         if (high < 0) {
             high = d;
         } else {
-            text.push_back(static_cast<char>(high << 4 | d));
+            block[n++] = static_cast<char>(high << 4 | d);
             high = -1;
         }
     }
-    return false;
+    if (high >= 0) block[n++] = static_cast<char>(high << 4);
+    out = std::string_view(block, bytes);
+    return true;
 }
+
+namespace {
+
+// "n g R" after the Int `out` (all digits, at most UINT32_MAX): read ahead, the cursor and `out`
+// moved to the reference only when it is one.
+void ReadReference(Cursor& c, PdfValue& out) {
+    Cursor ahead = c;
+    SkipSpace(ahead);
+    const std::string_view generation = ReadToken(ahead);
+    if (!AllDigits(generation) || generation.size() > 5) return;
+    uint32_t gen = 0;
+    for (char g : generation) gen = gen * 10 + static_cast<uint32_t>(g - '0');
+    SkipSpace(ahead);
+    if (gen > 65535 || ReadToken(ahead) != "R") return;
+    const uint32_t num = static_cast<uint32_t>(out.integer);
+    out = PdfValue();
+    out.type = PdfValue::Type::Ref;
+    out.refNum = num;
+    out.refGen = static_cast<uint16_t>(gen);
+    c = ahead;
+}
+
+} // namespace
 
 bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
     if (c.AtEnd()) return false;
@@ -369,6 +433,18 @@ bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
             break;
         default: {
             if (!IsRegular(ch)) return false;
+            // The common number at once; the reference test below as for any Int token (all
+            // digits: no sign, and an Int has no point).
+            if (StartsNumber(ch)) {
+                PdfValue number;
+                if (ReadSimpleNumber(c, number)) {
+                    out = number;
+                    if (mode == Mode::File && out.type == PdfValue::Type::Int && ch >= '0' && ch <= '9' &&
+                        out.integer <= UINT32_MAX)
+                        ReadReference(c, out);
+                    return true;
+                }
+            }
             const std::string_view token = ReadToken(c);
             if (token == "true" || token == "false") {
                 out = PdfValue();
@@ -381,25 +457,8 @@ bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
                 return true;
             }
             if (!ParseNumber(token, out)) return false;
-            // "n g R": a reference, read ahead without consuming anything else.
-            if (mode == Mode::File && out.type == PdfValue::Type::Int && AllDigits(token) && out.integer <= UINT32_MAX) {
-                Cursor ahead = c;
-                SkipSpace(ahead);
-                const std::string_view generation = ReadToken(ahead);
-                if (AllDigits(generation) && generation.size() <= 5) {
-                    uint32_t gen = 0;
-                    for (char g : generation) gen = gen * 10 + static_cast<uint32_t>(g - '0');
-                    SkipSpace(ahead);
-                    if (gen <= 65535 && ReadToken(ahead) == "R") {
-                        const uint32_t num = static_cast<uint32_t>(out.integer);
-                        out = PdfValue();
-                        out.type = PdfValue::Type::Ref;
-                        out.refNum = num;
-                        out.refGen = static_cast<uint16_t>(gen);
-                        c = ahead;
-                    }
-                }
-            }
+            if (mode == Mode::File && out.type == PdfValue::Type::Int && AllDigits(token) && out.integer <= UINT32_MAX)
+                ReadReference(c, out);
             return true;
         }
     }
