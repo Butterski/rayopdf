@@ -213,6 +213,20 @@ void TestDuplicateBold() {
     RAYOPDF_CHECK(md == "Plain **strong** words.\n", 415);
 }
 
+// A copy just inside the tolerance (0.15 em) folds whatever 4-unit cells the two straddle, with
+// the filter's window found in float near the origin and in double beyond 2048 units.
+void TestDuplicateCells() {
+    for (const float x : {79.0f, 80.74f, 2046.6f, 2050.0f, -2049.0f}) {
+        std::vector<PageData> pages{NewPage(1)};
+        const float at = AddText(pages[0], "Plain ", x - 30, 700, 10);
+        AddText(pages[0], "strong", at, 700, 10);
+        AddText(pages[0], "strong", at + 1.49f, 701.49f, 10);
+        const std::string md = Run(pages);
+        Show("duplicate cells", md);
+        RAYOPDF_CHECK(md == "Plain **strong**\n", 484);
+    }
+}
+
 void TestEmptyPage() {
     std::vector<PageData> pages{NewPage(1), NewPage(2)};
     AddText(pages[0], "Only page one has text.", 72, 700, 10);
@@ -1082,6 +1096,7 @@ int main() {
     TestDehyphenation();
     TestCodeBlock();
     TestDuplicateBold();
+    TestDuplicateCells();
     TestEmptyPage();
     TestLinkAnnotation();
     TestEscaping();

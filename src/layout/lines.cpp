@@ -51,6 +51,13 @@ struct Fragment {
 // 1/1024 against rounding at its ends) is set, the probe would find nothing and is skipped. A set
 // bit (a duplicate, the same letter close by, a collision) runs the probe as before, and every
 // kept glyph goes into the probe's table as before, so what the probe finds is unchanged.
+//
+// A kept glyph's filter cell is its probe cell halved (floor(floor(v / 2) / 2) = floor(v / 4); v / 2
+// errs by 2^-150 at most, far inside the margin). Below 2048 the window's cells come from float
+// sums biased by 1024, whose truncation is their floor: q = v / 4 is exact, r = t / 4 + 2^-12 errs
+// by 2^-23 at most, 1024 -+ r by 2^-14 and q + (1024 -+ r) by 2^-14, together less than the
+// 2^-12 (1/1024 in page units) by which r widens the window, so the float window holds the exact
+// one. Larger coordinates take the same window in double.
 void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     std::vector<Glyph>& glyphs = page.glyphs;
     size_t capacity = 16;
@@ -85,6 +92,7 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const int64_t t = static_cast<int64_t>(v);
         return t - (v < static_cast<float>(t) ? 1 : 0);
     };
+    constexpr float kFloatReach = 2048.0f;  // windows of glyphs nearer the origin are found in float
     size_t kept = 0;
     for (size_t k = 0; k < vis.size(); ++k) {
         const uint32_t i = vis[k];
@@ -97,15 +105,31 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         const uint64_t h = HashText(text);
         hashes[i] = h;
         // Coordinates are finite but may be huge: clamped before the integer conversion.
-        const int64_t cx = floorOf(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f));
-        const int64_t cy = floorOf(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f));
+        const bool near = std::fabs(g.x0) < kFloatReach && std::fabs(g.y0) < kFloatReach;
+        int64_t cx, cy;
+        if (near) {
+            cx = floorOf(g.x0 / kCell);
+            cy = floorOf(g.y0 / kCell);
+        } else {
+            cx = floorOf(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f));
+            cy = floorOf(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f));
+        }
         const float tolerance = Fmax(0.15f * g.size, 0.5f);
         const uint64_t key = h ^ (static_cast<uint64_t>(g.dir) << 56);
         bool candidate = true;
-        if (std::fabs(g.x0) < kFilterReach && std::fabs(g.y0) < kFilterReach && tolerance <= kFilterTolerance) {
-            const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
-            const int64_t xa = cellOf(g.x0 - reach), xb = cellOf(g.x0 + reach);
-            const int64_t ya = cellOf(g.y0 - reach), yb = cellOf(g.y0 + reach);
+        if (tolerance <= kFilterTolerance && (near || (std::fabs(g.x0) < kFilterReach && std::fabs(g.y0) < kFilterReach))) {
+            int64_t xa, xb, ya, yb;
+            if (near) {
+                const float r = tolerance * 0.25f + 1.0f / 4096;
+                const float below = 1024.0f - r, above = 1024.0f + r;
+                const float qx = g.x0 * 0.25f, qy = g.y0 * 0.25f;
+                xa = int64_t(static_cast<int32_t>(qx + below)) - 1024, xb = int64_t(static_cast<int32_t>(qx + above)) - 1024;
+                ya = int64_t(static_cast<int32_t>(qy + below)) - 1024, yb = int64_t(static_cast<int32_t>(qy + above)) - 1024;
+            } else {
+                const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
+                xa = cellOf(g.x0 - reach), xb = cellOf(g.x0 + reach);
+                ya = cellOf(g.y0 - reach), yb = cellOf(g.y0 + reach);
+            }
             uint64_t any = 0;
             for (int64_t x = xa; x <= xb; ++x) {
                 const uint64_t kx = keyAndX(key, x);
@@ -143,7 +167,7 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
         while (table[slot] != kEmpty) slot = (slot + 1) & mask;
         table[slot] = i;
         if (std::fabs(g.x0) < kFilterKeep && std::fabs(g.y0) < kFilterKeep) {
-            const size_t b = filterBit(keyAndX(key, cellOf(g.x0)), cellOf(g.y0));
+            const size_t b = filterBit(keyAndX(key, cx >> 1), cy >> 1);
             filter[b >> 6] |= uint64_t(1) << (b & 63);
         }
         vis[kept++] = i;
