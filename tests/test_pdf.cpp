@@ -1211,6 +1211,40 @@ void TestContentNumbers() {
     }
 }
 
+// The lexer's arrays as Syntax::ParseValue reads them: strings with and without escapes, hex
+// strings, names, nested arrays, keywords, a comment and a dictionary among numbers; an item that
+// is no value fails the array (its operands go, the lexer goes on after it); an unended one ends
+// the data.
+void TestContentArrays() {
+    const std::string_view text = "[(a) -12 (b\\)c) 3.5 <4142> /N [1 (x)] true null %c\n 7 <<>> ] TJ";
+    ContentLexer lexer(text);
+    std::string_view op;
+    RAYOPDF_CHECK(lexer.Next(op) && op == "TJ" && lexer.Operands().size() == 1 && lexer.Operands()[0].IsArray(), 263);
+    PdfArena arena;
+    Syntax::Builder copies(arena);
+    Syntax::Cursor cursor{text, 0};
+    PdfValue expected;
+    RAYOPDF_CHECK(Syntax::ParseValue(cursor, Syntax::Mode::Content, 0, copies, expected), 263);
+    const PdfSpan<PdfValue> got = lexer.Operands()[0].Array();
+    const PdfSpan<PdfValue> want = expected.Array();
+    RAYOPDF_CHECK(got.size() == 11 && want.size() == 11, 263);
+    for (size_t i = 0; i < got.size() && i < want.size(); i++) {
+        RAYOPDF_CHECK(got[i].type == want[i].type && got[i].boolean == want[i].boolean && got[i].count == want[i].count,
+                      263);
+        if (got[i].IsNumber()) RAYOPDF_CHECK(got[i].integer == want[i].integer, 263);
+        if (got[i].IsString() || got[i].IsName()) RAYOPDF_CHECK(got[i].Text() == want[i].Text(), 263);
+        if (got[i].IsArray()) RAYOPDF_CHECK(got[i].Array()[1].String() == "x" && got[i].Array()[0].integer == 1, 263);
+    }
+    RAYOPDF_CHECK(got.size() == 11 && got[2].String() == "b)c" && got[4].String() == "AB" && got[3].real == 3.5 &&
+                      got[9].integer == 7,
+                  263);
+
+    ContentLexer failed("[1 2 1e3] 5 TJ");
+    RAYOPDF_CHECK(failed.Next(op) && op == "TJ" && failed.Operands().size() == 1 && *failed.Numbers(1) == 5, 263);
+    ContentLexer unended("[(ab");
+    RAYOPDF_CHECK(!unended.Next(op) && unended.Offset() == 4, 263);
+}
+
 // The string, name and number readers: hex strings with white space and an odd last digit, the
 // cursor after a failure, literal strings with and without escapes, names and strings viewing the
 // data with Builder::views, and numbers read at once with the reference test of File mode.
@@ -1309,6 +1343,7 @@ int main() {
     TestInlineImageAtEnd();
     TestContentOperands();
     TestContentNumbers();
+    TestContentArrays();
     TestSyntaxReaders();
     std::puts("test_pdf: all checks passed");
     return 0;

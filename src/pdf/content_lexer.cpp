@@ -84,6 +84,88 @@ RAYOPDF_HOT_INLINE bool ReadShortNumber(const char*& p, PdfValue& value, double&
     return true;
 }
 
+// A name, a literal string or a hexadecimal string at the cursor (at '/', '(' or a '<' not
+// followed by '<'): Syntax::ParseValue's own case for them.
+bool ReadText(Cursor& c, Syntax::Builder& b, unsigned char ch, PdfValue& out) {
+    std::string_view text;
+    const bool read = ch == '/'   ? Syntax::ReadName(c, b, text)
+                      : ch == '(' ? Syntax::ReadLiteralString(c, b, text)
+                                  : Syntax::ReadHexString(c, b, text);
+    if (!read) return false;
+    out = PdfValue();
+    out.type = ch == '/' ? PdfValue::Type::Name : PdfValue::Type::String;
+    out.count = static_cast<uint32_t>(text.size());
+    out.data = text.data();
+    return true;
+}
+
+// The array at the cursor ('['), as Syntax::ParseValue reads it in Content mode at depth 0 (a TJ
+// array, most often): the same items read the same way, with the cursor left where ParseValue
+// leaves it; short numbers, names and strings here, every other item by ParseValue at depth 1.
+// `numbersEnd` is the lexer's numbersEnd_.
+bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
+    const char* const data = c.data.data();
+    const char* const end = data + c.data.size();
+    const char* const shortEnd = data + numbersEnd;
+    std::vector<PdfValue>& items = b.items;
+    const size_t base = items.size();
+    bool ok = false;
+    const char* p = data + c.pos + 1;
+    for (;;) {
+        while (p < end && kClasses.of[static_cast<unsigned char>(*p)] == LexerClasses::kWhite) p++;
+        if (p >= end) break;
+        const unsigned char ch = static_cast<unsigned char>(*p);
+        if (ch == ']') {
+            p++;
+            ok = true;
+            break;
+        }
+        PdfValue item;
+        double number;
+        if (kClasses.of[ch] == LexerClasses::kNumber && p < shortEnd && ReadShortNumber(p, item, number)) {
+            items.push_back(item);
+            continue;
+        }
+        c.pos = static_cast<size_t>(p - data);
+        if (ch == '%') {
+            Syntax::SkipSpace(c);
+            p = data + c.pos;
+            continue;
+        }
+        const bool read = ch == '/' || ch == '(' || (ch == '<' && !(p + 1 < end && p[1] == '<'))
+                              ? ReadText(c, b, ch, item)
+                              : Syntax::ParseValue(c, Syntax::Mode::Content, 1, b, item);
+        p = data + c.pos;
+        if (!read) break;
+        items.push_back(item);
+    }
+    c.pos = static_cast<size_t>(p - data);
+    const size_t n = items.size() - base;
+    PdfValue* stored = nullptr;
+    if (ok && n > 0) {
+        stored = n <= UINT32_MAX ? static_cast<PdfValue*>(b.arena.Allocate(n * sizeof(PdfValue))) : nullptr;
+        if (stored) std::memcpy(static_cast<void*>(stored), items.data() + base, n * sizeof(PdfValue));
+        ok = stored != nullptr;
+    }
+    items.resize(base);
+    if (!ok) return false;
+    out = PdfValue();
+    out.type = PdfValue::Type::Array;
+    out.count = static_cast<uint32_t>(n);
+    out.data = stored;
+    return true;
+}
+
+// The value at the cursor ('/', '(', '<' or '['), as Syntax::ParseValue reads it in Content mode at
+// depth 0: arrays, names and strings here, dictionaries by ParseValue. Out of line, so the
+// lexer's loop around it keeps its registers.
+RAYOPDF_NOINLINE bool ReadValue(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
+    const unsigned char ch = c.Peek();
+    if (ch == '[') return ReadArray(c, numbersEnd, b, out);
+    if (ch == '<' && c.Peek(1) == '<') return Syntax::ParseValue(c, Syntax::Mode::Content, 0, b, out);
+    return ReadText(c, b, ch, out);
+}
+
 // An inline image entry under its abbreviation or its full name.
 const PdfValue* InlineEntry(const PdfValue& dict, std::string_view abbreviation, std::string_view name) {
     const PdfValue* entry = dict.Find(abbreviation);
@@ -266,7 +348,7 @@ bool ContentLexer::Next(std::string_view& op) {
             const size_t start = static_cast<size_t>(p - data);
             cursor_.pos = start;
             PdfValue value;
-            if (Syntax::ParseValue(cursor_, Syntax::Mode::Content, 0, builder_, value)) {
+            if (ReadValue(cursor_, numbersEnd_, builder_, value)) {
                 Add(values, numbers, slots, count, numeric, value);
             } else {
                 if (cursor_.pos == start) cursor_.pos++;
