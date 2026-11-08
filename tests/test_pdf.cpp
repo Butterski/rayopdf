@@ -1189,6 +1189,28 @@ void TestContentOperands() {
                   262);
 }
 
+// The lexer's numbers have the type and bits Syntax::ParseNumber gives their tokens: signs, a
+// point without digits on one side, 18 and 19 digits (past INT64_MAX a Real), leading zeros
+// beyond 19 digits.
+void TestContentNumbers() {
+    const char* const tokens[] = {"0", "-0", "+7", "5.", ".5", "-.25", "123456789012345678", "-1234567890123456789",
+                                  "9999999999999999999", "0.000000000000000001", "00000000000000000012.5", "4.000"};
+    std::string data;
+    for (const char* token : tokens) data += std::string(token) + " ";
+    data += "op";
+    ContentLexer lexer(data);
+    std::string_view op;
+    RAYOPDF_CHECK(lexer.Next(op) && op == "op" && lexer.Operands().size() == std::size(tokens), 264);
+    const PdfSpan<PdfValue> operands = lexer.Operands();
+    for (size_t i = 0; i < operands.size() && i < std::size(tokens); i++) {
+        PdfValue expected;
+        RAYOPDF_CHECK(Syntax::ParseNumber(tokens[i], expected) && operands[i].type == expected.type &&
+                          operands[i].integer == expected.integer &&
+                          lexer.Numbers(std::size(tokens) - i)[0] == operands[i].Number(),
+                      264);
+    }
+}
+
 // The string, name and number readers: hex strings with white space and an odd last digit, the
 // cursor after a failure, literal strings with and without escapes, names and strings viewing the
 // data with Builder::views, and numbers read at once with the reference test of File mode.
@@ -1286,6 +1308,7 @@ int main() {
     TestEncryption();
     TestInlineImageAtEnd();
     TestContentOperands();
+    TestContentNumbers();
     TestSyntaxReaders();
     std::puts("test_pdf: all checks passed");
     return 0;

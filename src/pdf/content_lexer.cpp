@@ -17,6 +17,73 @@ using Syntax::Cursor;
 constexpr double kPowers[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
                               1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19};
 
+// Syntax::ByteClasses with one more class for the regular bytes that can start a number (digits,
+// signs and the point): one load tells white space, a delimiter, a number's byte or another
+// regular byte (0).
+struct LexerClasses {
+    static constexpr uint8_t kWhite = Syntax::ByteClasses::kWhite;
+    static constexpr uint8_t kDelimiter = Syntax::ByteClasses::kDelimiter;
+    static constexpr uint8_t kNumber = 4;
+    uint8_t of[256] = {};
+    constexpr LexerClasses() {
+        for (int c = 0; c < 256; ++c) of[c] = Syntax::kByteClasses.of[c];
+        for (int c = '0'; c <= '9'; ++c) of[c] = kNumber;
+        of['+'] = of['-'] = of['.'] = kNumber;
+    }
+};
+constexpr LexerClasses kClasses;
+constexpr uint8_t kNotRegular = LexerClasses::kWhite | LexerClasses::kDelimiter;
+
+// Syntax::ReadSimpleNumber at `p`, a digit, sign or point before the lexer's numbersEnd_, for at
+// most 18 digits and without its end tests: the byte at numbersEnd_ (no digit, sign or point)
+// stops every scan before the end of the data. The same steps give the same value (below 10^18 the
+// mantissa is an Int, and a fraction of no digits divides by 1). Makes `value`, whose stream
+// fields are 0 (an operand slot's, a fresh value's), the number, sets `number` to it as a double
+// (finite) and moves `p` past the number and one white-space byte after it; false, with nothing
+// changed, where ReadSimpleNumber fails or reads 19 digits (the token's ParseNumber then gives the
+// same value).
+RAYOPDF_HOT_INLINE bool ReadShortNumber(const char*& p, PdfValue& value, double& number) {
+    const char* q = p;
+    bool negative = false;
+    if (*q == '+' || *q == '-') negative = *q++ == '-';
+    uint64_t mantissa = 0;
+    const char* const first = q;
+    for (unsigned d; (d = static_cast<unsigned>(static_cast<unsigned char>(*q)) - '0') < 10; ++q) {
+        mantissa = mantissa * 10 + d;
+    }
+    size_t digits = static_cast<size_t>(q - first);
+    size_t fraction = 0;
+    const bool point = *q == '.';
+    if (point) {
+        const char* const after = ++q;
+        for (unsigned d; (d = static_cast<unsigned>(static_cast<unsigned char>(*q)) - '0') < 10; ++q) {
+            mantissa = mantissa * 10 + d;
+        }
+        fraction = static_cast<size_t>(q - after);
+        digits += fraction;
+    }
+    const uint8_t next = kClasses.of[static_cast<unsigned char>(*q)];
+    if (digits - 1 >= 18 || !(next & kNotRegular)) return false;
+    const int64_t magnitude = static_cast<int64_t>(mantissa);
+    // The fields of a fresh value besides the stream's, stored together.
+    value.type = point ? PdfValue::Type::Real : PdfValue::Type::Int;
+    value.boolean = false;
+    value.refGen = 0;
+    value.count = 0;
+    if (!point) {
+        const int64_t integer = negative ? -magnitude : magnitude;
+        value.integer = integer;
+        number = static_cast<double>(integer);
+    } else {
+        double real = static_cast<double>(magnitude) / kPowers[fraction];
+        real = negative ? -real : real;
+        value.real = real;
+        number = real;
+    }
+    p = q + (next == LexerClasses::kWhite);
+    return true;
+}
+
 // An inline image entry under its abbreviation or its full name.
 const PdfValue* InlineEntry(const PdfValue& dict, std::string_view abbreviation, std::string_view name) {
     const PdfValue* entry = dict.Find(abbreviation);
@@ -127,56 +194,17 @@ bool ContentLexer::Next(std::string_view& op) {
     size_t count = 0;
     size_t numeric = 0;
     for (;;) {
-        while (p < end && Syntax::IsWhite(static_cast<unsigned char>(*p))) p++;
+        while (p < end && kClasses.of[static_cast<unsigned char>(*p)] == LexerClasses::kWhite) p++;
         if (p >= end) break;
         const unsigned char ch = static_cast<unsigned char>(*p);
-        if (Syntax::IsRegular(ch)) {
-            if (Syntax::StartsNumber(ch)) {
+        const uint8_t kind = kClasses.of[ch];
+        if (!(kind & kNotRegular)) {
+            if (kind == LexerClasses::kNumber) {
                 if (RAYOPDF_LIKELY(p < numbersEnd)) {
-                    // Syntax::ReadSimpleNumber without the end tests: the byte at numbersEnd stops
-                    // every scan before the end of the data. The same steps give the same value.
-                    const char* q = p;
-                    bool negative = false;
-                    if (ch == '+' || ch == '-') negative = *q++ == '-';
-                    uint64_t mantissa = 0;
-                    const char* const first = q;
-                    for (unsigned d; (d = static_cast<unsigned>(static_cast<unsigned char>(*q)) - '0') < 10; ++q) {
-                        mantissa = mantissa * 10 + d;
-                    }
-                    size_t digits = static_cast<size_t>(q - first);
-                    size_t fraction = 0;
-                    const bool point = *q == '.';
-                    if (point) {
-                        const char* const after = ++q;
-                        for (unsigned d; (d = static_cast<unsigned>(static_cast<unsigned char>(*q)) - '0') < 10; ++q) {
-                            mantissa = mantissa * 10 + d;
-                        }
-                        fraction = static_cast<size_t>(q - after);
-                        digits += fraction;
-                    }
-                    if (digits - 1 < 19 && !Syntax::IsRegular(static_cast<unsigned char>(*q))) {
-                        // A fresh value's fields with the number: Int and short Real are finite.
-                        PdfValue& value = values[count];
-                        value.boolean = false;
-                        value.refGen = 0;
-                        value.count = 0;
-                        if (!point && mantissa <= static_cast<uint64_t>(INT64_MAX)) {
-                            const int64_t integer = negative ? -static_cast<int64_t>(mantissa) : static_cast<int64_t>(mantissa);
-                            value.type = PdfValue::Type::Int;
-                            value.integer = integer;
-                            numbers[count] = static_cast<double>(integer);
-                        } else {
-                            double real = static_cast<double>(mantissa);
-                            if (fraction > 0) real /= kPowers[fraction];
-                            real = negative ? -real : real;
-                            value.type = PdfValue::Type::Real;
-                            value.real = real;
-                            numbers[count] = real;
-                        }
+                    if (ReadShortNumber(p, values[count], numbers[count])) {
                         count++;
                         numeric++;
                         Added(values, numbers, slots, count, numeric);
-                        p = q;
                         continue;
                     }
                 } else {
@@ -190,7 +218,7 @@ bool ContentLexer::Next(std::string_view& op) {
                 }
             }
             const char* const start = p;
-            while (p < end && Syntax::IsRegular(static_cast<unsigned char>(*p))) p++;
+            while (p < end && !(kClasses.of[static_cast<unsigned char>(*p)] & kNotRegular)) p++;
             const std::string_view token(start, static_cast<size_t>(p - start));
             // The operands among the tokens: true, false, null and the numbers left above; the
             // first byte tells which one a token can be.
