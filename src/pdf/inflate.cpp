@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Forked from RayoMD src/core/inflate.cpp at ef106ca (Apache-2.0, same author).
 // The decode tables and the decoding loops are RayoMD's; the output goes to one buffer that grows
-// instead of a sliding window, and every way the stream can end is a Result (inflate.h).
+// (kept per thread between calls and copied out once, so it is never zero-filled), or for a
+// Stream to a window of 32 KB and a piece, and every way the stream can end is a Result (inflate.h).
 #include "pdf/inflate.h"
 
 #include "common/compiler.h"
@@ -261,16 +262,36 @@ bool ZlibHeader(const uint8_t* p) {
     return (p[0] & 15) == 8 && (p[0] >> 4) <= 7 && ((p[0] << 8) | p[1]) % 31 == 0;
 }
 
+// The decoders' output buffer: grown without zero-filling (every byte kept is written first).
+struct Buffer {
+    std::unique_ptr<uint8_t[]> bytes;
+    size_t size = 0;
+
+    // At least `want` bytes, the first `keep` as they were.
+    uint8_t* Reserve(size_t want, size_t keep) {
+        if (want > size) {
+            std::unique_ptr<uint8_t[]> grown(new uint8_t[want]);
+            if (keep > 0) std::memcpy(grown.get(), bytes.get(), keep);
+            bytes.swap(grown);
+            size = want;
+        }
+        return bytes.get();
+    }
+};
+
 class Inflater {
 public:
-    Inflater(const uint8_t* data, size_t size, std::string& out, size_t maxOut)
+    Inflater(const uint8_t* data, size_t size, Buffer& out, size_t maxOut)
         : begin_(data), in_(data), end_(data + size), out_(out), maxOut_(maxOut) {}
 
+    // Inflates the whole input into the buffer: Length() bytes of it.
     Result Run() {
         SkipHeader();
-        // A first guess at the size: content streams inflate 3 to 6 times; the buffer doubles.
+        // A first guess at the size: content streams inflate 3 to 6 times; the buffer doubles. A
+        // buffer kept from an earlier stream is used whole.
+        const size_t kept = out_.size > kSlack ? out_.size - kSlack : 0;
         const size_t guess = std::max<size_t>(size_t(4096), static_cast<size_t>(end_ - begin_) * 4);
-        if (!Resize(std::min(Cap(), guess))) return Result::Corrupt;
+        if (!Resize(std::min(Cap(), std::max(guess, kept)))) return Result::Corrupt;
         Step step = Step::Ok;
         bool done = false;
         while (!done) {
@@ -291,11 +312,7 @@ public:
             }
             if (step != Step::Ok) break;
         }
-        if (o_ > maxOut_) {
-            out_.resize(maxOut_);
-            return Result::TooLarge;
-        }
-        out_.resize(o_);
+        if (o_ > maxOut_) return Result::TooLarge;
         if (done) return Result::Ok;
         if (step == Step::Full) {
             // Grow failed: the output reached the limit with more to come.
@@ -304,14 +321,16 @@ public:
         return o_ > 0 ? Result::Salvaged : Result::Corrupt;
     }
 
+    // The bytes Run leaves in the buffer: the output, cut at the limit.
+    size_t Length() const { return std::min(o_, maxOut_); }
+
     // Streaming (Stream): the buffer holds the 32 KB window before the output not yet given out
     // and room for a piece (or the whole output, when that is less); it never grows.
     void BeginStream(size_t piece) {
         SkipHeader();
         growable_ = false;
         room_ = std::min(kWindow + piece, Cap());
-        if (out_.size() < room_ + kSlack) out_.resize(room_ + kSlack);
-        buf_ = reinterpret_cast<uint8_t*>(&out_[0]);
+        buf_ = out_.Reserve(room_ + kSlack, 0);
         cap_ = room_;
     }
 
@@ -351,8 +370,7 @@ private:
     size_t Cap() const { return maxOut_ + 1; }
 
     bool Resize(size_t capacity) {
-        out_.resize(capacity + kSlack);
-        buf_ = reinterpret_cast<uint8_t*>(&out_[0]);
+        buf_ = out_.Reserve(capacity + kSlack, o_);
         cap_ = capacity;
         return true;
     }
@@ -685,7 +703,7 @@ private:
     unsigned bitsleft_ = 0;
     unsigned overread_ = 0;  // zero bytes put in the bit buffer past the end of the input
 
-    std::string& out_;
+    Buffer& out_;
     uint8_t* buf_ = nullptr;
     size_t cap_ = 0;  // bytes of buf_ before the slack
     size_t o_ = 0;    // bytes of output (in the buffer, when streaming)
@@ -708,17 +726,25 @@ private:
     uint32_t dynamicDistance_[kDistTableSize];
 };
 
+// A buffer kept per thread for whole outputs up to this size, so that the common stream's output
+// needs no allocation of its own before it is copied out; a larger one is freed after its call.
+constexpr size_t kKeptBuffer = size_t(1) << 20;
+
 } // namespace
 
 Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
     limit = std::min(limit, (size_t(1) << 40));
-    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, limit);
-    return inflater.Run();
+    thread_local Buffer buffer;
+    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, limit);
+    const Result result = inflater.Run();
+    out.assign(reinterpret_cast<const char*>(buffer.bytes.get()), inflater.Length());
+    if (buffer.size > kKeptBuffer) buffer = Buffer();
+    return result;
 }
 
 struct Stream::State {
-    std::string buffer;
+    Buffer buffer;
     std::unique_ptr<Inflater> inflater;
 };
 
