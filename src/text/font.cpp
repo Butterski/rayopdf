@@ -1140,14 +1140,26 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     if (widthsValue.IsArray()) {
         const PdfSpan<PdfValue> widths = widthsValue.Array();
         const int64_t first = doc.Get(dict, "FirstChar").Int(0);
-        for (int c = 0; c < 256; ++c) {
-            const int64_t i = c - first;
+        // The codes /Widths covers, [lo, hi) within 0..256; the others take /MissingWidth. A
+        // direct number is read here, anything else (a reference) through Document::Number.
+        const int64_t lo = first < 0 ? 0 : first > 256 ? 256 : first;
+        int64_t hi = first > 256 ? 256 : first + static_cast<int64_t>(widths.size());
+        hi = hi < lo ? lo : hi > 256 ? 256 : hi;
+        const float missing = static_cast<float>(desc.missingWidth * scale);
+        for (int64_t c = 0; c < lo; ++c) font.slots[c].width = missing;
+        for (int64_t c = lo; c < hi; ++c) {
+            const PdfValue& item = widths[static_cast<size_t>(c - first)];
             double w = desc.missingWidth;
-            if (i >= 0 && i < static_cast<int64_t>(widths.size())) {
-                if (!doc.Number(widths[static_cast<size_t>(i)], w)) w = desc.missingWidth;
+            if (item.type == PdfValue::Type::Int) {
+                w = static_cast<double>(item.integer);
+            } else if (item.type == PdfValue::Type::Real && std::isfinite(item.real)) {
+                w = item.real;
+            } else if (!doc.Number(item, w)) {
+                w = desc.missingWidth;
             }
             font.slots[c].width = static_cast<float>(w * scale);
         }
+        for (int64_t c = hi; c < 256; ++c) font.slots[c].width = missing;
     } else if (kind != FontKind::Type3) {
         const std::string_view (&names)[256] = simple.names;
         const int metrics = StandardFontFor(font.baseName, font.style);

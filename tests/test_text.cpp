@@ -577,6 +577,32 @@ void TestLazyPrograms() {
     RAYOPDF_CHECK(Near(l.Get("F2").SpaceWidth(), 0.25) && Near(font.SpaceWidth(), 0.25), 1453);
 }
 
+// /Widths read only for the codes it covers: /FirstChar below 0 or past 255, a real, a reference
+// and a name among the widths; /MissingWidth everywhere else.
+void TestWidthRanges() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        const std::string descriptor = " /FontDescriptor << /Type /FontDescriptor /Flags 32 /MissingWidth 333 >>";
+        std::string f;
+        f += "/F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 250 /Widths [100 200.5 " +
+             Ref(b.Add("300")) + " /x 400 500 600 700]" + descriptor + " >>";
+        f += " /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar -2 /Widths [1 2 3 4]" + descriptor + " >>";
+        f += " /F3 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 300 /Widths [5]" + descriptor + " >>";
+        return f;
+    }, 1455);
+
+    const std::vector<Code> high = Codes(l.Get("F1"), "\xF9\xFA\xFB\xFC\xFD\xFE\xFF");
+    RAYOPDF_CHECK(high.size() == 7 && Near(high[0].width, 0.333) && Near(high[1].width, 0.1) &&
+                      Near(high[2].width, 0.2005) && Near(high[3].width, 0.3) && Near(high[4].width, 0.333) &&
+                      Near(high[5].width, 0.4) && Near(high[6].width, 0.5),
+                  1456);
+    const std::vector<Code> low = Codes(l.Get("F2"), std::string_view("\x00\x01\x02", 3));
+    const std::vector<Code> beyond = Codes(l.Get("F3"), "A");
+    RAYOPDF_CHECK(low.size() == 3 && Near(low[0].width, 0.003) && Near(low[1].width, 0.004) &&
+                      Near(low[2].width, 0.333) && beyond.size() == 1 && Near(beyond[0].width, 0.333),
+                  1457);
+}
+
 } // namespace
 
 int main() {
@@ -588,6 +614,7 @@ int main() {
     TestType0AndType3();
     TestEmbeddedPrograms();
     TestLazyPrograms();
+    TestWidthRanges();
     std::puts("test_text: ok");
     return 0;
 }
