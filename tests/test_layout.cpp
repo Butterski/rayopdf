@@ -1046,6 +1046,31 @@ void TestLinksMathAndNumbering() {
     RAYOPDF_CHECK(Contains(md, "# Table of Contents\n"), 736);
 }
 
+// List markers: every bullet and task box, enumerators with their values, and look-alikes that
+// are none (ParseMarker filters on the first byte before comparing).
+void TestMarkers() {
+    static const char* const kBullets[] = {
+        "\xE2\x80\xA2", "\xE2\x97\xA6", "\xE2\x96\xAA", "\xE2\x96\xAB", "\xE2\x97\x8F", "\xE2\x97\x8B",
+        "\xE2\x80\xA3", "\xE2\x81\x83", "\xE2\x80\x93", "-",            "*",            "\xC2\xB7",
+        "\xE2\x96\xA0", "\xE2\x96\xA1", "\xE2\x96\xBA", "\xE2\x96\xB6", "\xE2\x9E\xA2", "\xE2\x9E\xA4",
+        "\xE2\x9D\x96", "\xE2\x99\xA6", "\xE2\x97\x86", "\xE2\x88\x99", "\xE2\x97\xBE", "\xEF\x82\xB7",
+        "\xEF\x82\xA7", "\xEF\x83\x98", "\xEF\x81\xB6", "\xEF\x82\xA8", "\xE2\x80\x94", "\xE2\x9C\x93",
+        "\xE2\x9C\x94",
+    };
+    uint32_t value = 7;
+    for (const char* b : kBullets) RAYOPDF_CHECK(ParseMarker(b, value) == Marker::Bullet && value == 0, 421);
+    RAYOPDF_CHECK(ParseMarker("\xE2\x98\x90", value) == Marker::TaskOpen, 422);
+    RAYOPDF_CHECK(ParseMarker("\xE2\x98\x91", value) == Marker::TaskDone, 423);
+    RAYOPDF_CHECK(ParseMarker("\xE2\x98\x92", value) == Marker::TaskDone, 424);
+    for (const char* none : {"", "+", "--", "**", "\xC2\xB7\xC2\xB7", "\xE2\x80\xA0", "\xE2\x80\xA2x", "x", "\xEF\x82\xB6",
+                             "\xC2\xA0", "1", "123456789."})
+        RAYOPDF_CHECK(ParseMarker(none, value) == Marker::None, 425);
+    RAYOPDF_CHECK(ParseMarker("12.", value) == Marker::Number && value == 12, 426);
+    RAYOPDF_CHECK(ParseMarker("(iv)", value) == Marker::Roman && value == 4, 427);
+    RAYOPDF_CHECK(ParseMarker("b)", value) == Marker::Letter && value == 2, 428);
+    RAYOPDF_CHECK(ParseMarker("-.", value) == Marker::None, 429);
+}
+
 } // namespace
 
 int main() {
@@ -1095,6 +1120,7 @@ int main() {
     TestAlertAndListings();
     TestLinksMathAndNumbering();
     TestTitleBlockAndRtlStop();
+    TestMarkers();
     TestMonospaceDocument();
     std::puts("test_layout: all checks passed");
     return 0;

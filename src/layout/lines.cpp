@@ -482,7 +482,7 @@ void MarkStruck(PageData& page) {
 Marker ParseMarker(std::string_view t, uint32_t& value) {
     value = 0;
     if (t.empty() || t.size() > 8) return Marker::None;
-    static const char* const kBullets[] = {
+    static constexpr std::string_view kBullets[] = {
         "\xE2\x80\xA2", "\xE2\x97\xA6", "\xE2\x96\xAA", "\xE2\x96\xAB", "\xE2\x97\x8F", "\xE2\x97\x8B",
         "\xE2\x80\xA3", "\xE2\x81\x83", "\xE2\x80\x93", "-",            "*",            "\xC2\xB7",
         "\xE2\x96\xA0", "\xE2\x96\xA1", "\xE2\x96\xBA", "\xE2\x96\xB6", "\xE2\x9E\xA2", "\xE2\x9E\xA4",
@@ -490,10 +490,14 @@ Marker ParseMarker(std::string_view t, uint32_t& value) {
         "\xEF\x82\xA7", "\xEF\x83\x98", "\xEF\x81\xB6", "\xEF\x82\xA8", "\xE2\x80\x94", "\xE2\x9C\x93",
         "\xE2\x9C\x94",
     };
-    for (const char* b : kBullets)
-        if (t == b) return Marker::Bullet;
-    if (t == "\xE2\x98\x90") return Marker::TaskOpen;                            // ☐
-    if (t == "\xE2\x98\x91" || t == "\xE2\x98\x92") return Marker::TaskDone;     // ☑ ☒
+    // Bullets and task boxes are at most three bytes and start with one of these.
+    const unsigned char lead = static_cast<unsigned char>(t[0]);
+    if (t.size() <= 3 && (lead == '-' || lead == '*' || lead == 0xC2 || lead == 0xE2 || lead == 0xEF)) {
+        for (const std::string_view b : kBullets)
+            if (t == b) return Marker::Bullet;
+        if (t == "\xE2\x98\x90") return Marker::TaskOpen;                            // ☐
+        if (t == "\xE2\x98\x91" || t == "\xE2\x98\x92") return Marker::TaskDone;     // ☑ ☒
+    }
     // Enumerators: "N." "N)" "(N)" with N digits, one lowercase letter or a lowercase roman numeral.
     std::string_view core = t;
     bool parenthesized = false;
