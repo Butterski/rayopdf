@@ -224,7 +224,7 @@ void TestDuplicateCells() {
         AddText(pages[0], "strong", at + 1.49f, 701.49f, 10);
         const std::string md = Run(pages);
         Show("duplicate cells", md);
-        RAYOPDF_CHECK(md == "Plain **strong**\n", 484);
+        RAYOPDF_CHECK(md == "Plain **strong**\n", 430);
     }
 }
 
@@ -238,7 +238,7 @@ void TestNonFiniteGlyph() {
         pages[0].glyphs.back().u1 = bad;
         const std::string md = Run(pages);
         Show("non-finite glyph", md);
-        RAYOPDF_CHECK(Contains(md, "Words on a page."), 489);
+        RAYOPDF_CHECK(Contains(md, "Words on a page."), 431);
     }
 }
 

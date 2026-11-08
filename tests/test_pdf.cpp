@@ -1169,51 +1169,51 @@ void TestSyntaxReaders() {
     Syntax::Builder views(arena, true);
     std::string_view out;
     Cursor hex{"<48 65 6C6c\n6> x", 0};
-    RAYOPDF_CHECK(Syntax::ReadHexString(hex, copies, out) && out == "Hel\x6C\x60" && hex.pos == 14, 252);
+    RAYOPDF_CHECK(Syntax::ReadHexString(hex, copies, out) && out == "Hel\x6C\x60" && hex.pos == 14, 257);
     Cursor empty{"< >", 0};
-    RAYOPDF_CHECK(Syntax::ReadHexString(empty, copies, out) && out.empty() && empty.pos == 3, 252);
+    RAYOPDF_CHECK(Syntax::ReadHexString(empty, copies, out) && out.empty() && empty.pos == 3, 257);
     Cursor bad{"<41x42>", 0};
-    RAYOPDF_CHECK(!Syntax::ReadHexString(bad, copies, out) && bad.pos == 4, 252);
+    RAYOPDF_CHECK(!Syntax::ReadHexString(bad, copies, out) && bad.pos == 4, 257);
     Cursor open{"<4142", 0};
-    RAYOPDF_CHECK(!Syntax::ReadHexString(open, copies, out) && open.pos == 5, 252);
+    RAYOPDF_CHECK(!Syntax::ReadHexString(open, copies, out) && open.pos == 5, 257);
 
     const std::string_view plain = "(plain text) Tj";
     Cursor viewed{plain, 0};
     RAYOPDF_CHECK(Syntax::ReadLiteralString(viewed, views, out) && out == "plain text" &&
                       out.data() == plain.data() + 1 && viewed.pos == 12,
-                  253);
+                  258);
     Cursor copied{plain, 0};
     RAYOPDF_CHECK(Syntax::ReadLiteralString(copied, copies, out) && out == "plain text" &&
                       out.data() != plain.data() + 1 && copied.pos == 12,
-                  253);
+                  258);
     Cursor escaped{"(a\\)b(c)d\r\ne\\101) Tj", 0};
-    RAYOPDF_CHECK(Syntax::ReadLiteralString(escaped, views, out) && out == "a)b(c)d\neA" && escaped.pos == 17, 253);
+    RAYOPDF_CHECK(Syntax::ReadLiteralString(escaped, views, out) && out == "a)b(c)d\neA" && escaped.pos == 17, 258);
     Cursor unended{"(abc", 0};
-    RAYOPDF_CHECK(!Syntax::ReadLiteralString(unended, views, out), 253);
+    RAYOPDF_CHECK(!Syntax::ReadLiteralString(unended, views, out), 258);
     const std::string_view name = "/F1 12 Tf";
     Cursor named{name, 0};
-    RAYOPDF_CHECK(Syntax::ReadName(named, views, out) && out == "F1" && out.data() == name.data() + 1, 253);
+    RAYOPDF_CHECK(Syntax::ReadName(named, views, out) && out == "F1" && out.data() == name.data() + 1, 258);
     Cursor hashed{"/A#42 ", 0};
-    RAYOPDF_CHECK(Syntax::ReadName(hashed, views, out) && out == "AB" && hashed.pos == 5, 253);
+    RAYOPDF_CHECK(Syntax::ReadName(hashed, views, out) && out == "AB" && hashed.pos == 5, 258);
 
     PdfValue value;
     Cursor reference{"12 0 R", 0};
     RAYOPDF_CHECK(Syntax::ParseValue(reference, Syntax::Mode::File, 0, copies, value) && value.IsRef() &&
                       value.refNum == 12 && reference.pos == 6,
-                  254);
+                  259);
     Cursor sign{"+12 0 R", 0};
     RAYOPDF_CHECK(Syntax::ParseValue(sign, Syntax::Mode::File, 0, copies, value) &&
                       value.type == PdfValue::Type::Int && value.integer == 12 && sign.pos == 3,
-                  254);
+                  259);
     Cursor content{"12 0 R", 0};
     RAYOPDF_CHECK(Syntax::ParseValue(content, Syntax::Mode::Content, 0, copies, value) &&
                       value.type == PdfValue::Type::Int && content.pos == 2,
-                  254);
+                  259);
     Cursor numbers{"[-.5 3. 12345678901234567890]", 0};
     RAYOPDF_CHECK(Syntax::ParseValue(numbers, Syntax::Mode::Content, 0, copies, value) && value.IsArray() &&
                       value.Array().size() == 3 && value.Array()[0].real == -0.5 && value.Array()[1].real == 3.0 &&
                       value.Array()[2].type == PdfValue::Type::Real && value.Array()[2].real == 12345678901234567890.0,
-                  254);
+                  259);
     // The reference look-ahead: comments and line ends between the tokens; and what is no
     // reference (a six-digit generation, "Rx", a generation past 65535, a name after).
     const struct {
