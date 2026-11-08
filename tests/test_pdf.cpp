@@ -160,6 +160,64 @@ std::string DeflateZeros(size_t matches) {
     return w.Finish();
 }
 
+// A raw deflate block with codes of every length up to 15: literal/length lengths 'a' + i -> i + 1
+// (i < 13), 257 (match length 3) -> 14, 256 and 'z' -> 15; distance lengths i -> i + 1 (i < 9),
+// 9 -> 9. Codes longer than the decoder's first-level tables. `expected` gets the output.
+std::string DeflateLongCodes(std::string& expected) {
+    uint8_t lengths[258 + 10] = {};
+    for (int i = 0; i < 13; i++) lengths['a' + i] = static_cast<uint8_t>(i + 1);
+    lengths[257] = 14;
+    lengths[256] = 15;
+    lengths['z'] = 15;
+    for (int i = 0; i < 9; i++) lengths[258 + i] = static_cast<uint8_t>(i + 1);
+    lengths[258 + 9] = 9;
+    // Canonical codes of the two codes.
+    uint32_t codes[258 + 10] = {};
+    for (const auto& [from, count] : {std::pair<int, int>{0, 258}, std::pair<int, int>{258, 10}}) {
+        uint32_t next[17] = {};
+        uint32_t perLength[16] = {};
+        for (int s = from; s < from + count; s++) perLength[lengths[s]]++;
+        perLength[0] = 0;
+        for (int bits = 1, code = 0; bits <= 15; bits++) {
+            code = (code + static_cast<int>(perLength[bits - 1])) << 1;
+            next[bits] = static_cast<uint32_t>(code);
+        }
+        for (int s = from; s < from + count; s++) {
+            if (lengths[s] != 0) codes[s] = next[lengths[s]]++;
+        }
+    }
+    BitWriter w;
+    w.Put(1, 1);    // final
+    w.Put(2, 2);    // dynamic codes
+    w.Put(1, 5);    // 258 literal/length codes
+    w.Put(9, 5);    // 10 distance codes
+    w.Put(15, 4);   // 19 code length codes
+    // Code length codes 0-15 of four bits each (code = symbol), none for 16-18.
+    const int order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+    for (int symbol : order) w.Put(symbol >= 16 ? 0 : 4, 3);
+    for (uint8_t length : lengths) w.Code(length, 4);
+    const auto literal = [&](char c) {
+        w.Code(codes[static_cast<uint8_t>(c)], lengths[static_cast<uint8_t>(c)]);
+        expected.push_back(c);
+    };
+    for (int round = 0; round < 3; round++) {
+        for (char c = 'a'; c < 'a' + 13; c++) literal(c);
+        literal('z');
+    }
+    // Matches of 3 at each distance code, the extra bits all ones.
+    const int extra[10] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3};
+    const int base[10] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25};
+    for (int d = 0; d < 10; d++) {
+        w.Code(codes[257], lengths[257]);
+        w.Code(codes[258 + d], lengths[258 + d]);
+        w.Put((1u << extra[d]) - 1, extra[d]);
+        const size_t back = static_cast<size_t>(base[d] + (1 << extra[d]) - 1);
+        for (int i = 0; i < 3; i++) expected.push_back(expected[expected.size() - back]);
+    }
+    w.Code(codes[256], lengths[256]);
+    return w.Finish();
+}
+
 // An LZW encoder (ISO 32000-1 section 7.4.4.2) for round trips.
 std::string LzwEncode(std::string_view in, int earlyChange) {
     std::string out;
@@ -359,6 +417,16 @@ void TestFlate() {
     RAYOPDF_CHECK(out.find_first_not_of('\0') == std::string::npos, 209);
     const std::string small = DeflateZeros(10);
     RAYOPDF_CHECK(Decode(Filters::Kind::Flate, small, out) == StreamStatus::Ok && out == std::string(2581, '\0'), 209);
+    // Codes of every length up to 15 (second-level tables) in both codes; cut anywhere, the output
+    // decoded before the cut is kept.
+    std::string longExpected;
+    const std::string longCodes = DeflateLongCodes(longExpected);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, longCodes, out) == StreamStatus::Ok && out == longExpected, 270);
+    for (size_t cut = 0; cut < longCodes.size(); cut++) {
+        const StreamStatus status = Decode(Filters::Kind::Flate, longCodes.substr(0, cut), out);
+        RAYOPDF_CHECK(status == StreamStatus::Salvaged || (status == StreamStatus::Corrupt && out.empty()), 270);
+        RAYOPDF_CHECK(longExpected.compare(0, out.size(), out) == 0, 270);
+    }
 }
 
 void TestLzw() {

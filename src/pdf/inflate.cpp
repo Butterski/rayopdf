@@ -110,51 +110,130 @@ inline unsigned Reverse(unsigned code, unsigned bits) {
     return (static_cast<unsigned>(kReversed.of[code & 255]) << 8 | kReversed.of[(code >> 8) & 255]) >> (16 - bits);
 }
 
+inline unsigned HighestBit(uint32_t value) {
+#if defined(__GNUC__) || defined(__clang__)
+    return 31u - static_cast<unsigned>(__builtin_clz(value));
+#else
+    unsigned bit = 0;
+    while (value >>= 1) bit++;
+    return bit;
+#endif
+}
+
+// Copies the first `size` entries of `table` (a power of two) right after themselves.
+inline void DoubleTable(uint32_t* table, size_t size) {
+    uint32_t* const to = table + size;
+#if RAYOPDF_INFLATE_SSE2
+    const auto copy = [&](size_t index) {
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(to + index),
+                         _mm_loadu_si128(reinterpret_cast<const __m128i*>(table + index)));
+    };
+    if (size >= 16) {
+        for (size_t index = 0; index < size; index += 16) {
+            copy(index);
+            copy(index + 4);
+            copy(index + 8);
+            copy(index + 12);
+        }
+        return;
+    }
+    if (size >= 4) {
+        for (size_t index = 0; index < size; index += 4) copy(index);
+        return;
+    }
+#endif
+    for (size_t index = 0; index < size; index++) to[index] = table[index];
+}
+
 // The decode table of the canonical code with `lengths` (0 for an unused symbol, at most 15),
 // as zlib builds it: false for an over-subscribed code, and for an incomplete one unless it has a
 // single code of one bit or, where `allowEmpty`, no code at all. `incompleteAllowed` false refuses
 // every incomplete code (the code length code). False also when the subtables would pass
 // `tableSize` entries (which the bound above rules out).
+//
+// A complete code's root is filled in canonical order (by length, then symbol): the codes of one
+// length go into the first 2^length entries, which are then doubled for the next length, so every
+// entry is written once and the copies go 16 bytes at a time. The codes longer than the root then
+// fill their subtables in symbol order, which places the subtables where a symbol-order build
+// would.
 template <typename EntryOf>
 bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
                 bool incompleteAllowed, bool allowEmpty, EntryOf entryOf) {
     unsigned counts[16] = {};
     for (unsigned symbol = 0; symbol < count; symbol++) counts[lengths[symbol]]++;
+    const unsigned unused = counts[0];
     counts[0] = 0;
     int left = 1;
     unsigned codes = 0;
-    unsigned longest = 0;
     for (unsigned bits = 1; bits <= 15; bits++) {
         left <<= 1;
         left -= static_cast<int>(counts[bits]);
         if (left < 0) return false;
         codes += counts[bits];
-        if (counts[bits]) longest = bits;
     }
     const size_t rootSize = size_t(1) << root;
     if (left > 0) {
+        // A single code of one bit or none: its root entries and invalid ones between.
         const bool single = codes == 1 && counts[1] == 1;
         if (!incompleteAllowed || !(single || (codes == 0 && allowEmpty))) return false;
         for (size_t index = 0; index < rootSize; index++) table[index] = Entry(0, 0, kInvalid, 1);
+        for (unsigned symbol = 0; symbol < count; symbol++) {
+            if (lengths[symbol] == 0) continue;
+            for (size_t index = 0; index < rootSize; index += 2) table[index] = entryOf(symbol, 1);
+        }
+        return true;
     }
+    // The symbols sorted by length, then symbol: those of the codes up to the root first, then the
+    // unused and the longer ones (not read).
+    unsigned offsets[16];
+    offsets[1] = 0;
+    for (unsigned bits = 1; bits < root; bits++) offsets[bits + 1] = offsets[bits] + counts[bits];
+    offsets[0] = offsets[root] + counts[root];
+    for (unsigned bits = root + 1, at = offsets[0] + unused; bits <= 15; bits++) {
+        offsets[bits] = at;
+        at += counts[bits];
+    }
+    uint16_t sorted[288];
+    for (unsigned symbol = 0; symbol < count; symbol++) sorted[offsets[lengths[symbol]]++] = static_cast<uint16_t>(symbol);
+    // The root, by length: `code` is the next code of `length` bits, bit-reversed (its index), and
+    // the first `filled` entries hold the codes so far, repeated.
+    const uint16_t* nextSymbol = sorted;
+    unsigned length = 1;
+    while (counts[length] == 0) length++;
+    size_t filled = size_t(1) << length;
+    unsigned code = 0;
+    for (; length <= root; length++) {
+        if ((size_t(1) << length) > filled) {
+            DoubleTable(table, filled);
+            filled <<= 1;
+        }
+        for (unsigned remaining = counts[length]; remaining > 0; remaining--) {
+            table[code] = entryOf(*nextSymbol++, length);
+            if (code == filled - 1) {
+                // The last code (all ones): the code ends here.
+                for (; filled < rootSize; filled <<= 1) DoubleTable(table, filled);
+                return true;
+            }
+            // The next code: a bit-reversed increment.
+            const unsigned bit = 1u << HighestBit(code ^ static_cast<unsigned>(filled - 1));
+            code = (code & (bit - 1)) | bit;
+        }
+    }
+    // Codes longer than the root (only they are left): each root prefix of them leads to a subtable.
     unsigned next[16] = {};
-    for (unsigned bits = 1, code = 0; bits <= 15; bits++) {
-        code = (code + counts[bits - 1]) << 1;
-        next[bits] = code;
+    for (unsigned bits = 1, first = 0; bits <= 15; bits++) {
+        first = (first + counts[bits - 1]) << 1;
+        next[bits] = first;
     }
     const unsigned subBits = 15 - root;
     size_t subNext = rootSize;
     uint16_t subOf[1 << 11];  // the subtable of each root prefix, 0 for none
-    if (longest > root) std::memset(subOf, 0, sizeof(uint16_t) << root);
+    std::memset(subOf, 0, sizeof(uint16_t) << root);
     for (unsigned symbol = 0; symbol < count; symbol++) {
         const unsigned bits = lengths[symbol];
-        if (bits == 0) continue;
+        if (bits <= root) continue;
         const unsigned reversed = Reverse(next[bits]++, bits);
         const uint32_t entry = entryOf(symbol, bits);
-        if (bits <= root) {
-            for (size_t index = reversed; index < rootSize; index += size_t(1) << bits) table[index] = entry;
-            continue;
-        }
         const unsigned prefix = reversed & static_cast<unsigned>(rootSize - 1);
         if (subOf[prefix] == 0) {
             if (subNext + (size_t(1) << subBits) > tableSize) return false;
