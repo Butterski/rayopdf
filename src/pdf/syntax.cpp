@@ -419,16 +419,20 @@ struct NextDigits {
 // The same test byte by byte: white space, a token of at most five digits, white space, the
 // token "R". Most numbers (array items) fail at the second token's end; a '%' goes to the
 // general form. Where the second token is all digits and no reference follows, `next` (when not
-// null) receives it.
-void ReadReference(Cursor& c, PdfValue& out, NextDigits* next) {
+// null) receives it. Inline: every Int of an object runs it.
+RAYOPDF_HOT_INLINE void ReadReference(Cursor& c, PdfValue& out, NextDigits* next) {
     const char* const data = c.data.data();
     const size_t size = c.data.size();
     size_t at = c.pos;
     while (at < size && IsWhite(static_cast<unsigned char>(data[at]))) ++at;
     if (at < size && data[at] == '%') return ReadReferenceTokens(c, out);
     const size_t first = at;
+    // At most six digits are read: a sixth means no generation.
+    const size_t limit = size - first > 6 ? first + 6 : size;
     uint32_t gen = 0;
-    while (at < size && at - first <= 5 && data[at] >= '0' && data[at] <= '9') gen = gen * 10 + static_cast<uint32_t>(data[at++] - '0');
+    for (unsigned d; at < limit && (d = static_cast<unsigned>(static_cast<unsigned char>(data[at])) - '0') < 10; ++at) {
+        gen = gen * 10 + d;
+    }
     // The token is all digits only if it ends here (a sixth digit or another regular byte: not).
     if (at == first || at - first > 5 || (at < size && IsRegular(static_cast<unsigned char>(data[at])))) return;
     const size_t digitsEnd = at;
