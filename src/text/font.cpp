@@ -922,13 +922,18 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
     const bool hasToUnicode = LoadToUnicode(doc, dict, repairContext, toUnicode, nullptr, toUnicodeUntrusted);
 
     // Unicode per code, first source wins (algorithms §3.1); an untrustworthy ToUnicode comes last.
+    // The map's entries are sorted by code, one per code: walked along with the codes.
     bool needProgram = false;
     std::string text, repaired;
     const EncodingTexts* baseTexts = hasBase && !builtin ? &EncodingTextsFor(base, zapf) : nullptr;
+    const UnicodeEntry* unicodeAt = toUnicode.entries.data();
+    const UnicodeEntry* const unicodeEnd = unicodeAt + toUnicode.entries.size();
+    font.pool.reserve(512);
     for (int c = 0; c < 256; ++c) {
         if (hasToUnicode && !toUnicodeUntrusted) {
-            if (const UnicodeEntry* entry = toUnicode.Find(static_cast<uint32_t>(c))) {
-                SetSlot(font, static_cast<uint8_t>(c), toUnicode.Text(*entry), UnicodeSource::ToUnicode);
+            while (unicodeAt != unicodeEnd && unicodeAt->code < static_cast<uint32_t>(c)) ++unicodeAt;
+            if (unicodeAt != unicodeEnd && unicodeAt->code == static_cast<uint32_t>(c)) {
+                SetSlot(font, static_cast<uint8_t>(c), toUnicode.Text(*unicodeAt), UnicodeSource::ToUnicode);
                 continue;
             }
         }
