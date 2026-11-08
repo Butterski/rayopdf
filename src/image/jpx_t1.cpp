@@ -6,11 +6,17 @@
 // carry one fractional bit and a newly significant coefficient starts at the midpoint of its
 // interval (1.5 at its bit-plane), which a refinement bit moves up or down by half a step.
 //
-// Flags: one 16-bit word per coefficient, laid out stripe column by stripe column (the four rows
-// of a column adjacent) with a border of one coefficient so that the neighbours of every
-// coefficient exist. A coefficient that becomes significant sets its bit in the words of its
-// eight neighbours, so a context is a table lookup on one word, and one 64-bit load tells whether
-// a column has anything to code in a pass.
+// Flags: one 32-bit word per column of a stripe (four rows), OpenJPEG's layout. Bits 0-17 hold
+// the significance of the six rows from the one above the stripe to the one below it, in this
+// column and its two neighbours: row r (-1 to 4) at bit 3 * (r + 1), west, this column, east. So
+// the 3 x 3 neighbourhood of row k is the nine bits from 3k, its zero-coding context one table
+// lookup, and a coefficient that becomes significant sets one bit in its own word and in each
+// neighbouring column's (and in the next or previous stripe's for the first and last row). Bit 18
+// is the sign of the row above, bit 31 the sign of the row below; row k has its sign, refined and
+// visited bits at 19, 20 and 21 plus 3k. A column whose word is zero has nothing to code in the
+// significance pass and starts the run-length mode in the cleanup pass. With the vertically causal
+// style the first row never marks the stripe above, so the last row of a stripe never sees the
+// next one.
 #include "image/jpx_internal.h"
 
 #include <algorithm>
@@ -19,26 +25,13 @@
 namespace RayoPdf::Image::Jpx::Internal {
 namespace {
 
-// The significance of the eight neighbours, the signs of the four direct ones.
-constexpr uint16_t kSigN = 1u << 0;
-constexpr uint16_t kSigE = 1u << 1;
-constexpr uint16_t kSigS = 1u << 2;
-constexpr uint16_t kSigW = 1u << 3;
-constexpr uint16_t kSigNE = 1u << 4;
-constexpr uint16_t kSigSE = 1u << 5;
-constexpr uint16_t kSigSW = 1u << 6;
-constexpr uint16_t kSigNW = 1u << 7;
-constexpr uint16_t kSgnN = 1u << 8;
-constexpr uint16_t kSgnE = 1u << 9;
-constexpr uint16_t kSgnS = 1u << 10;
-constexpr uint16_t kSgnW = 1u << 11;
-constexpr uint16_t kSig = 1u << 12;      // the coefficient is significant
-constexpr uint16_t kRefined = 1u << 13;  // it has had a magnitude refinement bit
-constexpr uint16_t kVisited = 1u << 14;  // coded in this bit-plane's significance pass
-constexpr uint16_t kNeighbours = 0xFF;
-// With the vertically causal style, the next stripe's coefficients count as insignificant for the
-// last row of a stripe.
-constexpr uint16_t kSouth = kSigS | kSigSE | kSigSW | kSgnS;
+constexpr uint32_t kSigThis = 1u << 4;     // row 0's own significance (shifted by 3k for row k)
+constexpr uint32_t kSignShift = 19;        // row 0's sign
+constexpr uint32_t kRefined = 1u << 20;    // row 0 has had a magnitude refinement bit
+constexpr uint32_t kVisited = 1u << 21;    // row 0 was coded in this bit-plane's significance pass
+constexpr uint32_t kNeighbours = 0x1EF;    // the 3 x 3 window without its centre
+constexpr uint32_t kSigRows = kSigThis * 0x249u;     // own significance of the four rows
+constexpr uint32_t kVisitedRows = kVisited * 0x249u;  // visited bits of the four rows
 
 // Contexts (T.800 tables D.1 to D.4): 0-8 zero coding, 9-13 sign, 14-16 magnitude refinement,
 // 17 run length, 18 uniform.
@@ -47,17 +40,20 @@ constexpr int kCtxUniform = 18;
 constexpr int kContexts = 19;
 
 struct Luts {
-    uint8_t zeroCoding[4][256];  // by orientation (LL, HL, LH, HH) and the neighbour bits
-    uint8_t sign[256];           // context | (xor bit << 7), by the direct neighbours' bits
+    uint8_t zeroCoding[4][512];  // by orientation (LL, HL, LH, HH) and the 3 x 3 window
+    // By the direct neighbours: bits 1, 3, 5, 7 the significance of N, W, E, S (as in the
+    // window), bits 0, 2, 4, 6 the signs of W, E, N, S. Context | (xor bit << 7).
+    uint8_t sign[256];
 };
 
 constexpr Luts MakeLuts() {
     Luts luts{};
     for (int orientation = 0; orientation < 4; orientation++) {
-        for (int f = 0; f < 256; f++) {
-            int h = ((f & kSigE) != 0) + ((f & kSigW) != 0);
-            int v = ((f & kSigN) != 0) + ((f & kSigS) != 0);
-            const int d = ((f & kSigNE) != 0) + ((f & kSigSE) != 0) + ((f & kSigSW) != 0) + ((f & kSigNW) != 0);
+        for (int f = 0; f < 512; f++) {
+            // Window bits: 0 NW, 1 N, 2 NE, 3 W, 4 centre, 5 E, 6 SW, 7 S, 8 SE.
+            int h = ((f >> 3) & 1) + ((f >> 5) & 1);
+            int v = ((f >> 1) & 1) + ((f >> 7) & 1);
+            const int d = (f & 1) + ((f >> 2) & 1) + ((f >> 6) & 1) + ((f >> 8) & 1);
             int n = 0;
             if (orientation == 3) {
                 const int hv = h + v;
@@ -84,10 +80,9 @@ constexpr Luts MakeLuts() {
         }
     }
     for (int i = 0; i < 256; i++) {
-        // i: significance of N E S W in bits 0-3, their signs in bits 4-7.
         auto contribution = [i](int sigBit, int sgnBit) { return (i & sigBit) ? ((i & sgnBit) ? -1 : 1) : 0; };
-        int h = contribution(2, 32) + contribution(8, 128);
-        int v = contribution(1, 16) + contribution(4, 64);
+        int h = contribution(8, 1) + contribution(32, 4);
+        int v = contribution(2, 16) + contribution(128, 64);
         h = h > 0 ? 1 : (h < 0 ? -1 : 0);
         v = v > 0 ? 1 : (v < 0 ? -1 : 0);
         int context = 9;
@@ -106,17 +101,15 @@ constexpr Luts MakeLuts() {
 
 constexpr Luts kLuts = MakeLuts();
 
-inline int SignIndex(uint16_t f) { return (f & 0xF) | ((f >> 4) & 0xF0); }
-
 // T.800 table C.2: Qe, the next state after an MPS and after an LPS, and whether an LPS switches
 // the MPS sense.
-struct MqState {
+struct MqRow {
     uint16_t qe;
     uint8_t nmps;
     uint8_t nlps;
     uint8_t switchMps;
 };
-constexpr MqState kStates[47] = {
+constexpr MqRow kMqRows[47] = {
     {0x5601, 1, 1, 1},   {0x3401, 2, 6, 0},   {0x1801, 3, 9, 0},   {0x0AC1, 4, 12, 0},  {0x0521, 5, 29, 0},
     {0x0221, 38, 33, 0}, {0x5601, 7, 6, 1},   {0x5401, 8, 14, 0},  {0x4801, 9, 14, 0},  {0x3801, 10, 14, 0},
     {0x3001, 11, 17, 0}, {0x2401, 12, 18, 0}, {0x1C01, 13, 20, 0}, {0x1601, 29, 21, 0}, {0x5601, 15, 14, 1},
@@ -129,12 +122,31 @@ constexpr MqState kStates[47] = {
     {0x0001, 45, 43, 0}, {0x5601, 46, 46, 0},
 };
 
-// A context: its state index times two plus its MPS.
-void ResetContexts(uint8_t* contexts) {
-    std::memset(contexts, 0, kContexts);
-    contexts[0] = 4 << 1;
-    contexts[kCtxRunLength] = 3 << 1;
-    contexts[kCtxUniform] = 46 << 1;
+// A context is one word: its state's Qe in the high half, the state index times two plus the MPS
+// in the low bits, so a decision reads Qe and the MPS without another load. kMqNext gives the
+// words after decoding the MPS ([0]) and the LPS ([1]).
+constexpr uint32_t MqWord(int state, int mps) { return (uint32_t(kMqRows[state].qe) << 16) | uint32_t(2 * state + mps); }
+
+struct MqNext {
+    uint32_t next[94][2];
+};
+constexpr MqNext MakeMqNext() {
+    MqNext t{};
+    for (int state = 0; state < 47; state++) {
+        for (int mps = 0; mps < 2; mps++) {
+            t.next[2 * state + mps][0] = MqWord(kMqRows[state].nmps, mps);
+            t.next[2 * state + mps][1] = MqWord(kMqRows[state].nlps, mps ^ kMqRows[state].switchMps);
+        }
+    }
+    return t;
+}
+constexpr MqNext kMqNext = MakeMqNext();
+
+void ResetContexts(uint32_t* contexts) {
+    for (int i = 0; i < kContexts; i++) contexts[i] = MqWord(0, 0);
+    contexts[0] = MqWord(4, 0);
+    contexts[kCtxRunLength] = MqWord(3, 0);
+    contexts[kCtxUniform] = MqWord(46, 0);
 }
 
 #if defined(__GNUC__)
@@ -179,7 +191,18 @@ struct Mq {
         }
     }
 
+    // Shifts A (below 0x8000, not zero) and C left until A reaches 0x8000, reading a byte each
+    // time CT runs out: the shifts at once when CT covers them.
     JPX_INLINE void Renormalize() {
+#if defined(__GNUC__)
+        const uint32_t n = static_cast<uint32_t>(__builtin_clz(a)) - 16;
+        if (n <= ct) {
+            a <<= n;
+            c <<= n;
+            ct -= n;
+            return;
+        }
+#endif
         do {
             if (ct == 0) ByteIn();
             a <<= 1;
@@ -188,36 +211,25 @@ struct Mq {
         } while (a < 0x8000);
     }
 
-    JPX_INLINE uint32_t Decode(uint8_t& context) {
-        const MqState& state = kStates[context >> 1];
-        const uint32_t mps = context & 1u;
-        const uint32_t qe = state.qe;
+    // C.3.2 with the conditional exchanges: `lps` is whether the decision is the LPS.
+    JPX_INLINE uint32_t Decode(uint32_t& context) {
+        const uint32_t word = context;
+        const uint32_t qe = word >> 16;
+        const uint32_t mps = word & 1u;
         a -= qe;
         if ((c >> 16) < qe) {
-            uint32_t d;
-            if (a < qe) {
-                d = mps;
-                context = static_cast<uint8_t>((state.nmps << 1) | mps);
-            } else {
-                d = mps ^ 1u;
-                context = static_cast<uint8_t>((state.nlps << 1) | (mps ^ state.switchMps));
-            }
+            const uint32_t lps = a < qe ? 0 : 1;
+            context = kMqNext.next[word & 0x7F][lps];
             a = qe;
             Renormalize();
-            return d;
+            return mps ^ lps;
         }
         c -= qe << 16;
         if ((a & 0x8000) == 0) {
-            uint32_t d;
-            if (a < qe) {
-                d = mps ^ 1u;
-                context = static_cast<uint8_t>((state.nlps << 1) | (mps ^ state.switchMps));
-            } else {
-                d = mps;
-                context = static_cast<uint8_t>((state.nmps << 1) | mps);
-            }
+            const uint32_t lps = a < qe ? 1 : 0;
+            context = kMqNext.next[word & 0x7F][lps];
             Renormalize();
-            return d;
+            return mps ^ lps;
         }
         return mps;
     }
@@ -255,180 +267,249 @@ struct Raw {
     }
 };
 
-// Four flag words, one per row of a stripe column, in one 64-bit word.
-constexpr uint64_t kRows = 0x0001000100010001ull;
-
-inline uint64_t Column(const uint16_t* f) {
-    uint64_t v;
-    std::memcpy(&v, f, sizeof v);
-    return v;
-}
-
-// The code-block's flags, stripe by stripe: a stripe holds its columns (plus a border column on
-// each side) one after the other, a column its four rows; a border stripe above and below. The
-// four rows of a column load as one 64-bit word.
+// The code-block's flags: stripe by stripe, a word per column with a border column on each side,
+// and a border stripe above and below. The passes keep the current column's word in a local and
+// store it when they leave the column.
 struct Block {
     int width;
     int height;
-    ptrdiff_t stripeSize;  // flag words per stripe: (width + 2) * 4
-    uint16_t* flags;       // stripe 0, column 0, row 0
+    ptrdiff_t stride;  // words per stripe: width + 2
+    uint32_t* flags;   // stripe 0, column 0
     int32_t* data;
     const uint8_t* zeroCoding;
-    uint16_t viewMask[4];  // what row k sees of its flags (the vertically causal style hides south)
-    ptrdiff_t north[4];  // offset of the row above, by row within the stripe
-    ptrdiff_t south[4];
-    uint8_t contexts[kContexts];
+    bool causal;
+    uint32_t contexts[kContexts];
 
-    void Init() {
-        for (int k = 0; k < 4; k++) {
-            north[k] = k > 0 ? -1 : -stripeSize + 3;
-            south[k] = k < 3 ? 1 : stripeSize - 3;
+    // Row k of the column at `fp` (local word f) became significant with sign s.
+    JPX_INLINE void SetSignificant(uint32_t& f, uint32_t* fp, int k, uint32_t s) const {
+        const int shift = 3 * k;
+        f |= (kSigThis | (s << kSignShift)) << shift;
+        fp[-1] |= (1u << 5) << shift;
+        fp[1] |= (1u << 3) << shift;
+        if (k == 0 && !causal) {
+            uint32_t* north = fp - stride;
+            north[0] |= (1u << 16) | (s << 31);
+            north[-1] |= 1u << 17;
+            north[1] |= 1u << 15;
+        }
+        if (k == 3) {
+            uint32_t* south = fp + stride;
+            south[0] |= (1u << 1) | (s << 18);
+            south[-1] |= 1u << 2;
+            south[1] |= 1u << 0;
         }
     }
 
-    uint16_t* ColumnFlags(int stripe, int x) const { return flags + stripe * stripeSize + 4 * ptrdiff_t(x); }
-
-    JPX_INLINE void SetSignificant(uint16_t* f, int k, uint32_t negative) {
-        const ptrdiff_t n = north[k];
-        const ptrdiff_t s = south[k];
-        f[0] |= kSig;
-        f[n] |= static_cast<uint16_t>(kSigS | (negative ? kSgnS : 0));
-        f[s] |= static_cast<uint16_t>(kSigN | (negative ? kSgnN : 0));
-        f[-4] |= static_cast<uint16_t>(kSigE | (negative ? kSgnE : 0));
-        f[4] |= static_cast<uint16_t>(kSigW | (negative ? kSgnW : 0));
-        f[n - 4] |= kSigSE;
-        f[n + 4] |= kSigSW;
-        f[s - 4] |= kSigNE;
-        f[s + 4] |= kSigNW;
+    // The sign context index of row k (Luts::sign).
+    JPX_INLINE static uint32_t SignIndex(uint32_t f, const uint32_t* fp, int k) {
+        const int shift = 3 * k;
+        uint32_t lu = (f >> shift) & 0xAAu;
+        lu |= (fp[-1] >> (kSignShift + shift)) & 1u;
+        lu |= (fp[1] >> (kSignShift - 2 + shift)) & 4u;
+        lu |= k == 0 ? (f >> 14) & 16u : (f >> (12 + shift)) & 16u;
+        lu |= (f >> (16 + shift)) & 64u;
+        return lu;
     }
 
-    // The flags of row k of a stripe as its contexts see them.
-    JPX_INLINE uint16_t View(const uint16_t* f, int k) const { return static_cast<uint16_t>(*f & viewMask[k]); }
+    JPX_INLINE void DecodeSign(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
+        const uint8_t sc = kLuts.sign[SignIndex(f, fp, k)];
+        const uint32_t s = mq.Decode(contexts[sc & 0x1F]) ^ (sc >> 7);
+        *d = s ? -oneplushalf : oneplushalf;
+        SetSignificant(f, fp, k, s);
+    }
 
-    JPX_INLINE void DecodeSign(Mq& mq, uint16_t* f, int k, uint16_t view, int32_t* d, int32_t oneplushalf) {
-        const uint8_t sc = kLuts.sign[SignIndex(view)];
-        const uint32_t negative = mq.Decode(contexts[sc & 0x7F]) ^ (sc >> 7);
-        *d = negative ? -oneplushalf : oneplushalf;
-        SetSignificant(f, k, negative);
+    JPX_INLINE void SignificanceStep(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
+        const uint32_t window = f >> (3 * k);
+        if ((window & (kSigThis | kVisited)) != 0 || (window & kNeighbours) == 0) return;
+        if (mq.Decode(contexts[zeroCoding[window & 0x1FF]])) DecodeSign(mq, f, fp, k, d, oneplushalf);
+        f |= kVisited << (3 * k);
+    }
+
+    JPX_INLINE void SignificanceStepRaw(Raw& raw, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
+        const uint32_t window = f >> (3 * k);
+        if ((window & (kSigThis | kVisited)) != 0 || (window & kNeighbours) == 0) return;
+        if (raw.Decode()) {
+            const uint32_t s = raw.Decode();
+            *d = s ? -oneplushalf : oneplushalf;
+            SetSignificant(f, fp, k, s);
+        }
+        f |= kVisited << (3 * k);
+    }
+
+    JPX_INLINE void RefinementStep(Mq& mq, uint32_t& f, int k, int32_t* d, int32_t half) {
+        const uint32_t window = f >> (3 * k);
+        if ((window & (kSigThis | kVisited)) != kSigThis) return;
+        const int context = (window & kRefined) ? 16 : ((window & kNeighbours) ? 15 : 14);
+        const uint32_t bit = mq.Decode(contexts[context]);
+        *d += (bit ^ static_cast<uint32_t>(*d < 0)) ? half : -half;
+        f |= kRefined << (3 * k);
+    }
+
+    JPX_INLINE static void RefinementStepRaw(Raw& raw, uint32_t& f, int k, int32_t* d, int32_t half) {
+        const uint32_t window = f >> (3 * k);
+        if ((window & (kSigThis | kVisited)) != kSigThis) return;
+        const uint32_t bit = raw.Decode();
+        *d += (bit ^ static_cast<uint32_t>(*d < 0)) ? half : -half;
+        f |= kRefined << (3 * k);
+    }
+
+    JPX_INLINE void CleanupStep(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
+        const uint32_t window = f >> (3 * k);
+        if ((window & (kSigThis | kVisited)) == 0 && mq.Decode(contexts[zeroCoding[window & 0x1FF]])) {
+            DecodeSign(mq, f, fp, k, d, oneplushalf);
+        }
     }
 
     void SignificancePass(Mq& state, int bp) {
         Mq mq = state;
         const int32_t one = 1 << bp;
         const int32_t oneplushalf = one | (one >> 1);
+        const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
             const int rows = std::min(4, height - y0);
-            uint16_t* f = ColumnFlags(stripe, 0);
-            int32_t* d = data + static_cast<size_t>(y0) * width;
-            for (int x = 0; x < width; x++, f += 4, d++) {
-                // Nothing significant around and nothing significant here: no decision.
-                if (Column(f) == 0) continue;
-                for (int k = 0; k < rows; k++) {
-                    const uint16_t view = View(f + k, k);
-                    if ((view & (kSig | kVisited)) != 0 || (view & kNeighbours) == 0) continue;
-                    if (mq.Decode(contexts[zeroCoding[view & kNeighbours]])) {
-                        DecodeSign(mq, f + k, k, view, d + static_cast<size_t>(k) * width, oneplushalf);
-                    }
-                    f[k] |= kVisited;
+            uint32_t* fp = flags + stripe * stride;
+            int32_t* d = data + static_cast<size_t>(y0) * w;
+            if (rows == 4) {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    if (f == 0) continue;
+                    SignificanceStep(mq, f, fp, 0, d, oneplushalf);
+                    SignificanceStep(mq, f, fp, 1, d + w, oneplushalf);
+                    SignificanceStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
+                    SignificanceStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                    *fp = f;
+                }
+            } else {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    if (f == 0) continue;
+                    for (int k = 0; k < rows; k++) SignificanceStep(mq, f, fp, k, d + k * w, oneplushalf);
+                    *fp = f;
                 }
             }
         }
         state = mq;
     }
 
-    void SignificancePassRaw(Raw& raw, int bp) {
+    void SignificancePassRaw(Raw& state, int bp) {
+        Raw raw = state;
         const int32_t one = 1 << bp;
         const int32_t oneplushalf = one | (one >> 1);
+        const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
             const int rows = std::min(4, height - y0);
-            uint16_t* f = ColumnFlags(stripe, 0);
-            int32_t* d = data + static_cast<size_t>(y0) * width;
-            for (int x = 0; x < width; x++, f += 4, d++) {
-                if (Column(f) == 0) continue;
-                for (int k = 0; k < rows; k++) {
-                    const uint16_t view = View(f + k, k);
-                    if ((view & (kSig | kVisited)) != 0 || (view & kNeighbours) == 0) continue;
-                    if (raw.Decode()) {
-                        const uint32_t negative = raw.Decode();
-                        d[static_cast<size_t>(k) * width] = negative ? -oneplushalf : oneplushalf;
-                        SetSignificant(f + k, k, negative);
-                    }
-                    f[k] |= kVisited;
-                }
+            uint32_t* fp = flags + stripe * stride;
+            int32_t* d = data + static_cast<size_t>(y0) * w;
+            for (size_t x = 0; x < w; x++, fp++, d++) {
+                uint32_t f = *fp;
+                if (f == 0) continue;
+                for (int k = 0; k < rows; k++) SignificanceStepRaw(raw, f, fp, k, d + k * w, oneplushalf);
+                *fp = f;
             }
         }
+        state = raw;
     }
 
     void RefinementPass(Mq& state, int bp) {
         Mq mq = state;
         const int32_t half = (1 << bp) >> 1;
+        const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
             const int rows = std::min(4, height - y0);
-            uint16_t* f = ColumnFlags(stripe, 0);
-            int32_t* d = data + static_cast<size_t>(y0) * width;
-            for (int x = 0; x < width; x++, f += 4, d++) {
-                if ((Column(f) & (kRows * kSig)) == 0) continue;
-                for (int k = 0; k < rows; k++) {
-                    const uint16_t view = View(f + k, k);
-                    if ((view & (kSig | kVisited)) != kSig) continue;
-                    const int context = (view & kRefined) ? 16 : ((view & kNeighbours) ? 15 : 14);
-                    const uint32_t bit = mq.Decode(contexts[context]);
-                    int32_t& v = d[static_cast<size_t>(k) * width];
-                    v += (bit ^ static_cast<uint32_t>(v < 0)) ? half : -half;
-                    f[k] |= kRefined;
+            uint32_t* fp = flags + stripe * stride;
+            int32_t* d = data + static_cast<size_t>(y0) * w;
+            if (rows == 4) {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    if ((f & kSigRows) == 0) continue;
+                    RefinementStep(mq, f, 0, d, half);
+                    RefinementStep(mq, f, 1, d + w, half);
+                    RefinementStep(mq, f, 2, d + 2 * w, half);
+                    RefinementStep(mq, f, 3, d + 3 * w, half);
+                    *fp = f;
+                }
+            } else {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    if ((f & kSigRows) == 0) continue;
+                    for (int k = 0; k < rows; k++) RefinementStep(mq, f, k, d + k * w, half);
+                    *fp = f;
                 }
             }
         }
         state = mq;
     }
 
-    void RefinementPassRaw(Raw& raw, int bp) {
+    void RefinementPassRaw(Raw& state, int bp) {
+        Raw raw = state;
         const int32_t half = (1 << bp) >> 1;
+        const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
             const int rows = std::min(4, height - y0);
-            uint16_t* f = ColumnFlags(stripe, 0);
-            int32_t* d = data + static_cast<size_t>(y0) * width;
-            for (int x = 0; x < width; x++, f += 4, d++) {
-                if ((Column(f) & (kRows * kSig)) == 0) continue;
-                for (int k = 0; k < rows; k++) {
-                    if ((f[k] & (kSig | kVisited)) != kSig) continue;
-                    const uint32_t bit = raw.Decode();
-                    int32_t& v = d[static_cast<size_t>(k) * width];
-                    v += (bit ^ static_cast<uint32_t>(v < 0)) ? half : -half;
-                    f[k] |= kRefined;
-                }
+            uint32_t* fp = flags + stripe * stride;
+            int32_t* d = data + static_cast<size_t>(y0) * w;
+            for (size_t x = 0; x < w; x++, fp++, d++) {
+                uint32_t f = *fp;
+                if ((f & kSigRows) == 0) continue;
+                for (int k = 0; k < rows; k++) RefinementStepRaw(raw, f, k, d + k * w, half);
+                *fp = f;
             }
         }
+        state = raw;
     }
 
     void CleanupPass(Mq& state, int bp, bool segmentation) {
         Mq mq = state;
         const int32_t one = 1 << bp;
         const int32_t oneplushalf = one | (one >> 1);
-        // A column starts in run-length mode when all four rows are insignificant, not visited
-        // and without significant neighbours (the last row's south ones not counting with the
-        // vertically causal style).
-        const uint64_t busy = kSig | kVisited | kNeighbours;
-        const uint64_t runMask = (kRows * busy) & ~(uint64_t(static_cast<uint16_t>(~viewMask[3])) << 48);
+        const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
             const int rows = std::min(4, height - y0);
-            uint16_t* f = ColumnFlags(stripe, 0);
-            int32_t* d = data + static_cast<size_t>(y0) * width;
-            for (int x = 0; x < width; x++, f += 4, d++) {
-                int k = 0;
-                if (rows == 4 && (Column(f) & runMask) == 0) {
-                    if (!mq.Decode(contexts[kCtxRunLength])) continue;
-                    k = static_cast<int>(mq.Decode(contexts[kCtxUniform]) << 1);
-                    k |= static_cast<int>(mq.Decode(contexts[kCtxUniform]));
-                    DecodeSign(mq, f + k, k, View(f + k, k), d + static_cast<size_t>(k) * width, oneplushalf);
-                    k++;
-                }
-                for (; k < rows; k++) {
-                    const uint16_t view = View(f + k, k);
-                    if ((view & (kSig | kVisited)) == 0 && mq.Decode(contexts[zeroCoding[view & kNeighbours]])) {
-                        DecodeSign(mq, f + k, k, view, d + static_cast<size_t>(k) * width, oneplushalf);
+            uint32_t* fp = flags + stripe * stride;
+            int32_t* d = data + static_cast<size_t>(y0) * w;
+            if (rows == 4) {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    if (f == 0) {
+                        // Run-length mode: no row significant, visited or with a significant
+                        // neighbour.
+                        if (!mq.Decode(contexts[kCtxRunLength])) continue;
+                        uint32_t k = mq.Decode(contexts[kCtxUniform]) << 1;
+                        k |= mq.Decode(contexts[kCtxUniform]);
+                        switch (k) {
+                        case 0:
+                            DecodeSign(mq, f, fp, 0, d, oneplushalf);
+                            CleanupStep(mq, f, fp, 1, d + w, oneplushalf);
+                            CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
+                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                            break;
+                        case 1:
+                            DecodeSign(mq, f, fp, 1, d + w, oneplushalf);
+                            CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
+                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                            break;
+                        case 2:
+                            DecodeSign(mq, f, fp, 2, d + 2 * w, oneplushalf);
+                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                            break;
+                        default:
+                            DecodeSign(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                            break;
+                        }
+                        *fp = f;
+                        continue;
                     }
-                    f[k] &= static_cast<uint16_t>(~kVisited);
+                    CleanupStep(mq, f, fp, 0, d, oneplushalf);
+                    CleanupStep(mq, f, fp, 1, d + w, oneplushalf);
+                    CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
+                    CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                    *fp = f & ~kVisitedRows;
+                }
+            } else {
+                for (size_t x = 0; x < w; x++, fp++, d++) {
+                    uint32_t f = *fp;
+                    for (int k = 0; k < rows; k++) CleanupStep(mq, f, fp, k, d + k * w, oneplushalf);
+                    *fp = f & ~kVisitedRows;
                 }
             }
         }
@@ -451,15 +532,14 @@ bool T1Decoder::Decode(const CodeBlockJob& job, int32_t* out) {
     Block block;
     block.width = width;
     block.height = height;
-    block.stripeSize = (static_cast<ptrdiff_t>(width) + 2) * 4;
-    const int stripes = (height + 3) / 4;
-    flags_.assign(static_cast<size_t>(block.stripeSize) * (static_cast<size_t>(stripes) + 2), 0);
-    block.flags = flags_.data() + block.stripeSize + 4;
+    block.stride = static_cast<ptrdiff_t>(width) + 2;
+    const size_t words = static_cast<size_t>(block.stride) * (static_cast<size_t>(height + 3) / 4 + 2);
+    if (flags_.size() < words) flags_.resize(words);
+    std::memset(flags_.data(), 0, words * sizeof(uint32_t));
+    block.flags = flags_.data() + block.stride + 1;
     block.data = out;
     block.zeroCoding = kLuts.zeroCoding[job.orientation & 3];
-    const bool causal = (job.style & kStyleCausal) != 0;
-    for (int k = 0; k < 4; k++) block.viewMask[k] = causal && k == 3 ? static_cast<uint16_t>(~kSouth) : 0xFFFF;
-    block.Init();
+    block.causal = (job.style & kStyleCausal) != 0;
     ResetContexts(block.contexts);
 
     int passType = 2;  // the first pass is a cleanup pass

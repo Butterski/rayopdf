@@ -52,7 +52,7 @@ public:
     bool Decode(const CodeBlockJob& job, int32_t* out);
 
 private:
-    std::vector<uint16_t> flags_;
+    std::vector<uint32_t> flags_;
 };
 
 // ------------------------------------------------------------------------------ transforms
