@@ -9,7 +9,8 @@ never links the add-on, the inference runtime or the models. The decision to use
 **Recommendation (measured below):**
 - runtime: **ncnn**;
 - tier: **PP-OCRv6 small**;
-- detection input: longer side 1280.
+- detection input: longer side 1280;
+- no second engine on doubtful lines: measured in Phase D, it stays far below its gate.
 
 ONNX Runtime gives identical text and runs a few percent faster on Linux. It is not the default
 because it has no MinGW-w64 build, so it cannot give the Windows add-on. The `tiny` tier is the
@@ -264,9 +265,155 @@ only, not used for any choice):
 - tiny is the measured alternative where model bytes (6 MB against 31 MB) or time (0.7 s against
   2.7 s per page) matter more than 0.006 word F1. tiny also drops Japanese.
 - ONNX Runtime stays a Linux build option (`ocr-ort`). It is not packaged.
-- Tesseract (`--engine tesseract`) is the optional external backend for comparison and for a later
-  cascade (plan Phase D). Its recognition is level with small on Latin text and 3× faster, but it
-  needs an installed program and covers only its installed languages.
+- Tesseract (`--engine tesseract`) is the optional external backend for comparison. Its recognition
+  is level with small on Latin text and 3× faster, but it needs an installed program and covers only
+  its installed languages. As a second engine on doubtful lines it was measured and rejected
+  (Phase D, below).
+
+## Second-engine cascade (Phase D), 2026-11-08
+
+**Decision: not kept.** The add-on has no cascade, and the protocol is unchanged. The gate was:
+on the `scanned` development items, NID +0.01 or CER −10 % relative, at no more than +30 % OCR
+time per page. No candidate comes near it. Even a perfect choice among the candidates stays below
+it, because recognition errors are a small share of what these metrics count.
+
+**Method.**
+- A measurement probe, kept outside the tree, linked against the add-on's libraries and ncnn in
+  `rayopdf-ocr:1`. It runs the default detection once per page. Then it reads every line crop with
+  each candidate and times every reading. Its default readings reproduce the add-on: the same CER,
+  word F1 and NID as the default build above, on all 362 development items.
+- Candidates for the second reading:
+  - *medium*: medium recognition on the same crop. Its ncnn conversion already ships in the image.
+  - *tiny-rec*: tiny recognition on the same crop.
+  - *upscale*: small recognition on the crop sampled at twice its size.
+  - *padded*: small recognition on the rectangle grown by a quarter of its height on every side.
+    This is the "other view" candidate: crops are already deskewed, because each is cut at its
+    own angle.
+  - *tesseract*: Tesseract 5.3.4 `eng`, `--psm 7`, on the same crop. External and optional.
+  - *tiny→small*: the tiny tier as the first pass (detection and recognition), with small
+    recognition as the second reading.
+- Triggers on the first reading:
+  - mean confidence below 0.9, 0.95, 0.98 or 0.99;
+  - lowest character probability (*minp*) below 0.5, 0.7, 0.85 or 0.95;
+  - *implausible*: docling's four text-layer checks at line scale, or fewer than half of the
+    tokens word-like;
+  - minp or implausible combined, and every line.
+- Choosers: always the second reading; the higher mean confidence; the higher minp; or a
+  plausibility score (confidence × word-likeness, halved when implausible).
+- Every candidate ran with every trigger and every chooser (11 × 4). The table gives the best row of
+  each candidate within the time limit.
+- medium and tiny→small ran on every third item (121 items, 298 pages) to save time. Their rows are
+  compared with the default on the same items.
+- Ground truth per line: the best partial match (rapidfuzz) of any candidate's reading in the
+  fixture's plain text. Each reading is scored by its edits against that span.
+- Time:
+  - *+time* is the second reading's time on the triggered lines, over detection plus the first
+    reading. It is summed over all items, on the work CPUs.
+  - *ms/page* is detection plus recognition per page, measured by the probe on CPU 3 with its SMT
+    sibling (CPU 9) idle, over the 41-page timing sample. The probe's default comes out at 3,458 ms
+    median against the add-on's 2,663 ms above. The machine was busier (load average 16 → 5 during
+    the run), so compare rows only within this table.
+
+**Where the default fails** (908 pages, 29,020 lines, 1,250,102 GT characters; pooled CER 0.0947,
+about 118,000 edits):
+- Recognition edits on the 28,750 lines that match ground truth: 18,815 (1.5 % of the GT
+  characters, about 16 % of all edits). Of these:
+  - substitutions 9,834;
+  - extra characters 3,243;
+  - missing characters 2,502;
+  - dropped spaces 2,348;
+  - extra spaces 888.
+- 270 lines (1,873 characters) match no GT text.
+- GT text that no line covers:
+  - 21,443 characters of text: missed lines, and image alt text, which is not in the pixels;
+  - 33,736 characters of plain-text markup, such as pandoc's table rules.
+- Everything else is reading order: the add-on's rows against the GT order.
+- The triggers do find the wrong lines:
+  - lines with minp ≥ 0.97 (67 % of lines) hold 15.6 % of the edits;
+  - lines with minp from 0.5 to 0.7 (9.5 %) hold 35.5 %, with a line CER of 0.036.
+
+  The second readings do not fix those lines. Tesseract improves 2,634 lines and makes 3,366 worse;
+  medium improves 277 and makes 519 worse (on its 121 items).
+
+**Ceilings.**
+- *oracle*: per line, whichever candidate's reading has the fewest edits.
+- *perfect*: every matching line reads exactly its GT span; detection and order are kept.
+
+Both stay below the gate:
+- oracle: CER −2.5 % mean / −3.8 % pooled, NID +0.0005;
+- perfect: CER −3.6 % / −6.0 %, NID +0.004.
+
+Through the core the share is larger, but still short. The 0.0.9 bundle's Markdown, as plain text,
+has a pooled CER of 0.0697 (87,161 edits). A 10 % cut needs 8,716 fewer edits; the oracle removes
+5,062 recognition edits. If every one of them carried through the core, the bundle's CER would fall
+by at most 5.8 % (an estimate; no cascade was run through the core).
+
+**Decision table, `scanned` development items:**
+
+|Second reading (trigger, chooser)|Lines read twice|CER mean / pooled|Word F1|NID|Line CER|+time|ms/page CPU 3 median / mean (p95)|Models (B)|
+|---|---|---|---|---|---|---|---|---|
+|none: default, small|–|0.1245 / 0.0947|0.9397|0.8699|0.0160|–|3,458 / 4,528 (12,736)|30,987,999|
+|tiny-rec (minp < 0.85, higher confidence)|18.0 %|0.1224 / 0.0943|0.9398|0.8688|0.0163|+4.1 %|3,500 / 4,633 (12,736)|35,440,232|
+|upscale (confidence < 0.98, higher confidence)|5.0 %|0.1246 / 0.0947|0.9396|0.8698|0.0160|+3.1 %|mean +1.9 %|30,987,999|
+|padded (minp < 0.9 or implausible, higher confidence)|21.7 %|0.1243 / 0.0944|0.9422|0.8701|0.0157|+17.7 %|3,905 / 4,985 (12,800)|30,987,999|
+|tesseract (minp < 0.9 or implausible, higher minp)|21.7 %|0.1270 / 0.0941|0.9464|0.8671|0.0155|+28.1 %|4,260 / 5,201 (12,856)|30,987,999 + Tesseract installed|
+|oracle over the five above|–|0.1214 / 0.0911|0.9587|0.8704|0.0117|–|–|–|
+|perfect recognition|–|0.1200 / 0.0890|0.9735|0.8739|0.0016|–|–|–|
+|*every third item (121):* default|–|0.1100 / 0.0968|0.9436|0.8866|0.0164|–|3,458 / 4,528 (12,736)|30,987,999|
+|medium (confidence < 0.95, higher confidence)|2.3 %|0.1086 / 0.0964|0.9437|0.8875|0.0161|+4.4 %|3,679 / 4,593 (12,736)|107,456,907|
+|medium (confidence < 0.98, higher confidence)|5.2 %|0.1086 / 0.0964|0.9435|0.8874|0.0162|+13.3 %|4,183 / 4,835 (12,736)|107,456,907|
+|oracle default or medium|–|0.1079 / 0.0959|0.9471|0.8880|0.0152|–|–|–|
+|oracle over all six|–|0.1069 / 0.0941|0.9568|0.8884|0.0126|–|–|–|
+|tiny alone (detection and recognition)|–|0.1135 / 0.0994|0.9344|0.8784|0.0180|–|739 / 971 (1,962)|6,185,082|
+|tiny→small (confidence < 0.99, small's reading)|22.7 %|0.1107 / 0.0974|0.9423|0.8864|0.0135|+81.6 % of tiny|1,108 / 1,405 (2,143)|27,340,374|
+|tiny→small (minp < 0.85, small's reading)|28.1 %|0.1106 / 0.0973|0.9430|0.8864|0.0133|+135.7 % of tiny|1,340 / 1,779 (4,408)|27,340,374|
+
+- The executable is the same for every row: the pruned ncnn build already holds every tier's layers.
+- Upscale's time comes from an earlier, loaded run (relative only). Resampling a crop up and then
+  down to the recogniser's fixed 48 rows changes almost nothing.
+- Gate check, best against the default:
+  - CER: −1.7 % mean (tiny-rec, which costs 0.001 NID) and −0.6 % pooled (tesseract, which costs
+    0.003 NID);
+  - NID: +0.0009 (medium).
+- No trigger or chooser can do better than its oracle row. This also covers ones not tried, such as
+  a character n-gram model.
+
+**olmOCR-bench `old_scans`** (98 pages, 526 tests). The add-on's text was scored as in B2. Times are
+relative, on the work CPUs. On these pages most lines are doubtful, so the triggers fire far more
+often:
+
+|Second reading|old_scans|+time|
+|---|---|---|
+|none: default|17.3 % (91)|–|
+|medium (confidence < 0.95)|17.1 % (90)|+130 %|
+|medium (confidence < 0.98)|18.1 % (95)|+160 %|
+|tiny-rec|17.7 % (93)|+9 %|
+|upscale|17.3 % (91)|+34 %|
+|padded|18.3 % (96)|+35 %|
+|tesseract|17.5 % (92)|+119 %|
+|tiny alone|14.1 % (74)|0.36× the default|
+|tiny→small (confidence < 0.99)|17.7 % (93)|1.36× the default|
+|tiny→small (minp < 0.85)|17.7 % (93)|1.39× the default|
+
+The differences are at most 5 of 526 tests. Every row that gains more than 2 tests is over the time
+limit.
+
+**Holdout** (36 weasyprint items, 112 pages). Measured once, aggregate only, and not used for any
+choice:
+- default: CER 0.1341 / 0.0650, word F1 0.9408, NID 0.8637;
+- medium (confidence < 0.98): 0.1336 / 0.0648, 0.9411, 0.8644;
+- padded: 0.1348 / 0.0648, 0.9436, 0.8636;
+- tesseract: 0.1327 / 0.0627, 0.9536, 0.8624;
+- tiny-rec: 0.1312 / 0.0646, 0.9399, 0.8612;
+- tiny→small (confidence < 0.99): 0.1341 / 0.0646, 0.9409, 0.8636.
+
+**For OCR speed (plan B7, not this gate).** tiny→small with the trigger confidence < 0.99:
+- On the development items, word F1 is 0.001 lower than small alone, NID is level and pooled CER is
+  0.0006 higher. On the holdout, the aggregates are level with the default.
+- It takes 0.31× the default's time per page (mean, CPU 3) and 0.88× the model bytes.
+- On `old_scans` it costs 1.36× the default, because most lines trigger.
+- tiny's dictionary has no Japanese kana. Before tiny can be a first pass, Japanese lines need a
+  trigger of their own, such as script detection on the page.
 
 ## Open items
 
