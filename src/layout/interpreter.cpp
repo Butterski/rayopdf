@@ -99,67 +99,56 @@ enum class Op : uint8_t {
     Do, BI, re, m, l, c, v, y, h, S, s, f, F, fStar, B, BStar, b, bStar, n, W, WStar, gs, w, BDC, BMC, EMC,
 };
 
+// The one-byte operators by their byte, and the two-byte ones starting with 'T' by their second.
+struct OpTables {
+    Op one[256] = {};
+    Op text[256] = {};
+    constexpr OpTables() {
+        one['q'] = Op::q, one['Q'] = Op::Q, one['\''] = Op::Quote, one['"'] = Op::DoubleQuote;
+        one['m'] = Op::m, one['l'] = Op::l, one['c'] = Op::c, one['v'] = Op::v, one['y'] = Op::y;
+        one['h'] = Op::h, one['S'] = Op::S, one['s'] = Op::s, one['f'] = Op::f, one['F'] = Op::F;
+        one['B'] = Op::B, one['b'] = Op::b, one['n'] = Op::n, one['W'] = Op::W, one['w'] = Op::w;
+        text['c'] = Op::Tc, text['w'] = Op::Tw, text['z'] = Op::Tz, text['L'] = Op::TL, text['f'] = Op::Tf;
+        text['r'] = Op::Tr, text['s'] = Op::Ts, text['d'] = Op::Td, text['D'] = Op::TD, text['m'] = Op::Tm;
+        text['*'] = Op::TStar, text['j'] = Op::Tj, text['J'] = Op::TJ;
+    }
+};
+constexpr OpTables kOpTables;
+
+// The bytes of a two- or three-byte operator in one integer.
+constexpr uint32_t OpKey(char a, char b, char c = 0) {
+    return static_cast<uint32_t>(static_cast<unsigned char>(a)) |
+           static_cast<uint32_t>(static_cast<unsigned char>(b)) << 8 |
+           static_cast<uint32_t>(static_cast<unsigned char>(c)) << 16;
+}
+
 Op OpOf(std::string_view op) {
     switch (op.size()) {
     case 1:
-        switch (op[0]) {
-        case 'q': return Op::q;
-        case 'Q': return Op::Q;
-        case '\'': return Op::Quote;
-        case '"': return Op::DoubleQuote;
-        case 'm': return Op::m;
-        case 'l': return Op::l;
-        case 'c': return Op::c;
-        case 'v': return Op::v;
-        case 'y': return Op::y;
-        case 'h': return Op::h;
-        case 'S': return Op::S;
-        case 's': return Op::s;
-        case 'f': return Op::f;
-        case 'F': return Op::F;
-        case 'B': return Op::B;
-        case 'b': return Op::b;
-        case 'n': return Op::n;
-        case 'W': return Op::W;
-        case 'w': return Op::w;
+        return kOpTables.one[static_cast<unsigned char>(op[0])];
+    case 2:
+        if (op[0] == 'T') return kOpTables.text[static_cast<unsigned char>(op[1])];
+        switch (OpKey(op[0], op[1])) {
+        case OpKey('c', 'm'): return Op::cm;
+        case OpKey('B', 'T'): return Op::BT;
+        case OpKey('E', 'T'): return Op::ET;
+        case OpKey('D', 'o'): return Op::Do;
+        case OpKey('B', 'I'): return Op::BI;
+        case OpKey('r', 'e'): return Op::re;
+        case OpKey('f', '*'): return Op::fStar;
+        case OpKey('B', '*'): return Op::BStar;
+        case OpKey('b', '*'): return Op::bStar;
+        case OpKey('W', '*'): return Op::WStar;
+        case OpKey('g', 's'): return Op::gs;
         default: return Op::Unknown;
         }
-    case 2:
-        if (op == "cm") return Op::cm;
-        if (op == "BT") return Op::BT;
-        if (op == "ET") return Op::ET;
-        if (op[0] == 'T') {
-            switch (op[1]) {
-            case 'c': return Op::Tc;
-            case 'w': return Op::Tw;
-            case 'z': return Op::Tz;
-            case 'L': return Op::TL;
-            case 'f': return Op::Tf;
-            case 'r': return Op::Tr;
-            case 's': return Op::Ts;
-            case 'd': return Op::Td;
-            case 'D': return Op::TD;
-            case 'm': return Op::Tm;
-            case '*': return Op::TStar;
-            case 'j': return Op::Tj;
-            case 'J': return Op::TJ;
-            default: return Op::Unknown;
-            }
-        }
-        if (op == "Do") return Op::Do;
-        if (op == "BI") return Op::BI;
-        if (op == "re") return Op::re;
-        if (op == "f*") return Op::fStar;
-        if (op == "B*") return Op::BStar;
-        if (op == "b*") return Op::bStar;
-        if (op == "W*") return Op::WStar;
-        if (op == "gs") return Op::gs;
-        return Op::Unknown;
     case 3:
-        if (op == "BDC") return Op::BDC;
-        if (op == "BMC") return Op::BMC;
-        if (op == "EMC") return Op::EMC;
-        return Op::Unknown;
+        switch (OpKey(op[0], op[1], op[2])) {
+        case OpKey('B', 'D', 'C'): return Op::BDC;
+        case OpKey('B', 'M', 'C'): return Op::BMC;
+        case OpKey('E', 'M', 'C'): return Op::EMC;
+        default: return Op::Unknown;
+        }
     default:
         return Op::Unknown;
     }
@@ -341,8 +330,10 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
     bool error = false;
     size_t next = lexer.Offset();
     while (lexer.Next(op)) {
-        opSource_ = content.substr(next, lexer.Offset() - next);
-        next = lexer.Offset();
+        // The lexer's offsets only grow and stay within the content: no substr checks.
+        const size_t offset = lexer.Offset();
+        opSource_ = std::string_view(content.data() + next, offset - next);
+        next = offset;
         if (++operators_ > kMaxOperatorsPerPage) {
             budgetHit_ = true;
             break;
