@@ -299,6 +299,7 @@ public:
 
 private:
     void CollectWords();
+    void SortWords();
     void Lattices();
     void RuleStacks();
     void Continue();
@@ -396,10 +397,7 @@ void Detector::CollectWords() {
         }
         if (sizes.size() < 4096) sizes.push_back(line.size);
     }
-    std::sort(words_.begin(), words_.end(), [](const TWord& a, const TWord& b) {
-        if (a.base != b.base) return a.base > b.base;
-        return a.x0 < b.x0;
-    });
+    SortWords();
     wordUsed_.assign(words_.size(), 0);
     if (!sizes.empty()) {
         std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
@@ -409,6 +407,53 @@ void Detector::CollectWords() {
         std::nth_element(spaces.begin(), spaces.begin() + static_cast<std::ptrdiff_t>(spaces.size() / 2), spaces.end());
         wordSpace_ = spaces[spaces.size() / 2];
     }
+}
+
+// words_ by baseline descending, then x0, as std::sort with that order leaves them. They come line
+// by line in BuildLines' order, nearly sorted already, so an insertion sort of their keys takes few
+// moves. When it leaves each key strictly before the next, no two words tie and the sorted order
+// is the only one, which std::sort reaches too. Ties (whose order std::sort's steps decide), a NaN
+// baseline (no key sorts strictly before or after it) or too many moves leave the words to
+// std::sort as before.
+void Detector::SortWords() {
+    struct Key {
+        float base, x0;
+        uint32_t word;
+    };
+    const auto before = [](const Key& a, const Key& b) {
+        if (a.base != b.base) return a.base > b.base;
+        return a.x0 < b.x0;
+    };
+    const size_t n = words_.size();
+    std::vector<Key> keys;
+    keys.reserve(n);
+    for (size_t i = 0; i < n; ++i) keys.push_back(Key{words_[i].base, words_[i].x0, static_cast<uint32_t>(i)});
+    size_t moves = 8 * n + 256;
+    bool sorted = true;
+    for (size_t i = 1; i < n && sorted; ++i) {
+        const Key k = keys[i];
+        size_t j = i;
+        for (; j > 0 && before(k, keys[j - 1]); --j) {
+            if (moves-- == 0) {
+                sorted = false;
+                break;
+            }
+            keys[j] = keys[j - 1];
+        }
+        keys[j] = k;
+    }
+    for (size_t i = 1; i < n && sorted; ++i) sorted = before(keys[i - 1], keys[i]);
+    if (!sorted) {
+        std::sort(words_.begin(), words_.end(), [](const TWord& a, const TWord& b) {
+            if (a.base != b.base) return a.base > b.base;
+            return a.x0 < b.x0;
+        });
+        return;
+    }
+    std::vector<TWord> ordered;
+    ordered.reserve(n);
+    for (const Key& k : keys) ordered.push_back(words_[k.word]);
+    words_.swap(ordered);
 }
 
 std::string_view Detector::WordText(const TWord& w, std::string& scratch) const {

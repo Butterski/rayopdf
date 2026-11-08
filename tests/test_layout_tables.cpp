@@ -242,6 +242,34 @@ void TestBorderless() {
     RAYOPDF_CHECK(Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 563);
 }
 
+// The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
+// text: its words still sort top to bottom (the tie leaves them to std::sort), and it stays a table.
+void TestBorderlessWordOrder() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 450, 740, 3);
+    const char* const names[] = {"Austria", "Belgium", "Croatia", "Denmark", "Estonia"};
+    for (int r = 4; r >= 0; --r) {
+        const float y = 680 - 14.0f * float(r);
+        AddText(page, names[r], 72, y);
+        AddText(page, std::to_string(1200 + 37 * r), 250, y);
+        AddText(page, std::to_string(1300 + 29 * r), 330, y);
+        AddText(page, std::to_string(r + 2) + ".1%", 410, y);
+    }
+    AddText(page, "9999", 330, 680 - 14.0f * 2);
+    AddText(page, "Country", 72, 694, 10, kGlyphBold);
+    AddText(page, "2021", 250, 694, 10, kGlyphBold);
+    AddText(page, "2022", 330, 694, 10, kGlyphBold);
+    AddText(page, "Change", 410, 694, 10, kGlyphBold);
+    AddProse(page, 72, 450, 590, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("borderless word order", md);
+    RAYOPDF_CHECK(report.tables == 1, 740);
+    const size_t first = md.find("| Austria |"), last = md.find("| Estonia |");
+    RAYOPDF_CHECK(first != std::string::npos && last != std::string::npos && first < last, 741);
+}
+
 // Two columns of running text with a rule above them: prose, not a table.
 void TestTwoColumnProse() {
     std::vector<PageData> pages{NewPage()};
@@ -816,6 +844,7 @@ int main(int argc, char** argv) {
     TestBooktabs();
     TestHeaderRule();
     TestBorderless();
+    TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();
     TestTableAcrossColumns();
