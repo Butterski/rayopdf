@@ -702,11 +702,14 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // current line while direction and baseline match).
     std::vector<Fragment>& frags = tPlace.frags;
     frags.clear();
+    // The fragment being extended stays in `f` until the next one starts, out of memory that the
+    // glyphs' fields might alias.
+    Fragment f;
+    bool open = false;
     for (uint32_t k = 0; k < vis.size(); ++k) {
         const Glyph& g = glyphs[vis[k]];
         const bool space = (g.flags & kGlyphSpace) != 0;
-        if (!frags.empty()) {
-            Fragment& f = frags.back();
+        if (open) {
             const float em = M::Max(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
             const float dv = g.v - f.baseline;
@@ -735,8 +738,9 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 }
                 continue;
             }
+            frags.push_back(f);
         }
-        Fragment f;
+        f = Fragment();
         f.begin = k;
         f.end = k + 1;
         f.dir = g.dir;
@@ -750,8 +754,9 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             uint32_t value;
             f.marker = ParseMarker(page.GlyphText(g), value) != Marker::None;
         }
-        frags.push_back(f);
+        open = true;
     }
+    if (open) frags.push_back(f);
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
     std::vector<uint32_t>& fo = tPlace.fo;
@@ -897,6 +902,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         float right = 0;
         float previousSize = 0;
         bool first = true;
+        Segment seg{0, 0, 0};  // the ink segment being extended, appended when the next starts
         for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
             const uint32_t i = *at;
             Glyph& g = glyphs[i];
@@ -914,14 +920,15 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.
                 if (gap > kGutterCandidate * em) {
-                    segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
+                    segments.push_back(seg);
+                    seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())};
                 } else {
-                    segments.back().u1 = M::Max(segments.back().u1, g.u1);
+                    seg.u1 = M::Max(seg.u1, g.u1);
                 }
                 right = M::Max(right, g.u1);
                 p.u0 = M::Min(p.u0, g.u0), p.u1 = M::Max(p.u1, g.u1);
             } else {
-                segments.push_back(Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())});
+                seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())};
                 right = g.u1;
                 p.u0 = g.u0, p.u1 = g.u1;
             }
@@ -930,6 +937,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             previousSize = g.size;
             proto.push_back(i);
         }
+        if (!first) segments.push_back(seg);
         p.count = static_cast<uint32_t>(proto.size() - p.first);
         p.segCount = static_cast<uint32_t>(segments.size() - p.segFirst);
         // The size of most of its glyphs (not a drop cap's): gutter windows and gaps scale with it.
