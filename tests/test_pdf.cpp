@@ -1319,6 +1319,36 @@ void TestSyntaxReaders() {
                           at.pos == r.end && (!r.ref || (value.refNum == 7 && value.refGen == r.gen)),
                       260);
     }
+    // File-mode arrays: a number's reference test reads the next item, which is then not read
+    // again; every item as ParseValue gives it alone.
+    Cursor items{"[1 2 3 4 0 R 5 6 R 70000 8 0 R 9 %c\n 0 R 10 0.5 11 00012 R 1 65536 2 R 123456 0 R -3 7 0 Rx]", 0};
+    const struct {
+        PdfValue::Type type;
+        int64_t number;
+        uint16_t gen;
+    } expected[] = {
+        {PdfValue::Type::Int, 1, 0},     {PdfValue::Type::Int, 2, 0},     {PdfValue::Type::Int, 3, 0},
+        {PdfValue::Type::Ref, 4, 0},     {PdfValue::Type::Ref, 5, 6},     {PdfValue::Type::Int, 70000, 0},
+        {PdfValue::Type::Ref, 8, 0},     {PdfValue::Type::Ref, 9, 0},     {PdfValue::Type::Int, 10, 0},
+        {PdfValue::Type::Real, 0, 0},    {PdfValue::Type::Ref, 11, 12},   {PdfValue::Type::Int, 1, 0},
+        {PdfValue::Type::Ref, 65536, 2}, {PdfValue::Type::Ref, 123456, 0}, {PdfValue::Type::Int, -3, 0},
+        {PdfValue::Type::Int, 7, 0},     {PdfValue::Type::Int, 0, 0},
+    };
+    RAYOPDF_CHECK(!Syntax::ParseValue(items, Syntax::Mode::File, 0, copies, value), 280);  // "Rx" ends it
+    Cursor itemsEnded{"[1 2 3 4 0 R 5 6 R 70000 8 0 R 9 %c\n 0 R 10 0.5 11 00012 R 1 65536 2 R 123456 0 R -3 7 0]", 0};
+    RAYOPDF_CHECK(Syntax::ParseValue(itemsEnded, Syntax::Mode::File, 0, copies, value) && value.IsArray() &&
+                      value.Array().size() == sizeof expected / sizeof expected[0] && itemsEnded.AtEnd(),
+                  280);
+    const PdfSpan<PdfValue> got = value.Array();
+    for (size_t i = 0; i < got.size() && i < sizeof expected / sizeof expected[0]; ++i) {
+        const PdfValue& item = got[i];
+        const bool same = item.type == expected[i].type &&
+                          (item.type == PdfValue::Type::Ref
+                               ? item.refNum == expected[i].number && item.refGen == expected[i].gen
+                               : item.type == PdfValue::Type::Int ? item.integer == expected[i].number
+                                                                  : item.real == 0.5);
+        RAYOPDF_CHECK(same, 280);
+    }
 }
 
 } // namespace

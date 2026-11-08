@@ -407,10 +407,20 @@ void ReadReferenceTokens(Cursor& c, PdfValue& out) {
     c = ahead;
 }
 
+// What ReadReference read past a number that is no reference's first token: the next token
+// when it is all digits (one to five, ending at white space, a delimiter or the end), with only
+// white space before it. That token is the next array item, an Int of `value` ending at `end`.
+struct NextDigits {
+    bool valid = false;
+    uint32_t value = 0;
+    size_t end = 0;
+};
+
 // The same test byte by byte: white space, a token of at most five digits, white space, the
 // token "R". Most numbers (array items) fail at the second token's end; a '%' goes to the
-// general form.
-void ReadReference(Cursor& c, PdfValue& out) {
+// general form. Where the second token is all digits and no reference follows, `next` (when not
+// null) receives it.
+void ReadReference(Cursor& c, PdfValue& out, NextDigits* next) {
     const char* const data = c.data.data();
     const size_t size = c.data.size();
     size_t at = c.pos;
@@ -421,10 +431,17 @@ void ReadReference(Cursor& c, PdfValue& out) {
     while (at < size && at - first <= 5 && data[at] >= '0' && data[at] <= '9') gen = gen * 10 + static_cast<uint32_t>(data[at++] - '0');
     // The token is all digits only if it ends here (a sixth digit or another regular byte: not).
     if (at == first || at - first > 5 || (at < size && IsRegular(static_cast<unsigned char>(data[at])))) return;
-    if (gen > 65535) return;
+    const size_t digitsEnd = at;
+    if (gen > 65535) {
+        if (next) *next = NextDigits{true, gen, digitsEnd};
+        return;
+    }
     while (at < size && IsWhite(static_cast<unsigned char>(data[at]))) ++at;
     if (at < size && data[at] == '%') return ReadReferenceTokens(c, out);
-    if (at >= size || data[at] != 'R' || (at + 1 < size && IsRegular(static_cast<unsigned char>(data[at + 1])))) return;
+    if (at >= size || data[at] != 'R' || (at + 1 < size && IsRegular(static_cast<unsigned char>(data[at + 1])))) {
+        if (next) *next = NextDigits{true, gen, digitsEnd};
+        return;
+    }
     const uint32_t num = static_cast<uint32_t>(out.integer);
     out = PdfValue();
     out.type = PdfValue::Type::Ref;
@@ -466,7 +483,7 @@ bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
                     out = number;
                     if (mode == Mode::File && out.type == PdfValue::Type::Int && ch >= '0' && ch <= '9' &&
                         out.integer <= UINT32_MAX)
-                        ReadReference(c, out);
+                        ReadReference(c, out, nullptr);
                     return true;
                 }
             }
@@ -483,7 +500,7 @@ bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
             }
             if (!ParseNumber(token, out)) return false;
             if (mode == Mode::File && out.type == PdfValue::Type::Int && AllDigits(token) && out.integer <= UINT32_MAX)
-                ReadReference(c, out);
+                ReadReference(c, out, nullptr);
             return true;
         }
     }
@@ -494,15 +511,33 @@ bool ParseValue(Cursor& c, Mode mode, int depth, Builder& b, PdfValue& out) {
         c.pos++;
         const size_t base = b.items.size();
         bool ok = false;
+        // File mode reads a number item here, as ParseValue would; its reference test may have
+        // read the next item already (NextDigits), which then is not read again.
+        NextDigits next;
         for (;;) {
+            PdfValue item;
+            if (next.valid) {
+                item.type = PdfValue::Type::Int;
+                item.integer = next.value;
+                c.pos = next.end;
+                next.valid = false;
+                ReadReference(c, item, &next);
+                b.items.push_back(item);
+                continue;
+            }
             SkipSpace(c);
             if (c.AtEnd()) break;
-            if (c.Peek() == ']') {
+            const unsigned char first = c.Peek();
+            if (first == ']') {
                 c.pos++;
                 ok = true;
                 break;
             }
-            PdfValue item;
+            if (mode == Mode::File && first >= '0' && first <= '9' && ReadSimpleNumber(c, item)) {
+                if (item.type == PdfValue::Type::Int && item.integer <= UINT32_MAX) ReadReference(c, item, &next);
+                b.items.push_back(item);
+                continue;
+            }
             if (!ParseValue(c, mode, depth + 1, b, item)) break;
             b.items.push_back(item);
         }
