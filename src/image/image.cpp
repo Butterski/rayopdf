@@ -4,7 +4,10 @@
 //   (the fill colour is the content stream's, unknown here; black on white reads in any viewer).
 // - A data stream shorter than the image keeps the rows present: the height shrinks to them (a
 //   last partial row is completed with zero bytes), so memory follows the data that exists; no
-//   complete or partial row at all is Corrupt.
+//   complete or partial row at all is Corrupt. CCITT and JBIG2 data are the exception: their
+//   decoders' output is read as the filter's byte stream in rows of the image's own (as poppler
+//   does, whatever /Columns or the JBIG2 page width says), what a damaged stream decoded before
+//   the damage is kept, and missing rows are white, as poppler shows them.
 // - 16-bit samples are rounded to 8 bits; CMYK becomes RGB by the naive formula
 //   R = 255 (1 - C)(1 - K); CalGray and CalRGB are taken as DeviceGray and DeviceRGB; Lab goes
 //   through XYZ to sRGB with its white point mapped onto D65 by scaling.
@@ -20,13 +23,20 @@
 //   go through the PDF colour space and /Decode like any 8-bit samples; a colour space of another
 //   number of components than the JPEG's gives way to the JPEG's own (gray, RGB, CMYK). A JPEG
 //   that should be decoded but cannot be (arithmetic coding, 12-bit, damaged, more than 64 Mi
-//   pixels) is stored after all. JPX is always stored (from the JP2 signature on; a raw JPEG 2000
+//   pixels) is stored after all.
+// - JPX: decoded samples of 8 or 16 bits through the PDF colour space, or without one (or with
+//   one of another number of components) the JP2 header's (gray, sRGB, CMYK), else the device
+//   space of as many channels; an Indexed space reads the raw indices (the JP2 palette is not
+//   applied). A JPX image the decoder cannot read is stored (from the JP2 signature on; a raw
 //   codestream gets a minimal JP2 wrapper so that it is a .jp2), a mask that hides part of it
 //   counted as dropped.
 #include "image/image.h"
 
 #include "common/minmax.h"
+#include "image/ccitt.h"
+#include "image/jbig2.h"
 #include "image/jpeg.h"
+#include "image/jpx.h"
 #include "image/png.h"
 #include "pdf/filters.h"
 
@@ -790,9 +800,115 @@ Status ReadLayout(const Source& src, bool mask, int components, uint64_t maxPixe
     return Status::Ok;
 }
 
+// The /DecodeParms entry of the filter StopFilter names (resolved): the entry at its index of a
+// /DecodeParms array, or a /DecodeParms dictionary; null when there is none.
+const PdfValue& StopParms(const Source& src) {
+    static const PdfValue kNone{};
+    const PdfValue& filter = src.Entry("Filter", "F");
+    const PdfValue& parms = src.Entry("DecodeParms", "DP");
+    const PdfValue* items = &filter;
+    size_t n = filter.IsName() ? 1 : 0;
+    if (filter.IsArray()) {
+        items = filter.Array().begin();
+        n = filter.Array().size();
+    }
+    for (size_t i = 0; i < n; i++) {
+        switch (Filters::KindOf(src.doc.Resolve(items[i]).Name())) {
+        case Filters::Kind::Flate:
+        case Filters::Kind::Lzw:
+        case Filters::Kind::Ascii85:
+        case Filters::Kind::AsciiHex:
+        case Filters::Kind::RunLength:
+        case Filters::Kind::Crypt: continue;
+        default:
+            if (parms.IsArray()) return i < parms.Array().size() ? src.doc.Resolve(parms.Array()[i]) : kNone;
+            return parms.IsDict() ? parms : kNone;
+        }
+    }
+    return kNone;
+}
+
+bool Bitonal(Filters::Kind stop) { return stop == Filters::Kind::Ccitt || stop == Filters::Kind::Jbig2; }
+
+Ccitt::Params CcittParams(const Document& doc, const PdfValue& p) {
+    Ccitt::Params c;
+    if (!p.IsDict()) return c;
+    const auto number = [&](std::string_view key, int64_t fallback, int64_t low, int64_t high) {
+        const int64_t v = doc.Get(p, key).Int(fallback);
+        return v < low ? low : v > high ? high : v;
+    };
+    c.k = static_cast<int32_t>(number("K", 0, -1000000, 1000000));
+    c.endOfLine = doc.Get(p, "EndOfLine").Bool(false);
+    c.encodedByteAlign = doc.Get(p, "EncodedByteAlign").Bool(false);
+    c.columns = static_cast<uint32_t>(number("Columns", 1728, 0, kMaxDimension));
+    c.rows = static_cast<uint32_t>(number("Rows", 0, 0, kMaxDimension));
+    c.endOfBlock = doc.Get(p, "EndOfBlock").Bool(true);
+    c.blackIs1 = doc.Get(p, "BlackIs1").Bool(false);
+    c.damagedRowsBeforeError = static_cast<uint32_t>(number("DamagedRowsBeforeError", 0, 0, kMaxDimension));
+    return c;
+}
+
+// The rows of a CCITT or JBIG2 image (1 bit a pixel, `layout`) through its decoder, whole rows of
+// layout.rowBytes. What a damaged stream decoded before the damage is kept, and rows the data
+// lacks are white (in the filter's polarity), as poppler shows them.
+Status DecodeBitonal(const Source& src, Filters::Kind stop, const Layout& layout, std::string& data, uint32_t& rows) {
+    std::string encoded;
+    const StreamStatus read = ReadData(src, encoded, kPassThroughLimit);
+    if (!Usable(read, encoded)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+    if (read == StreamStatus::TooLarge) return Status::TooLarge;
+    std::string decoded;
+    uint8_t white = 0xFF;
+    if (stop == Filters::Kind::Ccitt) {
+        const Ccitt::Params params = CcittParams(src.doc, StopParms(src));
+        Ccitt::Info info;
+        // The filter's rows are /Columns wide, which may pass /Width: its output is bounded by
+        // those rows, /Height of them, and the general pixel limit.
+        const uint64_t maxPixels =
+            std::min<uint64_t>(kDefaultMaxPixels, uint64_t(std::max(params.columns, layout.width)) * layout.height);
+        const Ccitt::Result result = Ccitt::Decode(reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size(), params,
+                                                   layout.height, maxPixels, decoded, info);
+        if (result == Ccitt::Result::InvalidParams) return Status::Corrupt;
+        if (result != Ccitt::Result::Ok && info.rows == 0) {
+            return result == Ccitt::Result::Unsupported ? Status::Unsupported
+                   : result == Ccitt::Result::TooLarge  ? Status::TooLarge
+                                                        : Status::Corrupt;
+        }
+        white = params.blackIs1 ? 0x00 : 0xFF;
+    } else {
+        // /JBIG2Globals: a stream of the segments shared by the document's JBIG2 images.
+        std::string globals;
+        const PdfValue& globalStream = src.doc.Get(StopParms(src), "JBIG2Globals");
+        if (globalStream.IsStream()) {
+            const StreamStatus g = src.doc.StreamData(globalStream, globals, kPassThroughLimit);
+            if (g == StreamStatus::Corrupt || g == StreamStatus::NotStream) globals.clear();
+        }
+        // A page a little larger than /Width x /Height is seen (one column more); more is no image.
+        const uint64_t maxPixels = std::min<uint64_t>(kDefaultMaxPixels, 4 * uint64_t(layout.width) * layout.height + (1u << 20));
+        Jbig2::Info info;
+        const Jbig2::Result result =
+            Jbig2::Decode(reinterpret_cast<const uint8_t*>(encoded.data()), encoded.size(),
+                          reinterpret_cast<const uint8_t*>(globals.data()), globals.size(), maxPixels, info, decoded);
+        if (result != Jbig2::Result::Ok) {
+            return result == Jbig2::Result::Unsupported ? Status::Unsupported
+                   : result == Jbig2::Result::TooLarge  ? Status::TooLarge
+                                                        : Status::Corrupt;
+        }
+    }
+    // The filter's output is a byte stream that the image reads as rows of its own (as poppler
+    // does, whatever the filter's row length: /Columns, or the JBIG2 page's width).
+    if (decoded.empty()) return Status::Corrupt;
+    data.swap(decoded);
+    data.resize(layout.rowBytes * layout.height, static_cast<char>(white));
+    rows = layout.height;
+    return Status::Ok;
+}
+
 // The samples of `layout` as whole rows: those the data holds, the last partial one completed
-// with zeros; Corrupt for none. `rows` is how many.
+// with zeros; Corrupt for none. `rows` is how many. CCITT and JBIG2 data go through their
+// decoders (DecodeBitonal).
 Status ReadSamples(const Source& src, const Layout& layout, std::string& data, uint32_t& rows) {
+    const Filters::Kind stop = StopFilter(src);
+    if (Bitonal(stop)) return DecodeBitonal(src, stop, layout, data, rows);
     const size_t expected = layout.rowBytes * layout.height;
     // Slack past the samples, so that data a little longer than needed is no limit hit.
     const StreamStatus read = ReadData(src, data, expected + 4096);
@@ -836,7 +952,8 @@ struct DecodeMap {
     }
 };
 
-void MakeDecodeMap(const Source& src, const Space& space, int bpc, DecodeMap& map) {
+// `useDecode` false ignores /Decode (JPX images, ISO 32000-1 Table 89).
+void MakeDecodeMap(const Source& src, const Space& space, int bpc, DecodeMap& map, bool useDecode = true) {
     map.codeBits = bpc > 8 ? 8 : bpc;
     const int n = space.components;
     for (int i = 0; i < n; i++) {
@@ -853,7 +970,7 @@ void MakeDecodeMap(const Source& src, const Space& space, int bpc, DecodeMap& ma
         map.high[0] = static_cast<double>((1u << map.codeBits) - 1);
     }
     double decode[2 * kMaxComponents];
-    if (NumberPairs(src.doc, src.Entry("Decode", "D"), decode) == static_cast<size_t>(2 * n)) {
+    if (useDecode && NumberPairs(src.doc, src.Entry("Decode", "D"), decode) == static_cast<size_t>(2 * n)) {
         for (int i = 0; i < n; i++) {
             map.low[i] = decode[2 * i];
             map.high[i] = decode[2 * i + 1];
@@ -962,7 +1079,8 @@ void ConvertPixels(const Layout& layout, uint32_t rows, std::string& data, const
 
 // A stencil (ImageMask) as gray: 0 where it paints, 255 elsewhere.
 Status DecodeStencil(const Source& src, uint64_t maxPixels, Pixels& out) {
-    if (StopFilter(src) != Filters::Kind::Flate) return Status::Unsupported;
+    const Filters::Kind stop = StopFilter(src);
+    if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
     Layout layout;
     Status status = ReadLayout(src, true, 1, maxPixels, layout);
     if (status != Status::Ok) return status;
@@ -1058,20 +1176,126 @@ Status DecodeJpegSamples(const Source& src, uint64_t maxPixels, Space& space, La
     return Status::Ok;
 }
 
-// The pixels of a sampled image (no stencil; Flate-family or DCT data): colour space, samples,
-// /Decode. With `keyAlpha`, a /Mask colour key fills it when the image has one. A soft mask
-// (`softMask`) without /ColorSpace is DeviceGray, the only space it may have.
-Status DecodeSampled(const Source& src, uint64_t maxPixels, bool softMask, Pixels& out,
-                     std::vector<uint8_t>* keyAlpha) {
+// What a sampled image's decode is asked for, besides the samples.
+struct SampleRequest {
+    uint64_t maxPixels = kDefaultMaxPixels;
+    bool softMask = false;                     // a /SMask: DeviceGray when it has no /ColorSpace
+    std::vector<uint8_t>* keyAlpha = nullptr;  // filled from a /Mask colour key, when given
+    Pixels* inDataAlpha = nullptr;             // filled from a JPX opacity channel (/SMaskInData)
+    uint32_t longerSide = 0;  // JPX: decode at a reduced resolution down to about this (0: full)
+};
+
+// A JPX image's samples through the JPEG 2000 decoder (jpx.h): the layout is the decoded
+// image's (8 or 16 bits, its colour channels). Without a /ColorSpace, or with one of another
+// number of components, the JP2 header's colour space or the device space of as many channels
+// stands in. An opacity channel (/SMaskInData) goes to `alpha` (premultiplied colour divided by
+// it). `fullWidth` x `fullHeight`: the image's size before any reduced-resolution decoding.
+Status DecodeJpxSamples(const Source& src, const SampleRequest& req, bool spaceGiven, Space& space, Layout& layout,
+                        std::string& samples, uint32_t& fullWidth, uint32_t& fullHeight) {
+    std::string data;
+    std::string_view jpx = src.encoded;
+    if (jpx.empty()) {
+        const StreamStatus read = ReadData(src, data, kPassThroughLimit);
+        if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
+        if (read == StreamStatus::TooLarge) return Status::TooLarge;
+        jpx = data;
+    }
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(jpx.data());
+    Jpx::Options options;
+    options.maxPixels = std::min<uint64_t>(req.maxPixels, Document::kDefaultStreamLimit / 4);
+    options.ignorePalette = spaceGiven && space.family == Family::Indexed;
+    options.pdfComponents = spaceGiven ? space.components : 0;
+    if (req.inDataAlpha && !src.inlineImage) {
+        const int64_t inData = src.doc.Get(src.dict, "SMaskInData").Int(0);
+        options.smaskInData = inData == 1 || inData == 2 ? static_cast<int>(inData) : 0;
+    }
+    if (req.longerSide > 0) {
+        // The most levels to drop with the longer side still at least `longerSide`.
+        Jpx::Info info;
+        if (Jpx::ReadInfo(bytes, jpx.size(), info) == Jpx::Result::Ok) {
+            const uint64_t longer = std::max(info.width, info.height);
+            while (options.reduce < info.levels &&
+                   ((longer + (uint64_t(2) << options.reduce) - 1) >> (options.reduce + 1)) >= req.longerSide) {
+                options.reduce++;
+            }
+        }
+    }
+    Jpx::Image image;
+    switch (Jpx::Decode(bytes, jpx.size(), options, image)) {
+    case Jpx::Result::Ok: break;
+    case Jpx::Result::Unsupported: return Status::Unsupported;
+    case Jpx::Result::TooLarge: return Status::TooLarge;
+    case Jpx::Result::Corrupt: return Status::Corrupt;
+    }
+    const int n = image.colourChannels;
+    if (!spaceGiven || n != space.components) {
+        if (n != 1 && n != 3 && n != 4) return Status::Unsupported;
+        space = Space();
+        SetDevice(space, n == 1 ? Family::Gray : n == 3 ? Family::Rgb : Family::Cmyk);
+    }
+    fullWidth = image.info.width;
+    fullHeight = image.info.height;
+    const size_t depth = image.bitsPerComponent == 16 ? 2 : 1;
+    layout.width = image.width;
+    layout.height = image.height;
+    layout.bpc = image.bitsPerComponent;
+    layout.components = n;
+    layout.rowBytes = size_t(image.width) * static_cast<size_t>(n) * depth;
+    if (!image.opacity || !req.inDataAlpha) {
+        if (image.channels != n) return Status::Corrupt;
+        samples.swap(image.samples);
+        return Status::Ok;
+    }
+    // The opacity channel, last, apart: 8 bits of alpha, and the colour without it.
+    Pixels& alpha = *req.inDataAlpha;
+    const size_t pixels = size_t(image.width) * image.height;
+    const size_t in = (static_cast<size_t>(n) + 1) * depth, colour = static_cast<size_t>(n) * depth;
+    if (image.samples.size() < pixels * in) return Status::Corrupt;
+    alpha.width = image.width;
+    alpha.height = image.height;
+    alpha.declaredHeight = image.height;
+    alpha.channels = 1;
+    alpha.data.resize(pixels);
+    samples.resize(pixels * colour);
+    const uint8_t* source = reinterpret_cast<const uint8_t*>(image.samples.data());
+    uint8_t* target = reinterpret_cast<uint8_t*>(&samples[0]);
+    uint8_t* opacity = alpha.Bytes();
+    const uint32_t full = depth == 2 ? 65535u : 255u;
+    for (size_t i = 0; i < pixels; i++, source += in, target += colour) {
+        std::memcpy(target, source, colour);
+        const uint32_t a = depth == 2 ? (uint32_t(source[colour]) << 8 | source[colour + 1]) : source[colour];
+        opacity[i] = source[colour];  // the high byte
+        if (!image.premultiplied || a == 0 || a == full) continue;
+        for (int c = 0; c < n; c++) {
+            if (depth == 2) {
+                const uint32_t v = uint32_t(target[2 * c]) << 8 | target[2 * c + 1];
+                const uint32_t u = std::min<uint32_t>(full, (v * full + a / 2) / a);
+                target[2 * c] = static_cast<uint8_t>(u >> 8);
+                target[2 * c + 1] = static_cast<uint8_t>(u);
+            } else {
+                target[c] = static_cast<uint8_t>(std::min<uint32_t>(full, (target[c] * full + a / 2) / a));
+            }
+        }
+    }
+    return Status::Ok;
+}
+
+// The pixels of a sampled image (no stencil; Flate-family, CCITT, JBIG2, DCT or JPX data):
+// colour space, samples, /Decode (not for JPX). `fullWidth` x `fullHeight` (when given): the
+// image's size before a reduced-resolution JPX decode.
+Status DecodeSampled(const Source& src, const SampleRequest& req, Pixels& out, uint32_t* fullWidth = nullptr,
+                     uint32_t* fullHeight = nullptr) {
     const Filters::Kind stop = StopFilter(src);
-    if (stop != Filters::Kind::Flate && stop != Filters::Kind::Dct) return Status::Unsupported;
+    const bool jpx = stop == Filters::Kind::Jpx;
+    if (stop != Filters::Kind::Flate && stop != Filters::Kind::Dct && !jpx && !Bitonal(stop)) return Status::Unsupported;
     Space space;
     const SpaceContext ctx{src.doc, src.resources, src.inlineImage};
     const PdfValue& csValue = src.Entry("ColorSpace", "CS");
     Status status = Status::Ok;
     if (csValue.IsNull()) {
-        // A JPEG says what it holds; other samples need the space.
-        if (!softMask && stop != Filters::Kind::Dct) return Status::Corrupt;
+        // JPEG and JPEG 2000 data say what they hold, and fax and JBIG2 data are gray; other
+        // samples need the space.
+        if (!req.softMask && stop != Filters::Kind::Dct && !jpx && !Bitonal(stop)) return Status::Corrupt;
         SetDevice(space, Family::Gray);
     } else if ((status = ParseSpace(ctx, csValue, 0, space)) != Status::Ok) {
         return status;
@@ -1080,15 +1304,24 @@ Status DecodeSampled(const Source& src, uint64_t maxPixels, bool softMask, Pixel
     std::string data;
     uint32_t rows = 0;
     if (stop == Filters::Kind::Dct) {
-        if ((status = DecodeJpegSamples(src, maxPixels, space, layout, data)) != Status::Ok) return status;
+        if ((status = DecodeJpegSamples(src, req.maxPixels, space, layout, data)) != Status::Ok) return status;
+        rows = layout.height;
+    } else if (jpx) {
+        uint32_t width = 0, height = 0;
+        status = DecodeJpxSamples(src, req, !csValue.IsNull() || req.softMask, space, layout, data, width, height);
+        if (status != Status::Ok) return status;
+        if (fullWidth) *fullWidth = width;
+        if (fullHeight) *fullHeight = height;
         rows = layout.height;
     } else {
-        if ((status = ReadLayout(src, false, space.components, maxPixels, layout)) != Status::Ok) return status;
+        // CCITT and JBIG2 decode to one bit a pixel of one component, whatever /BitsPerComponent says.
+        if (Bitonal(stop) && space.components != 1) return Status::Corrupt;
+        if ((status = ReadLayout(src, Bitonal(stop), space.components, req.maxPixels, layout)) != Status::Ok) return status;
         if ((status = ReadSamples(src, layout, data, rows)) != Status::Ok) return status;
     }
-    if (keyAlpha) ColourKeyAlpha(src, layout, rows, data, *keyAlpha);
+    if (req.keyAlpha) ColourKeyAlpha(src, layout, rows, data, *req.keyAlpha);
     DecodeMap map;
-    MakeDecodeMap(src, space, layout.bpc, map);
+    MakeDecodeMap(src, space, layout.bpc, map, !jpx);
     ConvertPixels(layout, rows, data, space, map, out);
     return Status::Ok;
 }
@@ -1186,7 +1419,10 @@ MaskKind ReadMask(const Source& src, uint64_t maxPixels, Pixels& mask, bool& dec
     const PdfValue& smask = src.doc.Get(src.dict, "SMask");
     if (smask.IsStream()) {
         const Source maskSrc{src.doc, smask, src.resources, false, {}, {}};
-        decoded = DecodeSampled(maskSrc, maxPixels, true, mask, nullptr) == Status::Ok;
+        SampleRequest req;
+        req.maxPixels = maxPixels;
+        req.softMask = true;
+        decoded = DecodeSampled(maskSrc, req, mask) == Status::Ok;
         if (decoded && mask.channels == 3) {  // not the DeviceGray it must be: its luminance
             uint8_t* bytes = mask.Bytes();
             for (size_t i = 0, n = size_t(mask.width) * mask.height; i < n; i++) {
@@ -1277,6 +1513,41 @@ bool JpegAsStored(const Source& src, std::string_view jpeg) {
     return true;
 }
 
+// An image of `src` decoded to pixels whatever its filter (of those decoded here), with its
+// mask: what Encode writes as a PNG, and what Gray composes on white.
+struct DecodedImage {
+    Pixels image;
+    MaskKind kind = MaskKind::None;
+    Pixels mask;
+    bool maskDecoded = false;
+    std::vector<uint8_t> key;  // colour-key alpha, one byte a pixel, when /Mask is an array
+    uint32_t fullWidth = 0;    // the size before a reduced-resolution JPX decode (0: as decoded)
+    uint32_t fullHeight = 0;
+};
+
+// `longerSide`: a JPX image may be decoded at a reduced resolution down to about this (0: full).
+// A JPX opacity channel (/SMaskInData) is the soft mask when there is no /SMask stream, which
+// takes precedence (ISO 32000-1 Table 89).
+Status DecodeImage(const Source& src, uint64_t maxPixels, DecodedImage& d, uint32_t longerSide = 0) {
+    if (src.Entry("ImageMask", "IM").Bool(false)) return DecodeStencil(src, maxPixels, d.image);
+    SampleRequest req;
+    req.maxPixels = maxPixels;
+    req.keyAlpha = &d.key;
+    req.longerSide = longerSide;
+    Pixels inData;
+    if (!src.inlineImage && !src.doc.Get(src.dict, "SMask").IsStream()) req.inDataAlpha = &inData;
+    const Status status = DecodeSampled(src, req, d.image, &d.fullWidth, &d.fullHeight);
+    if (status != Status::Ok) return status;
+    if (!inData.data.empty()) {
+        d.kind = MaskKind::Soft;
+        d.mask = std::move(inData);
+        d.maskDecoded = true;
+        return Status::Ok;
+    }
+    d.kind = ReadMask(src, maxPixels, d.mask, d.maskDecoded);
+    return Status::Ok;
+}
+
 Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
     out = Encoded();
     const Filters::Kind stop = StopFilter(src);
@@ -1293,6 +1564,16 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
         if (!Usable(read, data)) return read == StreamStatus::TooLarge ? Status::TooLarge : Status::Corrupt;
         // The data must be whole: a JPEG or JPEG 2000 file cut at the limit is no file.
         if (read == StreamStatus::TooLarge) return Status::TooLarge;
+        if (stop == Filters::Kind::Jpx && !stencil) {
+            // JPEG 2000 is decoded and written as a PNG (with its masks); stored as .jp2 only
+            // when this decoder cannot read it.
+            Source jpxSrc = src;
+            jpxSrc.encoded = data;
+            DecodedImage d;
+            if (DecodeImage(jpxSrc, maxPixels, d) == Status::Ok) {
+                return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out);
+            }
+        }
         const MaskKind kind = stencil ? MaskKind::None : ReadMask(src, maxPixels, mask, maskDecoded);
         // A mask that hides something, decoded; only pixels can carry it.
         const bool maskShows = kind == MaskKind::ColourKey || (kind != MaskKind::None && maskDecoded && Transparent(mask, kind));
@@ -1302,7 +1583,10 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
             if (!jpegSrc.encoded.empty() && (maskShows || !JpegAsStored(src, jpegSrc.encoded))) {
                 Pixels image;
                 std::vector<uint8_t> key;
-                const Status status = DecodeSampled(jpegSrc, maxPixels, false, image, &key);
+                SampleRequest req;
+                req.maxPixels = maxPixels;
+                req.keyAlpha = &key;
+                const Status status = DecodeSampled(jpegSrc, req, image);
                 if (status == Status::Ok) return WriteMasked(image, kind, maskDecoded, mask, key, out);
                 // A JPEG this decoder cannot read (arithmetic, 12-bit, damaged, too large to
                 // decode): as stored, which the pixel limit below still bounds.
@@ -1321,19 +1605,105 @@ Status Encode(const Source& src, Encoded& out, uint64_t maxPixels) {
         out.maskDropped = maskShows || (kind != MaskKind::None && !maskDecoded);
         return status;
     }
-    if (stop != Filters::Kind::Flate) return Status::Unsupported;
+    if (stop != Filters::Kind::Flate && !Bitonal(stop)) return Status::Unsupported;
 
-    Pixels image;
-    if (stencil) {
-        const Status status = DecodeStencil(src, maxPixels, image);
-        if (status != Status::Ok) return status;
-        return WritePng(image, nullptr, out);
-    }
-    std::vector<uint8_t> key;
-    const Status status = DecodeSampled(src, maxPixels, false, image, &key);
+    DecodedImage d;
+    const Status status = DecodeImage(src, maxPixels, d);
     if (status != Status::Ok) return status;
-    const MaskKind kind = ReadMask(src, maxPixels, mask, maskDecoded);
-    return WriteMasked(image, kind, maskDecoded, mask, key, out);
+    if (stencil) return WritePng(d.image, nullptr, out);
+    return WriteMasked(d.image, d.kind, d.maskDecoded, d.mask, d.key, out);
+}
+
+// `d` as gray composited on white (image.h), reduced by area averaging to a longer side of at
+// most `maxSide` (0: none), a source row at a time. Rows the data lacks (up to the image's
+// declared height) are white, so that the pixels always cover the whole of image space.
+void ComposeGray(const DecodedImage& d, uint32_t maxSide, GrayImage& out) {
+    const Pixels& image = d.image;
+    const uint32_t width = image.width, height = std::max(image.height, image.declaredHeight);
+    std::unique_ptr<AlphaRows> alpha;
+    if ((d.kind == MaskKind::Soft || d.kind == MaskKind::Stencil) && d.maskDecoded) {
+        alpha = std::make_unique<AlphaRows>(image, &d.mask, d.kind == MaskKind::Stencil, nullptr);
+    } else if (!d.key.empty()) {
+        alpha = std::make_unique<AlphaRows>(image, nullptr, false, &d.key);
+    }
+    const uint32_t longer = std::max(width, height);
+    uint32_t outWidth = width, outHeight = height;
+    if (maxSide > 0 && longer > maxSide) {
+        outWidth = std::max<uint32_t>(1, static_cast<uint32_t>(uint64_t(width) * maxSide / longer));
+        outHeight = std::max<uint32_t>(1, static_cast<uint32_t>(uint64_t(height) * maxSide / longer));
+    }
+    out.width = outWidth;
+    out.height = outHeight;
+    // The image's own size: before a reduced-resolution decode, its declared height.
+    out.sourceWidth = d.fullWidth ? d.fullWidth : width;
+    out.sourceHeight = d.fullHeight ? d.fullHeight : height;
+    out.pixels.resize(size_t(outWidth) * outHeight);
+    uint8_t* target = reinterpret_cast<uint8_t*>(&out.pixels[0]);
+    const bool reduce = outWidth != width || outHeight != height;
+    // Reduction: each source pixel adds to the output pixel (x * outWidth / width, y * outHeight /
+    // height); an output row is written when the source rows that map to it are done.
+    std::vector<uint32_t> columnOf, columnCount, sums;
+    if (reduce) {
+        columnOf.resize(width);
+        columnCount.assign(outWidth, 0);
+        sums.assign(outWidth, 0);
+        for (uint32_t x = 0; x < width; x++) {
+            columnOf[x] = static_cast<uint32_t>(uint64_t(x) * outWidth / width);
+            columnCount[columnOf[x]]++;
+        }
+    }
+    uint32_t pendingRow = 0, pendingCount = 0;
+    const auto flush = [&]() {
+        uint8_t* row = target + size_t(pendingRow) * outWidth;
+        for (uint32_t x = 0; x < outWidth; x++) {
+            const uint32_t n = columnCount[x] * pendingCount;
+            row[x] = static_cast<uint8_t>(n ? (sums[x] + n / 2) / n : 255);
+            sums[x] = 0;
+        }
+        pendingCount = 0;
+    };
+    std::vector<uint8_t> gray(width), alphaRow(alpha ? width : 0);
+    const size_t ch = static_cast<size_t>(image.channels);
+    for (uint32_t y = 0; y < height; y++) {
+        if (y >= image.height) {
+            std::fill(gray.begin(), gray.end(), uint8_t(255));
+        } else if (ch == 1) {
+            std::memcpy(gray.data(), image.Bytes() + size_t(y) * width, width);
+        } else {
+            const uint8_t* pixels = image.Bytes() + size_t(y) * width * ch;
+            for (uint32_t x = 0; x < width; x++) {
+                const uint8_t* p = pixels + 3 * size_t(x);
+                gray[x] = static_cast<uint8_t>((p[0] * 77u + p[1] * 150u + p[2] * 29u) >> 8);
+            }
+        }
+        if (alpha && y < image.height) {
+            alpha->Row(y, alphaRow.data());
+            for (uint32_t x = 0; x < width; x++) {
+                const uint32_t a = alphaRow[x];
+                gray[x] = static_cast<uint8_t>((gray[x] * a + 255 * (255 - a) + 127) / 255);
+            }
+        }
+        if (!reduce) {
+            std::memcpy(target + size_t(y) * width, gray.data(), width);
+            continue;
+        }
+        const uint32_t outRow = static_cast<uint32_t>(uint64_t(y) * outHeight / height);
+        if (pendingCount > 0 && outRow != pendingRow) flush();
+        pendingRow = outRow;
+        for (uint32_t x = 0; x < width; x++) sums[columnOf[x]] += gray[x];
+        pendingCount++;
+    }
+    if (reduce && pendingCount > 0) flush();
+}
+
+Status Gray(const Source& src, uint32_t maxSide, uint64_t maxPixels, GrayImage& out) {
+    out = GrayImage();
+    DecodedImage d;
+    // A JPX image need not be decoded at more than the size asked for.
+    const Status status = DecodeImage(src, maxPixels, d, maxSide);
+    if (status != Status::Ok) return status;
+    ComposeGray(d, maxSide, out);
+    return Status::Ok;
 }
 
 } // namespace
@@ -1353,6 +1723,23 @@ Status EncodeInline(const Document& document, const PdfValue& dictionary, std::s
     if (!dictionary.IsDict()) return Status::Corrupt;
     const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
     return Encode(src, out, maxPixels);
+}
+
+Status GrayXObject(const Document& document, const PdfValue& image, const PdfValue& resources, GrayImage& out,
+                   uint32_t maxSide, uint64_t maxPixels) {
+    out = GrayImage();
+    const PdfValue& stream = document.Resolve(image);
+    if (!stream.IsStream()) return Status::Corrupt;
+    const Source src{document, stream, document.Resolve(resources), false, {}, {}};
+    return Gray(src, maxSide, maxPixels, out);
+}
+
+Status GrayInline(const Document& document, const PdfValue& dictionary, std::string_view data,
+                  const PdfValue& resources, GrayImage& out, uint32_t maxSide, uint64_t maxPixels) {
+    out = GrayImage();
+    if (!dictionary.IsDict()) return Status::Corrupt;
+    const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
+    return Gray(src, maxSide, maxPixels, out);
 }
 
 } // namespace RayoPdf::Image

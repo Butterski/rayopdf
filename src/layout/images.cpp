@@ -263,4 +263,16 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
     }
 }
 
+Image::Status ImageGray(const Document& document, const PageData& page, const ImageBox& image, Image::GrayImage& out,
+                        uint32_t maxSide) {
+    if (!image.xobject.IsNull()) return Image::GrayXObject(document, image.xobject, image.resources, out, maxSide);
+    out = Image::GrayImage();
+    if (uint64_t(image.inlineData) + image.inlineLength > page.inlineImages.size()) return Image::Status::Corrupt;
+    ContentLexer lexer(std::string_view(page.inlineImages).substr(image.inlineData, image.inlineLength));
+    std::string_view op;
+    std::vector<PdfValue> operands;
+    if (!lexer.Next(op, operands) || op != "BI" || operands.empty()) return Image::Status::Corrupt;
+    return Image::GrayInline(document, operands.back(), lexer.InlineImageData(), image.resources, out, maxSide);
+}
+
 } // namespace RayoPdf::Layout

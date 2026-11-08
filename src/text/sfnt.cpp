@@ -55,6 +55,9 @@ bool ReadDirectory(std::string_view data, size_t at, Sfnt& out, int depth) {
         else if (tag == "post") out.post = table;
         else if (tag == "maxp") out.glyphCount = U16(table, 4);
         else if (tag == "CFF ") out.cff = table;
+        else if (tag == "head") out.head = table;
+        else if (tag == "loca") out.loca = table;
+        else if (tag == "glyf") out.glyf = table;
     }
     const uint32_t subtables = U16(cmap, 2);
     for (uint32_t i = 0; i < subtables && out.cmaps.size() < 64 && Has(cmap, 4 + static_cast<size_t>(i) * 8, 8); ++i) {

@@ -1,0 +1,126 @@
+# syntax=docker/dockerfile:1
+# SPDX-License-Identifier: Apache-2.0
+# Build image of the OCR add-on rayopdf-ocr (docs/development/ocr-engine.md): the build image plus
+# the inference runtimes, built from pinned source for Linux (GCC, position-independent, for the
+# -static-pie add-on) and Windows (MinGW-w64), the PP-OCRv6 models converted for both runtimes,
+# and Tesseract for the optional external backend. tools/dev.py builds it (`image --name ocr`, tag
+# rayopdf-ocr:1) and runs the `ocr` and `ocr-windows` configs in it. Nothing here is linked into
+# the core `rayopdf`.
+#
+#   /opt/ocr/ncnn/{linux,windows}/   ncnn 20261020 (BSD-3-Clause), static, no OpenMP, no Vulkan
+#   /opt/ocr/ort/linux/              ONNX Runtime 1.31.1 (MIT) minimal build, static, operators of
+#                                    the six PP-OCRv6 models only, no exceptions or RTTI
+#   /opt/ocr/models/<tier>/          PP-OCRv6 tiny/small/medium (Apache-2.0), docker/ocr_models.py
+#   /opt/ocr/versions.json           every pinned input and its SHA-256
+
+# ---- Models: download, check, convert (ncnn through pnnx, ORT format through onnxruntime) ----
+FROM python:3.11-slim AS models
+RUN pip install --no-cache-dir onnx==1.23.2 onnxruntime==1.31.1 numpy==2.4.6 pyyaml==6.0.3 \
+      flatbuffers==25.12.19 protobuf==7.36.2 ml_dtypes==0.6.0 packaging==26.3 typing_extensions==4.16.0
+RUN python3 - <<'EOF'
+import hashlib, io, os, urllib.request, zipfile
+url = "https://github.com/pnnx/pnnx/releases/download/20261020/pnnx-20261020-linux.zip"
+data = urllib.request.urlopen(url, timeout=300).read()
+assert hashlib.sha256(data).hexdigest() == "6cfff631178e02e62542e72bf14e0045dfce62095bbc1f633176e9c0778ab8a6", url
+zipfile.ZipFile(io.BytesIO(data)).extract("pnnx-20261020-linux/pnnx", "/opt")
+os.chmod("/opt/pnnx-20261020-linux/pnnx", 0o755)
+EOF
+COPY ocr_models.py /opt/ocr/ocr_models.py
+RUN python3 /opt/ocr/ocr_models.py --out /opt/ocr/models --pnnx /opt/pnnx-20261020-linux/pnnx --work /tmp/models \
+ && rm -rf /tmp/models
+
+# ---- Sources ----
+FROM rayopdf-build:2 AS sources
+RUN mkdir -p /src3 && cd /src3 && python3 - <<'EOF'
+import hashlib, tarfile, urllib.request, zipfile
+for url, name, digest in (
+    ("https://github.com/Tencent/ncnn/releases/download/20261020/ncnn-20261020-full-source.zip", "ncnn.zip",
+     "699d9acc67489eee0993a551ca1ebc247bbf0f4e33babe1dec810e6a9a52b988"),
+    ("https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.31.1.tar.gz", "ort.tar.gz",
+     "92ffbf8b97872fd1e73c9eebdf3319d9a3b24919ae438d27db903b72ee08939e")):
+    data = urllib.request.urlopen(url, timeout=600).read()
+    assert hashlib.sha256(data).hexdigest() == digest, url
+    open(name, "wb").write(data)
+zipfile.ZipFile("ncnn.zip").extractall("ncnn")
+tarfile.open("ort.tar.gz").extractall(".", filter="tar")
+EOF
+RUN cd /src3 && rm ncnn.zip ort.tar.gz && mv onnxruntime-1.31.1 onnxruntime
+
+# ---- ncnn, Linux and Windows ----
+# Only the layers the six networks use are built (plus the ones ncnn's own layers create inside:
+# padding, packing, casts, activations, ...), which roughly halves the add-on executable.
+FROM sources AS ncnn
+COPY --from=models /opt/ocr/models /tmp/models
+RUN python3 - <<'EOF' > /tmp/ncnn-layers.cmake
+import glob, re
+used = {line.split()[0] for path in glob.glob("/tmp/models/*/*.ncnn.param")
+        for line in open(path).read().splitlines()[2:] if line.split()}
+used |= {"Padding", "Packing", "Cast", "Flatten", "Crop", "Slice", "Eltwise", "Split", "Concat", "Reshape",
+         "Permute", "ReLU", "LeakyReLU", "Clip", "Sigmoid", "Mish", "HardSwish", "Swish", "TanH", "Softmax",
+         "Gemm", "MatMul", "InnerProduct", "Convolution", "ConvolutionDepthWise", "Deconvolution",
+         "DeconvolutionDepthWise", "Pooling", "BinaryOp", "UnaryOp", "Dequantize", "Requantize", "Quantize"}
+names = re.findall(r"^ncnn_add_layer\((\w+)", open("/src3/ncnn/src/CMakeLists.txt").read(), re.M)
+print(" ".join(f"-DWITH_LAYER_{n.lower()}=OFF" for n in names if n not in used))
+EOF
+RUN set -e; \
+    common="-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DNCNN_SHARED_LIB=OFF \
+      -DNCNN_VULKAN=OFF -DNCNN_OPENMP=OFF -DNCNN_SIMPLEOCV=OFF -DNCNN_PIXEL=OFF -DNCNN_PIXEL_ROTATE=OFF \
+      -DNCNN_PIXEL_AFFINE=OFF -DNCNN_PIXEL_DRAWING=OFF -DNCNN_INT8=OFF -DNCNN_BF16=OFF \
+      -DNCNN_DISABLE_RTTI=ON -DNCNN_DISABLE_EXCEPTION=ON -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF \
+      -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_BUILD_TESTS=OFF -DNCNN_PYTHON=OFF $(cat /tmp/ncnn-layers.cmake)"; \
+    cmake -S /src3/ncnn -B /tmp/ncnn-linux $common -DCMAKE_INSTALL_PREFIX=/opt/ocr/ncnn/linux; \
+    cmake --build /tmp/ncnn-linux -j 6 && cmake --install /tmp/ncnn-linux; \
+    cp /tmp/ncnn-layers.cmake /opt/ocr/ncnn/layers-off.txt; \
+    cmake -S /src3/ncnn -B /tmp/ncnn-windows $common -DCMAKE_INSTALL_PREFIX=/opt/ocr/ncnn/windows \
+      -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
+      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix; \
+    cmake --build /tmp/ncnn-windows -j 6 && cmake --install /tmp/ncnn-windows; \
+    cp /src3/ncnn/LICENSE.txt /opt/ocr/ncnn/LICENSE.txt; rm -rf /tmp/ncnn-linux /tmp/ncnn-windows
+
+# ---- ONNX Runtime minimal, Linux ----
+FROM sources AS ort-linux
+COPY --from=models /opt/ocr/models/required_operators.config /tmp/required_operators.config
+# The reduced-operator build reads the operator list with ORT's Python tools, which need flatbuffers.
+RUN apt-get update && apt-get install -y --no-install-recommends python3-flatbuffers && rm -rf /var/lib/apt/lists/*
+RUN set -e; cd /src3/onnxruntime; \
+    python3 tools/ci_build/build.py --build_dir /tmp/ort --config Release --update --build --parallel 6 \
+      --cmake_generator Ninja --skip_tests --skip_submodule_sync --allow_running_as_root \
+      --compile_no_warning_as_error --minimal_build --disable_ml_ops --disable_exceptions --disable_rtti \
+      --include_ops_by_config /tmp/required_operators.config \
+      --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF CMAKE_POSITION_INDEPENDENT_CODE=ON; \
+    mkdir -p /opt/ocr/ort/linux/lib /opt/ocr/ort/linux/include; \
+    find /tmp/ort/Release -name '*.a' ! -path '*gtest*' ! -path '*gmock*' ! -path '*benchmark*' \
+      -exec cp {} /opt/ocr/ort/linux/lib/ \; ; \
+    cp include/onnxruntime/core/session/onnxruntime_c_api.h include/onnxruntime/core/session/onnxruntime_float16.h \
+      include/onnxruntime/core/session/onnxruntime_ep_c_api.h /opt/ocr/ort/linux/include/ 2>/dev/null || \
+      cp include/onnxruntime/core/session/*.h /opt/ocr/ort/linux/include/; \
+    cp LICENSE /opt/ocr/ort/LICENSE; cp ThirdPartyNotices.txt /opt/ocr/ort/ThirdPartyNotices.txt; \
+    ls /opt/ocr/ort/linux/lib > /opt/ocr/ort/linux/libs.txt; rm -rf /tmp/ort
+
+# ---- The image ----
+FROM rayopdf-build:2
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tesseract-ocr=5.3.4-1build5 tesseract-ocr-eng=1:4.1.0-2 \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=ncnn /opt/ocr/ncnn /opt/ocr/ncnn
+COPY --from=ort-linux /opt/ocr/ort /opt/ocr/ort
+# All public headers of the C API (onnxruntime_c_api.h includes its siblings).
+COPY --from=sources /src3/onnxruntime/include/onnxruntime/core/session/ /opt/ocr/ort/linux/include/
+COPY --from=models /opt/ocr/models /opt/ocr/models
+RUN python3 - <<'EOF'
+import json, subprocess
+versions = {
+    "ncnn": {"version": "20261020", "source": "ncnn-20261020-full-source.zip",
+             "sha256": "699d9acc67489eee0993a551ca1ebc247bbf0f4e33babe1dec810e6a9a52b988"},
+    "onnxruntime": {"version": "1.31.1", "source": "onnxruntime v1.31.1 tag archive",
+                    "sha256": "92ffbf8b97872fd1e73c9eebdf3319d9a3b24919ae438d27db903b72ee08939e"},
+    "pnnx": {"version": "20261020", "sha256": "6cfff631178e02e62542e72bf14e0045dfce62095bbc1f633176e9c0778ab8a6"},
+    "tesseract": subprocess.run(["tesseract", "--version"], capture_output=True, text=True).stdout.splitlines()[0],
+    "models": {},
+}
+for tier in ("tiny", "small", "medium"):
+    versions["models"][tier] = {line.split()[2]: line.split()[0]
+                                for line in open(f"/opt/ocr/models/{tier}/models.txt")}
+json.dump(versions, open("/opt/ocr/versions.json", "w"), indent=1, sort_keys=True)
+EOF
+RUN chmod -R a+rX /opt/ocr

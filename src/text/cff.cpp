@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Forked from RayoMD src/core/cff.cpp at ef106ca (Apache-2.0, same author).
 // The INDEX and DICT readers of RayoMD's CFF module, plus the charset and encoding readers it
-// lacked (CFF specification, Adobe TN #5176, sections 12-13; algorithms §3.3). Outlines, private
-// DICTs and subroutines are not read.
+// lacked (CFF specification, Adobe TN #5176, sections 12-13; algorithms §3.3), and for
+// glyph-shape recovery (text/outline.h) the charstrings, subroutines, private DICTs and font
+// DICTs the outlines need.
 
+#include "text/outline.h"
 #include "text/program.h"
 
 #include "text/tables.h"
@@ -334,6 +336,165 @@ bool ReadCff(std::string_view bytes, CffInfo& out) {
         if (!ReadEncoding(data, size, encoding, out.glyphCount, ids, out)) out.encoding = 0;
     }
     return true;
+}
+
+namespace {
+
+// The items of `index` as views; false when one is out of range.
+bool Items(const uint8_t* data, const Index& index, std::vector<std::string_view>& out) {
+    out.clear();
+    out.reserve(index.count);
+    for (uint32_t i = 0; i < index.count; ++i) {
+        const std::string_view item = IndexItem(data, index, i);
+        if (item.data() == nullptr) return false;
+        out.push_back(item);
+    }
+    return true;
+}
+
+// A FontMatrix entry's six operands, when they are finite and the matrix invertible.
+bool ReadMatrix(const DictEntry& entry, double (&out)[6]) {
+    if (entry.operandCount != 6) return false;
+    for (int i = 0; i < 6; ++i)
+        if (!(entry.operands[i] > -1e6 && entry.operands[i] < 1e6)) return false;
+    const double det = entry.operands[0] * entry.operands[3] - entry.operands[1] * entry.operands[2];
+    if (!(det > 1e-12 || det < -1e-12)) return false;
+    for (int i = 0; i < 6; ++i) out[i] = entry.operands[i];
+    return true;
+}
+
+// A Private DICT (`size` bytes at `offset`) and its local Subrs.
+bool ReadPrivate(const uint8_t* data, size_t size, uint32_t privateSize, uint32_t privateOffset,
+                 CffOutlines::FontDict& out) {
+    if (privateOffset > size || privateSize > size - privateOffset) return false;
+    const std::string_view dict(reinterpret_cast<const char*>(data) + privateOffset, privateSize);
+    DictEntry entries[kMaxDictEntries];
+    size_t count = 0;
+    if (!ParseDict(dict, entries, kMaxDictEntries, count)) return false;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t subrs = 0;
+        if (entries[i].op != 19 || !Offset(entries[i], 0, subrs)) continue;
+        Index index;
+        size_t next = 0;
+        if (uint64_t(privateOffset) + subrs > size ||
+            !ReadIndex(data, size, privateOffset + size_t(subrs), index, next) || !Items(data, index, out.localSubrs))
+            return false;
+    }
+    return true;
+}
+
+// A DICT's Private entry (size, offset), read into `out`; true when there is none.
+bool PrivateOf(const uint8_t* data, size_t size, const DictEntry* entries, size_t count, CffOutlines::FontDict& out) {
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t privateSize = 0, privateOffset = 0;
+        if (entries[i].op == 18 && Offset(entries[i], 0, privateSize) && Offset(entries[i], 1, privateOffset))
+            return ReadPrivate(data, size, privateSize, privateOffset, out);
+    }
+    return true;
+}
+
+} // namespace
+
+bool ReadCffOutlines(std::string_view bytes, CffOutlines& out) {
+    out = CffOutlines();
+    if (!ReadCff(bytes, out.info)) return false;
+    const uint8_t* const data = reinterpret_cast<const uint8_t*>(bytes.data());
+    const size_t size = bytes.size();
+    const size_t headerSize = data[2];
+    Index names, topDicts, strings, globalSubrs;
+    size_t next = 0;
+    if (!ReadIndex(data, size, headerSize, names, next) || !ReadIndex(data, size, next, topDicts, next) ||
+        !ReadIndex(data, size, next, strings, next) || !ReadIndex(data, size, next, globalSubrs, next) ||
+        !Items(data, globalSubrs, out.globalSubrs))
+        return false;
+    DictEntry entries[kMaxDictEntries];
+    size_t count = 0;
+    if (!ParseDict(IndexItem(data, topDicts, 0), entries, kMaxDictEntries, count)) return false;
+    uint32_t charStrings = 0, fdArray = 0, fdSelect = 0;
+    bool hasFdArray = false, hasFdSelect = false;
+    for (size_t i = 0; i < count; ++i) {
+        const DictEntry& entry = entries[i];
+        if (entry.op == 17) Offset(entry, 0, charStrings);
+        else if (entry.op == 1206 && entry.operandCount == 1 && entry.operands[0] != 2) return false;  // CharstringType
+        else if (entry.op == 1207) out.hasMatrix = ReadMatrix(entry, out.matrix);
+        else if (entry.op == 1236) hasFdArray = Offset(entry, 0, fdArray);
+        else if (entry.op == 1237) hasFdSelect = Offset(entry, 0, fdSelect);
+    }
+    Index glyphs;
+    if (!ReadIndex(data, size, charStrings, glyphs, next) || !Items(data, glyphs, out.charStrings)) return false;
+    const uint32_t glyphCount = static_cast<uint32_t>(out.charStrings.size());
+
+    if (!out.info.cidKeyed) {
+        out.fonts.resize(1);
+        return PrivateOf(data, size, entries, count, out.fonts[0]);
+    }
+    // CID-keyed: the font DICTs of FDArray, each with its Private DICT, and FDSelect.
+    Index fds;
+    if (!hasFdArray || !hasFdSelect || !ReadIndex(data, size, fdArray, fds, next) || fds.count == 0 || fds.count > 256)
+        return false;
+    out.fonts.resize(fds.count);
+    for (uint32_t f = 0; f < fds.count; ++f) {
+        const std::string_view fd = IndexItem(data, fds, f);
+        size_t fdCount = 0;
+        if (fd.data() == nullptr || !ParseDict(fd, entries, kMaxDictEntries, fdCount)) return false;
+        for (size_t i = 0; i < fdCount; ++i)
+            if (entries[i].op == 1207) out.fonts[f].hasMatrix = ReadMatrix(entries[i], out.fonts[f].matrix);
+        if (!PrivateOf(data, size, entries, fdCount, out.fonts[f])) return false;
+    }
+    out.fdOfGlyph.assign(glyphCount, 0);
+    if (fdSelect >= size) return false;
+    const uint8_t format = data[fdSelect];
+    if (format == 0) {
+        if (size - fdSelect - 1 < glyphCount) return false;
+        for (uint32_t g = 0; g < glyphCount; ++g) out.fdOfGlyph[g] = data[fdSelect + 1 + g];
+    } else if (format == 3) {
+        if (size - fdSelect < 3) return false;
+        const uint32_t ranges = ReadU16(data + fdSelect + 1);
+        const size_t at = fdSelect + 3;
+        if ((size - at) / 3 < size_t(ranges) + 1) return false;  // the ranges and the sentinel
+        for (uint32_t r = 0; r < ranges; ++r) {
+            const uint32_t first = ReadU16(data + at + 3 * size_t(r));
+            const uint8_t fd = data[at + 3 * size_t(r) + 2];
+            const uint32_t end = ReadU16(data + at + 3 * size_t(r + 1));
+            for (uint32_t g = first; g < end && g < glyphCount; ++g) out.fdOfGlyph[g] = fd;
+        }
+    } else {
+        return false;
+    }
+    for (uint8_t& fd : out.fdOfGlyph)
+        if (fd >= out.fonts.size()) fd = 0;
+    return true;
+}
+
+int32_t CffGlyphByName(const CffOutlines& font, std::string_view name) {
+    if (font.info.cidKeyed || name.empty()) return -1;
+    const uint32_t count = static_cast<uint32_t>(font.info.glyphNames.Count());
+    for (uint32_t g = 0; g < count && g < font.charStrings.size(); ++g)
+        if (font.info.glyphNames.Name(g) == name) return static_cast<int32_t>(g);
+    return -1;
+}
+
+int32_t CffGlyphByCid(const CffOutlines& font, uint32_t cid) {
+    if (!font.info.cidKeyed) return cid < font.charStrings.size() ? static_cast<int32_t>(cid) : -1;
+    for (uint32_t g = 0; g < font.info.glyphCids.size() && g < font.charStrings.size(); ++g)
+        if (font.info.glyphCids[g] == cid) return static_cast<int32_t>(g);
+    return -1;
+}
+
+Raster::Matrix CffGlyphMatrix(const CffOutlines& font, uint32_t glyph) {
+    const double* t = font.matrix;
+    const Raster::Matrix top{t[0], t[1], t[2], t[3], t[4], t[5]};
+    if (glyph < font.fdOfGlyph.size()) {
+        const CffOutlines::FontDict& fd = font.fonts[font.fdOfGlyph[glyph]];
+        if (fd.hasMatrix) {
+            const double* m = fd.matrix;
+            const Raster::Matrix own{m[0], m[1], m[2], m[3], m[4], m[5]};
+            // A CID font's matrix is its font DICT's followed by the Top DICT's, when the Top DICT
+            // has one of its own (as rayomd-gui's CffOutlines::GlyphMatrix).
+            return font.hasMatrix ? own.Then(top) : own;
+        }
+    }
+    return top;
 }
 
 } // namespace RayoPdf::Text::Program

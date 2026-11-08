@@ -14,10 +14,12 @@ namespace RayoPdf::Layout {
 
 struct Structure;
 
-// Per page: whether most of its text came from unmapped or guessed codes.
+// Per page: whether most of its text came from unmapped or guessed codes, and whether OCR failed on
+// it (layout/ocr.h).
 struct PageTextQuality {
     uint64_t glyphs = 0;
     uint64_t unreliable = 0;  // unmapped + guessed
+    bool ocrFailed = false;
 };
 
 // Lines, header/footer removal, images, reading order, semantics and the writer over `pages`

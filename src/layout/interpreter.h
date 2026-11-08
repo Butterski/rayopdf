@@ -35,11 +35,23 @@ constexpr uint32_t kMaxPiecesPerPath = 4096;  // straight axis-aligned pieces ke
 constexpr size_t kMaxMarkStreams = 254;
 constexpr uint8_t kNoMarkStream = 255;
 
+// One glyph as glyph-shape recovery (layout/ocr_glyphs.h) needs it: its font, code and placement.
+struct GlyphUse {
+    uint32_t glyph = 0;               // index in PageData::glyphs
+    uint32_t text = 0;                // its Glyph::text when emitted (ActualText moves it)
+    const Text::Font* font = nullptr;
+    uint32_t code = 0;
+    uint8_t bytes = 1;                // the code's length in the string
+    float matrix[6] = {};             // text space at size 1 to the upright page (Trm)
+};
+
 // Counters of one page for ConvertReport.
 struct PageStats {
     uint64_t glyphs = 0;    // shown codes
     uint64_t unmapped = 0;  // codes with no Unicode text
     uint64_t guessed = 0;   // codes whose Unicode text is a guess
+    // When set (glyph-shape recovery interprets a page again), every glyph kept on the page.
+    std::vector<GlyphUse>* uses = nullptr;
 };
 
 // Interprets page `index` (0-based) of `document` into `page` (cleared first). `withLinks` reads

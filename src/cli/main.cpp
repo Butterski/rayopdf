@@ -2,7 +2,8 @@
 // The rayopdf command line (roadmap D7).
 //
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-//                                   [--no-annotations] [--no-structure] [--report]
+//                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
+//                                   [--ocr-addon=PATH] [--report]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -15,12 +16,15 @@
 // 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
 // 13 unsupported encryption. A batch exits with the code of its last failed document in input
 // order. The batch modes' records and files never depend on the number of workers: documents are
-// converted independently and records are written in input order.
+// converted independently and records are written in input order. Each worker keeps its own OCR
+// add-on process (started when a document first needs it), and the add-on answers the same
+// request the same way, so OCR does not change that.
 
 #include "common/batch.h"
 #include "common/file.h"
 #include "common/serve.h"
 #include "layout/convert.h"
+#include "layout/ocr_client.h"
 #include "pdf/document.h"
 
 #include <algorithm>
@@ -94,8 +98,15 @@ void PrintUsage(std::FILE* out) {
         "  --pages=A-B        convert pages A to B (1-based; \"A\", \"A-\", \"-B\" also work)\n"
         "  --images=DIR|none  where image files go (default: OUT-images/ beside OUT.md;\n"
         "                     none for standard output; only none in the batch modes)\n"
+        "  --no-exact         convert the pages even when the PDF carries its RayoMD source\n"
+        "                     (by default a verified rayomd-source/1 payload is written as it is)\n"
         "  --no-annotations   do not turn link annotations into Markdown links\n"
         "  --no-structure     ignore the structure tree of a tagged PDF (layout analysis only)\n"
+        "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
+        "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
+        "                     image and large image, replacing an existing invisible text layer\n"
+        "  --ocr-addon=PATH   the OCR add-on to run (default: $RAYOPDF_OCR, then rayopdf-ocr\n"
+        "                     beside rayopdf, then on PATH)\n"
         "  --report           print one JSON record of the document (its counters)\n"
         "\n"
         "Batch options:\n"
@@ -187,10 +198,30 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             return FlagStatus::Invalid;
         }
         options.imagesGiven = true;
+    } else if (arg == "--no-exact") {
+        options.convert.exact = false;
     } else if (arg == "--no-annotations") {
         options.convert.annotations = false;
     } else if (arg == "--no-structure") {
         options.convert.structure = false;
+    } else if (StartsWith(arg, "--ocr=")) {
+        const std::string_view mode = arg.substr(6);
+        if (mode == "auto") {
+            options.convert.ocr.mode = Layout::OcrMode::Auto;
+        } else if (mode == "off") {
+            options.convert.ocr.mode = Layout::OcrMode::Off;
+        } else if (mode == "force") {
+            options.convert.ocr.mode = Layout::OcrMode::Force;
+        } else {
+            error = "--ocr takes auto, off or force: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
+    } else if (StartsWith(arg, "--ocr-addon=")) {
+        options.convert.ocr.addon = std::string(arg.substr(12));
+        if (options.convert.ocr.addon.empty()) {
+            error = "--ocr-addon needs a path";
+            return FlagStatus::Invalid;
+        }
     } else {
         return FlagStatus::Unknown;
     }
@@ -387,6 +418,15 @@ void AppendCounters(std::string& out, const Layout::ConvertReport& r, const Docu
     AppendField(out, "content_errors", static_cast<uint64_t>(r.contentErrors));
     AppendField(out, "structure", std::string_view(Layout::StructureUseName(r.structure)));
     AppendField(out, "structure_elements", static_cast<uint64_t>(r.structureElements));
+    AppendField(out, "exact", std::string_view(Layout::ExactUseName(r.exact)));
+    AppendField(out, "ocr_pages_routed", static_cast<uint64_t>(r.ocrPagesRouted));
+    AppendField(out, "ocr_pages", static_cast<uint64_t>(r.ocrPages));
+    AppendField(out, "ocr_failures", static_cast<uint64_t>(r.ocrFailures));
+    AppendField(out, "ocr_addon_missing", r.ocrAddonMissing);
+    AppendField(out, "ocr_broken_pages", static_cast<uint64_t>(r.ocrBrokenPages));
+    AppendField(out, "ocr_vector_text_pages", static_cast<uint64_t>(r.ocrVectorTextPages));
+    AppendField(out, "ocr_glyph_fonts", static_cast<uint64_t>(r.ocrGlyphFonts));
+    AppendField(out, "ocr_glyphs", r.ocrGlyphs);
     AppendField(out, "repaired", d.repaired);
     AppendField(out, "encrypted", d.encrypted);
     AppendField(out, "broken_objects", static_cast<uint64_t>(d.brokenObjects));
@@ -559,7 +599,8 @@ bool CollectPdfs(const std::string& folder, bool recursive, std::vector<std::str
     return true;
 }
 
-void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOptions& batch, std::string& markdown) {
+void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOptions& batch, std::string& markdown,
+                   Layout::OcrSession& ocr) {
     const Clock::time_point start = Clock::now();
     Batch::Record& record = job.record;
     record.input = job.input;
@@ -576,6 +617,7 @@ void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOp
     }
     Layout::ConvertOptions options = document.convert;
     ChooseImageTarget(job.output, document, options);
+    options.ocr.session = &ocr;
     ConvertDocument(job.input, job.output, document.password, options, markdown, record, true);
     record.milliseconds = MillisecondsSince(start);
 }
@@ -632,16 +674,19 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
         return kExitUnwritable;
     }
     const unsigned workers = Batch::WorkerCount(batch.workers, jobs.size());
-    // A Markdown buffer per worker, reused from document to document.
+    // A Markdown buffer and an OCR add-on session per worker, reused from document to document.
     std::vector<std::string> buffers(workers);
+    std::vector<std::unique_ptr<Layout::OcrSession>> sessions(workers);
+    for (std::unique_ptr<Layout::OcrSession>& s : sessions) s.reset(new Layout::OcrSession(document.convert.ocr));
     Batch::RunJobs(jobs.size(), workers, [&](unsigned worker, size_t index) {
-        BatchDocument(jobs[index], document, batch, buffers[worker]);
+        BatchDocument(jobs[index], document, batch, buffers[worker], *sessions[worker]);
         if (report.IsOpen()) {
             std::string line;
             Batch::AppendRecord(line, jobs[index].record);
             report.Put(index, std::move(line));
         }
     });
+    sessions.clear();  // the add-ons quit
     const bool reported = !batch.report || report.Close();
 
     size_t failures = 0;
@@ -661,9 +706,10 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
     return reported ? kExitOk : kExitUnwritable;
 }
 
-// One serve request into `record`: the session's flags with the request's `args` over them.
+// One serve request into `record`: the session's flags with the request's `args` over them. `ocr`
+// is the worker's add-on, used unless the request names another one.
 void ServeRequest(const Serve::Request& request, const DocumentOptions& session, std::string& markdown,
-                  Batch::Record& record) {
+                  Batch::Record& record, Layout::OcrSession& ocr) {
     const Clock::time_point start = Clock::now();
     record.input = request.input;
     record.output = request.hasOutput ? request.output : std::string("-");
@@ -679,6 +725,7 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
     }
     Layout::ConvertOptions options = document.convert;
     ChooseImageTarget(request.hasOutput ? request.output : std::string(), document, options);
+    if (options.ocr.addon == session.convert.ocr.addon) options.ocr.session = &ocr;
     ConvertDocument(request.input, request.hasOutput ? request.output : std::string(), document.password, options,
                     markdown, record, true);
     if (record.code == kExitOk && !request.hasOutput) {
@@ -730,6 +777,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
     std::vector<std::thread> threads;
     const auto work = [&] {
         std::string markdown;
+        Layout::OcrSession ocr(session.convert.ocr);
         for (;;) {
             ServeQueue::Task task;
             {
@@ -742,7 +790,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
             queue.changed.notify_all();
             Batch::Record record;
             record.id = task.request.id;
-            ServeRequest(task.request, session, markdown, record);
+            ServeRequest(task.request, session, markdown, record, ocr);
             std::string line;
             Batch::AppendRecord(line, record);
             answers.Put(task.index, std::move(line));
@@ -758,6 +806,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
     std::string line;
     std::string error;
     std::string markdown;
+    Layout::OcrSession ocr(session.convert.ocr);
     size_t index = 0;
     while (answers.Healthy()) {
         const Serve::LineReader::Status status = lines.Next(line, Serve::kMaxRequestBytes);
@@ -781,7 +830,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
         if (workers <= 1) {
             Batch::Record record;
             record.id = request.id;
-            ServeRequest(request, session, markdown, record);
+            ServeRequest(request, session, markdown, record, ocr);
             std::string answer;
             Batch::AppendRecord(answer, record);
             answers.Put(index++, std::move(answer));

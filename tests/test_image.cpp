@@ -537,13 +537,13 @@ void TestPassThrough() {
                       out.bytes.size() == 12 + 20 + 45 + 8 + j2k.size() &&
                       out.bytes.compare(out.bytes.size() - j2k.size(), j2k.size(), j2k) == 0,
                   536);
-    // Not decoded: JBIG2, CCITT, unknown filters; Pattern spaces.
+    // Not decoded: unknown filters; Pattern spaces. JBIG2 or CCITT data that is none: Corrupt.
     RAYOPDF_CHECK(EncodeImage("/Width 2 /Height 2 /BitsPerComponent 1 /ColorSpace /DeviceGray /Filter /JBIG2Decode", "x",
-                              out, false) == Image::Status::Unsupported,
+                              out, false) == Image::Status::Corrupt,
                   537);
     RAYOPDF_CHECK(EncodeImage("/Width 2 /Height 2 /BitsPerComponent 1 /ColorSpace /DeviceGray /Filter [/FlateDecode "
                               "/CCITTFaxDecode]",
-                              ZlibStored("x"), out, false) == Image::Status::Unsupported,
+                              ZlibStored("x"), out, false) == Image::Status::Corrupt,
                   537);
     RAYOPDF_CHECK(EncodeImage("/Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /Foo", "xxxx", out,
                               false) == Image::Status::Unsupported,
@@ -637,7 +637,7 @@ void TestInline() {
                       std::string_view(out.extension) == "jpg" && out.width == 32,
                   546);
     RAYOPDF_CHECK(parse("<< /W 2 /H 1 /BPC 8 /CS /G /F /CCF >>", dict), 547);
-    RAYOPDF_CHECK(Image::EncodeInline(*f.doc, dict, "xx", kNull, out) == Image::Status::Unsupported, 547);
+    RAYOPDF_CHECK(Image::EncodeInline(*f.doc, dict, "xx", kNull, out) == Image::Status::Corrupt, 547);
 }
 
 // ---------------------------------------------------------------- a JPEG encoder for the tests
@@ -1055,6 +1055,223 @@ void TestDctImages() {
     }
 }
 
+// The gray pixels for OCR (image.h GrayXObject, GrayInline): luminance, masks on white, stencils,
+// reduction by area averaging.
+void TestGray() {
+    Fixture f;
+    // RGB: red, green, blue, white.
+    const int rgb = f.b.AddFlateStream("/Width 4 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+                                       Bytes({255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255}));
+    // Black under a soft mask 0, 128, 255.
+    const int soft = f.b.AddFlateStream("/Width 3 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", Bytes({0, 128, 255}));
+    const int masked = f.b.AddFlateStream("/Width 3 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask " +
+                                              std::to_string(soft) + " 0 R",
+                                          Bytes({0, 0, 0}));
+    // A colour key that hides black: white.
+    const int keyed = f.b.AddFlateStream("/Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Mask [0 0]",
+                                         Bytes({0, 100}));
+    const int stencil = f.b.AddFlateStream("/Width 4 /Height 1 /ImageMask true", Bytes({0x50}));
+    // 100 x 50: left half 0, right half 200; and 7 x 3 of increasing values.
+    std::string halves;
+    for (int y = 0; y < 50; y++)
+        for (int x = 0; x < 100; x++) halves.push_back(static_cast<char>(x < 50 ? 0 : 200));
+    const int large = f.b.AddFlateStream("/Width 100 /Height 50 /ColorSpace /DeviceGray /BitsPerComponent 8", halves);
+    std::string ramp;
+    for (int i = 0; i < 21; i++) ramp.push_back(static_cast<char>(i * 10));
+    const int odd = f.b.AddFlateStream("/Width 7 /Height 3 /ColorSpace /DeviceGray /BitsPerComponent 8", ramp);
+    const int jbig = f.b.AddStream("/Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode "
+                                   "/Foo 1",
+                                   "xx");
+    f.Open();
+    Image::GrayImage g;
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(rgb), kNull, g) == Image::Status::Ok && g.width == 4 && g.height == 1 &&
+                      g.sourceWidth == 4 && g.pixels == Bytes({76, 149, 28, 255}),
+                  1000);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(masked), kNull, g) == Image::Status::Ok &&
+                      g.pixels == Bytes({255, 127, 0}),
+                  1001);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(keyed), kNull, g) == Image::Status::Ok && g.pixels == Bytes({255, 100}),
+                  1002);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(stencil), kNull, g) == Image::Status::Ok &&
+                      g.pixels == Bytes({0, 255, 0, 255}),
+                  1003);
+    // Reduced to a longer side of 10: 10 x 5, halves kept; no reduction when already small.
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(large), kNull, g, 10) == Image::Status::Ok && g.width == 10 &&
+                      g.height == 5 && g.sourceWidth == 100 && g.sourceHeight == 50 && g.pixels.size() == 50,
+                  1004);
+    for (uint32_t y = 0; y < 5; y++)
+        for (uint32_t x = 0; x < 10; x++) RAYOPDF_CHECK(static_cast<uint8_t>(g.pixels[y * 10 + x]) == (x < 5 ? 0 : 200), 1004);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(large), kNull, g, 100) == Image::Status::Ok && g.width == 100, 1004);
+    // 7 x 3 to a longer side of 5: 5 x 2; columns 0-1, 2, 3-4, 5, 6 (x * 5 / 7) and rows 0-1, 2.
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(odd), kNull, g, 5) == Image::Status::Ok && g.width == 5 && g.height == 2,
+                  1005);
+    // Row 0-1, columns 0-1: (0 + 10 + 70 + 80) / 4 = 40; row 2, column 6: 200.
+    RAYOPDF_CHECK(static_cast<uint8_t>(g.pixels[0]) == 40 && static_cast<uint8_t>(g.pixels[9]) == 200, 1005);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(jbig), kNull, g) != Image::Status::Ok && g.pixels.empty(), 1006);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, kNull, kNull, g) == Image::Status::Corrupt, 1006);
+    // Inline.
+    PdfArena arena;
+    Syntax::Builder builder(arena);
+    const std::string text = "<< /W 2 /H 1 /BPC 8 /CS /RGB >>";
+    Syntax::Cursor cursor{text, 0};
+    PdfValue inlineDict;
+    RAYOPDF_CHECK(Syntax::ParseValue(cursor, Syntax::Mode::Content, 0, builder, inlineDict), 1007);
+    RAYOPDF_CHECK(Image::GrayInline(*f.doc, inlineDict, Bytes({0, 0, 255, 255, 255, 255}), kNull, g) == Image::Status::Ok &&
+                      g.pixels == Bytes({28, 255}),
+                  1007);
+}
+
+// CCITT fax images through image/ccitt.h: the filter's polarity (/BlackIs1) and the colour space
+// and /Decode after it, stencils, inline /CCF, a /Width that differs from /Columns, missing rows
+// white. The data: an 8 x 3 Group 4 image, row 0 black in columns 0-3 (horizontal mode), rows 1
+// and 2 white (pass mode then V0; V0), then EOFB.
+void TestCcittImages() {
+    const std::string g4 = Bytes({0x26, 0xAE, 0x38, 0x00, 0x80, 0x08});
+    const std::string parms = " /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 8";
+    const std::string gray = "/Width 8 /Height 3 /BitsPerComponent 1 /ColorSpace /DeviceGray";
+    Image::Encoded out;
+    Decoded png;
+    RAYOPDF_CHECK(EncodeImage(gray + parms + " >>", g4, out, false) == Image::Status::Ok &&
+                      std::string_view(out.extension) == "png" && ReadPng(out.bytes, png) && png.width == 8 && png.height == 3,
+                  1010);
+    for (uint32_t x = 0; x < 8; x++) {
+        RAYOPDF_CHECK(Pixel(png, x, 0, {x < 4 ? 0 : 255}) && Pixel(png, x, 1, {255}) && Pixel(png, x, 2, {255}), 1010);
+    }
+    // /BlackIs1 true makes white 0, which DeviceGray shows black unless /Decode [1 0] turns it back.
+    RAYOPDF_CHECK(EncodeImage(gray + parms + " /BlackIs1 true >>", g4, out, false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && Pixel(png, 0, 0, {255}) && Pixel(png, 7, 2, {0}),
+                  1011);
+    RAYOPDF_CHECK(EncodeImage(gray + " /Decode [1 0]" + parms + " /BlackIs1 true >>", g4, out, false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && Pixel(png, 0, 0, {0}) && Pixel(png, 7, 2, {255}),
+                  1011);
+    // A stencil: painted where the fax is black. No /ColorSpace: gray.
+    RAYOPDF_CHECK(EncodeImage("/Width 8 /Height 3 /ImageMask true" + parms + " >>", g4, out, false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && Pixel(png, 0, 0, {0}) && Pixel(png, 4, 0, {255}),
+                  1012);
+    RAYOPDF_CHECK(EncodeImage("/Width 8 /Height 3" + parms + " >>", g4, out, false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && Pixel(png, 0, 0, {0}),
+                  1012);
+    // /Width 6 and 10 against /Columns 8: cut, or padded white.
+    RAYOPDF_CHECK(EncodeImage("/Width 6 /Height 3 /BitsPerComponent 1 /ColorSpace /DeviceGray" + parms + " >>", g4, out, false) ==
+                          Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && png.width == 6 && Pixel(png, 3, 0, {0}) && Pixel(png, 5, 0, {255}),
+                  1013);
+    RAYOPDF_CHECK(EncodeImage("/Width 10 /Height 3 /BitsPerComponent 1 /ColorSpace /DeviceGray" + parms + " >>", g4, out,
+                              false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && png.width == 10 && Pixel(png, 3, 0, {0}) && Pixel(png, 8, 0, {255}) &&
+                      Pixel(png, 9, 0, {255}),
+                  1013);
+    // Only row 0 in the data: the image keeps its 3 rows, the missing ones white; also for OCR.
+    RAYOPDF_CHECK(EncodeImage(gray + parms + " >>", Bytes({0x26, 0xAE}), out, false) == Image::Status::Ok &&
+                      ReadPng(out.bytes, png) && png.height == 3 && Pixel(png, 0, 0, {0}) && Pixel(png, 0, 2, {255}),
+                  1014);
+    {
+        Fixture f;
+        const int image = f.b.AddStream(gray + parms + " >>", Bytes({0x26, 0xAE}));
+        f.Open();
+        Image::GrayImage g;
+        RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(image), kNull, g) == Image::Status::Ok && g.width == 8 &&
+                          g.height == 3 && g.sourceHeight == 3 && g.pixels == Bytes({0, 0, 0, 0, 255, 255, 255, 255}) +
+                                                                                  std::string(16, '\xFF'),
+                      1014);
+    }
+    // Inline /CCF with its /DP.
+    Fixture f;
+    f.Open();
+    PdfArena arena;
+    Syntax::Builder builder(arena);
+    const std::string text = "<< /W 8 /H 3 /BPC 1 /CS /G /F /CCF /DP << /K -1 /Columns 8 >> >>";
+    Syntax::Cursor cursor{text, 0};
+    PdfValue dict;
+    RAYOPDF_CHECK(Syntax::ParseValue(cursor, Syntax::Mode::Content, 0, builder, dict), 1015);
+    RAYOPDF_CHECK(Image::EncodeInline(*f.doc, dict, g4, kNull, out) == Image::Status::Ok && ReadPng(out.bytes, png) &&
+                      Pixel(png, 0, 0, {0}) && Pixel(png, 4, 0, {255}) && Pixel(png, 0, 1, {255}),
+                  1015);
+}
+
+// JBIG2 images through image/jbig2.h: a page information segment and an immediate generic region
+// coded with MMR (the Group 4 data of TestCcittImages), in the stream or partly in /JBIG2Globals;
+// the filter's 0 is black.
+void TestJbig2Images() {
+    const auto u32 = [](uint32_t v) {
+        return Bytes({static_cast<int>(v >> 24), static_cast<int>((v >> 16) & 0xFF), static_cast<int>((v >> 8) & 0xFF),
+                      static_cast<int>(v & 0xFF)});
+    };
+    // Segment header: number, type, no referred segments, page 1, data length.
+    const auto segment = [&](uint32_t number, int type, const std::string& data) {
+        return u32(number) + Bytes({type, 0, 1}) + u32(static_cast<uint32_t>(data.size())) + data;
+    };
+    const std::string page = segment(0, 48, u32(8) + u32(3) + u32(0) + u32(0) + Bytes({0, 0, 0}));
+    const std::string mmr = Bytes({0x26, 0xAE, 0x38, 0x00, 0x80, 0x08});
+    const std::string region = segment(1, 38, u32(8) + u32(3) + u32(0) + u32(0) + Bytes({0, 1}) + mmr);
+    const std::string dict = "/Width 8 /Height 3 /BitsPerComponent 1 /ColorSpace /DeviceGray /Filter /JBIG2Decode";
+    Image::Encoded out;
+    Decoded png;
+    RAYOPDF_CHECK(EncodeImage(dict, page + region, out, false) == Image::Status::Ok && ReadPng(out.bytes, png) &&
+                      png.width == 8 && png.height == 3 && Pixel(png, 0, 0, {0}) && Pixel(png, 3, 0, {0}) &&
+                      Pixel(png, 4, 0, {255}) && Pixel(png, 0, 1, {255}),
+                  1016);
+    Fixture f;
+    const int globals = f.b.AddStream("", page);
+    const int image = f.b.AddStream(dict + " /DecodeParms << /JBIG2Globals " + std::to_string(globals) + " 0 R >>", region);
+    const int mask = f.b.AddStream("/Width 8 /Height 3 /ImageMask true /Decode [1 0] /Filter /JBIG2Decode", page + region);
+    f.Open();
+    RAYOPDF_CHECK(Image::EncodeXObject(*f.doc, f.Obj(image), kNull, out) == Image::Status::Ok && ReadPng(out.bytes, png) &&
+                      Pixel(png, 0, 0, {0}) && Pixel(png, 7, 2, {255}),
+                  1017);
+    // A stencil with /Decode [1 0]: painted where the filter gives 1, white.
+    RAYOPDF_CHECK(Image::EncodeXObject(*f.doc, f.Obj(mask), kNull, out) == Image::Status::Ok && ReadPng(out.bytes, png) &&
+                      Pixel(png, 0, 0, {255}) && Pixel(png, 7, 2, {0}),
+                  1018);
+    Image::GrayImage g;
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(image), kNull, g) == Image::Status::Ok && g.width == 8 &&
+                      g.pixels.substr(0, 8) == Bytes({0, 0, 0, 0, 255, 255, 255, 255}),
+                  1018);
+}
+
+// JPX images through image/jpx.h, decoded to PNG instead of stored: a 4 x 4 one-component
+// codestream with no wavelet levels and one empty packet (every sample 0, 128 after the level
+// shift), gray from its one component without a /ColorSpace, with an /SMask applied; a JPX this
+// decoder cannot read stays stored as .jp2 with its mask counted as dropped (TestDctImages).
+void TestJpxImages() {
+    const std::string j2k = Bytes({0xFF, 0x4F,                                                  // SOC
+                                   0xFF, 0x51, 0x00, 0x29, 0x00, 0x00,                          // SIZ
+                                   0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0,              // size, offset
+                                   0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0,              // tile size, offset
+                                   0x00, 0x01, 0x07, 0x01, 0x01,                                // 1 component, 8-bit
+                                   0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00,        // COD: LRCP, 1 layer
+                                   0x00, 0x04, 0x04, 0x00, 0x01,                                // 0 levels, 64x64, 5/3
+                                   0xFF, 0x5C, 0x00, 0x04, 0x40, 0x40,                          // QCD: no quantization
+                                   0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F,  // SOT, 15 bytes
+                                   0x00, 0x01,                                                  //
+                                   0xFF, 0x93, 0x00,                                            // SOD, empty packet
+                                   0xFF, 0xD9});                                                // EOC
+    Image::Encoded out;
+    Decoded png;
+    RAYOPDF_CHECK(EncodeImage("/Width 4 /Height 4 /Filter /JPXDecode", j2k, out, false) == Image::Status::Ok &&
+                      std::string_view(out.extension) == "png" && !out.maskDropped && ReadPng(out.bytes, png) &&
+                      png.channels == 1 && png.width == 4 && png.height == 4 && Pixel(png, 3, 3, {128}),
+                  1020);
+    Fixture f;
+    const int soft = f.b.AddFlateStream("/Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", Bytes({0, 255}));
+    const int masked = f.b.AddStream("/Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /JPXDecode /SMask " +
+                                         std::to_string(soft) + " 0 R",
+                                     j2k);
+    f.Open();
+    RAYOPDF_CHECK(Image::EncodeXObject(*f.doc, f.Obj(masked), kNull, out) == Image::Status::Ok && !out.maskDropped &&
+                      ReadPng(out.bytes, png) && png.channels == 2 && Pixel(png, 0, 0, {128, 0}) &&
+                      Pixel(png, 3, 0, {128, 255}),
+                  1021);
+    // For OCR: composited on white (128 under alpha 0 is white), and reduced.
+    Image::GrayImage g;
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(masked), kNull, g) == Image::Status::Ok && g.width == 4 &&
+                      g.pixels.substr(0, 4) == Bytes({255, 255, 128, 128}),
+                  1022);
+    RAYOPDF_CHECK(Image::GrayXObject(*f.doc, f.Obj(masked), kNull, g, 2) == Image::Status::Ok && g.width == 2 &&
+                      g.height == 2 && g.sourceWidth == 4 && g.sourceHeight == 4,
+                  1022);
+}
+
 } // namespace
 
 int main() {
@@ -1069,6 +1286,10 @@ int main() {
     TestInline();
     TestJpegDecoder();
     TestDctImages();
+    TestGray();
+    TestCcittImages();
+    TestJbig2Images();
+    TestJpxImages();
     std::printf("test_image: ok\n");
     return 0;
 }

@@ -12,13 +12,29 @@ SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
   rayopdf-VERSION-linux-x64-static.tar.gz   build/static/rayopdf (fully static, -static-pie)
   rayopdf-VERSION-windows-x64.zip           build/windows/rayopdf.exe (MinGW-w64, static)
 
+With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
+the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
+the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
+tier, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a models.txt listing just
+those) and the same documents:
+
+  rayopdf-ocr-VERSION-linux-x64-static.tar.gz   build/ocr/addon/rayopdf-ocr (static-pie)
+  rayopdf-ocr-VERSION-windows-x64.zip           build/ocr-windows/addon/rayopdf-ocr.exe
+
 Build the binaries first:
   python3 tools/dev.py build --config static
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
+  python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:1
+  python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
+  python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 
 Usage:
   python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
-                           [--out build/dist] [--only linux|windows] [--repository URL]
+                           [--out build/dist] [--only linux|windows|ocr-linux|ocr-windows]
+                           [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
+                           [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
+                           [--ocr-models build/ocr-models] [--ocr-tiers small]
+                           [--repository URL]
 """
 
 from __future__ import annotations
@@ -89,7 +105,7 @@ def documents(version: str, repository: str) -> list[tuple[str, bytes, int]]:
     return files
 
 
-def check_linux(binary: Path, version: str) -> None:
+def check_linux(binary: Path, version: str, program: str = "rayopdf") -> None:
     data = binary.read_bytes()
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         raise SystemExit(f"package: {binary} is not a 64-bit little-endian ELF file")
@@ -106,8 +122,34 @@ def check_linux(binary: Path, version: str) -> None:
         raise SystemExit(f"package: {binary} is not position-independent (-static-pie)")
     if sys.platform.startswith("linux") and os.uname().machine == "x86_64":
         out = subprocess.run([str(binary), "--version"], capture_output=True, text=True).stdout.strip()
-        if out != f"rayopdf {version}":
+        # rayopdf-ocr appends its engine in parentheses: "rayopdf-ocr 0.0.9 (pp-ocrv6 small, ...)".
+        if out.split(" (")[0] != f"{program} {version}":
             raise SystemExit(f"package: {binary} --version says {out!r}, VERSION says {version}")
+
+
+# Network files of the add-on's runtime in a tier folder (besides config.txt and dict.txt). Releases
+# ship the ncnn build (docs/development/ocr-engine.md); the ONNX Runtime variant is not packaged.
+OCR_RUNTIME_FILES = ("det.ncnn.param", "det.ncnn.bin", "rec.ncnn.param", "rec.ncnn.bin")
+
+
+def ocr_models(folder: Path, tiers: list[str]) -> list[tuple[str, bytes, int]]:
+    """rayopdf-ocr-models/<tier>/ entries: the runtime's files, checked against and listed in models.txt."""
+    entries = []
+    for tier in tiers:
+        manifest = {}
+        for line in (folder / tier / "models.txt").read_text(encoding="ascii").splitlines():
+            digest, size, name = line.split()
+            manifest[name] = (digest, int(size))
+        kept = []
+        for name in ("config.txt", "dict.txt") + OCR_RUNTIME_FILES:
+            data = (folder / tier / name).read_bytes()
+            digest, size = manifest[name]
+            if hashlib.sha256(data).hexdigest() != digest or len(data) != size:
+                raise SystemExit(f"package: {folder / tier / name} differs from its models.txt")
+            entries.append((f"rayopdf-ocr-models/{tier}/{name}", data, 0o644))
+            kept.append(f"{digest} {size} {name}\n")
+        entries.append((f"rayopdf-ocr-models/{tier}/models.txt", "".join(kept).encode("ascii"), 0o644))
+    return entries
 
 
 def check_windows(binary: Path) -> None:
@@ -187,7 +229,13 @@ def main() -> int:
     parser.add_argument("--linux", default="build/static/rayopdf", help="the linux-x64-static binary")
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
-    parser.add_argument("--only", choices=("linux", "windows"), help="package one platform")
+    parser.add_argument("--only", choices=("linux", "windows", "ocr-linux", "ocr-windows"),
+                        help="package one archive")
+    parser.add_argument("--ocr", action="store_true", help="also package the OCR add-on's archives")
+    parser.add_argument("--ocr-linux", default="build/ocr/addon/rayopdf-ocr", help="the linux add-on binary")
+    parser.add_argument("--ocr-windows", default="build/ocr-windows/addon/rayopdf-ocr.exe", help="the windows add-on")
+    parser.add_argument("--ocr-models", default="build/ocr-models", help="the model folder (/opt/ocr/models)")
+    parser.add_argument("--ocr-tiers", default="small", help="comma-separated tiers to ship (default small)")
     parser.add_argument("--repository", default=REPOSITORY_URL, help="where the README's links point")
     args = parser.parse_args()
 
@@ -209,10 +257,29 @@ def main() -> int:
         name = f"rayopdf-{version}-windows-x64"
         zip_archive(out / f"{name}.zip", name, [("rayopdf.exe", binary.read_bytes(), 0o755)] + docs, mtime)
         made.append(out / f"{name}.zip")
+    wanted = {"ocr-linux", "ocr-windows"} if args.ocr and args.only is None else {args.only}
+    if wanted & {"ocr-linux", "ocr-windows"}:
+        folder = REPO / args.ocr_models if not Path(args.ocr_models).is_absolute() else Path(args.ocr_models)
+        models = ocr_models(folder, [t for t in args.ocr_tiers.split(",") if t])
+    if "ocr-linux" in wanted:
+        binary = REPO / args.ocr_linux if not Path(args.ocr_linux).is_absolute() else Path(args.ocr_linux)
+        check_linux(binary, version, "rayopdf-ocr")
+        name = f"rayopdf-{version}-linux-x64-static"
+        tar_gz(out / f"rayopdf-ocr-{version}-linux-x64-static.tar.gz", name,
+               [("rayopdf-ocr", binary.read_bytes(), 0o755)] + models + docs, mtime)
+        made.append(out / f"rayopdf-ocr-{version}-linux-x64-static.tar.gz")
+    if "ocr-windows" in wanted:
+        binary = REPO / args.ocr_windows if not Path(args.ocr_windows).is_absolute() else Path(args.ocr_windows)
+        check_windows(binary)
+        name = f"rayopdf-{version}-windows-x64"
+        zip_archive(out / f"rayopdf-ocr-{version}-windows-x64.zip", name,
+                    [("rayopdf-ocr.exe", binary.read_bytes(), 0o755)] + models + docs, mtime)
+        made.append(out / f"rayopdf-ocr-{version}-windows-x64.zip")
 
     # SHA256SUMS covers every archive of this version in the folder, also one packaged earlier.
     archives = sorted(p for p in out.iterdir()
-                      if p.name.startswith(f"rayopdf-{version}-") and p.name.endswith((".tar.gz", ".zip")))
+                      if p.name.startswith((f"rayopdf-{version}-", f"rayopdf-ocr-{version}-")) and
+                      p.name.endswith((".tar.gz", ".zip")))
     sums = "".join(f"{sha256(p)}  {p.name}\n" for p in archives)
     (out / "SHA256SUMS").write_text(sums, encoding="ascii")
     for path in made:

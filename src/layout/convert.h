@@ -6,6 +6,7 @@
 // unmapped glyphs and a repaired file get a `<!-- rayopdf: ... -->` comment where they apply.
 #pragma once
 
+#include "layout/ocr_options.h"
 #include "pdf/document.h"
 
 #include <cstdint>
@@ -18,11 +19,14 @@ struct ConvertOptions {
     int lastPage = 0;          // 0: the last page
     bool annotations = true;   // link annotations become Markdown links
     bool structure = true;     // a structure tree that passes the checks decides blocks and order (D5)
+    bool exact = true;         // a verified rayomd-source/1 payload is written as it is (D5, layout/exact.h)
     // Images (D6): each image worth keeping is written to `imageDirectory` (created when the first
     // image is written) as p<page>-<n>.<ext> and referenced as ![alt](imageLinkPrefix + that name).
     // An empty `imageDirectory` writes no image files and no image references.
     std::string imageDirectory;
     std::string imageLinkPrefix;
+    // OCR where the text layer fails (layout/ocr.h); without an add-on the output is the same.
+    OcrOptions ocr;
 };
 
 // What became of the document's structure tree (tagged PDF, roadmap D5; layout/structure.h).
@@ -38,6 +42,24 @@ enum class StructureUse : uint8_t {
 
 // "none", "used", "broken", "role-cycle", "coverage", "generic", "order".
 const char* StructureUseName(StructureUse use);
+
+// What became of a RayoMD source payload (rayomd-source/1, layout/exact.h).
+enum class ExactUse : uint8_t {
+    Off,          // --no-exact: not looked for
+    None,         // the file claims no payload
+    Used,         // the payload passed both checks and is the Markdown written
+    Pages,        // not used: a page range was asked for and the payload is the whole document
+    Unsupported,  // rejected: another profile version or encoding
+    Corrupt,      // rejected: the file or the profile's objects are not as the profile writes them
+    Integrity,    // rejected: the payload's SHA-256 or length does not match its packet
+    Limit,        // rejected: the PDF or the payload is past the profile's limits
+    Utf8,         // rejected: the payload is not UTF-8
+    Mismatch,     // rejected: the payload does not say what the pages show
+};
+
+// "off", "none", "used", "pages", "unsupported", "corrupt", "integrity", "limit", "utf8",
+// "mismatch".
+const char* ExactUseName(ExactUse use);
 
 // Counters of one conversion: `--report` prints them as one JSON line.
 struct ConvertReport {
@@ -61,10 +83,26 @@ struct ConvertReport {
     int contentErrors = 0;           // content streams that could not be fully read or interpreted
     StructureUse structure = StructureUse::None;
     uint32_t structureElements = 0;  // structure elements read (0 without a tree)
+    // Exact recovery (layout/exact.h). With Used the Markdown is the payload and the counters above
+    // are those of the conversion its check ran (no image files written).
+    ExactUse exact = ExactUse::None;
+    // OCR (layout/ocr.h). Routed: a page sent whole (image-only), or with image regions whose pixels
+    // look like text (counted only when an add-on runs to check them).
+    int ocrPagesRouted = 0;
+    int ocrPages = 0;                // routed pages that received OCR text
+    int ocrFailures = 0;             // routed pages on which the add-on failed (or was not used after failing)
+    bool ocrAddonMissing = false;    // pages were routed and no add-on was found
+    int ocrBrokenPages = 0;          // pages whose text layer fails the broken-text checks
+    int ocrVectorTextPages = 0;      // pages that look like text drawn as vector outlines
+    // Glyph-shape recovery (layout/ocr_glyphs.h): fonts whose recognised glyphs replaced their text,
+    // and the glyphs (shown codes) given text so.
+    int ocrGlyphFonts = 0;
+    uint64_t ocrGlyphs = 0;
 };
 
-// Converts the pages of `document` to Markdown in `markdown` (replaced). Never fails: what cannot
-// be read is reported in `report` and marked in the text.
+// Converts the pages of `document` to Markdown in `markdown` (replaced): a verified RayoMD source
+// payload as it is (layout/exact.h), else the pages. Never fails: what cannot be read is reported
+// in `report` and marked in the text.
 void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report);
 
 } // namespace RayoPdf::Layout

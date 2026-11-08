@@ -16,13 +16,16 @@ ms is the median over --repeat runs; the first repeat's output is kept.
 The opendataloader tool converts the whole list in one JVM and also writes
 /out/batch.json {"total_ms","docs","pages":null}; its per-document ms is null.
 
-In-process tools (markitdown, pymupdf, edgeparse, docling) run in one persistent
-worker process, timed there around the conversion call only. A document that
+In-process tools (markitdown, pymupdf, edgeparse, docling, docling-ocr) run in one
+persistent worker process, timed there around the conversion call only. A document that
 runs past --timeout kills the worker; the next document starts a fresh one, so
-a tool's stuck threads cannot spoil the documents after it.
+a tool's stuck threads cannot spoil the documents after it. docling-ocr is docling with
+its default OCR (it runs in the docling image); tesseract renders pages with pdftoppm
+and writes tesseract's plain text.
 """
 
 import argparse
+import concurrent.futures
 import json
 import multiprocessing
 import os
@@ -42,6 +45,8 @@ TIMING = {
     "liteparse": "fresh-process",
     "edgeparse": "in-process",
     "docling": "in-process",
+    "docling-ocr": "in-process",
+    "tesseract": "fresh-process",
     "cli": "fresh-process",
 }
 ERR_KEEP = 500
@@ -173,17 +178,26 @@ def MakeEdgeparse(args):
     return InProcess(lambda p: edgeparse.convert(p, format="markdown")), "edgeparse.convert(format=markdown)"
 
 
-def MakeDocling(args):
+def MakeDocling(args, ocr=False):
     try:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
-        opts = PdfPipelineOptions(artifacts_path="/models", do_ocr=False)
+        # docling-ocr keeps docling's default OCR options (OcrAutoOptions: RapidOCR with the
+        # models downloaded into /models at image build), which OCR bitmap regions only.
+        opts = PdfPipelineOptions(artifacts_path="/models", do_ocr=ocr)
         conv = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
     except (ImportError, TypeError, AttributeError) as e:
+        if ocr:
+            raise SystemExit("docling API unavailable for docling-ocr: %s" % e)
         sys.stderr.write("docling API unavailable (%s); using CLI fallback\n" % e)
         return DoclingCli, "docling CLI (fallback)"
-    return InProcess(lambda p: conv.convert(p).document.export_to_markdown()), "docling.DocumentConverter"
+    api = "docling.DocumentConverter" + (" (do_ocr=True, default OcrAutoOptions)" if ocr else "")
+    return InProcess(lambda p: conv.convert(p).document.export_to_markdown()), api
+
+
+def MakeDoclingOcr(args):
+    return MakeDocling(args, ocr=True)
 
 
 def DoclingCli(pdf, md, timeout=None):
@@ -206,6 +220,40 @@ def MakeLiteparse(args):
     return Conv, "lit parse"
 
 
+TESSERACT_DPI = 300
+
+
+def MakeTesseract(args):
+    """pdftoppm renders every page at 300 dpi gray; tesseract (--psm 1: page segmentation with
+    orientation and script detection, eng) reads each page in its own single-threaded process
+    (OMP_THREAD_LIMIT=1), OMP_NUM_THREADS pages at a time, and writes plain text; pages are
+    joined by blank lines. Pages are independent, so the text does not depend on the job count."""
+    os.environ["OMP_THREAD_LIMIT"] = "1"
+    jobs = max(1, int(os.environ.get("OMP_NUM_THREADS", "1") or "1"))
+
+    def Conv(pdf, md, t):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            start = time.perf_counter()
+            RunCommand(["pdftoppm", "-r", str(TESSERACT_DPI), "-gray", "-png", pdf,
+                        os.path.join(tmp, "p")], t)
+            pages = sorted((n for n in os.listdir(tmp) if n.endswith(".png")),
+                           key=lambda n: int(n.rsplit("-", 1)[1][:-4]))
+            left = None if t is None else max(1.0, t - (time.perf_counter() - start))
+
+            def Page(n):
+                RunCommand(["tesseract", os.path.join(tmp, pages[n]), os.path.join(tmp, "out%d" % n),
+                            "-l", "eng", "--psm", "1", "--dpi", str(TESSERACT_DPI)], left)
+                with open(os.path.join(tmp, "out%d.txt" % n), encoding="utf-8", errors="replace") as f:
+                    return f.read().replace("\f", "").strip("\n")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                texts = list(pool.map(Page, range(len(pages))))
+            with open(md, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(texts) + "\n")
+            return (time.perf_counter() - start) * 1000.0
+    return Conv, "pdftoppm -r 300 -gray + tesseract -l eng --psm 1 per page (plain text)"
+
+
 def MakeCli(args):
     if not args.cmd:
         raise SystemExit("--cmd is required for --tool cli")
@@ -225,6 +273,8 @@ MAKERS = {
     "liteparse": MakeLiteparse,
     "edgeparse": MakeEdgeparse,
     "docling": MakeDocling,
+    "docling-ocr": MakeDoclingOcr,
+    "tesseract": MakeTesseract,
     "cli": MakeCli,
 }
 

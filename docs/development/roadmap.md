@@ -127,15 +127,18 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
         [--no-exact] [--no-annotations] [--no-structure] [--report]
 rayopdf --inspect IN.pdf
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
-        [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-annotations] [--no-structure]
-rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-annotations]
+        [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-exact] [--no-annotations]
         [--no-structure]
+rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] [--pages=A-B] [--no-exact]
+        [--no-annotations] [--no-structure]
 ```
 
-(`--no-exact` arrives with exact recovery.) One record shape serves `--report`, the batch report
-and the serve answers, after RayoMD's protocol-1 record: `{"id"?, "input", "output", "status":
-"ok"|"skipped"|"error", "code", "error"?, "pages", "bytes", "ms", <counters>, "markdown"?}`, one
-JSON object a line; `code` is the exit code the document alone would give.
+`--no-exact` converts the pages of a RayoMD PDF that carries its source (D5 step 1,
+`src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).
+One record shape serves `--report`, the batch report and the serve answers, after RayoMD's
+protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error", "code",
+"error"?, "pages", "bytes", "ms", <counters>, "markdown"?}`, one JSON object a line; `code` is the
+exit code the document alone would give.
 
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
   hidden ones and links to folders excepted, mirrored) to `NAME.md` and `NAME-images/` under the

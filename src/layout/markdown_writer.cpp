@@ -762,8 +762,9 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
         case BlockKind::Comment:
             out += "<!-- rayopdf: page ";
             out += std::to_string(block.number);
-            out += block.level == static_cast<uint8_t>(CommentKind::NoText) ? " has no extractable text -->"
-                                                                             : " text is mostly unmapped glyphs -->";
+            out += block.level == static_cast<uint8_t>(CommentKind::NoText)      ? " has no extractable text -->"
+                   : block.level == static_cast<uint8_t>(CommentKind::OcrFailed) ? " has no extractable text; OCR failed -->"
+                                                                                  : " text is mostly unmapped glyphs -->";
             break;
         case BlockKind::Heading:
             counts.headings++;

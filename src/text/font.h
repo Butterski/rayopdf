@@ -8,6 +8,7 @@
 #pragma once
 
 #include "pdf/document.h"
+#include "raster/path.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -80,6 +81,10 @@ public:
     // True when the font has no ToUnicode map and its codes cannot be mapped by name or by
     // collection: its text is unreliable and the converter marks it.
     bool Unmappable() const;
+    // The font dictionary it was loaded from (glyph-shape recovery reads the font again).
+    const PdfValue& Dictionary() const;
+    // The CID of a Type0 font's code (`bytes` long); false for simple fonts and unknown CIDs.
+    bool Cid(uint32_t code, uint8_t bytes, uint32_t& cid) const;
 
     // The loaded tables, defined in font.cpp (public only so its loaders can name them).
     struct Impl;
@@ -108,6 +113,41 @@ public:
 private:
     const Document& document_;
     std::unordered_map<uintptr_t, std::unique_ptr<Font>> fonts_;
+};
+
+// The glyph outlines of one font, for glyph-shape recovery (layout/ocr_glyphs.h): the embedded
+// TrueType, CFF or Type 1 program read again (text/outline.h) and the way its codes reach its
+// glyphs (simple fonts: the encoding's glyph names, the TrueType cmaps of §9.6.6.4; Type0: CIDs
+// through /CIDToGIDMap or the CFF charset). Type 3 fonts give their glyph procedures instead.
+// Loaded only for fonts whose text is missing or wrong; the text path never uses it.
+class FontGlyphs {
+public:
+    enum class Kind : uint8_t { None, TrueType, Cff, Type1, Type3 };
+
+    FontGlyphs();
+    ~FontGlyphs();
+    FontGlyphs(const FontGlyphs&) = delete;
+    FontGlyphs& operator=(const FontGlyphs&) = delete;
+
+    // Reads what drawing `font`'s glyphs needs (`font` must come from a FontCache of `document`).
+    // Kind None when it has no embedded program read here (the standard 14 fonts, OpenType CFF2,
+    // a program that cannot be read).
+    Kind Load(const Document& document, const Font& font);
+    Kind GetKind() const;
+    // The glyph a code shows, as a number unique within the font; false when it shows none.
+    bool GlyphOf(uint32_t code, uint8_t bytes, uint32_t& glyph) const;
+    // The outline of `glyph` in text space at size 1 (y up, the origin at the glyph's origin),
+    // appended to `out`; false when it cannot be drawn. Not for Type 3 fonts.
+    bool Outline(uint32_t glyph, Raster::Path& out) const;
+    // Type 3: the glyph procedure (a content stream) of `glyph`, nullptr for none; the font's
+    // /Resources (null when it has none).
+    const PdfValue* Procedure(uint32_t glyph) const;
+    const PdfValue& Resources() const;
+
+    struct Impl;
+
+private:
+    std::unique_ptr<Impl> impl_;
 };
 
 // The Unicode text of an Adobe glyph name (AGL plus the uniXXXX, uXXXX[XX] and "f_f_i" ligature

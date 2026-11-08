@@ -9,7 +9,7 @@ Usage:
   python3 tools/eval.py all [--resume]
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
   python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
-  python3 tools/eval.py corpus [--producers a,b] [--only fixture,ids] [--jobs 6]
+  python3 tools/eval.py corpus [--suite synthetic|scanned] [--producers a,b] [--only ids] [--jobs 6]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
   python3 tools/eval.py score --suite S [--tools a,b]
@@ -18,8 +18,10 @@ Usage:
   python3 tools/eval.py report
 
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
-pymupdf, opendataloader, liteparse, edgeparse, docling, cli. Suites: synthetic, odl, olmocr,
-readoc. The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
+pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, cli. Suites:
+synthetic, odl, olmocr, readoc, scanned, olmocr-scans. The scanned suite is built from the
+synthetic corpus by `corpus --suite scanned`; olmocr-scans comes with `fetch --only olmocr`.
+The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
 """
 
@@ -46,11 +48,17 @@ TIMING_CPU = "3"
 GIB = 1024 ** 3
 
 TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse", "edgeparse",
-         "docling", "cli"]
+         "docling", "docling-ocr", "tesseract", "cli"]
 TEXT_LAYER_TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse",
                     "edgeparse"]
-SUITES = ["synthetic", "odl", "olmocr", "readoc"]
-IMAGES = ["producers", "scorer", "olmocr", "readoc"] + TOOLS
+# OCR reference tools; `all` runs them on the scanned suites only.
+OCR_TOOLS = ["docling-ocr", "tesseract"]
+# Tools that run in another tool's image (same install and models, different options).
+TOOL_IMAGE = {"docling-ocr": "docling"}
+TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc"]
+SCAN_SUITES = ["scanned", "olmocr-scans"]
+SUITES = TEXT_SUITES + SCAN_SUITES
+IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
 DATASETS = ["odl", "olmocr", "readoc", "safedocs"]
 
 ODL_URL = "https://github.com/opendataloader-project/opendataloader-bench"
@@ -61,6 +69,8 @@ OLMOCR_CATEGORIES = ["arxiv_math", "headers_footers", "long_tiny_text", "multi_c
 OLMOCR_JSONL = {"arxiv_math": "arxiv_math", "headers_footers": "headers_footers",
                 "long_tiny_text": "long_tiny_text", "multi_column": "multi_column",
                 "tables": "table_tests"}
+OLMOCR_SCAN_CATEGORIES = ["old_scans", "old_scans_math"]
+OLMOCR_SCAN_JSONL = {"old_scans": "old_scans", "old_scans_math": "old_scans_math"}
 READOC_URL = "https://github.com/icip-cas/READoc"
 READOC_COMMIT = "afa047715184ac319046ce0230a6109cd270e6fc"
 READOC_DATASET = "lazyc/READoc"
@@ -79,6 +89,9 @@ FULL_RUN_NEED = 25 * GIB
 SPEED_SYNTHETIC = [f"{p}/{f}" for p in ("rayomd", "xelatex", "libreoffice")
                    for f in ("d03-user-manual", "d05-book-chapter")]
 CLASSES = ["renderer", "office", "academic", "book"]
+# eval/producers/scan.py's codecs and degradations, in report order.
+CODECS_SCANNED = ("jpeg", "ccitt", "jbig2", "jpx", "flate")
+DEGRADATIONS_SCANNED = ("clean", "noise", "skew", "blur")
 CONSTRUCT_CATEGORIES = ["heading", "list_item", "code_block", "quote_para", "alert", "link",
                         "strong", "emph", "strike", "code_inline", "sup", "sub", "footnote"]
 CONSTRUCT_ATTRS = ["heading.level", "list_item.depth", "list_item.ordered", "list_item.task",
@@ -116,6 +129,10 @@ def tag(name: str) -> str:
 def dockerfile(name: str) -> Path:
     stem = f"tool-{name}" if name in TOOLS else name
     return REPO / "eval" / "docker" / f"{stem}.Dockerfile"
+
+
+def tool_tag(tool: str) -> str:
+    return tag(TOOL_IMAGE.get(tool, tool))
 
 
 def docker_cmd(image: str, argv: list[str], *, mounts: list[tuple[Path | str, str, bool]],
@@ -215,12 +232,22 @@ def corpus_items(root: Path) -> list[dict]:
     return data["items"]
 
 
+def scanned_items(root: Path) -> list[dict]:
+    data = read_json(root / "scanned" / "scanned.json")
+    if not data:
+        raise SystemExit(f"{root / 'scanned' / 'scanned.json'} is missing; run "
+                         "`corpus --suite scanned` first")
+    return data["items"]
+
+
 def suite_root(root: Path, suite: str) -> Path:
     return {
         "synthetic": root / "corpus",
         "odl": root / "data" / "odl-bench" / "pdfs",
         "olmocr": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
         "readoc": root / "data" / "READoc-data" / "sel",
+        "scanned": root / "scanned",
+        "olmocr-scans": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
     }[suite]
 
 
@@ -235,10 +262,14 @@ def suite_ids(root: Path, suite: str) -> list[str]:
     base = suite_root(root, suite)
     if suite == "synthetic":
         return [item["id"] for item in corpus_items(root) if item["valid"]]
+    if suite == "scanned":
+        return [item["id"] for item in scanned_items(root) if item["valid"]]
     if suite == "odl":
         ids = pdf_ids(base)
     elif suite == "olmocr":
         ids = [i for cat in OLMOCR_CATEGORIES for i in pdf_ids(base, cat)]
+    elif suite == "olmocr-scans":
+        ids = [i for cat in OLMOCR_SCAN_CATEGORIES for i in pdf_ids(base, cat)]
     else:
         ids = [i for sub in READOC_SUBSETS for i in pdf_ids(base, sub)]
     if not ids:
@@ -252,7 +283,8 @@ def write_list(path: Path, ids: list[str]) -> None:
 
 
 def tool_timeout(tool: str) -> int:
-    return 600 if tool == "docling" else 120
+    # cli gets the OCR tools' limit: with the OCR add-on beside it, it OCRs scanned pages too.
+    return {"docling": 600, "docling-ocr": 1800, "tesseract": 600, "cli": 600}.get(tool, 120)
 
 
 def odl_pages(root: Path) -> dict[str, int | None]:
@@ -420,6 +452,8 @@ def cmd_fetch(args) -> int:
 
 
 def cmd_corpus(args) -> int:
+    if args.suite == "scanned":
+        return corpus_scanned(args)
     out = args.root / "corpus"
     out.mkdir(parents=True, exist_ok=True)
     argv = ["python3", "/opt/eval/producers/render.py", "--fixtures", "/fixtures", "--out", "/out",
@@ -434,6 +468,24 @@ def cmd_corpus(args) -> int:
     valid = sum(1 for i in items if i["valid"])
     log(f"corpus: {valid}/{len(items)} valid")
     return 0
+
+
+def corpus_scanned(args) -> int:
+    """Image-only PDFs made from the valid synthetic items (eval/producers/scan.py)."""
+    corpus_items(args.root)
+    out = args.root / "scanned"
+    out.mkdir(parents=True, exist_ok=True)
+    argv = ["python3", "/opt/eval/producers/scan.py", "--corpus", "/corpus", "--out", "/out",
+            "--jobs", str(args.jobs)]
+    if args.only:
+        argv += ["--only", args.only]
+    run(docker_cmd(tag("producers"), argv,
+                   mounts=[(args.root / "corpus", "/corpus", True), (out, "/out", False)]))
+    items = scanned_items(args.root)
+    valid = sum(1 for i in items if i["valid"])
+    log(f"scanned: {valid}/{len(items)} valid, {sum(i['pages'] or 0 for i in items if i['valid'])}"
+        " pages")
+    return 0 if valid == len(items) else 1
 
 
 def tool_argv(tool: str, list_path: str, out: str, extra: list[str], cmd: str | None) -> list[str]:
@@ -464,7 +516,7 @@ def cmd_convert(args) -> int:
     argv = tool_argv(args.tool, "/list/list.txt", "/out", [], args.cmd)
     mounts = [(suite_root(root, args.suite), "/in", True), (list_dir, "/list", True),
               (out, "/out", False)] + tool_mounts(args.tool, args.bin_dir)
-    run(docker_cmd(tag(args.tool), argv, mounts=mounts, env={"OMP_NUM_THREADS": "4"}))
+    run(docker_cmd(tool_tag(args.tool), argv, mounts=mounts, env={"OMP_NUM_THREADS": "4"}))
     rows = read_jsonl(out / "results.jsonl")
     counts: dict[str, int] = {}
     for row in rows:
@@ -504,24 +556,29 @@ def score_selftest(args) -> int:
     return proc.returncode
 
 
-def score_synthetic(root: Path, tools: list[str]) -> None:
-    items = [i for i in corpus_items(root) if i["valid"]]
-    work = root / "scores" / "synthetic" / "work"
+def score_fixture_suite(root: Path, suite: str, items: list[dict], tools: list[str]) -> None:
+    """Score a suite whose ground truth is the fixture Markdown (synthetic, scanned).
+
+    odl's evaluator needs flat file names (`<id with / as __>.md`); constructs.py pairs files
+    by relative path, so its ground truth mirrors the ids.
+    """
+    work = root / "scores" / suite / "work"
     gt_flat = reset_dir(work / "gt")
     gt_nested = reset_dir(work / "gt-nested")
     for item in items:
         src = REPO / "eval" / "fixtures" / "md" / f"{item['fixture']}.md"
-        shutil.copyfile(src, gt_flat / f"{item['producer']}__{item['fixture']}.md")
-        (gt_nested / item["producer"]).mkdir(exist_ok=True)
-        shutil.copyfile(src, gt_nested / item["producer"] / f"{item['fixture']}.md")
+        shutil.copyfile(src, gt_flat / f"{item['id'].replace('/', '__')}.md")
+        dst = gt_nested / f"{item['id']}.md"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
     odl = root / "data" / "odl-bench"
     for tool in tools:
-        runs = root / "runs" / tool / "synthetic"
+        runs = root / "runs" / tool / suite
         pred = reset_dir(work / "pred" / tool / "markdown")
         for item in items:
             src = runs / f"{item['id']}.md"
             if src.is_file():
-                shutil.copyfile(src, pred / f"{item['producer']}__{item['fixture']}.md")
+                shutil.copyfile(src, pred / f"{item['id'].replace('/', '__')}.md")
         script = (" ".join(odl_evaluator("/work/gt", "/work/pred", tool, "evaluation.json"))
                   + " && python3 /opt/eval/scorer/constructs.py --gt-dir /work/gt-nested"
                   + f" --pred-dir /pred --out /work/constructs-{tool}.json")
@@ -530,15 +587,16 @@ def score_synthetic(root: Path, tools: list[str]) -> None:
         evaluation = read_json(work / "pred" / tool / "evaluation.json", {})
         odl_docs = {d["document_id"]: d["scores"] for d in evaluation.get("documents", [])}
         constructs = read_json(work / f"constructs-{tool}.json", {}).get("docs", {})
-        status = {r["id"]: r["status"] for r in read_jsonl(runs / "results.jsonl")}
+        results = {r["id"]: r for r in read_jsonl(runs / "results.jsonl")}
         joined = []
         for item in items:
-            joined.append({**item, "status": status.get(item["id"], "missing"),
-                           "odl": odl_docs.get(f"{item['producer']}__{item['fixture']}"),
+            res = results.get(item["id"], {})
+            joined.append({**item, "status": res.get("status", "missing"), "ms": res.get("ms"),
+                           "odl": odl_docs.get(item["id"].replace("/", "__")),
                            "constructs": constructs.get(f"{item['id']}.md")})
-        write_json(root / "scores" / "synthetic" / f"{tool}.json",
+        write_json(root / "scores" / suite / f"{tool}.json",
                    {"schema": 1, "tool": tool, "items": joined})
-        log(f"synthetic/{tool}: scored {len(joined)} items")
+        log(f"{suite}/{tool}: scored {len(joined)} items")
 
 
 def score_odl(root: Path, tools: list[str], force: bool) -> None:
@@ -559,22 +617,25 @@ def score_odl(root: Path, tools: list[str], force: bool) -> None:
                        mounts=[(stored, "/stored", False), (odl, "/odl", True)]))
 
 
-def score_olmocr(root: Path, tools: list[str]) -> None:
+def score_olmocr(root: Path, tools: list[str], suite: str) -> None:
+    """olmOCR-bench scorer over the born-digital (olmocr) or scanned (olmocr-scans) categories."""
+    categories, jsonls = ((OLMOCR_CATEGORIES, OLMOCR_JSONL) if suite == "olmocr"
+                          else (OLMOCR_SCAN_CATEGORIES, OLMOCR_SCAN_JSONL))
     dataset = root / "data" / "olmOCR-bench" / "bench_data"
-    out = root / "scores" / "olmocr"
+    out = root / "scores" / suite
     out.mkdir(parents=True, exist_ok=True)
     for tool in tools:
         work = reset_dir(out / "work" / tool)
         bench = work / "bench_data"
         # The benchmark expects a candidate file for every PDF under pdfs/, so pdfs/ holds only
-        # the born-digital categories; the scanned ones belong to the OCR gate.
+        # this suite's categories.
         (bench / "pdfs").mkdir(parents=True)
-        for category in OLMOCR_CATEGORIES:
+        for category in categories:
             (bench / "pdfs" / category).symlink_to(f"/data/bench_data/pdfs/{category}")
-        for jsonl in OLMOCR_JSONL.values():
+        for jsonl in jsonls.values():
             shutil.copyfile(dataset / f"{jsonl}.jsonl", bench / f"{jsonl}.jsonl")
-        runs = root / "runs" / tool / "olmocr"
-        for doc_id in suite_ids(root, "olmocr"):
+        runs = root / "runs" / tool / suite
+        for doc_id in suite_ids(root, suite):
             src = runs / f"{doc_id}.md"
             category, name = doc_id.split("/", 1)
             dst = bench / tool / category / f"{name}_pg1_repeat1.md"
@@ -623,11 +684,15 @@ def cmd_score(args) -> int:
     if not tools and args.suite != "odl":
         raise SystemExit(f"no runs for suite {args.suite}; run `convert` first")
     if args.suite == "synthetic":
-        score_synthetic(args.root, tools)
+        score_fixture_suite(args.root, "synthetic",
+                            [i for i in corpus_items(args.root) if i["valid"]], tools)
+    elif args.suite == "scanned":
+        score_fixture_suite(args.root, "scanned",
+                            [i for i in scanned_items(args.root) if i["valid"]], tools)
     elif args.suite == "odl":
         score_odl(args.root, tools, args.force)
-    elif args.suite == "olmocr":
-        score_olmocr(args.root, tools)
+    elif args.suite in ("olmocr", "olmocr-scans"):
+        score_olmocr(args.root, tools, args.suite)
     else:
         score_readoc(args.root, tools)
     return 0
@@ -657,13 +722,13 @@ def cmd_speed(args) -> int:
                             "RAYON_NUM_THREADS")}
     warm = ["/usr/bin/time", "-f", "%M", "-o", "/out/warm-time.txt"] + tool_argv(
         tool, "/out/list.txt", "/out/warm", ["--warmup", "1", "--repeat", "3"], args.cmd)
-    run(docker_cmd(tag(tool), warm, mounts=mounts, timing=True, env=env), check=False)
+    run(docker_cmd(tool_tag(tool), warm, mounts=mounts, timing=True, env=env), check=False)
     one = " ".join(shlex_quote(a) for a in tool_argv(tool, "/out/cold.txt", "/out/cold-$i", [],
                                                        args.cmd))
     one = one.replace("'/out/cold-$i'", '"/out/cold-$i"')
     cold = ("for i in 1 2 3 4 5; do /usr/bin/time -f '%e %M' -o /out/cold-$i.txt " + one
             + " >/dev/null 2>&1 || true; done")
-    run(docker_cmd(tag(tool), ["sh", "-c", cold], mounts=mounts, timing=True, env=env),
+    run(docker_cmd(tool_tag(tool), ["sh", "-c", cold], mounts=mounts, timing=True, env=env),
         check=False)
 
     rows = read_jsonl(out / "warm" / "results.jsonl")
@@ -1085,7 +1150,98 @@ def report(root: Path) -> str:
                                                   key=lambda kv: -kv[1])])
     else:
         lines += ["Not run.", ""]
+    lines += report_scanned(root)
+    lines += report_olmocr_scans(root)
     return "\n".join(lines) + "\n"
+
+
+def report_scanned(root: Path) -> list[str]:
+    lines = ["## 10. Scanned suite (image-only PDFs of the synthetic items)", ""]
+    scored = {t: read_json(root / "scores" / "scanned" / f"{t}.json")
+              for t in TOOLS if (root / "scores" / "scanned" / f"{t}.json").is_file()}
+    data = read_json(root / "scanned" / "scanned.json")
+    if data:
+        items = data["items"]
+        valid = [i for i in items if i["valid"]]
+        lines += [f"{len(valid)} of {len(items)} items valid, "
+                  f"{sum(i['pages'] for i in valid)} pages; ground truth = the fixture Markdown; "
+                  "items made from the weasyprint producer are holdout (aggregate only). "
+                  "Metrics as in section 3 (missing or failed output scores NID 0).", ""]
+        combos = {}
+        for i in valid:
+            key = (i["dpi"], i["codec"])
+            combos[key] = combos.get(key, 0) + 1
+        lines += table(["dpi"] + list(CODECS_SCANNED),
+                       [[str(d)] + [str(combos.get((d, c), 0)) for c in CODECS_SCANNED]
+                        for d in (300, 200)])
+    if not scored:
+        return lines + ["Not scored.", ""]
+    rows, codec_rows, deg_rows, f1_rows, hold_rows = [], [], [], [], []
+    for tool, res in scored.items():
+        dev = [i for i in res["items"] if not i["holdout"]]
+        hold = [i for i in res["items"] if i["holdout"]]
+        m = odl_means(dev)
+        pool = construct_pool([i["constructs"] for i in dev])
+        ok = sum(1 for i in dev if i["status"] == "ok")
+        timed = [i for i in dev if i.get("ms") is not None and i["pages"]]
+        s_per_page = (sum(i["ms"] for i in timed) / 1000 / sum(i["pages"] for i in timed)
+                      if timed else None)
+        rows.append([tool, str(len(dev)), f"{ok}", m["nid"], m["teds"], m["mhs"], pool["all"],
+                     pool["f1"]["heading"], pool["attr"]["heading.level"],
+                     odl_means([i for i in dev if i["dpi"] == 300])["nid"],
+                     odl_means([i for i in dev if i["dpi"] == 200])["nid"], s_per_page])
+        codec_rows.append([tool] + [odl_means([i for i in dev if i["codec"] == c])["nid"]
+                                    for c in CODECS_SCANNED])
+        deg_rows.append([tool] + [odl_means([i for i in dev if i["degradation"] == d])["nid"]
+                                  for d in DEGRADATIONS_SCANNED])
+        f1_rows.append([tool] + [pool["f1"][c] for c in CONSTRUCT_CATEGORIES])
+        if hold:
+            hm = odl_means(hold)
+            hold_rows.append([tool, str(len(hold)), hm["nid"], hm["teds"], hm["mhs"],
+                              construct_pool([i["constructs"] for i in hold])["all"]])
+    lines += ["### 10.1 Development items", "",
+              "s/page: conversion time of the quality run over its pages (work cpuset shared with "
+              "other jobs, `OMP_NUM_THREADS=4`); a rough cost indication, not a speed result.", ""]
+    lines += table(["tool", "items", "ok", "NID", "TEDS", "MHS", "construct F1 (all)",
+                    "heading F1", "heading level acc.", "NID 300 dpi", "NID 200 dpi", "s/page"],
+                   rows)
+    lines += ["### 10.2 NID per codec, development", ""]
+    lines += table(["tool"] + list(CODECS_SCANNED), codec_rows)
+    lines += ["### 10.3 NID per degradation, development", ""]
+    lines += table(["tool"] + list(DEGRADATIONS_SCANNED), deg_rows)
+    lines += ["### 10.4 Construct F1 per category, development", ""]
+    lines += table(["tool"] + CONSTRUCT_CATEGORIES, f1_rows)
+    if hold_rows:
+        lines += ["### 10.5 Holdout (weasyprint sources), aggregate only", ""]
+        lines += table(["tool", "items", "NID", "TEDS", "MHS", "construct F1 (all)"], hold_rows)
+    return lines
+
+
+def report_olmocr_scans(root: Path) -> list[str]:
+    lines = ["## 11. olmOCR-bench scans (old_scans, old_scans_math)", ""]
+    rows, verbatim = [], []
+    cats = list(OLMOCR_SCAN_JSONL.values())
+    for tool in TOOLS:
+        path = root / "scores" / "olmocr-scans" / f"{tool}.log"
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        rates = parse_olmocr_log(text)
+        if not rates:
+            verbatim += [f"`{tool}`: summary could not be parsed; its final block:", "", "```",
+                         olmocr_summary_block(text), "```", ""]
+            continue
+        vals = [rates.get(c) for c in cats]
+        rows.append([tool] + vals + [mean(vals) if all(v is not None for v in vals) else None])
+    if rows:
+        lines += ["Pass rate per JSONL (tests passed / tests), olmOCR scorer as in section 5. "
+                  "Empty output passes the 70 `absent` tests of old_scans (floor 0.133); "
+                  "old_scans_math has only `math` tests.", ""]
+        lines += table(["tool"] + cats + ["mean"], rows)
+    lines += verbatim
+    if not rows and not verbatim:
+        lines += ["Not scored.", ""]
+    return lines
 
 
 def flatten_numbers(data, prefix: str = "") -> dict[str, float]:
@@ -1183,10 +1339,15 @@ def cmd_all(args) -> int:
     if args.resume and (root / "corpus" / "corpus.json").is_file():
         log("=== corpus: corpus.json present, skipped (--resume)")
     else:
-        step("corpus", cmd_corpus, ns())
+        step("corpus", cmd_corpus, ns(suite="synthetic"))
+    if args.resume and (root / "scanned" / "scanned.json").is_file():
+        log("=== corpus --suite scanned: scanned.json present, skipped (--resume)")
+    else:
+        step("corpus --suite scanned", cmd_corpus, ns(suite="scanned"))
     step("score --selftest", cmd_score, ns(selftest=True))
     for tool in TOOLS[:-1]:
-        for suite in SUITES:
+        # The OCR reference tools run on the scanned suites only.
+        for suite in SCAN_SUITES if tool in OCR_TOOLS else SUITES:
             if args.resume and run_complete(root, tool, suite):
                 log(f"=== convert {tool}/{suite}: complete, skipped (--resume)")
                 continue
@@ -1194,6 +1355,8 @@ def cmd_all(args) -> int:
     for suite in SUITES:
         step(f"score --suite {suite}", cmd_score, ns(suite=suite))
     for tool in TOOLS[:-1]:
+        if tool in OCR_TOOLS:
+            continue
         if args.resume and (root / "speed" / f"{tool}.json").is_file():
             log(f"=== speed {tool}: present, skipped (--resume)")
             continue
@@ -1228,9 +1391,11 @@ def main() -> int:
     p.add_argument("--only", help=f"comma-separated subset of: {', '.join(IMAGES)}")
     p = add("fetch", cmd_fetch, "download the public benchmarks (network)")
     p.add_argument("--only", help=f"comma-separated subset of: {', '.join(DATASETS)}")
-    p = add("corpus", cmd_corpus, "render the synthetic corpus")
-    p.add_argument("--producers", help="comma-separated producer ids")
-    p.add_argument("--only", help="comma-separated fixture ids")
+    p = add("corpus", cmd_corpus, "render the synthetic corpus, or build the scanned suite from it")
+    p.add_argument("--suite", choices=["synthetic", "scanned"], default="synthetic")
+    p.add_argument("--producers", help="synthetic only: comma-separated producer ids")
+    p.add_argument("--only", help="comma-separated fixture ids (synthetic) or source item ids "
+                                  "<producer>/<fixture> (scanned)")
     p.add_argument("--jobs", type=int, default=6)
     p = add("convert", cmd_convert, "convert one suite with one tool")
     p.add_argument("--tool", required=True, choices=TOOLS)

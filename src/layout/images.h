@@ -7,6 +7,7 @@
 // files), and each placement gets an anchor line (kLineImage) that OrderLines orders with the text.
 #pragma once
 
+#include "image/image.h"
 #include "layout/convert.h"
 #include "layout/page.h"
 #include "pdf/document.h"
@@ -27,5 +28,11 @@ struct ImageOutput {
 // An image that cannot be extracted keeps its anchor with the reason (ImageState::Failed). Does
 // nothing without a document or a directory.
 void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, ConvertReport& report);
+
+// The pixels of placed image `image` of `page` (an entry of page.images: an XObject or an inline
+// image, with its page-space box x0..y1 and placement matrix) as 8-bit gray for OCR, through
+// Image::GrayXObject or Image::GrayInline with `maxSide`. Works whatever image.state is.
+Image::Status ImageGray(const Document& document, const PageData& page, const ImageBox& image, Image::GrayImage& out,
+                        uint32_t maxSide = 0);
 
 } // namespace RayoPdf::Layout

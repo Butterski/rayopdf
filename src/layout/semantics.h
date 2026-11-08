@@ -32,8 +32,9 @@ enum class BlockKind : uint8_t {
 };
 
 enum class CommentKind : uint8_t {
-    NoText,    // the page has no extractable text
-    Unmapped,  // most of the page's text has no reliable Unicode mapping
+    NoText,     // the page has no extractable text
+    Unmapped,   // most of the page's text has no reliable Unicode mapping
+    OcrFailed,  // the page has no extractable text and the OCR add-on failed on it (layout/ocr.h)
 };
 
 // GitHub alerts (`> [!NOTE]`): a block quote titled by one of these words alone on its first line.
@@ -77,8 +78,9 @@ struct BlockList {
     bool monoDocument = false;      // typeset in a monospace font: monospace text is the body, not code
 };
 
-// Pages carry their lines in reading order (PageData::order). Pages whose text is mostly unmapped
-// are listed in `unmappedPages` (indices into `pages`). `out` is replaced.
+// Pages carry their lines in reading order (PageData::order). `unmappedPages` holds per page (index
+// into `pages`) bit 1 when its text is mostly unmapped and bit 2 when OCR failed on it. `out` is
+// replaced.
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
                  const std::vector<uint8_t>& unmappedPages, BlockList& out);
 

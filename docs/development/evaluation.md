@@ -27,8 +27,10 @@ harness answers each condition:
 |---|---|---|---|---|
 |synthetic|`corpus/`|the valid items of `corpus/corpus.json`|`eval/fixtures/md/<fixture>.md`|development; the `weasyprint` producer is the holdout|
 |odl|`data/odl-bench/pdfs`|200 single-page PDFs|`data/odl-bench/ground-truth/markdown`|development|
-|olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development; `old_scans*` belong to the M8 OCR gate|
+|olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development|
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
+|scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
+|olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 
 Suite ids are paths relative to the suite root without `.pdf`. READoc's selection: the ground-truth
 stems of each subset (`<subset>_ground_truth/*.md`) sorted by the SHA-256 of the stem, first 150
@@ -120,6 +122,52 @@ producer `libreoffice*` → office; producer `xelatex-2col` → academic; everyt
 `corpus/corpus.json`: `{"schema":1,"versions":{…},"items":[{"id":"<producer>/<fixture>",
 "fixture","producer","class","tagged","pages","sha256","valid","reason","holdout"}]}`.
 
+## Scanned suite
+
+`python3 tools/eval.py corpus --suite scanned` runs `eval/producers/scan.py` in
+`rayopdf-eval-producers:1` over the valid items of `corpus/corpus.json` (run `corpus` first).
+Every source item becomes two image-only PDFs, one at 300 dpi (`s300/…`) and one at 200 dpi
+(`s200/…`):
+
+1. `pdftoppm -r <dpi>` renders every page, gray or (colour variants) RGB.
+2. One degradation: `clean`; `noise` (paper darkened to 0.9·v+14, Gaussian noise σ = 10, 0.05 %
+   salt and pepper); `skew` (rotation by 0.3–1.2° either way, bicubic, white fill); `blur`
+   (Gaussian, radius dpi/250). Random values come from NumPy's PCG64 seeded with the SHA-256 of
+   the item id.
+3. One codec, a single image XObject per page; bilevel codecs threshold the gray page at 150:
+
+|Codec|Encoder|Sub-variants (rotating)|
+|---|---|---|
+|jpeg|libjpeg-turbo via Pillow|baseline q85 RGB 4:2:0; baseline q70 gray; progressive q75 RGB|
+|ccitt|libtiff Group 4 via Pillow, one strip|`/K -1` DeviceGray; `/BlackIs1 true` with `/Decode [1 0]`; `/ImageMask true`|
+|jbig2|jbig2enc 0.30 (Apache-2.0, built from the release tarball, SHA-256 pinned)|generic region; generic region with TPGD (`-d`); symbol mode (`-s`) with one `/JBIG2Globals` stream shared by the document's pages|
+|jpx|OpenJPEG 2.5.4 `opj_compress`|JP2 lossy RGB (`-r 20 -I`); raw J2K codestream, gray, `-r 15 -I -p RPCL -n 5 -b 32,32` with precincts, `/ColorSpace` in the dictionary; JP2 lossless gray, 1024² tiles, PCRL; JP2 RGB with 3 quality layers, LRCP, SOP and EPH markers|
+|flate|zlib level 6|8-bit gray; 8-bit gray with PNG Up predictor (`/Predictor 15`); 8-bit RGB|
+
+4. An own minimal PDF writer (in `scan.py`) wraps the images: page size = image size at the
+   item's dpi, so `pdftoppm -r <dpi>` reproduces the encoded pixels 1:1.
+
+**Matrix.** The valid synthetic items are sorted by id; item *k* gets codec `k mod 5` at 300 dpi
+and `(k+2) mod 5` at 200 dpi, degradation `⌊k/5⌋ mod 4` (shifted by 2 at 200 dpi) and the
+codec's sub-variant `⌊k/20⌋` (shifted by 1 at 200 dpi). Every block of 20 items holds each
+(codec, degradation) pair once per dpi, and no source gets the same codec twice. The 2026-11-07
+build: JPEG 211 pages, CCITT 197, JBIG2 211, JPX 202, Flate 199.
+
+**Validity.** An item is valid when every page was encoded, `pdfimages -list` reports the codec's
+encoding for every image, `pdftotext` finds no text, and `pdftoppm -r <dpi> -gray` of every page
+differs from the gray page that was encoded by a mean absolute difference < 40 (`render_diff`,
+the worst page). Splash resamples the 1:1 image by up to a pixel, so lossless pages too differ
+by a few levels (at most 14.4 in the 2026-11-07 build, on a noisy page); an inverted or garbled
+image differs by about 200. The build is deterministic: a rebuild with the same images
+reproduced every item's `sha256`.
+
+`scanned/scanned.json`: `{"schema":1,"versions":{…},"items":[{"id":"s<dpi>/<producer>/<fixture>",
+"source","fixture","producer","class","source_tagged","tagged":false,"dpi","codec","codec_variant",
+"colour","degradation","holdout","pages","bytes","sha256","render_diff","valid","reason"}]}`.
+Scored like the synthetic suite (odl evaluator on `s<dpi>__<producer>__<fixture>.md`,
+`constructs.py` on the nested layout). Items made from `weasyprint` items are the holdout:
+aggregate scores only.
+
 ## Metrics
 
 A conversion that errors, times out or is missing scores as empty output in every scorer, and so
@@ -183,11 +231,13 @@ accuracy.
 
 `python -m olmocr.bench.benchmark --dir /work/bench_data --candidate <tool> --skip_baseline` in
 `rayopdf-eval-olmocr:1` (olmocr 0.4.27). The work directory holds `pdfs/<category>` links for the
-5 born-digital categories only (the benchmark requires a candidate file for every PDF under
-`pdfs/`), the 5 JSONLs, and `<tool>/<category>/<name>_pg1_repeat1.md`. Reported: pass rate per JSONL
-(tests passed / tests) and the mean of the 4 born-digital JSONLs without `arxiv_math`. Markdown
-syntax is ignored by these tests; text presence/absence, reading order, table cell neighbourhood
-and KaTeX-rendered math are checked.
+scored suite's categories only (the benchmark requires a candidate file for every PDF under
+`pdfs/`): the 5 born-digital categories for `olmocr`, `old_scans` and `old_scans_math` for
+`olmocr-scans`; their JSONLs; and `<tool>/<category>/<name>_pg1_repeat1.md`. Reported: pass rate
+per JSONL (tests passed / tests); for `olmocr` also the mean of the 4 born-digital JSONLs without
+`arxiv_math`, for `olmocr-scans` the mean of its 2 JSONLs. Markdown syntax is ignored by these
+tests; text presence/absence, reading order, table cell neighbourhood and KaTeX-rendered math are
+checked.
 
 ### READoc
 
@@ -203,7 +253,8 @@ READoc normalises headings, formulas and tables and strips links and images befo
 
 One image per tool, `rayopdf-eval-<tool>:1`, built from `eval/docker/tool-<tool>.Dockerfile`; the
 shared adapter `eval/competitors/convert.py` runs each. "Text-layer tools" are the first six;
-docling is the ML reference.
+docling is the ML reference. docling-ocr and tesseract are the OCR references: `all` runs them on
+the scanned suites only (`scanned`, `olmocr-scans`); every other tool runs on every suite.
 
 |Tool|Version|Licence|Mode|Timing|
 |---|---|---|---|---|
@@ -214,6 +265,8 @@ docling is the ML reference.
 |liteparse|2.18.0|Apache-2.0|`lit parse --format markdown --no-ocr --image-mode off`|fresh-process|
 |edgeparse|0.3.2|Apache-2.0|`edgeparse.convert(p, format="markdown")` (returns the Markdown string)|in-process|
 |docling|2.147.0, CPU torch, models in `/models`|MIT|`DocumentConverter` with `PdfPipelineOptions(artifacts_path="/models", do_ocr=False)`, `export_to_markdown()`|in-process|
+|docling-ocr|the docling image (no image of its own): docling 2.147.0, RapidOCR 3.10.0 on torch (docling's auto OCR picks it because onnxruntime is not installed), PP-OCRv6 small det + rec and the mobile v2 angle classifier from `/models/RapidOcr` (downloaded by `docling-tools models download` at image build; SHA-256 of the `.pth` files: det `fbdc74c9…`, rec `0107b2ad…`, cls `bfe13860…`)|MIT; models Apache-2.0|the same with `do_ocr=True` and docling's default `OcrAutoOptions` (OCR of bitmap regions, not forced full-page)|in-process|
+|tesseract|Tesseract 5.5.0 (Debian `tesseract-ocr=5.5.0-1+b1`, `tesseract-ocr-eng`/`-osd=1:4.1.0-2`), Poppler 25.03.0 (`poppler-utils=25.03.0-5+deb13u4`), base `python:3.13-slim` pinned by digest|Apache-2.0 (Poppler GPL)|`pdftoppm -r 300 -gray -png`, then `tesseract <page> out -l eng --psm 1 --dpi 300` per page, single-threaded (`OMP_THREAD_LIMIT=1`), `OMP_NUM_THREADS` pages at a time; plain text, pages joined by blank lines; `versions.json` records the model SHA-256|fresh-process|
 |cli|any binary|–|`--cmd` template, binary dir mounted at `/opt/tool`|fresh-process|
 
 marker and MinerU are not run locally (6–54 s/page on CPU per odl-bench). Their odl-bench
@@ -224,10 +277,12 @@ The adapter writes `<id>.md` and one `results.jsonl` line per document
 the image's `versions.json`. `tools/eval.py` mounts the repository's adapter over the image's copy,
 so the adapter in use is always the committed one. In-process tools run in one persistent worker
 process and are timed there with `perf_counter` around the conversion call only; a document past
-the timeout (600 s for docling, 120 s otherwise) kills the worker and the next document starts a
-fresh one, so stuck model threads cannot spoil later documents. Subprocess tools are timed around
-`subprocess.run`, so their time includes process start. Quality runs use the work cpuset with
-`OMP_NUM_THREADS=4`; their times are not speed results.
+the timeout (600 s for docling, tesseract and cli — which OCRs scanned pages when the OCR add-on
+sits beside it —, 1,800 s for docling-ocr, 120 s otherwise) kills
+the worker and the next document starts a fresh one, so stuck model threads cannot spoil later
+documents. Subprocess tools are timed around `subprocess.run`, so their time includes process
+start. Quality runs use the work cpuset with `OMP_NUM_THREADS=4`; their times are not speed
+results.
 
 ## Speed and memory
 
@@ -284,6 +339,7 @@ python3 tools/eval.py all [--resume]          # everything below, in order, then
 python3 tools/eval.py images [--only NAMES]   # build images, write images.json
 python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
 python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
+python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
 python3 tools/eval.py score --selftest
 python3 tools/eval.py convert --tool T --suite S
 python3 tools/eval.py score --suite S [--tools A,B]
@@ -292,21 +348,22 @@ python3 tools/eval.py census
 python3 tools/eval.py report
 ```
 
-`all --resume` skips images that are built and recorded, an existing corpus, complete
-conversions, existing speed results and an existing census. `all` checks for 25 GB of free disk
-less what the harness already uses; `fetch` checks for the space its downloads need. Neither
-ever prunes Docker images.
+`all --resume` skips images that are built and recorded, an existing corpus and scanned suite,
+complete conversions, existing speed results and an existing census. `all` checks for 25 GB of
+free disk less what the harness already uses; `fetch` checks for the space its downloads need.
+Neither ever prunes Docker images. `all` does not run speed passes for the OCR tools.
 
 Output layout under `benchmark-output/eval/` (ignored by git):
 
 ```
 images.json                 image ids, sizes and versions.json of every image
 corpus/                     <producer>/<fixture>.pdf, corpus.json
+scanned/                    s300|s200/<producer>/<fixture>.pdf, scanned.json (about 0.8 GB)
 data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, odl-pages.json
 suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
-scores/synthetic/<tool>.json, scores/odl/{work,stored}/, scores/olmocr/<tool>.log,
-scores/readoc/<tool>-<subset>.json
+scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
+scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
 report.md
@@ -319,7 +376,7 @@ RayoPDF's fully static build runs there as is:
 
 ```sh
 python3 tools/dev.py build --config static        # build/static/rayopdf
-for s in synthetic odl olmocr readoc; do
+for s in synthetic odl olmocr readoc scanned olmocr-scans; do
     python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
     python3 tools/eval.py score --suite $s --tools cli
 done
@@ -341,9 +398,9 @@ These are AGENTS.md rules 4–8:
   image records its resolved versions in `/opt/eval/versions.json`.
 - Benchmark claims are dated and scoped (hardware, versions, threads, warm or fresh process).
   Third-party numbers are marked "reproduced" or "claimed".
-- Never inspect per-document outputs of the `weasyprint` producer or the `readoc` suite while
-  designing converter heuristics; use aggregate scores only. Tagged and untagged producers are
-  reported separately.
+- Never inspect per-document outputs of the `weasyprint` producer, the scanned items made from
+  it, or the `readoc` suite while designing converter heuristics; use aggregate scores only.
+  Tagged and untagged producers are reported separately.
 - No AGPL or GPL code or data in the repository (PyMuPDF/MuPDF, Poppler, marker): they run as
   black boxes in images. READoc's code is run from a clone and never copied.
 

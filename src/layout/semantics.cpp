@@ -1408,10 +1408,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         // Comments open the page they are about.
         const PageData& page = pages[p];
         const bool noText = !page.HasText();
-        if (noText || (p < unmappedPages.size() && unmappedPages[p])) {
+        const uint8_t flags = p < unmappedPages.size() ? unmappedPages[p] : 0;
+        if (noText || (flags & 1)) {
             Block c;
             c.kind = BlockKind::Comment;
-            c.level = static_cast<uint8_t>(noText ? CommentKind::NoText : CommentKind::Unmapped);
+            c.level = static_cast<uint8_t>(noText ? ((flags & 2) ? CommentKind::OcrFailed : CommentKind::NoText)
+                                                  : CommentKind::Unmapped);
             c.number = static_cast<uint32_t>(page.number);
             c.first = static_cast<uint32_t>(lines.size());
             blocks.push_back(c);

@@ -451,6 +451,8 @@ bool Interpreter::Execute(Op op, const std::vector<PdfValue>& operands, const Pd
             return true;
         ImageBox image;
         image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
+        image.matrix[0] = float(gs_.ctm.a), image.matrix[1] = float(gs_.ctm.b), image.matrix[2] = float(gs_.ctm.c);
+        image.matrix[3] = float(gs_.ctm.d), image.matrix[4] = float(gs_.ctm.e), image.matrix[5] = float(gs_.ctm.f);
         const PdfValue& dictionary = operands.back();
         const PdfValue* w = dictionary.Find("W");
         const PdfValue* h = dictionary.Find("H");
@@ -712,6 +714,8 @@ void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, in
         if (box.Empty() || page_.images.size() >= kMaxShapesPerPage) return;
         ImageBox image;
         image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
+        image.matrix[0] = float(gs_.ctm.a), image.matrix[1] = float(gs_.ctm.b), image.matrix[2] = float(gs_.ctm.c);
+        image.matrix[3] = float(gs_.ctm.d), image.matrix[4] = float(gs_.ctm.e), image.matrix[5] = float(gs_.ctm.f);
         image.xobject = xobject;
         image.resources = resources;
         image.mcid = mcid_;
@@ -1094,6 +1098,17 @@ void Interpreter::EmitGlyph(const Text::Code& code, const Matrix& trm, double wi
     if (length == 0 && !(flags & kGlyphUnmapped)) flags |= kGlyphDropped;  // control characters
     g.flags = flags;
     page_.glyphs.push_back(g);
+    if (RAYOPDF_UNLIKELY(stats_.uses != nullptr)) {
+        GlyphUse use;
+        use.glyph = static_cast<uint32_t>(page_.glyphs.size() - 1);
+        use.text = g.text;
+        use.font = gs_.font;
+        use.code = code.code;
+        use.bytes = code.bytes;
+        const double m[6] = {trm.a, trm.b, trm.c, trm.d, trm.e, trm.f};
+        for (int i = 0; i < 6; ++i) use.matrix[i] = static_cast<float>(m[i]);
+        stats_.uses->push_back(use);
+    }
 }
 
 void Interpreter::ReadLinks(int index) {

@@ -552,10 +552,11 @@ void BuildLines(PageData& page) {
     std::vector<Glyph>& glyphs = page.glyphs;
 
     // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave, except that invisible
-    // text is the page's text when nothing visible is (an OCR layer).
+    // text is the page's text when nothing visible is (an OCR layer). The add-on's OCR layer
+    // (kGlyphOcr) stays whatever else the page has.
     bool visibleText = false, invisibleText = false;
     for (const Glyph& g : glyphs) {
-        if (g.flags & (kGlyphDropped | kGlyphSpace)) continue;
+        if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
         if (g.flags & kGlyphClipped || g.size < 1.0f) continue;
         if (g.flags & kGlyphInvisible)
             invisibleText = true;
@@ -568,7 +569,8 @@ void BuildLines(PageData& page) {
     for (uint32_t i = 0; i < glyphs.size(); ++i) {
         Glyph& g = glyphs[i];
         if (g.flags & kGlyphDropped) continue;
-        const bool hidden = (g.flags & kGlyphClipped) || g.size < 1.0f || ((g.flags & kGlyphInvisible) && !keepInvisible);
+        const bool hidden = (g.flags & kGlyphClipped) || g.size < 1.0f ||
+                            ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible);
         if (hidden) {
             g.flags |= kGlyphDropped;
             if (!(g.flags & kGlyphSpace)) page.hiddenGlyphs++;

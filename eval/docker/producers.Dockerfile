@@ -39,6 +39,22 @@ RUN curl -fsSL -o /tmp/eisvogel.tar.gz \
     && mv /tmp/Eisvogel-3.5.1/LICENSE /opt/eval/templates/eisvogel-LICENSE \
     && rm -rf /tmp/eisvogel.tar.gz /tmp/Eisvogel-3.5.1
 
+# Scanned suite (eval/producers/scan.py): Pillow + NumPy for degradations and the JPEG and CCITT G4
+# encoders (libjpeg-turbo, libtiff), OpenJPEG's opj_compress for JPEG 2000, and jbig2enc 0.30
+# (Apache-2.0, built from its release tarball against Leptonica) for JBIG2. Versions come from the
+# pinned 2026-11-01 archive snapshot above.
+RUN pacman -Sy --noconfirm --needed python-pillow python-numpy openjpeg2 leptonica gcc \
+    && curl -fsSL -o /tmp/jbig2enc.tar.gz https://github.com/agl/jbig2enc/archive/refs/tags/0.30.tar.gz \
+    && echo '4468442f666edc2cc4d38b11cde2123071a94edc3b403ebe60eb20ea3b2cc67b  /tmp/jbig2enc.tar.gz' | sha256sum -c - \
+    && tar -xzf /tmp/jbig2enc.tar.gz -C /tmp \
+    && cd /tmp/jbig2enc-0.30/src \
+    && g++ -O2 -std=c++14 -DNDEBUG '-DVERSION="0.30"' -I/usr/include/leptonica \
+         jbig2.cc jbig2arith.cc jbig2comparator.cc jbig2enc.cc jbig2sym.cc -o /usr/local/bin/jbig2 -lleptonica \
+    && cd / \
+    && mkdir -p /opt/eval/licenses && cp /tmp/jbig2enc-0.30/COPYING /opt/eval/licenses/jbig2enc-COPYING \
+    && pacman -Scc --noconfirm \
+    && rm -rf /tmp/jbig2enc* /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
+
 COPY producers/ /opt/eval/producers/
 COPY census/ /opt/eval/census/
 
@@ -65,6 +81,11 @@ v = {
     "rayomd": first(["rayomd", "--version"]),
     "pdfinfo": first(["pdfinfo", "-v"]),
     "qpdf": first(["qpdf", "--version"]),
+    "jbig2enc": first(["jbig2", "--version"]),
+    "opj_compress": first(["opj_compress", "-h"]),
+    "pacman": {line.split()[0]: line.split()[1] for line in subprocess.run(
+        ["pacman", "-Q", "poppler", "python-pillow", "python-numpy", "openjpeg2", "leptonica",
+         "libtiff", "libjpeg-turbo", "zlib"], capture_output=True, text=True).stdout.splitlines()},
 }
 with open("/opt/eval/versions.json", "w") as f:
     json.dump(v, f, indent=2, sort_keys=True)

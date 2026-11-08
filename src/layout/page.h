@@ -35,6 +35,9 @@ enum : uint16_t {
     kGlyphSymbolic = 1u << 12,   // symbolic font (Symbol, ZapfDingbats, Wingdings)
     kGlyphImage = 1u << 13,      // no glyph: an image set in the line; its text is the Markdown image link
     kGlyphStrike = 1u << 14,     // struck through: set by BuildLines from a rule across its middle, or by tags
+    // Recognised by the OCR add-on (layout/ocr.h), always with kGlyphInvisible: an OCR text layer
+    // that BuildLines keeps even beside visible text (an image region's text on a digital page).
+    kGlyphOcr = 1u << 15,
 };
 
 struct Glyph {
@@ -82,6 +85,9 @@ enum class ImageState : uint8_t {
 
 struct ImageBox {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    // The CTM of the placement: image space (the unit square; the image's first row at its top,
+    // y = 1) to the space of x0..y1, which is the placement's bounding box, clipped.
+    float matrix[6] = {1, 0, 0, 1, 0, 0};
     PdfValue xobject;     // the image XObject stream; Null for an inline image
     PdfValue resources;   // the resources that named it (Null when none)
     uint32_t inlineData = 0, inlineLength = 0;  // an inline image's source in PageData::inlineImages

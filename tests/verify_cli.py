@@ -346,6 +346,9 @@ def main() -> int:
         c.check("report", r.returncode == 0 and report.get("pages") == 1 and report.get("glyphs", 0) >= 10 and
                 report.get("status") == "ok" and report.get("code") == 0 and report.get("input") == hello and
                 report.get("bytes") == Path(out).stat().st_size, repr(r.stdout))
+        c.check("report exact none", report.get("exact") == "none", repr(r.stdout))
+        r = c.run("--convert", hello, out, "--report", "--no-exact")
+        c.check("no-exact", r.returncode == 0 and b'"exact":"off"' in r.stdout, repr(r.stdout))
         r = c.run("--convert", str(work / "missing.pdf"), out, "--report")
         try:
             report = json.loads(r.stdout)

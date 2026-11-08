@@ -40,6 +40,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         if (!page.HasText()) report.pagesWithoutText++;
         if (p < quality.size() && quality[p].glyphs >= 20 && quality[p].unreliable * 2 > quality[p].glyphs)
             unmapped[p] = 1;
+        if (p < quality.size() && quality[p].ocrFailed) unmapped[p] |= 2;
     }
     BlockList blocks;
     BuildBlocks(pages, outline, unmapped, blocks);

@@ -541,11 +541,12 @@ void TestPdfImages() {
     const int photo = b.AddStream(gray + " /Width 40 /Height 40", std::string(1600, '\x70'));
     const int logo = b.AddStream(gray + " /Width 32 /Height 32", std::string(1024, '\x40'));
     const int icon = b.AddStream(gray + " /Width 10 /Height 10", std::string(100, '\x20'));
-    const int jbig2 = b.AddStream("/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceGray "
-                                  "/BitsPerComponent 1 /Filter /JBIG2Decode",
-                                  std::string(64, '\x01'));
+    // A filter no decoder knows, so the image is reported as an unsupported encoding.
+    const int unknown = b.AddStream("/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceGray "
+                                    "/BitsPerComponent 1 /Filter /FooDecode",
+                                    std::string(64, '\x01'));
     const std::string xobjects = "/XObject << /Ph " + std::to_string(photo) + " 0 R /Lo " + std::to_string(logo) +
-                                 " 0 R /Ic " + std::to_string(icon) + " 0 R /Jb " + std::to_string(jbig2) + " 0 R >>";
+                                 " 0 R /Ic " + std::to_string(icon) + " 0 R /Jb " + std::to_string(unknown) + " 0 R >>";
     const std::string resources = "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> "
                                   ">> " + xobjects + " >>";
     const int c1 = b.AddFlateStream("", "BT /F1 12 Tf 72 720 Td (Before the figures.) Tj ET\n"
@@ -590,7 +591,7 @@ void TestPdfImages() {
     RAYOPDF_CHECK(Contains(md, "After the figures. ![](media/p1-1.png)"), 497);
     RAYOPDF_CHECK(Contains(md, "<!-- rayopdf: image on page 2 not extracted (unsupported encoding) -->"), 486);
     RAYOPDF_CHECK(Contains(md, "<!-- rayopdf: page 3 has no extractable text -->\n\n![](media/p1-1.png)"), 487);
-    // Logo (2 placements), icon and JBIG2 image skipped; photo and inline image written.
+    // Logo (2 placements), icon and the unknown-filter image skipped; photo and inline image written.
     RAYOPDF_CHECK(report.images == 2 && report.imagesSkipped == 4 && report.pagesWithoutText == 1, 488);
     {
         // Scoped: Windows removes no mapped file.

@@ -64,13 +64,18 @@ function(rayopdf_flags target)
 endfunction()
 
 # One static library per module directory src/<module>/ (every .cpp in it). Dependencies:
-# common <- crypt <- pdf <- text, image <- layout <- the command line.
-set(RAYOPDF_MODULES common crypt pdf text image layout)
+# common <- crypt <- pdf <- text, image <- layout <- the command line; raster (paths and the
+# rasterizer for glyph-shape recovery) <- text. `ocr` is the OCR add-on's
+# own code (pre- and post-processing, protocol server, Tesseract backend; no inference runtime):
+# only the add-on rayopdf-ocr, its tests and its fuzz target link it, never `rayopdf`.
+set(RAYOPDF_MODULES common crypt pdf raster text image layout ocr)
 set(RAYOPDF_DEPENDS_crypt common)
 set(RAYOPDF_DEPENDS_pdf crypt common)
-set(RAYOPDF_DEPENDS_text pdf)
+set(RAYOPDF_DEPENDS_raster common)
+set(RAYOPDF_DEPENDS_text pdf raster)
 set(RAYOPDF_DEPENDS_image pdf)
 set(RAYOPDF_DEPENDS_layout text image)
+set(RAYOPDF_DEPENDS_ocr crypt common)
 foreach(module ${RAYOPDF_MODULES})
     file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/${module}/*.cpp")
     if(sources)
@@ -107,11 +112,56 @@ if(TARGET rayopdf_layout)
     endif()
 endif()
 
+# The OCR add-on rayopdf-ocr (docs/development/ocr-engine.md): src/ocr/addon/ plus one inference
+# runtime, a static build of it under RAYOPDF_OCR_RUNTIME_DIR (include/, lib/), as
+# docker/ocr.Dockerfile installs them (tools/dev.py configs ocr, ocr-ort, ocr-windows).
+option(RAYOPDF_OCR_ADDON "Build the OCR add-on rayopdf-ocr" OFF)
+set(RAYOPDF_OCR_RUNTIME "ncnn" CACHE STRING "Inference runtime of rayopdf-ocr: ncnn or onnxruntime")
+set(RAYOPDF_OCR_RUNTIME_DIR "" CACHE PATH "Static build of that runtime (include/, lib/)")
+set(RAYOPDF_OCR_TIER "small" CACHE STRING "Default model tier of rayopdf-ocr: tiny, small or medium")
+set(RAYOPDF_OCR_MODELS "" CACHE PATH "Model folder (with <tier>/) for tests/verify_ocr.py")
+if(RAYOPDF_OCR_ADDON)
+    if(NOT RAYOPDF_OCR_RUNTIME_DIR)
+        message(FATAL_ERROR "RAYOPDF_OCR_ADDON needs RAYOPDF_OCR_RUNTIME_DIR.")
+    endif()
+    add_executable(rayopdf-ocr src/ocr/addon/main.cpp src/ocr/addon/runtime_${RAYOPDF_OCR_RUNTIME}.cpp)
+    target_link_libraries(rayopdf-ocr PRIVATE rayopdf_ocr)
+    rayopdf_flags(rayopdf-ocr)
+    target_compile_definitions(rayopdf-ocr PRIVATE RAYOPDF_OCR_TIER="${RAYOPDF_OCR_TIER}")
+    # In a folder of its own: the core's add-on discovery looks beside the running executable, and
+    # the core tests in this build directory must not find (and start) the real add-on.
+    set_target_properties(rayopdf-ocr PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addon")
+    if(RAYOPDF_OCR_RUNTIME STREQUAL "ncnn")
+        target_include_directories(rayopdf-ocr SYSTEM PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/include/ncnn")
+        target_link_libraries(rayopdf-ocr PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/lib/libncnn.a" Threads::Threads)
+    elseif(RAYOPDF_OCR_RUNTIME STREQUAL "onnxruntime")
+        file(GLOB ort_libraries "${RAYOPDF_OCR_RUNTIME_DIR}/lib/*.a")
+        target_include_directories(rayopdf-ocr SYSTEM PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/include")
+        target_link_libraries(rayopdf-ocr PRIVATE -Wl,--start-group ${ort_libraries} -Wl,--end-group
+            Threads::Threads ${CMAKE_DL_LIBS})
+        # MLAS's assembly kernels lack .note.GNU-stack; the stack stays non-executable regardless.
+        target_link_options(rayopdf-ocr PRIVATE -Wl,-z,noexecstack)
+    else()
+        message(FATAL_ERROR "RAYOPDF_OCR_RUNTIME must be ncnn or onnxruntime.")
+    endif()
+    if(RAYOPDF_STATIC)
+        target_link_options(rayopdf-ocr PRIVATE -static-pie)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)
+        target_link_options(rayopdf-ocr PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+        target_link_options(rayopdf-ocr PRIVATE $<$<CONFIG:Release>:-Wl,--gc-sections>)
+    endif()
+endif()
+
 if(RAYOPDF_TESTS)
     enable_testing()
     # Core tests: one executable per file tests/test_<module>[_<part>].cpp, linked to its module.
     # Every check fails with a code of its own (tests/check.h lists the ranges);
-    # tests/verify_cli.py checks the built command line.
+    # tests/verify_cli.py checks the built command line. RAYOPDF_OCR names no file in every test, so
+    # an OCR add-on installed beside the build or on PATH is never found (an environment variable
+    # naming nothing ends the add-on search); tests/test_layout_ocr.cpp names its stand-in itself.
+    set(rayopdf_test_environment "RAYOPDF_OCR=/nonexistent/rayopdf-ocr")
     file(GLOB test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp")
     foreach(source ${test_sources})
         get_filename_component(name ${source} NAME_WE)
@@ -123,8 +173,22 @@ if(RAYOPDF_TESTS)
             rayopdf_flags(${name})
             string(REGEX REPLACE "^test_" "" test_name ${name})
             add_test(NAME ${test_name} COMMAND ${name})
+            set_tests_properties(${test_name} PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
         endif()
     endforeach()
+    # The stand-in OCR add-on that tests/test_layout_ocr.cpp and tests/test_layout_glyph.cpp start
+    # (tests/ocr_mock_addon.cpp).
+    if(TARGET test_layout_ocr)
+        add_executable(ocr_mock_addon tests/ocr_mock_addon.cpp)
+        target_link_libraries(ocr_mock_addon PRIVATE rayopdf_common)
+        rayopdf_flags(ocr_mock_addon)
+        foreach(test test_layout_ocr test_layout_glyph)
+            if(TARGET ${test})
+                add_dependencies(${test} ocr_mock_addon)
+                target_compile_definitions(${test} PRIVATE RAYOPDF_OCR_MOCK="$<TARGET_FILE:ocr_mock_addon>")
+            endif()
+        endforeach()
+    endif()
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET rayopdf)
         # A cross build's binary runs under its emulator (Wine for the Windows build).
@@ -135,6 +199,11 @@ if(RAYOPDF_TESTS)
         endif()
         add_test(NAME cli COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_cli.py"
             --binary $<TARGET_FILE:rayopdf> ${rayopdf_emulator})
+        set_tests_properties(cli PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
+        if(TARGET rayopdf-ocr AND RAYOPDF_OCR_MODELS)
+            add_test(NAME ocr_addon COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_ocr.py"
+                --binary $<TARGET_FILE:rayopdf-ocr> --models "${RAYOPDF_OCR_MODELS}" ${rayopdf_emulator})
+        endif()
     endif()
 endif()
 

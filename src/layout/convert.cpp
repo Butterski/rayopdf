@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/convert.h"
 
+#include "layout/exact.h"
 #include "layout/interpreter.h"
+#include "layout/ocr.h"
 #include "layout/pipeline.h"
 #include "layout/structure.h"
 #include "text/font.h"
@@ -11,7 +13,10 @@
 
 namespace RayoPdf::Layout {
 
-void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report) {
+namespace {
+
+// The pages of `document` to Markdown (D4 steps 2-8).
+void ConvertDocument(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report) {
     markdown.clear();
     report = ConvertReport();
     const int count = document.PageCount();
@@ -35,6 +40,7 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         quality[slot].unreliable = stats.unmapped + stats.guessed;
     }
     report.pages = static_cast<int>(pages.size());
+    RecognisePages(document, fonts, options.ocr, pages, quality, report);
     std::vector<OutlineEntry> outline;
     ReadOutline(document, outline);
     ImageOutput images;
@@ -44,6 +50,39 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
     Structure structure;
     if (options.structure && first <= last) ReadStructure(document, first - 1, last - 1, structure);
     ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure);
+}
+
+} // namespace
+
+void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report) {
+    std::string_view source;
+    ExactUse use = options.exact ? FindExactSource(document, source) : ExactUse::Off;
+    if (use == ExactUse::Used) {
+        const int count = document.PageCount();
+        if (options.firstPage > 1 || (options.lastPage > 0 && options.lastPage < count)) use = ExactUse::Pages;
+    }
+    if (use == ExactUse::Used) {
+        // The check converts the pages without writing images or running OCR; when the caller asked
+        // for neither, that conversion is also the fallback.
+        ConvertOptions check = options;
+        check.imageDirectory.clear();
+        check.imageLinkPrefix.clear();
+        check.ocr.mode = OcrMode::Off;
+        ConvertDocument(document, check, markdown, report);
+        ExactMatch match;
+        if (SourceMatchesPages(source, markdown, match)) {
+            markdown.assign(source.data(), source.size());
+            report.exact = ExactUse::Used;
+            return;
+        }
+        use = ExactUse::Mismatch;
+        if (options.imageDirectory.empty() && options.ocr.mode == OcrMode::Off) {
+            report.exact = use;
+            return;
+        }
+    }
+    ConvertDocument(document, options, markdown, report);
+    report.exact = use;
 }
 
 } // namespace RayoPdf::Layout

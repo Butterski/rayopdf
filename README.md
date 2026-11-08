@@ -4,33 +4,63 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.8: born-digital PDFs to GitHub Flavored Markdown with headings, paragraphs, lists,
-code blocks, block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and
-CJK text included; tagged PDFs are read through their structure tree. Scanned pages are marked,
-not read (no OCR yet); math is written as Unicode text.
+Version 0.0.9: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
+included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
+are read by the optional OCR add-on; math is written as Unicode text.
 The [roadmap](docs/development/roadmap.md) lists what comes next.
 
 ## Usage
 
 ```sh
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-                                [--no-annotations] [--no-structure] [--report]
+                                [--ocr=auto|off|force] [--ocr-addon=PATH]
+                                [--no-exact] [--no-annotations] [--no-structure] [--report]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --inspect IN.pdf          # the document's structure as one JSON object
 ```
 
-`OUT.md` `-` writes to standard output. Images go to `OUT-images/` beside `OUT.md` (PNG, or
-the PDF's own JPEG and JPEG 2000 data) unless `--images` says otherwise. Text that could not be
-read is never dropped silently: a `<!-- rayopdf: ... -->` comment marks the spot. Exit codes: 0
-converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12
-unwritable output, 13 unsupported encryption.
+`OUT.md` `-` writes to standard output. Images go to `OUT-images/` beside `OUT.md` (PNG, or the
+PDF's own JPEG data when that file shows what the PDF shows) unless `--images` says otherwise.
+Text that could not be read is never dropped silently: a `<!-- rayopdf: ... -->` comment marks
+the spot. Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair, 11
+password required, 12 unwritable output, 13 unsupported encryption.
 
 `--report` prints one JSON record of the document: `input`, `output`, `status` (`ok`, `skipped`
 or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,
 then the counters behind the uncertainty comments (glyphs without Unicode, pages without text,
-repairs, limits reached, ...).
+repairs, limits reached, `exact`, ...).
+
+### Exact recovery of RayoMD PDFs
+
+A PDF that [RayoMD](https://github.com/Butterski/rayomd) exported with `--embed-source` carries
+its Markdown source (the `rayomd-source/1` profile). RayoPDF then writes that Markdown byte for
+byte instead of converting the pages, once two checks pass: the profile's own (its exact object
+layout, length, SHA-256 and UTF-8), and a comparison with the pages: the letters and digits of
+the source, compared in runs of 8 with the normal conversion's, may miss or add at most 32 plus
+20 % of either side's (link and image targets, TeX commands of formulas, comments). The digest
+detects damage, not forgery, and the comparison does not cover punctuation, Markdown syntax or
+link targets beyond that allowance. The profile carries no images: the source's image links stay
+as written and no image files are written. The record's `exact` says what happened: `used`,
+`none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), or why the payload
+was rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`,
+`utf8`, `mismatch`. `--no-exact` always converts the pages.
+
+### OCR add-on
+
+Pages without a text layer (scans) and text drawn inside images or as outlines are read by a
+separate program, `rayopdf-ocr`, shipped in its own archive with its models
+(`rayopdf-ocr-models/`, PP-OCRv6 small on ncnn; about 7 MB plus 31 MB). Unpacked into the same
+folder as `rayopdf`, it is found and started only when a page needs it; pages with a usable text
+layer never wait for it. It is also used to read the shapes of glyphs whose font maps them to no
+or wrong text. Without the add-on, those pages keep the `<!-- rayopdf: page N has no extractable
+text -->` comment. `--ocr=off` never starts it, `--ocr=force` also re-reads pages that already
+carry an invisible OCR layer; `--ocr-addon=PATH` or the `RAYOPDF_OCR` environment variable name
+it elsewhere (otherwise: beside `rayopdf`, then `PATH`). The record counts routed, recognised and
+failed pages (`ocr_pages_routed`, `ocr_pages`, `ocr_failures`, `ocr_addon_missing`, ...). An OCR
+page takes seconds, not milliseconds: about 2.7 s on one core for a 300 dpi page.
 
 ### Batch conversion
 
@@ -54,10 +84,10 @@ line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
 Markdown as `markdown` and no images are written) and `args` (flags of `--convert`:
-`--password`, `--pages`, `--images`, `--no-annotations`, `--no-structure`, over those the session
-started with). A malformed request gets an error record (code 2) and the session goes on; `quit`,
-`exit` or the end of the input ends it. With `--workers=N` requests already sent are converted N at
-a time, and the answers still come in request order.
+`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, over those
+the session started with). A malformed request gets an error record (code 2) and the session goes
+on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
+converted N at a time, and the answers still come in request order.
 
 ```sh
 printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-3"]}' \
@@ -76,15 +106,21 @@ python3 tools/dev.py test --config asan       # core tests and the CLI verifier 
 python3 tools/dev.py test --config tsan       # the same under ThreadSanitizer
 python3 tools/dev.py build --config static    # a fully static build/static/rayopdf
 python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
-python3 tools/package.py                      # release archives and SHA256SUMS in build/dist/
+python3 tools/dev.py image --name ocr         # rayopdf-ocr:1: ncnn, ONNX Runtime, the models, Tesseract
+python3 tools/dev.py test --config ocr        # the static core plus the add-on build/ocr/addon/rayopdf-ocr
+python3 tools/dev.py test --config ocr-windows # rayopdf-ocr.exe, tested under Wine
+python3 tools/package.py --ocr                # release archives and SHA256SUMS in build/dist/
 ```
 
-The source is C++17 with no third-party library: `src/crypt` (Standard security handler),
-`src/pdf` (objects, filters, page tree), `src/text` (fonts to Unicode), `src/layout`
-(interpretation, reading order, Markdown), `src/image`, `src/common` (files, threads, the batch
-record and the serve protocol) and `src/cli`. The release archives `rayopdf-VERSION-linux-x64-static.tar.gz`
-and `rayopdf-VERSION-windows-x64.zip` hold the binary, this README's usage part, LICENSE, NOTICE,
-VERSION and `third_party/licenses/`; `tools/package.py` makes them byte for byte reproducible.
+The core is C++17 with no third-party library: `src/crypt` (Standard security handler),
+`src/pdf` (objects, filters, page tree, RayoMD source recovery), `src/text` (fonts to Unicode,
+glyph outlines), `src/raster`, `src/layout` (interpretation, reading order, Markdown, OCR routing),
+`src/image` (JPEG, JPEG 2000, JBIG2, CCITT, PNG), `src/common` (files, threads, the batch record,
+the serve and OCR protocols) and `src/cli`. The OCR add-on (`src/ocr`) links ncnn and is never
+linked into `rayopdf`. The release archives `rayopdf-VERSION-linux-x64-static.tar.gz` and
+`rayopdf-VERSION-windows-x64.zip` hold the binary, this README's usage part, LICENSE, NOTICE,
+VERSION and `third_party/licenses/`; `rayopdf-ocr-VERSION-…` hold the add-on and its models and
+unpack into the same folder. `tools/package.py` makes them byte for byte reproducible.
 
 ## Documents
 

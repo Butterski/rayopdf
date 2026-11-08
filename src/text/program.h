@@ -2,7 +2,8 @@
 // What the text layer reads of embedded font programs (algorithms §3.3, §3.4): glyph names and
 // built-in encodings of Type 1 (FontFile) and CFF (FontFile3 /Type1C, /CIDFontType0C) fonts, and
 // the 'cmap', 'post' and 'maxp' tables of TrueType / OpenType (FontFile2, FontFile3 /OpenType).
-// Outlines are never read. Every read is bounds-checked: font programs are untrusted.
+// Outlines are read only for glyph-shape recovery (text/outline.h). Every read is bounds-checked:
+// font programs are untrusted.
 #pragma once
 
 #include <cstddef>
@@ -70,6 +71,7 @@ struct Sfnt {
     std::vector<CmapSubtable> cmaps;
     std::string_view post;
     std::string_view cff;      // an OpenType font's 'CFF ' table
+    std::string_view head, loca, glyf;  // TrueType outlines (text/outline.h)
 
     // The (platform, encoding) subtable, nullptr when absent.
     const CmapSubtable* Cmap(uint16_t platform, uint16_t encoding) const;

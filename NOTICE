@@ -42,3 +42,12 @@ Binaries built from this source also contain libraries linked into them:
 - The MinGW-w64 runtime (its C runtime startup code and the winpthreads library) in the
   Windows build, licensed under the Zope Public License 2.1, the MIT (Expat) licence and the
   BSD 3-Clause licence, or in the public domain (https://www.mingw-w64.org).
+
+The OCR add-on rayopdf-ocr (a separate program, never linked into rayopdf) also contains:
+
+- ncnn (https://github.com/Tencent/ncnn, release 20261020), licensed under the BSD 3-Clause
+  License, with parts under the zlib and BSD 2-Clause licences. See
+  third_party/licenses/ncnn.txt.
+- Its model folder rayopdf-ocr-models/ holds PP-OCRv6 text detection and recognition models by
+  the PaddlePaddle Authors (PaddleOCR, https://github.com/PaddlePaddle/PaddleOCR), licensed under
+  the Apache License 2.0, converted to ncnn's format. See third_party/licenses/pp-ocrv6.txt.
