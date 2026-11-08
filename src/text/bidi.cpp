@@ -32,6 +32,7 @@
 
 #include "text/bidi.h"
 
+#include "common/per_thread.h"
 #include "text/bidi_tables.h"
 
 #include <algorithm>
@@ -143,6 +144,14 @@ struct Work {
     std::vector<uint32_t> openers;     // BD16 stack: positions in `sequence`
     std::vector<uint32_t> openerBrackets;
     std::vector<uint64_t> pairs;       // opener position << 32 | closer position
+};
+
+// The visual paragraph's items in processing order (VisualToLogical), kept by each thread.
+struct VisualWork {
+    std::vector<Class> classes;
+    std::vector<uint32_t> codePoints;
+    std::vector<uint8_t> governing, strongLeft, strongRight, moving;
+    std::vector<uint32_t> pending;
 };
 
 // The paragraph level P2-P3 give items [from, to) (isolates skipped through their matching PDI);
@@ -494,8 +503,6 @@ void Resolve(const Class* classes, const uint32_t* codePoints, size_t count, uin
     }
 }
 
-thread_local Work tWork;
-
 // Reverses, from the highest level down to the lowest odd one, every run at that level or higher
 // (L2) in `order`, the levels moving with their items.
 void ReverseRuns(std::vector<uint32_t>& order, std::vector<uint8_t>& moving) {
@@ -527,7 +534,7 @@ void ReverseRuns(std::vector<uint32_t>& order, std::vector<uint8_t>& moving) {
 
 uint8_t ResolveLevels(const Class* classes, const uint32_t* codePoints, size_t count, int direction,
                       std::vector<uint8_t>& levels) {
-    Work& w = tWork;
+    Work& w = PerThread<Work>();
     w.matching.assign(count, kNoMatch);
     // BD9 is needed by P2-P3 before Resolve recomputes it.
     w.openers.clear();
@@ -592,9 +599,13 @@ bool VisualToLogical(const Class* classes, const uint32_t* codePoints, size_t co
 
     // The items in processing order (see the top of the file): classes, code points (mirrored for
     // a right-to-left paragraph), and the geometric W2/W7 strong type of each.
-    thread_local std::vector<Class> pClasses;
-    thread_local std::vector<uint32_t> pCodePoints;
-    thread_local std::vector<uint8_t> governing, strongLeft, strongRight, moving;
+    VisualWork& vw = PerThread<VisualWork>();
+    std::vector<Class>& pClasses = vw.classes;
+    std::vector<uint32_t>& pCodePoints = vw.codePoints;
+    std::vector<uint8_t>& governing = vw.governing;
+    std::vector<uint8_t>& strongLeft = vw.strongLeft;
+    std::vector<uint8_t>& strongRight = vw.strongRight;
+    std::vector<uint8_t>& moving = vw.moving;
     pClasses.resize(count);
     pCodePoints.resize(codePoints ? count : 0);
     governing.resize(count);
@@ -607,7 +618,7 @@ bool VisualToLogical(const Class* classes, const uint32_t* codePoints, size_t co
     }
     // A closer before any opener of its kind trades places with the next opener: the innermost
     // pending closer with the first opener after it.
-    thread_local std::vector<uint32_t> pending;
+    std::vector<uint32_t>& pending = vw.pending;
     for (const bool isolate : {false, true}) {
         size_t open = 0;
         pending.clear();
@@ -649,7 +660,7 @@ bool VisualToLogical(const Class* classes, const uint32_t* codePoints, size_t co
         governing[i] = g;
     }
 
-    Work& w = tWork;
+    Work& w = PerThread<Work>();
     Options options;
     options.governing = governing.data();
     const uint8_t paragraphLevel = rtl ? 1 : 0;

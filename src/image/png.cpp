@@ -4,6 +4,7 @@
 #include "image/png.h"
 
 #include "common/compiler.h"
+#include "common/per_thread.h"
 #include "image/deflate.h"
 #include "image/image.h"
 
@@ -457,7 +458,7 @@ bool EncodeFormatted(uint32_t width, uint32_t height, const RowFormat& format, P
     std::memcpy(idat + 4, "IDAT", 4);
     if (!output.Append(head, sizeof head)) return false;
 
-    thread_local Deflate::Scratch scratch;
+    Deflate::Scratch& scratch = PerThread<Deflate::Scratch>();
     IdatSink sink{&output, Png::Crc32(idat + 4, 4), 0};
     Deflate::ZlibStream stream(static_cast<size_t>(filtered64), scratch, AppendIdat, &sink);
     // One filter byte, then the residuals, per row; the source's rows are asked for once each.

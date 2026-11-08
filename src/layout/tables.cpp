@@ -2,6 +2,7 @@
 #include "layout/tables.h"
 
 #include "common/minmax.h"
+#include "common/per_thread.h"
 #include "layout/lines.h"
 
 #include <algorithm>
@@ -313,7 +314,6 @@ struct TableScratch {
     std::vector<uint8_t> split, label;
     std::vector<Gap> gaps, trial;
 };
-thread_local TableScratch tTables;
 constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
 
 class Detector {
@@ -321,22 +321,23 @@ public:
     // Tables of the text of baseline direction `dir`, in that direction's frame (page.h). The
     // vectors come from the thread's scratch and go back to it, their capacity with them.
     Detector(PageData& page, TableContinuation& continuation, uint8_t dir)
-        : page_(page), continuation_(continuation), dir_(dir), words_(std::move(tTables.words)),
-          h_(std::move(tTables.h)), v_(std::move(tTables.v)), rules_(std::move(tTables.rules)),
-          grids_(std::move(tTables.grids)), wordUsed_(std::move(tTables.wordUsed)),
-          events_(std::move(tTables.events)), bins_(std::move(tTables.bins)),
-          pageRows_(std::move(tTables.pageRows)), pageRowWords_(std::move(tTables.pageRowWords)) {}
+        : page_(page), continuation_(continuation), dir_(dir), scratch_(PerThread<TableScratch>()),
+          words_(std::move(scratch_.words)),
+          h_(std::move(scratch_.h)), v_(std::move(scratch_.v)), rules_(std::move(scratch_.rules)),
+          grids_(std::move(scratch_.grids)), wordUsed_(std::move(scratch_.wordUsed)),
+          events_(std::move(scratch_.events)), bins_(std::move(scratch_.bins)),
+          pageRows_(std::move(scratch_.pageRows)), pageRowWords_(std::move(scratch_.pageRowWords)) {}
     ~Detector() {
-        tTables.words = std::move(words_);
-        tTables.h = std::move(h_);
-        tTables.v = std::move(v_);
-        tTables.rules = std::move(rules_);
-        tTables.grids = std::move(grids_);
-        tTables.wordUsed = std::move(wordUsed_);
-        tTables.events = std::move(events_);
-        tTables.bins = std::move(bins_);
-        tTables.pageRows = std::move(pageRows_);
-        tTables.pageRowWords = std::move(pageRowWords_);
+        scratch_.words = std::move(words_);
+        scratch_.h = std::move(h_);
+        scratch_.v = std::move(v_);
+        scratch_.rules = std::move(rules_);
+        scratch_.grids = std::move(grids_);
+        scratch_.wordUsed = std::move(wordUsed_);
+        scratch_.events = std::move(events_);
+        scratch_.bins = std::move(bins_);
+        scratch_.pageRows = std::move(pageRows_);
+        scratch_.pageRowWords = std::move(pageRowWords_);
     }
     Detector(const Detector&) = delete;
     Detector& operator=(const Detector&) = delete;
@@ -379,6 +380,7 @@ private:
     PageData& page_;
     TableContinuation& continuation_;  // in: from the previous page; out: for the next (upright only)
     uint8_t dir_ = 0;
+    TableScratch& scratch_;  // the thread's (PerThread), lent to the vectors below and back
     std::vector<TWord> words_;  // by baseline descending, then x
     std::vector<Edge> h_, v_;
     std::vector<Edge> rules_;     // horizontal edges left for partially ruled tables
@@ -399,8 +401,8 @@ private:
 
 void Detector::CollectWords() {
     words_.clear();
-    std::vector<float>& sizes = tTables.sizes;
-    std::vector<float>& spaces = tTables.spaces;
+    std::vector<float>& sizes = scratch_.sizes;
+    std::vector<float>& spaces = scratch_.spaces;
     sizes.clear();
     spaces.clear();
     for (uint32_t li = 0; li < page_.lines.size(); ++li) {
@@ -470,7 +472,7 @@ void Detector::SortWords() {
         return a.x0 < b.x0;
     };
     const size_t n = words_.size();
-    std::vector<Key>& keys = tTables.keys;
+    std::vector<Key>& keys = scratch_.keys;
     keys.clear();
     for (size_t i = 0; i < n; ++i) keys.push_back(Key{words_[i].base, words_[i].x0, static_cast<uint32_t>(i)});
     size_t moves = 8 * n + 256;
@@ -495,7 +497,7 @@ void Detector::SortWords() {
         });
         return;
     }
-    std::vector<TWord>& ordered = tTables.ordered;
+    std::vector<TWord>& ordered = scratch_.ordered;
     ordered.clear();
     for (const Key& k : keys) ordered.push_back(words_[k.word]);
     words_.swap(ordered);
@@ -1850,7 +1852,7 @@ void Detector::Borderless(float gapFactor) {
     if (rows.size() < 3 || rows.size() > 4000) return;
     // Rows that split at a column gap (gapFactor ems: wider than any word space) and hold no code
     // are candidates.
-    std::vector<uint8_t>& split = tTables.split;
+    std::vector<uint8_t>& split = scratch_.split;
     split.assign(rows.size(), 0);
     for (size_t r = 0; r < rows.size(); ++r) {
         int segments = 1;
@@ -1864,14 +1866,14 @@ void Detector::Borderless(float gapFactor) {
         }
         split[r] = segments >= 2 && !mono;
     }
-    std::vector<Gap>& gaps = tTables.gaps;
-    std::vector<Gap>& trial = tTables.trial;
+    std::vector<Gap>& gaps = scratch_.gaps;
+    std::vector<Gap>& trial = scratch_.trial;
     std::string scratch, cellText;
-    std::vector<float>& lefts = tTables.lefts;
-    std::vector<float>& rights = tTables.rights;
-    std::vector<float>& centres = tTables.centres;
-    std::vector<float>& pitches = tTables.pitches;
-    std::vector<uint8_t>& label = tTables.label;  // a one-cell row of the first column inside a run
+    std::vector<float>& lefts = scratch_.lefts;
+    std::vector<float>& rights = scratch_.rights;
+    std::vector<float>& centres = scratch_.centres;
+    std::vector<float>& pitches = scratch_.pitches;
+    std::vector<uint8_t>& label = scratch_.label;  // a one-cell row of the first column inside a run
     label.assign(rows.size(), 0);
     size_t r = 0;
     while (r < rows.size() && grids_.size() < static_cast<size_t>(kMaxTablesPerPage)) {
@@ -2355,7 +2357,8 @@ int DetectTables(PageData& page, TableContinuation& continuation) {
         restored += other.Run();
     }
     // A huge page's words leave the thread's scratch with it.
-    if (tTables.words.capacity() > kKeptWords) tTables = TableScratch();
+    TableScratch& scratch = PerThread<TableScratch>();
+    if (scratch.words.capacity() > kKeptWords) scratch = TableScratch();
     return restored;
 }
 

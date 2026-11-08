@@ -6,6 +6,7 @@
 #include "pdf/inflate.h"
 
 #include "common/compiler.h"
+#include "common/per_thread.h"
 
 #include <algorithm>
 #include <cstring>
@@ -827,7 +828,7 @@ constexpr size_t kKeptBuffer = size_t(1) << 20;
 Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
     limit = std::min(limit, (size_t(1) << 40));
-    thread_local Buffer buffer;
+    Buffer& buffer = PerThread<Buffer>();
     Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, limit);
     const Result result = inflater.Run();
     out.assign(reinterpret_cast<const char*>(buffer.bytes.get()), inflater.Length());

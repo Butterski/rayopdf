@@ -2,6 +2,7 @@
 #include "layout/reading_order.h"
 
 #include "common/minmax.h"
+#include "common/per_thread.h"
 #include "layout/lines.h"
 
 #include <algorithm>
@@ -132,7 +133,9 @@ struct CutLevel {
     std::vector<size_t> xCuts, yCuts, ruleCuts;
     std::vector<uint32_t> byY, byRule, soft, part;
 };
-thread_local CutLevel tCutLevels[kMaxCutDepth + 1];
+struct CutLevels {
+    CutLevel level[kMaxCutDepth + 1];
+};
 
 struct Orderer {
     PageData& page;
@@ -353,7 +356,7 @@ struct Orderer {
             Fallback(items);
             return;
         }
-        CutLevel& level = tCutLevels[depth];
+        CutLevel& level = PerThread<CutLevels>().level[depth];
         const float size = MedianSize(items);
         std::vector<size_t>& xCuts = level.xCuts;
         std::vector<size_t>& yCuts = level.yCuts;
@@ -549,7 +552,7 @@ struct Orderer {
 
     void Recurse(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, int depth) {
         size_t begin = 0;
-        std::vector<uint32_t>& part = tCutLevels[depth].part;
+        std::vector<uint32_t>& part = PerThread<CutLevels>().level[depth].part;
         for (size_t c = 0; c <= cuts.size(); ++c) {
             const size_t end = c < cuts.size() ? cuts[c] : items.size();
             part.assign(items.begin() + static_cast<std::ptrdiff_t>(begin), items.begin() + static_cast<std::ptrdiff_t>(end));

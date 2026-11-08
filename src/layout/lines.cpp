@@ -2,6 +2,7 @@
 #include "layout/lines.h"
 
 #include "common/minmax.h"
+#include "common/per_thread.h"
 #include "common/utf8.h"
 #include "text/bidi.h"
 
@@ -51,7 +52,6 @@ struct FoldScratch {
     std::vector<uint32_t> words;   // filter words set by the call
     uint32_t base = 1;
 };
-thread_local FoldScratch tFold;
 
 // Folds overprinted duplicates (the same text drawn again within 0.15 em, algorithms §4.2) into one
 // glyph marked bold. `vis` keeps the survivors.
@@ -89,17 +89,18 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     const bool scratch = capacity <= kScratchSlots;
     // Pages up to kRecordSlots slots clear their filter whole: cheaper than recording the words.
     const bool record = scratch && capacity > kRecordSlots;
+    FoldScratch& fold = PerThread<FoldScratch>();
     if (scratch) {
-        if (tFold.table.size() < capacity || UINT32_MAX - tFold.base < glyphs.size()) {
-            tFold.table.assign(std::max(capacity, tFold.table.size()), 0);
-            tFold.base = 1;
+        if (fold.table.size() < capacity || UINT32_MAX - fold.base < glyphs.size()) {
+            fold.table.assign(std::max(capacity, fold.table.size()), 0);
+            fold.base = 1;
         }
-        if (tFold.filter.size() < filterWords) tFold.filter.assign(filterWords, 0);
-        if (record && tFold.words.size() < vis.size()) tFold.words.resize(vis.size());
-        table = tFold.table.data();
-        filter = tFold.filter.data();
-        setWords = tFold.words.data();
-        base = tFold.base;
+        if (fold.filter.size() < filterWords) fold.filter.assign(filterWords, 0);
+        if (record && fold.words.size() < vis.size()) fold.words.resize(vis.size());
+        table = fold.table.data();
+        filter = fold.filter.data();
+        setWords = fold.words.data();
+        base = fold.base;
     } else {
         ownTable.assign(capacity, 0);
         ownFilter.assign(filterWords, 0);
@@ -226,7 +227,7 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     }
     vis.resize(kept);
     if (scratch) {
-        tFold.base = base + static_cast<uint32_t>(glyphs.size());
+        fold.base = base + static_cast<uint32_t>(glyphs.size());
         if (record) {
             for (size_t s = 0; s < wordCount; ++s) filter[setWords[s]] = 0;
         } else {
@@ -690,17 +691,17 @@ struct PlaceScratch {
     std::vector<Segment> segments;
     std::vector<uint8_t> splitBefore;
 };
-thread_local PlaceScratch tPlace;
 
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
 void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     std::vector<Glyph>& glyphs = page.glyphs;
+    PlaceScratch& place = PerThread<PlaceScratch>();
     FoldDuplicates(page, vis);
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
     // current line while direction and baseline match).
-    std::vector<Fragment>& frags = tPlace.frags;
+    std::vector<Fragment>& frags = place.frags;
     frags.clear();
     // The fragment being extended stays in `f` until the next one starts, out of memory that the
     // glyphs' fields might alias.
@@ -759,7 +760,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     if (open) frags.push_back(f);
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
-    std::vector<uint32_t>& fo = tPlace.fo;
+    std::vector<uint32_t>& fo = place.fo;
     fo.clear();
     for (uint32_t i = 0; i < frags.size(); ++i)
         if (frags[i].any) fo.push_back(i);
@@ -771,11 +772,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         return x.u0 < y.u0;
     });
 
-    std::vector<uint32_t>& members = tPlace.members;
+    std::vector<uint32_t>& members = place.members;
     members.clear();
-    std::vector<Group>& groups = tPlace.groups;
+    std::vector<Group>& groups = place.groups;
     groups.clear();
-    std::vector<uint32_t>& cluster = tPlace.cluster;
+    std::vector<uint32_t>& cluster = place.cluster;
     for (size_t at = 0; at < fo.size();) {
         const Fragment& head = frags[fo[at]];
         size_t end = at + 1;
@@ -817,7 +818,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // A small fragment left alone (a superscript or subscript out of content order) joins the
     // full-size line it sits in (algorithms §4.4, MuPDF's 0.8 em baseline tolerance).
     std::vector<std::vector<uint32_t>> extra;  // fragments added to groups, by group, rarely used
-    std::vector<uint32_t>& extraOf = tPlace.extraOf;
+    std::vector<uint32_t>& extraOf = place.extraOf;
     extraOf.assign(groups.size(), kEmpty);
     for (size_t s = 0; s < groups.size(); ++s) {
         Group& small = groups[s];
@@ -856,11 +857,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // take their glyphs in that order.
     std::vector<uint32_t>& proto = page.lineGlyphs;
     proto.reserve(vis.size());
-    std::vector<Proto>& protos = tPlace.protos;
+    std::vector<Proto>& protos = place.protos;
     protos.clear();
-    std::vector<Segment>& segments = tPlace.segments;
+    std::vector<Segment>& segments = place.segments;
     segments.clear();
-    std::vector<uint32_t>& lineVis = tPlace.lineVis;
+    std::vector<uint32_t>& lineVis = place.lineVis;
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         const Group& grp = groups[gi];
         if (grp.merged) continue;
@@ -964,11 +965,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // on both sides (a line with text left and right of it, or lines left of it and lines right of
     // it); a wide space of justified text has ink above and below it, or only short lines on one
     // side. The line splits there.
-    std::vector<uint8_t>& splitBefore = tPlace.splitBefore;
+    std::vector<uint8_t>& splitBefore = place.splitBefore;
     splitBefore.assign(proto.size(), 0);
     uint32_t splits = 0;
     {
-        std::vector<uint32_t>& byBase = tPlace.byBase;
+        std::vector<uint32_t>& byBase = place.byBase;
         byBase.resize(protos.size());
         for (uint32_t i = 0; i < protos.size(); ++i) byBase[i] = i;
         std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
@@ -1108,7 +1109,8 @@ void BuildLines(PageData& page) {
         invisibleText = true;
     }
     const bool keepInvisible = !visibleText && invisibleText;
-    std::vector<uint32_t>& vis = tPlace.vis;
+    PlaceScratch& place = PerThread<PlaceScratch>();
+    std::vector<uint32_t>& vis = place.vis;
     if (vis.size() < glyphs.size()) vis.resize(glyphs.size());
     uint32_t* const placed = vis.data();
     size_t count = 0;
@@ -1140,7 +1142,7 @@ void BuildLines(PageData& page) {
         PlaceGlyphs<FiniteMinMax>(page, vis);
     else
         PlaceGlyphs<CheckedMinMax>(page, vis);
-    if (glyphs.size() > kKeptGlyphs) tPlace = PlaceScratch();
+    if (glyphs.size() > kKeptGlyphs) place = PlaceScratch();
 
     DropLineNumbers(page);
     MarkStruck(page);
