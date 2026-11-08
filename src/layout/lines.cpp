@@ -657,6 +657,41 @@ struct CheckedMinMax {
     static float Max(float a, float b) { return Fmax(a, b); }
 };
 
+// Line groups: runs of `members` (fragment indices) in u order.
+struct Group {
+    uint32_t first = 0, count = 0;
+    float u0 = 0, u1 = 0, vb = 0, vt = 0, baseline = 0, size = 0;
+    uint8_t dir = 0;
+    bool merged = false;   // absorbed into another group
+    bool scripts = false;  // received a superscript or subscript fragment: sort glyphs by position
+};
+
+// Proto lines: glyphs in order with their word breaks set, before gutter splitting.
+struct Proto {
+    uint32_t first = 0, count = 0;  // in `proto`
+    uint32_t segFirst = 0, segCount = 0;
+    float baseline = 0, size = 0, u0 = 0, u1 = 0;
+    uint8_t dir = 0;
+};
+
+struct Segment {
+    float u0, u1;
+    uint32_t start;  // position in `proto` of its first glyph
+};
+
+// BuildLines' working vectors, kept by each thread between pages so that a page grows none of
+// them anew; released after a page of more than kKeptGlyphs glyphs.
+constexpr size_t kKeptGlyphs = size_t(1) << 18;
+struct PlaceScratch {
+    std::vector<uint32_t> vis, fo, members, cluster, extraOf, lineVis, byBase;
+    std::vector<Fragment> frags;
+    std::vector<Group> groups;
+    std::vector<Proto> protos;
+    std::vector<Segment> segments;
+    std::vector<uint8_t> splitBefore;
+};
+thread_local PlaceScratch tPlace;
+
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
 void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
@@ -665,7 +700,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
     // current line while direction and baseline match).
-    std::vector<Fragment> frags;
+    std::vector<Fragment>& frags = tPlace.frags;
+    frags.clear();
     for (uint32_t k = 0; k < vis.size(); ++k) {
         const Glyph& g = glyphs[vis[k]];
         const bool space = (g.flags & kGlyphSpace) != 0;
@@ -718,8 +754,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     }
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
-    std::vector<uint32_t> fo;
-    fo.reserve(frags.size());
+    std::vector<uint32_t>& fo = tPlace.fo;
+    fo.clear();
     for (uint32_t i = 0; i < frags.size(); ++i)
         if (frags[i].any) fo.push_back(i);
     std::sort(fo.begin(), fo.end(), [&](uint32_t a, uint32_t b) {
@@ -730,18 +766,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         return x.u0 < y.u0;
     });
 
-    // Line groups: runs of `members` (fragment indices) in u order.
-    struct Group {
-        uint32_t first = 0, count = 0;
-        float u0 = 0, u1 = 0, vb = 0, vt = 0, baseline = 0, size = 0;
-        uint8_t dir = 0;
-        bool merged = false;   // absorbed into another group
-        bool scripts = false;  // received a superscript or subscript fragment: sort glyphs by position
-    };
-    std::vector<uint32_t> members;
-    members.reserve(fo.size());
-    std::vector<Group> groups;
-    std::vector<uint32_t> cluster;
+    std::vector<uint32_t>& members = tPlace.members;
+    members.clear();
+    std::vector<Group>& groups = tPlace.groups;
+    groups.clear();
+    std::vector<uint32_t>& cluster = tPlace.cluster;
     for (size_t at = 0; at < fo.size();) {
         const Fragment& head = frags[fo[at]];
         size_t end = at + 1;
@@ -783,7 +812,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // A small fragment left alone (a superscript or subscript out of content order) joins the
     // full-size line it sits in (algorithms §4.4, MuPDF's 0.8 em baseline tolerance).
     std::vector<std::vector<uint32_t>> extra;  // fragments added to groups, by group, rarely used
-    std::vector<uint32_t> extraOf(groups.size(), kEmpty);
+    std::vector<uint32_t>& extraOf = tPlace.extraOf;
+    extraOf.assign(groups.size(), kEmpty);
     for (size_t s = 0; s < groups.size(); ++s) {
         Group& small = groups[s];
         if (small.count != 1) continue;
@@ -817,43 +847,45 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         extra[extraOf[best]].push_back(members[small.first]);
     }
 
-    // Proto lines: glyphs in order with their word breaks set, before gutter splitting.
-    struct Proto {
-        uint32_t first = 0, count = 0;  // in `proto`
-        uint32_t segFirst = 0, segCount = 0;
-        float baseline = 0, size = 0, u0 = 0, u1 = 0;
-        uint8_t dir = 0;
-    };
-    struct Segment {
-        float u0, u1;
-        uint32_t start;  // position in `proto` of its first glyph
-    };
-    std::vector<uint32_t> proto;
-    std::vector<Proto> protos;
-    std::vector<Segment> segments;
-    std::vector<uint32_t> lineVis;
+    // Proto lines in `proto`, which becomes the page's lineGlyphs: the lines split from them below
+    // take their glyphs in that order.
+    std::vector<uint32_t>& proto = page.lineGlyphs;
+    proto.reserve(vis.size());
+    std::vector<Proto>& protos = tPlace.protos;
+    protos.clear();
+    std::vector<Segment>& segments = tPlace.segments;
+    segments.clear();
+    std::vector<uint32_t>& lineVis = tPlace.lineVis;
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         const Group& grp = groups[gi];
         if (grp.merged) continue;
-        lineVis.clear();
-        for (uint32_t m = 0; m < grp.count; ++m) {
-            const Fragment& f = frags[members[grp.first + m]];
-            for (uint32_t k = f.begin; k < f.end; ++k) lineVis.push_back(vis[k]);
-        }
-        if (extraOf[gi] != kEmpty) {
-            for (uint32_t fi : extra[extraOf[gi]]) {
-                const Fragment& f = frags[fi];
-                for (uint32_t k = f.begin; k < f.end; ++k) lineVis.push_back(vis[k]);
+        // The group's glyphs: a lone fragment's are a run of `vis` already.
+        const uint32_t *lineBegin, *lineEnd;
+        if (grp.count == 1 && extraOf[gi] == kEmpty) {
+            const Fragment& f = frags[members[grp.first]];
+            lineBegin = vis.data() + f.begin, lineEnd = vis.data() + f.end;
+        } else {
+            lineVis.clear();
+            for (uint32_t m = 0; m < grp.count; ++m) {
+                const Fragment& f = frags[members[grp.first + m]];
+                lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
             }
-        }
-        if (grp.scripts) {
-            std::stable_sort(lineVis.begin(), lineVis.end(), [&](uint32_t a, uint32_t b) {
-                return glyphs[a].u0 + glyphs[a].u1 < glyphs[b].u0 + glyphs[b].u1;
-            });
+            if (extraOf[gi] != kEmpty) {
+                for (uint32_t fi : extra[extraOf[gi]]) {
+                    const Fragment& f = frags[fi];
+                    lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
+                }
+            }
+            if (grp.scripts) {
+                std::stable_sort(lineVis.begin(), lineVis.end(), [&](uint32_t a, uint32_t b) {
+                    return glyphs[a].u0 + glyphs[a].u1 < glyphs[b].u0 + glyphs[b].u1;
+                });
+            }
+            lineBegin = lineVis.data(), lineEnd = lineVis.data() + lineVis.size();
         }
         // Explicit spaces decide the word breaks of lines that have them (algorithms §4.1).
         const bool spaces =
-            std::any_of(lineVis.begin(), lineVis.end(), [&](uint32_t i) { return (glyphs[i].flags & kGlyphSpace) != 0; });
+            std::any_of(lineBegin, lineEnd, [&](uint32_t i) { return (glyphs[i].flags & kGlyphSpace) != 0; });
         const float wordGap = spaces ? kWordGapWithSpaces : kWordGap;
         Proto p;
         p.first = static_cast<uint32_t>(proto.size());
@@ -865,7 +897,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         float right = 0;
         float previousSize = 0;
         bool first = true;
-        for (uint32_t i : lineVis) {
+        for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
+            const uint32_t i = *at;
             Glyph& g = glyphs[i];
             if (g.flags & kGlyphSpace) {
                 if (!first) pendingSpace = true;
@@ -923,9 +956,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // on both sides (a line with text left and right of it, or lines left of it and lines right of
     // it); a wide space of justified text has ink above and below it, or only short lines on one
     // side. The line splits there.
-    std::vector<uint8_t> splitBefore(proto.size(), 0);
+    std::vector<uint8_t>& splitBefore = tPlace.splitBefore;
+    splitBefore.assign(proto.size(), 0);
+    uint32_t splits = 0;
     {
-        std::vector<uint32_t> byBase(protos.size());
+        std::vector<uint32_t>& byBase = tPlace.byBase;
+        byBase.resize(protos.size());
         for (uint32_t i = 0; i < protos.size(); ++i) byBase[i] = i;
         std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
             if (protos[a].dir != protos[b].dir) return protos[a].dir < protos[b].dir;
@@ -976,17 +1012,17 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 }
                 const bool bounded = clear >= 1 || (leftSide && rightSide);
                 const bool gutter = bounded && (clear + oneSide >= 2) && blocked * 8 <= clear + oneSide;
-                if (gutter) splitBefore[start] = 1;
+                if (gutter) splitBefore[start] = 1, splits++;
             }
         }
     }
 
-    // Lines: metrics of each piece.
+    // Lines: metrics of each piece; a piece's glyphs stay where they are in `proto`.
     struct SizeCount {
         float size;
         uint32_t count;
     };
-    std::vector<SizeCount> sizes;
+    page.lines.reserve(protos.size() + splits);
     for (const Proto& p : protos) {
         uint32_t at = p.first;
         const uint32_t end = p.first + p.count;
@@ -994,11 +1030,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             uint32_t stop = at + 1;
             while (stop < end && !splitBefore[stop]) ++stop;
             Line line;
-            line.first = static_cast<uint32_t>(page.lineGlyphs.size());
+            line.first = at;
             line.dir = p.dir;
             uint16_t allFlags =
                 kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
-            sizes.clear();
+            SizeCount sizes[32];
+            uint32_t sizeCount = 0;
             for (uint32_t k = at; k < stop; ++k) {
                 Glyph& g = glyphs[proto[k]];
                 if (k == at) {
@@ -1010,19 +1047,18 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 allFlags &= g.flags;
                 line.chars++;
                 bool counted = false;
-                for (SizeCount& sc : sizes)
-                    if (std::fabs(sc.size - g.size) < 0.25f) {
-                        sc.count++;
+                for (uint32_t s = 0; s < sizeCount; ++s)
+                    if (std::fabs(sizes[s].size - g.size) < 0.25f) {
+                        sizes[s].count++;
                         counted = true;
                         break;
                     }
-                if (!counted && sizes.size() < 32) sizes.push_back({g.size, 1});
-                page.lineGlyphs.push_back(proto[k]);
+                if (!counted && sizeCount < 32) sizes[sizeCount++] = SizeCount{g.size, 1};
             }
             line.count = stop - at;
             SizeCount best{0, 0};
-            for (const SizeCount& sc : sizes)
-                if (sc.count > best.count || (sc.count == best.count && sc.size > best.size)) best = sc;
+            for (uint32_t s = 0; s < sizeCount; ++s)
+                if (sizes[s].count > best.count || (sizes[s].count == best.count && sizes[s].size > best.size)) best = sizes[s];
             line.size = best.size;
             line.baseline = p.baseline;
             for (uint32_t k = 0; k < line.count; ++k) {
@@ -1064,8 +1100,10 @@ void BuildLines(PageData& page) {
         invisibleText = true;
     }
     const bool keepInvisible = !visibleText && invisibleText;
-    std::vector<uint32_t> vis;
-    vis.reserve(glyphs.size());
+    std::vector<uint32_t>& vis = tPlace.vis;
+    if (vis.size() < glyphs.size()) vis.resize(glyphs.size());
+    uint32_t* const placed = vis.data();
+    size_t count = 0;
     // Stays 0 while every placed glyph's frame box, baseline and size are finite: x - x is 0 for
     // a finite x and NaN otherwise, and a NaN stays in the sum.
     float nonFinite = 0;
@@ -1087,12 +1125,14 @@ void BuildLines(PageData& page) {
         if ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
             g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
         nonFinite += ((g.u0 - g.u0) + (g.u1 - g.u1)) + ((g.vb - g.vb) + (g.vt - g.vt)) + ((g.v - g.v) + (g.size - g.size));
-        vis.push_back(i);
+        placed[count++] = i;
     }
+    vis.resize(count);
     if (nonFinite == 0)
         PlaceGlyphs<FiniteMinMax>(page, vis);
     else
         PlaceGlyphs<CheckedMinMax>(page, vis);
+    if (glyphs.size() > kKeptGlyphs) tPlace = PlaceScratch();
 
     DropLineNumbers(page);
     MarkStruck(page);
