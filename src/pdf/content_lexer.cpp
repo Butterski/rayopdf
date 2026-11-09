@@ -17,22 +17,8 @@ using Syntax::Cursor;
 constexpr double kPowers[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,
                               1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19};
 
-// Syntax::ByteClasses with one more class for the regular bytes that can start a number (digits,
-// signs and the point): one load tells white space, a delimiter, a number's byte or another
-// regular byte (0).
-struct LexerClasses {
-    static constexpr uint8_t kWhite = Syntax::ByteClasses::kWhite;
-    static constexpr uint8_t kDelimiter = Syntax::ByteClasses::kDelimiter;
-    static constexpr uint8_t kNumber = 4;
-    uint8_t of[256] = {};
-    constexpr LexerClasses() {
-        for (int c = 0; c < 256; ++c) of[c] = Syntax::kByteClasses.of[c];
-        for (int c = '0'; c <= '9'; ++c) of[c] = kNumber;
-        of['+'] = of['-'] = of['.'] = kNumber;
-    }
-};
-constexpr LexerClasses kClasses;
-constexpr uint8_t kNotRegular = LexerClasses::kWhite | LexerClasses::kDelimiter;
+using Classes = ContentClasses;
+constexpr const ContentClasses& kClasses = kContentClasses;
 
 // Syntax::ReadSimpleNumber at `p`, a digit, sign or point before the lexer's numbersEnd_, for at
 // most 18 digits and without its end tests: the byte at numbersEnd_ (no digit, sign or point)
@@ -63,7 +49,7 @@ RAYOPDF_HOT_INLINE bool ReadShortNumber(const char*& p, PdfValue& value, double&
         digits += fraction;
     }
     const uint8_t next = kClasses.of[static_cast<unsigned char>(*q)];
-    if (digits - 1 >= 18 || !(next & kNotRegular)) return false;
+    if (digits - 1 >= 18 || !(next & Classes::kNotRegular)) return false;
     const int64_t magnitude = static_cast<int64_t>(mantissa);
     // The fields of a fresh value besides the stream's, stored together.
     value.type = point ? PdfValue::Type::Real : PdfValue::Type::Int;
@@ -80,7 +66,7 @@ RAYOPDF_HOT_INLINE bool ReadShortNumber(const char*& p, PdfValue& value, double&
         value.real = real;
         number = real;
     }
-    p = q + (next == LexerClasses::kWhite);
+    p = q + (next & Classes::kWhite);
     return true;
 }
 
@@ -112,7 +98,7 @@ bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) 
     bool ok = false;
     const char* p = data + c.pos + 1;
     for (;;) {
-        while (p < end && kClasses.of[static_cast<unsigned char>(*p)] == LexerClasses::kWhite) p++;
+        while (p < end && kClasses.of[static_cast<unsigned char>(*p)] == Classes::kWhite) p++;
         if (p >= end) break;
         const unsigned char ch = static_cast<unsigned char>(*p);
         if (ch == ']') {
@@ -122,7 +108,7 @@ bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) 
         }
         PdfValue item;
         double number;
-        if (kClasses.of[ch] == LexerClasses::kNumber && p < shortEnd && ReadShortNumber(p, item, number)) {
+        if ((kClasses.of[ch] & (Classes::kDigit | Classes::kSign)) && p < shortEnd && ReadShortNumber(p, item, number)) {
             items.push_back(item);
             continue;
         }
@@ -216,154 +202,103 @@ ContentLexer::ContentLexer(std::string_view data)
     size_t at = data.size();
     while (at > 0 && Syntax::StartsNumber(static_cast<unsigned char>(data[at - 1]))) at--;
     numbersEnd_ = at > 0 ? at - 1 : 0;
+    while (at > 0 && Syntax::IsRegular(static_cast<unsigned char>(data[at - 1]))) at--;
+    fast_ = data.data() + (at > 0 ? at - 1 : 0);
+    slotsEnd_ = values_.data() + values_.size();
 }
 
+bool ContentLexer::Next(std::string_view& op) { return Scan(op); }
+
 bool ContentLexer::Next(std::string_view& op, std::vector<PdfValue>& operands) {
-    const bool more = Next(op);
+    const bool more = Scan(op);
     operands.assign(values_.data(), values_.data() + count_);
     return more;
 }
 
-// Twice the slots, at most kMaxOperands + 1.
-void ContentLexer::Grow() {
+// The slots are full (count_ of them): twice the slots, at most kMaxOperands + 1, or past
+// kMaxOperands only the newest operand kept, in the first.
+void ContentLexer::Overflow() {
+    if (count_ > kMaxOperands) {
+        values_[0] = values_[count_ - 1];
+        numbers_[0] = numbers_[count_ - 1];
+        count_ = 1;
+        numeric_ = numeric_ > 0 ? 1 : 0;
+        return;
+    }
     const size_t slots = values_.size() * 2 < kMaxOperands + 1 ? values_.size() * 2 : kMaxOperands + 1;
     values_.resize(slots);
     numbers_.resize(slots);
-}
-
-// After an operand went into the slot `count` - 1: when that was the last slot, more slots, or
-// past kMaxOperands only the newest operand kept, in the first.
-RAYOPDF_HOT_INLINE void ContentLexer::Added(PdfValue*& values, double*& numbers, size_t& slots, size_t& count,
-                                            size_t& numeric) {
-    if (RAYOPDF_UNLIKELY(count == slots)) {
-        if (slots > kMaxOperands) {
-            values[0] = values[count - 1];
-            numbers[0] = numbers[count - 1];
-            count = 1;
-            numeric = numeric > 0 ? 1 : 0;
-        } else {
-            Grow();
-            values = values_.data();
-            numbers = numbers_.data();
-            slots = values_.size();
-        }
-    }
+    slotsEnd_ = values_.data() + values_.size();
 }
 
 // `value` as the next operand.
-RAYOPDF_HOT_INLINE void ContentLexer::Add(PdfValue*& values, double*& numbers, size_t& slots, size_t& count,
-                                          size_t& numeric, const PdfValue& value) {
+void ContentLexer::Push(const PdfValue& value) {
     const double number = value.Number();
-    values[count] = value;
-    numbers[count] = number;
-    count++;
-    numeric = value.IsNumber() && std::isfinite(number) ? numeric + 1 : 0;
-    Added(values, numbers, slots, count, numeric);
+    values_[count_] = value;
+    numbers_[count_] = number;
+    count_++;
+    numeric_ = value.IsNumber() && std::isfinite(number) ? numeric_ + 1 : 0;
+    if (count_ == values_.size()) Overflow();
 }
 
-bool ContentLexer::Next(std::string_view& op) {
-    inlineData_ = {};
-    arena_.Reset();
-    // The cursor and the operand count in locals while reading; the members get them back before
-    // a call that reads them and at the end.
-    PdfValue* values = values_.data();
-    double* numbers = numbers_.data();
-    size_t slots = values_.size();
-    const char* const data = cursor_.data.data();
-    const char* const end = data + cursor_.data.size();
-    const char* const numbersEnd = data + numbersEnd_;
-    const char* p = data + cursor_.pos;
-    size_t count = 0;
-    size_t numeric = 0;
-    for (;;) {
-        while (p < end && kClasses.of[static_cast<unsigned char>(*p)] == LexerClasses::kWhite) p++;
-        if (p >= end) break;
-        const unsigned char ch = static_cast<unsigned char>(*p);
-        const uint8_t kind = kClasses.of[ch];
-        if (!(kind & kNotRegular)) {
-            if (kind == LexerClasses::kNumber) {
-                if (RAYOPDF_LIKELY(p < numbersEnd)) {
-                    if (ReadShortNumber(p, values[count], numbers[count])) {
-                        count++;
-                        numeric++;
-                        Added(values, numbers, slots, count, numeric);
-                        continue;
-                    }
-                } else {
-                    Cursor c{cursor_.data, static_cast<size_t>(p - data)};
-                    PdfValue value;
-                    if (Syntax::ReadSimpleNumber(c, value)) {
-                        Add(values, numbers, slots, count, numeric, value);
-                        p = data + c.pos;
-                        continue;
-                    }
-                }
-            }
-            const char* const start = p;
-            while (p < end && !(kClasses.of[static_cast<unsigned char>(*p)] & kNotRegular)) p++;
-            const std::string_view token(start, static_cast<size_t>(p - start));
-            // The operands among the tokens: true, false, null and the numbers left above; the
-            // first byte tells which one a token can be.
-            switch (ch) {
-            case 't':
-            case 'f':
-                if (token == "true" || token == "false") {
-                    PdfValue value;
-                    value.type = PdfValue::Type::Bool;
-                    value.boolean = ch == 't';
-                    Add(values, numbers, slots, count, numeric, value);
-                    continue;
-                }
-                break;
-            case 'n':
-                if (token == "null") {
-                    Add(values, numbers, slots, count, numeric, PdfValue());
-                    continue;
-                }
-                break;
-            default:
-                if (Syntax::StartsNumber(ch)) {
-                    PdfValue value;
-                    if (Syntax::ParseNumber(token, value)) {
-                        Add(values, numbers, slots, count, numeric, value);
-                        continue;
-                    }
-                }
-                break;
-            }
-            cursor_.pos = static_cast<size_t>(p - data);
-            count_ = count;
-            numeric_ = numeric;
-            op = token;
-            if (token == "BI") ReadInlineImage();
-            return true;
-        }
-        if (ch == '%') {  // a comment, rare in content streams
-            cursor_.pos = static_cast<size_t>(p - data);
-            Syntax::SkipSpace(cursor_);
-            p = data + cursor_.pos;
-            continue;
-        }
-        if (ch == '/' || ch == '(' || ch == '<' || ch == '[') {
-            const size_t start = static_cast<size_t>(p - data);
-            cursor_.pos = start;
-            PdfValue value;
-            if (ReadValue(cursor_, numbersEnd_, builder_, value)) {
-                Add(values, numbers, slots, count, numeric, value);
-            } else {
-                if (cursor_.pos == start) cursor_.pos++;
-                count = 0;
-                numeric = 0;
-            }
-            p = data + cursor_.pos;
-            continue;
-        }
-        p++;  // a stray ')', ']', '>', '{' or '}'
+// At a delimiter: a comment, a name, a string, an array or a dictionary (an operand), or a stray
+// ')', ']', '>', '{' or '}'.
+void ContentLexer::Delimiter() {
+    const unsigned char ch = cursor_.Peek();
+    if (ch == '%') {  // a comment, rare in content streams
+        Syntax::SkipSpace(cursor_);
+        return;
     }
-    cursor_.pos = static_cast<size_t>(p - data);
-    count_ = count;
-    numeric_ = numeric;
-    return false;
+    if (ch == '/' || ch == '(' || ch == '<' || ch == '[') {
+        const size_t start = cursor_.pos;
+        PdfValue value;
+        if (ReadValue(cursor_, numbersEnd_, builder_, value)) {
+            Push(value);
+        } else {
+            if (cursor_.pos == start) cursor_.pos++;
+            count_ = 0;
+            numeric_ = 0;
+        }
+        return;
+    }
+    cursor_.pos++;
+}
+
+// The regular token [start, end) that starts with 't', 'f', 'n', a digit, a sign or a point:
+// true, false, null or a number becomes the next operand; anything else is the operator `op`.
+bool ContentLexer::Token(const char* start, const char* end, std::string_view& op) {
+    const std::string_view token(start, static_cast<size_t>(end - start));
+    cursor_.pos = static_cast<size_t>(end - cursor_.data.data());
+    const unsigned char ch = static_cast<unsigned char>(*start);
+    switch (ch) {
+    case 't':
+    case 'f':
+        if (token == "true" || token == "false") {
+            PdfValue value;
+            value.type = PdfValue::Type::Bool;
+            value.boolean = ch == 't';
+            Push(value);
+            return false;
+        }
+        break;
+    case 'n':
+        if (token == "null") {
+            Push(PdfValue());
+            return false;
+        }
+        break;
+    default:
+        if (Syntax::StartsNumber(ch)) {
+            PdfValue value;
+            if (Syntax::ParseNumber(token, value)) {
+                Push(value);
+                return false;
+            }
+        }
+        break;
+    }
+    op = token;
+    return true;
 }
 
 void ContentLexer::ReadInlineImage() {

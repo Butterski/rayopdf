@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <unordered_set>
 
 namespace RayoPdf::Layout {
@@ -365,7 +366,8 @@ private:
     void EndMarked();
     uint8_t MarkStream();
     void Paint(bool fill, bool stroke);
-    void PathPoint(double x, double y, bool curve);
+    template <int kCount>
+    RAYOPDF_HOT_INLINE void PathPoints(const double* xy, bool curve);
     void AddPiece(double x0, double y0, double x1, double y1, bool rect);
     void ReadLinks(int index);
     void NextLine(double tx, double ty) {
@@ -470,24 +472,67 @@ void Interpreter::Run(int index, bool withLinks) {
 
 void Interpreter::RunStream(std::string_view content, const PdfValue& resources, int depth) {
     ContentLexer lexer(content);
-    std::string_view op;
     const size_t stackBase = stack_.size();
     bool error = false;
-    size_t next = lexer.Offset();
-    while (lexer.Next(op)) {
+    size_t next = lexer.Offset();  // where the operator being read starts
+    lexer.Run([&](std::string_view op) RAYOPDF_HOT_LAMBDA {
         // The lexer's offsets only grow and stay within the content: no substr checks.
-        const size_t offset = lexer.Offset();
-        opSource_ = std::string_view(content.data() + next, offset - next);
-        next = offset;
-        if (++operators_ > kMaxOperatorsPerPage) {
+        const size_t start = next;
+        next = lexer.Offset();
+        if (RAYOPDF_UNLIKELY(++operators_ > kMaxOperatorsPerPage)) {
             budgetHit_ = true;
-            break;
+            return false;
         }
+        // The path operators, most of a drawing's, here; the others by Execute.
         const Op code = OpOf(op);
-        if (code == Op::Unknown) continue;
-        if (!Execute(code, lexer, resources, depth)) error = true;
-        if (budgetHit_) break;
-    }
+        const double* n;
+        switch (code) {
+        case Op::Unknown:
+            return true;
+        case Op::m:
+            if (!(n = lexer.Numbers(2))) break;
+            startX_ = curX_ = n[0];
+            startY_ = curY_ = n[1];
+            pathSubpaths_++;
+            if (!pathEmpty_) pathIsRect_ = false;
+            PathPoints<1>(n, false);
+            return true;
+        case Op::l:
+            if (!(n = lexer.Numbers(2)) || pathEmpty_) break;
+            AddPiece(curX_, curY_, n[0], n[1], false);
+            curX_ = n[0];
+            curY_ = n[1];
+            PathPoints<1>(n, false);
+            if (pathSegments_ < 60000) pathSegments_++;
+            return true;
+        case Op::c:
+            if (!(n = lexer.Numbers(6)) || pathEmpty_) break;
+            PathPoints<3>(n, true);
+            curX_ = n[4];
+            curY_ = n[5];
+            if (pathSegments_ < 60000) pathSegments_++;
+            return true;
+        case Op::v:
+        case Op::y:
+            if (!(n = lexer.Numbers(4)) || pathEmpty_) break;
+            PathPoints<2>(n, true);
+            curX_ = n[2];
+            curY_ = n[3];
+            if (pathSegments_ < 60000) pathSegments_++;
+            return true;
+        case Op::h:
+            if (!pathEmpty_ && (curX_ != startX_ || curY_ != startY_)) AddPiece(curX_, curY_, startX_, startY_, false);
+            curX_ = startX_;
+            curY_ = startY_;
+            return true;
+        default:
+            if (code == Op::BI) opSource_ = std::string_view(content.data() + start, next - start);
+            if (!Execute(code, lexer, resources, depth)) error = true;
+            return !budgetHit_;
+        }
+        error = true;  // a path operator without its operands, or with no current point
+        return true;
+    });
     // A stream restores the state stack it started with (forms run inside q/Q, §8.10.1).
     while (stack_.size() > stackBase) {
         gs_ = stack_.back();
@@ -633,10 +678,8 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
     case Op::re: {
         if (!Numbers(lexer, 4, n)) return false;
         const bool wasEmpty = pathEmpty_;
-        PathPoint(n[0], n[1], false);
-        PathPoint(n[0] + n[2], n[1] + n[3], false);
-        PathPoint(n[0] + n[2], n[1], false);
-        PathPoint(n[0], n[1] + n[3], false);
+        const double corners[8] = {n[0], n[1], n[0] + n[2], n[1] + n[3], n[0] + n[2], n[1], n[0], n[1] + n[3]};
+        PathPoints<4>(corners, false);
         // Four segments of one subpath; an axis-aligned rectangle when the CTM keeps axes.
         pathSegments_ = static_cast<uint16_t>(pathSegments_ + 4 < 60000 ? pathSegments_ + 4 : 60000);
         pathSubpaths_++;
@@ -648,48 +691,6 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
         curY_ = startY_ = n[1];
         return true;
     }
-    case Op::m:
-        if (!Numbers(lexer, 2, n)) return false;
-        startX_ = curX_ = n[0];
-        startY_ = curY_ = n[1];
-        pathSubpaths_++;
-        if (!pathEmpty_) pathIsRect_ = false;
-        PathPoint(n[0], n[1], false);
-        return true;
-    case Op::l:
-        if (!Numbers(lexer, 2, n)) return false;
-        if (pathEmpty_) return false;
-        AddPiece(curX_, curY_, n[0], n[1], false);
-        curX_ = n[0];
-        curY_ = n[1];
-        PathPoint(n[0], n[1], false);
-        if (pathSegments_ < 60000) pathSegments_++;
-        return true;
-    case Op::c:
-        if (!Numbers(lexer, 6, n)) return false;
-        if (pathEmpty_) return false;
-        PathPoint(n[0], n[1], true);
-        PathPoint(n[2], n[3], true);
-        PathPoint(n[4], n[5], true);
-        curX_ = n[4];
-        curY_ = n[5];
-        if (pathSegments_ < 60000) pathSegments_++;
-        return true;
-    case Op::v:
-    case Op::y:
-        if (!Numbers(lexer, 4, n)) return false;
-        if (pathEmpty_) return false;
-        PathPoint(n[0], n[1], true);
-        PathPoint(n[2], n[3], true);
-        curX_ = n[2];
-        curY_ = n[3];
-        if (pathSegments_ < 60000) pathSegments_++;
-        return true;
-    case Op::h:
-        if (!pathEmpty_ && (curX_ != startX_ || curY_ != startY_)) AddPiece(curX_, curY_, startX_, startY_, false);
-        curX_ = startX_;
-        curY_ = startY_;
-        return true;
     case Op::S: Paint(false, true); return true;
     case Op::s: Paint(false, true); return true;
     case Op::f:
@@ -725,10 +726,9 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
     case Op::EMC:
         EndMarked();
         return true;
-    case Op::Unknown:
+    default:  // Op::Unknown and the path operators RunStream runs
         return true;
     }
-    return true;
 }
 
 void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect) {
@@ -743,22 +743,31 @@ void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect
     pieces_.push_back(PathPiece{ax < bx ? ax : bx, ay < by ? ay : by, ax > bx ? ax : bx, ay > by ? ay : by, rect});
 }
 
-// The path's box holds finite device points only, so its bounds grow by plain comparisons, the
-// values Fmin and Fmax give without a NaN.
-void Interpreter::PathPoint(double x, double y, bool curve) {
-    const Matrix& m = gs_.ctm;
-    const double dx = x * m.a + y * m.c + m.e;
-    const double dy = x * m.b + y * m.d + m.f;
-    if (!std::isfinite(dx) || !std::isfinite(dy)) return;
-    if (pathEmpty_) {
-        pathBox_ = Box{dx, dy, dx, dy};
-        pathEmpty_ = false;
-    } else {
-        pathBox_.x0 = pathBox_.x0 < dx ? pathBox_.x0 : dx;
-        pathBox_.y0 = pathBox_.y0 < dy ? pathBox_.y0 : dy;
-        pathBox_.x1 = pathBox_.x1 > dx ? pathBox_.x1 : dx;
-        pathBox_.y1 = pathBox_.y1 > dy ? pathBox_.y1 : dy;
+// The `kCount` points (x, y) of `xy` added to the path's box in device space. The box holds finite
+// points only, so its bounds grow by plain comparisons, the values Fmin and Fmax give without a
+// NaN; an empty path's box starts at infinities, which the first point replaces whole. The CTM and
+// the box stay in locals for the points of one operator.
+template <int kCount>
+RAYOPDF_HOT_INLINE void Interpreter::PathPoints(const double* xy, bool curve) {
+    constexpr double kInfinity = std::numeric_limits<double>::infinity();
+    const Matrix m = gs_.ctm;
+    Box box = pathEmpty_ ? Box{kInfinity, kInfinity, -kInfinity, -kInfinity} : pathBox_;
+    bool any = false;
+    for (int i = 0; i < kCount; ++i) {
+        const double x = xy[2 * i], y = xy[2 * i + 1];
+        const double dx = x * m.a + y * m.c + m.e;
+        const double dy = x * m.b + y * m.d + m.f;
+        // Both finite: x - x is 0 for a finite x and NaN for an infinity or NaN.
+        if (!((dx - dx) + (dy - dy) == 0)) continue;
+        box.x0 = box.x0 < dx ? box.x0 : dx;
+        box.y0 = box.y0 < dy ? box.y0 : dy;
+        box.x1 = box.x1 > dx ? box.x1 : dx;
+        box.y1 = box.y1 > dy ? box.y1 : dy;
+        any = true;
     }
+    if (!any) return;
+    pathBox_ = box;
+    pathEmpty_ = false;
     if (curve) pathCurved_ = true;
 }
 
