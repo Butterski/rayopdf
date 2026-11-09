@@ -89,8 +89,7 @@ RAYOPDF_HOT_INLINE size_t ValuePlusExtra(uint32_t entry, uint64_t bits) {
 // a code is complete wherever it has codes longer than the root (BuildTable refuses an incomplete
 // one but for a single code of one bit), so every prefix with a subtable leads to at least two
 // codes: at most 286 / 2 literal/length and 30 / 2 distance subtables. Smaller tables than for
-// every symbol a subtable: 26 KB instead of 43 KB of stack touched by a fresh process's first
-// dynamic block.
+// every symbol a subtable: 26 KB instead of 43 KB (DynamicTables).
 constexpr unsigned kLitLenRoot = 11;
 constexpr unsigned kDistRoot = 8;
 constexpr unsigned kPrecodeRoot = 7;
@@ -207,10 +206,11 @@ RAYOPDF_HOT_INLINE void ForUsedSymbols(const uint8_t* lengths, unsigned count, U
 }
 
 // The decode table of the canonical code with `lengths` (0 for an unused symbol, at most 15),
-// as zlib builds it: false for an over-subscribed code, and for an incomplete one unless it has a
-// single code of one bit or, where `allowEmpty`, no code at all. `incompleteAllowed` false refuses
-// every incomplete code (the code length code). False also when the subtables would pass
-// `tableSize` entries (which the bound above rules out).
+// as zlib builds it: the number of entries it takes (the root and its subtables), or 0 for an
+// over-subscribed code, and for an incomplete one unless it has a single code of one bit or, where
+// `allowEmpty`, no code at all. `incompleteAllowed` false refuses every incomplete code (the code
+// length code). 0 also when the subtables would pass `tableSize` entries (which the bound above
+// rules out).
 //
 // A complete code is filled in canonical order (by length, then symbol), `code` running through
 // the codes bit-reversed (an index). The codes of one length up to the root go into the first
@@ -218,8 +218,8 @@ RAYOPDF_HOT_INLINE void ForUsedSymbols(const uint8_t* lengths, unsigned count, U
 // written once and the copies go 16 bytes at a time. The longer codes follow, those under one root
 // prefix one after another, each prefix's subtable after the last one's.
 template <typename EntryOf>
-bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
-                bool incompleteAllowed, bool allowEmpty, const EntryOf& entryOf) {
+size_t BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
+                  bool incompleteAllowed, bool allowEmpty, const EntryOf& entryOf) {
     unsigned counts[16] = {};
     ForUsedSymbols(lengths, count, [&](unsigned symbol) { counts[lengths[symbol]]++; });
     counts[0] = 0;
@@ -228,20 +228,20 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
     for (unsigned bits = 1; bits <= 15; bits++) {
         left <<= 1;
         left -= static_cast<int>(counts[bits]);
-        if (left < 0) return false;
+        if (left < 0) return 0;
         codes += counts[bits];
     }
     const size_t rootSize = size_t(1) << root;
     if (left > 0) {
         // A single code of one bit or none: its root entries and invalid ones between.
         const bool single = codes == 1 && counts[1] == 1;
-        if (!incompleteAllowed || !(single || (codes == 0 && allowEmpty))) return false;
+        if (!incompleteAllowed || !(single || (codes == 0 && allowEmpty))) return 0;
         for (size_t index = 0; index < rootSize; index++) table[index] = Entry(0, 0, kInvalid, 1);
         for (unsigned symbol = 0; symbol < count; symbol++) {
             if (lengths[symbol] == 0) continue;
             for (size_t index = 0; index < rootSize; index += 2) table[index] = entryOf(symbol, 1);
         }
-        return true;
+        return rootSize;
     }
     // The symbols sorted by length, then symbol, the unused ones last (not read).
     unsigned offsets[16];
@@ -267,7 +267,7 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
             if (code == filled - 1) {
                 // The last code (all ones): the code ends here.
                 for (; filled < rootSize; filled <<= 1) DoubleTable(table, filled);
-                return true;
+                return rootSize;
             }
             // The next code: a bit-reversed increment.
             const unsigned bit = 1u << HighestBit(code ^ static_cast<unsigned>(filled - 1));
@@ -286,19 +286,19 @@ bool BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t*
         for (unsigned remaining = counts[length]; remaining > 0; remaining--) {
             if ((code & rootMask) != prefix) {
                 prefix = code & rootMask;
-                if (subNext + subSize > tableSize) return false;
+                if (subNext + subSize > tableSize) return 0;
                 table[prefix] = Entry(static_cast<uint32_t>(subNext), subBits, kSubtable, 0);  // takes no bits itself
                 sub = table + subNext;
                 subNext += subSize;
             }
             const uint32_t entry = entryOf(*nextSymbol++, length);
             for (size_t index = code >> root; index < subSize; index += size_t(1) << (length - root)) sub[index] = entry;
-            if (code == last) return true;
+            if (code == last) return subNext;
             const unsigned bit = 1u << HighestBit(code ^ last);
             code = (code & (bit - 1)) | bit;
         }
     }
-    return true;
+    return subNext;
 }
 
 inline uint64_t Load64(const uint8_t* at) {
@@ -394,13 +394,22 @@ bool ZlibHeader(const uint8_t* p) {
     return (p[0] & 15) == 8 && (p[0] >> 4) <= 7 && ((p[0] << 8) | p[1]) % 31 == 0;
 }
 
+// The decode tables of a dynamic block: the literal/length table, then the distance table right
+// after the entries the first one takes, so that a block's tables usually fill no more pages than
+// the root of 8 KB takes and one. Not on the stack: a frame of their 26 KB is probed page by page
+// (stack-clash protection), so a fresh process faulted all of it in on its first inflate.
+struct DynamicTables {
+    uint32_t entries[kLitLenTableSize + kDistTableSize];
+};
+
 // Every byte of the decoders' output buffer that is kept is written first: it grows without
 // zero-filling (Output).
 class Inflater {
 public:
-    // Decodes into `out` from its byte `at` on (`at` 0 when streaming).
-    Inflater(const uint8_t* data, size_t size, Output& out, size_t at, size_t maxOut)
-        : begin_(data), in_(data), end_(data + size), out_(out), at_(at), maxOut_(maxOut) {}
+    // Decodes into `out` from its byte `at` on (`at` 0 when streaming), building dynamic blocks'
+    // tables in `tables`, which nothing else uses while the inflater works.
+    Inflater(const uint8_t* data, size_t size, Output& out, size_t at, size_t maxOut, DynamicTables& tables)
+        : begin_(data), in_(data), end_(data + size), out_(out), at_(at), maxOut_(maxOut), dynamic_(tables.entries) {}
 
     // Inflates the whole input into the buffer: Length() bytes of it.
     Result Run() {
@@ -628,14 +637,14 @@ private:
         }
         if (!Within()) return Step::Truncated;
         if (lengths[256] == 0) return Step::Corrupt;
-        if (!BuildTable(lengths, litlenCount, kLitLenRoot, dynamicLitlen_, kLitLenTableSize, true, false,
-                        kLitLenEntries) ||
-            !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamicDistance_, kDistTableSize, true, true,
-                        kDistanceEntries)) {
+        const size_t litlenEntries = BuildTable(lengths, litlenCount, kLitLenRoot, dynamic_, kLitLenTableSize, true,
+                                                false, kLitLenEntries);
+        if (litlenEntries == 0 || !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamic_ + litlenEntries,
+                                              kDistTableSize, true, true, kDistanceEntries)) {
             return Step::Corrupt;
         }
-        litlen_ = dynamicLitlen_;
-        distance_ = dynamicDistance_;
+        litlen_ = dynamic_;
+        distance_ = dynamic_ + litlenEntries;
         return Step::Ok;
     }
 
@@ -860,8 +869,7 @@ private:
     size_t storedLeft_ = 0;
     const uint32_t* litlen_ = nullptr;
     const uint32_t* distance_ = nullptr;
-    uint32_t dynamicLitlen_[kLitLenTableSize];
-    uint32_t dynamicDistance_[kDistTableSize];
+    uint32_t* const dynamic_;  // DynamicTables::entries
 };
 
 // A buffer kept per thread for whole outputs up to this size, so that the common stream's output
@@ -900,7 +908,8 @@ Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
     limit = std::min(limit, (size_t(1) << 40));
     Output& buffer = PerThread<Output>();
-    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, 0, limit);
+    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, 0, limit,
+                      PerThread<DynamicTables>());
     const Result result = inflater.Run();
     out.assign(reinterpret_cast<const char*>(buffer.Data()), inflater.Length());
     if (buffer.Capacity() > kKeptBuffer) buffer.Release();
@@ -909,14 +918,18 @@ Result Inflate(std::string_view in, std::string& out, size_t limit) {
 
 Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length) {
     limit = std::min(limit, (size_t(1) << 40));
-    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, at, limit);
+    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, at, limit,
+                      PerThread<DynamicTables>());
     const Result result = inflater.Run();
     length = inflater.Length();
     return result;
 }
 
+// A stream keeps its inflater between pieces, while other inflates may run on its thread: tables
+// of its own.
 struct Stream::State {
     Output buffer;
+    std::unique_ptr<DynamicTables> tables;
     std::unique_ptr<Inflater> inflater;
 };
 
@@ -926,8 +939,9 @@ Stream::~Stream() = default;
 void Stream::Start(std::string_view in, size_t limit) {
     limit = std::min(limit, (size_t(1) << 40));
     if (!state_) state_ = std::make_unique<State>();
+    if (!state_->tables) state_->tables.reset(new DynamicTables);
     state_->inflater = std::make_unique<Inflater>(reinterpret_cast<const uint8_t*>(in.data()), in.size(),
-                                                  state_->buffer, 0, limit);
+                                                  state_->buffer, 0, limit, *state_->tables);
     state_->inflater->BeginStream(kPiece);
 }
 
