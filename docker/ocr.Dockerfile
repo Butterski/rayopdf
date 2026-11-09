@@ -11,7 +11,30 @@
 #   /opt/ocr/ort/linux/              ONNX Runtime 1.31.1 (MIT) minimal build, static, operators of
 #                                    the six PP-OCRv6 models only, no exceptions or RTTI
 #   /opt/ocr/models/<tier>/          PP-OCRv6 tiny/small/medium (Apache-2.0), docker/ocr_models.py
+#   /opt/ocr/models/scripts/<script>/ the script pack: PP-OCRv5 cyrillic, korean, arabic,
+#                                    devanagari, tamil and PP-OCRv3 kannada recognisers (Apache-2.0),
+#                                    ncnn only, half-precision weights
+#   /opt/ocr/models/orient/          PP-LCNet_x0_25_textline_ori (Apache-2.0), ncnn only
 #   /opt/ocr/versions.json           every pinned input and its SHA-256
+
+# ---- Kannada: PaddleOCR publishes its Kannada recogniser (PP-OCRv3) in Paddle format only ----
+FROM python:3.11-slim AS kannada
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1=14.2.0-19 && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir paddlepaddle==3.3.1 paddle2onnx==2.1.0
+RUN mkdir -p /opt/ka/model && cd /opt/ka/model && python3 - <<'EOF'
+import hashlib, urllib.request
+base = "https://huggingface.co/PaddlePaddle/ka_PP-OCRv3_mobile_rec/resolve/fd08732bad5fb532cf883cb42a75ed139a72ab18/"
+for name, digest in (("inference.json", "3be0576413bd881ed088dbaf7174c7a32fda9d000fa94cbf687727347fb123cc"),
+                     ("inference.pdiparams", "5abb4f1c00e5fab314b06d55f69b137ee79bef3f59b547166a48e93bd530ff12"),
+                     ("inference.yml", "948eb2cdc413b7754a3c41e1b4902fbab5478f0bb0f1b9d814f5b08c7bb51765")):
+    data = urllib.request.urlopen(base + name, timeout=300).read()
+    assert hashlib.sha256(data).hexdigest() == digest, name
+    open(name, "wb").write(data)
+EOF
+# docker/ocr_models.py checks the converted model's SHA-256.
+RUN paddle2onnx --model_dir /opt/ka/model --model_filename inference.json --params_filename inference.pdiparams \
+      --save_file /opt/ka/ka.onnx --opset_version 14 \
+ && cp /opt/ka/model/inference.yml /opt/ka/inference.yml && pip freeze > /opt/ka/pip-freeze.txt
 
 # ---- Models: download, check, convert (ncnn through pnnx, ORT format through onnxruntime) ----
 FROM python:3.11-slim AS models
@@ -26,7 +49,9 @@ zipfile.ZipFile(io.BytesIO(data)).extract("pnnx-20261020-linux/pnnx", "/opt")
 os.chmod("/opt/pnnx-20261020-linux/pnnx", 0o755)
 EOF
 COPY ocr_models.py /opt/ocr/ocr_models.py
+COPY --from=kannada /opt/ka/ka.onnx /opt/ka/inference.yml /opt/ka/pip-freeze.txt /opt/ka/
 RUN python3 /opt/ocr/ocr_models.py --out /opt/ocr/models --pnnx /opt/pnnx-20261020-linux/pnnx --work /tmp/models \
+      --kannada /opt/ka \
  && rm -rf /tmp/models
 
 # ---- Sources ----
@@ -47,13 +72,13 @@ EOF
 RUN cd /src3 && rm ncnn.zip ort.tar.gz && mv onnxruntime-1.31.1 onnxruntime
 
 # ---- ncnn, Linux and Windows ----
-# Only the layers the six networks use are built (plus the ones ncnn's own layers create inside:
+# Only the layers the networks use are built (plus the ones ncnn's own layers create inside:
 # padding, packing, casts, activations, ...), which roughly halves the add-on executable.
 FROM sources AS ncnn
 COPY --from=models /opt/ocr/models /tmp/models
 RUN python3 - <<'EOF' > /tmp/ncnn-layers.cmake
 import glob, re
-used = {line.split()[0] for path in glob.glob("/tmp/models/*/*.ncnn.param")
+used = {line.split()[0] for path in glob.glob("/tmp/models/**/*.ncnn.param", recursive=True)
         for line in open(path).read().splitlines()[2:] if line.split()}
 used |= {"Padding", "Packing", "Cast", "Flatten", "Crop", "Slice", "Eltwise", "Split", "Concat", "Reshape",
          "Permute", "ReLU", "LeakyReLU", "Clip", "Sigmoid", "Mish", "HardSwish", "Swish", "TanH", "Softmax",
@@ -107,20 +132,24 @@ COPY --from=ort-linux /opt/ocr/ort /opt/ocr/ort
 # All public headers of the C API (onnxruntime_c_api.h includes its siblings).
 COPY --from=sources /src3/onnxruntime/include/onnxruntime/core/session/ /opt/ocr/ort/linux/include/
 COPY --from=models /opt/ocr/models /opt/ocr/models
+COPY --from=models /opt/ka/pip-freeze.txt /opt/ocr/kannada-converter-pip-freeze.txt
 RUN python3 - <<'EOF'
-import json, subprocess
+import glob, json, os, subprocess
 versions = {
     "ncnn": {"version": "20261020", "source": "ncnn-20261020-full-source.zip",
              "sha256": "699d9acc67489eee0993a551ca1ebc247bbf0f4e33babe1dec810e6a9a52b988"},
     "onnxruntime": {"version": "1.31.1", "source": "onnxruntime v1.31.1 tag archive",
                     "sha256": "92ffbf8b97872fd1e73c9eebdf3319d9a3b24919ae438d27db903b72ee08939e"},
     "pnnx": {"version": "20261020", "sha256": "6cfff631178e02e62542e72bf14e0045dfce62095bbc1f633176e9c0778ab8a6"},
+    "kannada converter": open("/opt/ocr/kannada-converter-pip-freeze.txt").read().split(),
     "tesseract": subprocess.run(["tesseract", "--version"], capture_output=True, text=True).stdout.splitlines()[0],
     "models": {},
 }
-for tier in ("tiny", "small", "medium"):
-    versions["models"][tier] = {line.split()[2]: line.split()[0]
-                                for line in open(f"/opt/ocr/models/{tier}/models.txt")}
+folders = ["tiny", "small", "medium", "orient"] + sorted(
+    os.path.relpath(p, "/opt/ocr/models") for p in glob.glob("/opt/ocr/models/scripts/*"))
+for folder in folders:
+    versions["models"][folder] = {line.split()[2]: line.split()[0]
+                                  for line in open(f"/opt/ocr/models/{folder}/models.txt")}
 json.dump(versions, open("/opt/ocr/versions.json", "w"), indent=1, sort_keys=True)
 EOF
 RUN chmod -R a+rX /opt/ocr

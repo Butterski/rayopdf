@@ -49,10 +49,10 @@ void Resize(const GrayView& source, uint32_t width, uint32_t height, ResizeScrat
 void SampleRect(const GrayView& source, const RotatedRect& rect, uint32_t width, uint32_t height,
                 std::vector<uint8_t>& out);
 
-// `pixels` (width x height) rotated a quarter turn counter-clockwise into `out`, which becomes
-// height x width: the image's top row becomes its left column, read bottom to top.
-void RotateCounterClockwise(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t height,
-                            std::vector<uint8_t>& out);
+// `source` turned `quarters` quarter turns clockwise (0 to 3) into `out` (replaced); a quarter or
+// three quarters make it height wide and width tall. Three quarters (one counter-clockwise): the
+// image's top row becomes its left column, read bottom to top.
+void Turn(const GrayView& source, uint32_t quarters, std::vector<uint8_t>& out);
 
 // Three planes (channel-major, as a 1x3xHxW tensor) of (gray / 255 - mean[c]) / deviation[c].
 void Normalise(const uint8_t* pixels, size_t count, const float mean[3], const float deviation[3],

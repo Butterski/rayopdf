@@ -42,7 +42,9 @@ public:
     // The first line of `tesseract --version`, or false when it cannot run.
     bool Probe(std::string& version);
     EngineStatus Page(const GrayView& page, uint32_t dpi, std::vector<OcrProtocol::Line>& lines) override;
-    EngineStatus Line(const GrayView& image, OcrProtocol::Line& line) override;
+    // Each image read alone (`--psm 7`).
+    EngineStatus Lines(const std::vector<GrayView>& images, std::vector<OcrProtocol::Line>& lines) override;
+    EngineStatus Line(const GrayView& image, OcrProtocol::Line& line);
 
 private:
     EngineStatus Run(const GrayView& image, uint32_t dpi, const char* psm, std::vector<OcrProtocol::Line>& lines);

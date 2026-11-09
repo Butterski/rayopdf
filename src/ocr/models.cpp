@@ -81,6 +81,17 @@ const char* ModelStatusText(ModelStatus status) {
     return "?";
 }
 
+bool ParseHex(std::string_view text, uint32_t& value) {
+    if (text.empty() || text.size() > 6) return false;
+    value = 0;
+    for (char c : text) {
+        const int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+        if (digit < 0) return false;
+        value = value * 16 + uint32_t(digit);
+    }
+    return value <= 0x10FFFF;
+}
+
 bool ParseDecimal(std::string_view text, float& value) {
     uint64_t whole = 0, fraction = 0, scale = 1;
     size_t i = 0;
@@ -152,9 +163,30 @@ bool ParseConfig(std::string_view text, ModelSet& set) {
             unclip = true;
         } else if (key == "rec_height") {
             if (value != "48") return false;
+        } else if (key == "script") {
+            if (value.empty() || value.size() > 32) return false;
+            for (char c : value) {
+                if (c < 'a' || c > 'z') return false;
+            }
+            set.script.assign(value);
+        } else if (key == "order") {
+            if (value != "logical" && value != "visual") return false;
+            set.visualOrder = value == "visual";
+        } else if (key == "letters") {
+            // "XXXX-YYYY": the code points of the script's letters, hexadecimal.
+            const size_t dash = value.find('-');
+            if (dash == std::string_view::npos || !ParseHex(value.substr(0, dash), set.lettersFirst) ||
+                !ParseHex(value.substr(dash + 1), set.lettersLast) || set.lettersFirst > set.lettersLast) {
+                return false;
+            }
+        } else if (key == "space_gap") {
+            if (!ParseDecimal(value, set.spaceGap) || set.spaceGap > 4) return false;
         }
     }
-    return thresh && box && unclip && !set.model.empty();
+    // The detection thresholds come all together (a tier) or not at all (a recogniser of the script
+    // pack, the orientation classifier).
+    set.detectConfig = thresh && box && unclip;
+    return (set.detectConfig || (!thresh && !box && !unclip)) && !set.model.empty();
 }
 
 ModelStatus LoadModelSet(const std::string& directory, ModelSet& set, std::string& detail) {

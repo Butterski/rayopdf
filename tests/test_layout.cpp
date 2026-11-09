@@ -1128,6 +1128,105 @@ void TestMarkers() {
     RAYOPDF_CHECK(ParseMarker("-.", value) == Marker::None, 429);
 }
 
+void TestQuotesTasksAndFormulas() {
+    // A paragraph inset by about two and a half em on both sides between body paragraphs: a quote
+    // set by indentation alone (LaTeX's quote environment).
+    const std::string body = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sig.";
+    std::vector<PageData> pages{NewPage(1)};
+    for (int i = 0; i < 3; ++i) AddText(pages[0], body, 72, 700 - 12.0f * i, 10);
+    AddText(pages[0], "The quoted words run on over two lines that are inset from both edges of the column", 96, 658, 10);
+    AddText(pages[0], "and end the quotation here.", 96, 646, 10);
+    for (int i = 0; i < 3; ++i) AddText(pages[0], body, 72, 622 - 12.0f * i, 10);
+    std::string md = Run(pages);
+    Show("indented quote", md);
+    RAYOPDF_CHECK(Contains(md, "\n\n> The quoted words run on over two lines") && Contains(md, "quotation here.\n\nalpha"), 737);
+    // LaTeX's third itemize level "∗", and task lists drawn as "⊠" (done) and "□" (open).
+    std::vector<PageData> lists{NewPage(1)};
+    float x = AddText(lists[0], "\xE2\x80\xA2", 72, 700, 10);
+    AddText(lists[0], "Fruit", x + 4, 700, 10);
+    x = AddText(lists[0], "\xE2\x80\x93", 90, 688, 10);
+    AddText(lists[0], "Apples", x + 4, 688, 10);
+    x = AddText(lists[0], "\xE2\x88\x97", 108, 676, 10);
+    AddText(lists[0], "Granny Smith", x + 4, 676, 10);
+    x = AddText(lists[0], "\xE2\x8A\xA0", 72, 650, 10);
+    AddText(lists[0], "Write the draft", x + 4, 650, 10);
+    x = AddText(lists[0], "\xE2\x96\xA1", 72, 638, 10);
+    AddText(lists[0], "Review the draft", x + 4, 638, 10);
+    md = Run(lists);
+    Show("bullets and boxes", md);
+    RAYOPDF_CHECK(Contains(md, "    - Granny Smith") && Contains(md, "- [x] Write the draft\n- [ ] Review the draft"), 738);
+    // A display formula in pieces (a limit above, one below) is one paragraph.
+    std::vector<PageData> formula{NewPage(1)};
+    AddText(formula[0], "The integral of the square function over the unit interval follows here:", 72, 700, 10);
+    AddText(formula[0], "1", 300, 670, 7);
+    AddText(formula[0], "\xE2\x88\xAB \xF0\x9D\x91\xA5 \xF0\x9D\x91\x91\xF0\x9D\x91\xA5 = \xF0\x9D\x91\xA6", 290, 660, 10);
+    AddText(formula[0], "0", 300, 652, 7);
+    AddText(formula[0], "The sum of the first natural numbers comes next in the same way below.", 72, 620, 10);
+    md = Run(formula);
+    Show("formula pieces", md);
+    const size_t integral = md.find("\xE2\x88\xAB");
+    const size_t from = md.rfind("\n\n", integral), to = md.find("\n\n", integral);
+    RAYOPDF_CHECK(integral != std::string::npos && from != std::string::npos && to != std::string::npos &&
+                      md.compare(from, to - from, "\n\n1 \xE2\x88\xAB \xF0\x9D\x91\xA5 \xF0\x9D\x91\x91\xF0\x9D\x91\xA5 = "
+                                                  "\xF0\x9D\x91\xA6 0") == 0,
+                  739);
+}
+
+void TestShadingMathAndGutters() {
+    // Lines shaded one by one in bands of one width, in a proportional font: a code listing.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "The listing below prints a greeting when it runs.", 54, 720, 11);
+    AddText(pages[0], "package main", 62, 700, 9.5f);
+    AddText(pages[0], "func main() {", 62, 687, 9.5f);
+    AddText(pages[0], "}", 62, 674, 9.5f);
+    for (const float y : {700.0f, 687.0f, 674.0f}) pages[0].shapes.push_back(Box(54, y - 4, 541, y + 9.5f, ShapeKind::Rect, true));
+    AddText(pages[0], "Text after the listing ends the example.", 54, 650, 11);
+    std::string md = Run(pages);
+    Show("shaded listing", md);
+    RAYOPDF_CHECK(Contains(md, "```\npackage main\nfunc main() {\n}\n```"), 740);
+    // Text that goes on in lowercase heads nothing, however large; italic letters of a product
+    // ("4ac") and of an ordinal ("n-th") are math, not emphasis; a bold letter beside math is no
+    // strong emphasis.
+    std::vector<PageData> math{NewPage(1)};
+    AddText(math[0], "Body text of the page runs long enough here to set the body size of it.", 72, 700, 10);
+    AddText(math[0], "and so on", 72, 670, 14);
+    float x = AddText(math[0], "The discriminant is b squared minus 4", 72, 640, 10);
+    x = AddText(math[0], "ac", x, 640, 10, kGlyphItalic);
+    x = AddText(math[0], ", for the ", x, 640, 10);
+    x = AddText(math[0], "n", x, 640, 10, kGlyphItalic);
+    x = AddText(math[0], "-th root. The field ", x, 640, 10);
+    x = AddText(math[0], "E", x, 640, 10, kGlyphBold);
+    AddText(math[0], " = \xF0\x9D\x9C\x8C holds.", x, 640, 10);
+    md = Run(math);
+    Show("lowercase and math styles", md);
+    RAYOPDF_CHECK(!Contains(md, "# and so on") && Contains(md, "and so on"), 741);
+    RAYOPDF_CHECK(Contains(md, "minus 4ac, for the n-th root. The field E = "), 742);
+    // A column's first quote mark hanging into the gutter: the gutter still splits the line.
+    PageData columns = NewPage(1);
+    const char* left[] = {"left one alpha beta gamma delt", "left two alpha beta gamma and.", "left three alpha beta gamma de",
+                          "left four alpha beta gamma del"};
+    for (int i = 0; i < 4; ++i) {
+        const float y = 700 - 12.0f * i;
+        AddText(columns, left[i], 150, y, 10);
+        if (i == 1) {
+            // The left text ends at 300, the mark hangs at 304, the right text starts at 314.
+            AddText(columns, "\xE2\x80\x9C", 304, y, 10);
+            AddText(columns, "Would it be of use now said", 314, y, 10);
+        } else {
+            AddText(columns, "right column words go here ok", 314, y, 10);
+        }
+    }
+    BuildLines(columns);
+    bool split = false, joined = false;
+    std::string text;
+    for (const Line& line : columns.lines) {
+        LineText(columns, line, text);
+        split = split || (text.compare(0, 3, "\xE2\x80\x9C") == 0 && Contains(text, "Would"));
+        joined = joined || (Contains(text, "and.") && Contains(text, "Would"));
+    }
+    RAYOPDF_CHECK(split && !joined, 743);
+}
+
 } // namespace
 
 int main() {
@@ -1179,6 +1278,8 @@ int main() {
     TestInlineStyles();
     TestAlertAndListings();
     TestLinksMathAndNumbering();
+    TestQuotesTasksAndFormulas();
+    TestShadingMathAndGutters();
     TestTitleBlockAndRtlStop();
     TestMarkers();
     TestMonospaceDocument();

@@ -19,11 +19,17 @@ extern const char* const kRuntimeVersion;  // the pinned version docker/ocr.Dock
 extern const char* const kRuntimeFiles[];
 extern const size_t kRuntimeFileCount;
 
-// Which of the tier's networks a runtime loads: both, or the recogniser alone (a first pass detects).
-enum class Networks : uint8_t { DetectAndRecognize, RecognizeOnly };
+// Which of a folder's networks a runtime loads: the detector and the recogniser (a tier), the
+// recogniser alone (a first pass, a recogniser of the script pack), or the orientation classifier
+// (cls.*).
+enum class Networks : uint8_t { DetectAndRecognize, RecognizeOnly, Classify };
 
-// The runtime with the tier's networks loaded, or null with `detail` saying why. A runtime without
-// the detector fails Detect.
+// The runtime with the folder's networks loaded, or null with `detail` saying why. A runtime without
+// the detector fails Detect; only one loaded for it classifies.
 std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, std::string& detail);
+
+// Whether this runtime can read `set`: its manifest lists the runtime's file for that network
+// (the script pack and the classifier come for ncnn only).
+bool RuntimeReads(const ModelSet& set, Networks networks);
 
 } // namespace RayoPdf::Ocr

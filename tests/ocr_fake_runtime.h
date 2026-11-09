@@ -6,7 +6,7 @@
 // the first normalised plane). Recognize: every 8 input columns are one timestep; the darkest of
 // its rows (mean darkness d over the 8 columns) gives the class: blank below 0.55 (white, and the
 // mid-gray padding), class 1 up to 0.7, class 2 up to 0.85, class 3 above, each with probability
-// 0.9 and the rest spread evenly.
+// 0.9 and the rest spread evenly. Classify: see below.
 #pragma once
 
 #include "ocr/engine.h"
@@ -54,6 +54,21 @@ public:
             if (cls >= classes) cls = classes - 1;
             probs[size_t(t) * classes + cls] = 0.9f;
         }
+        return RuntimeStatus::Ok;
+    }
+
+    // Classify: the probability of 180 degrees is the share of the input's darkness (first plane,
+    // ImageNet-normalised) in its right half.
+    RuntimeStatus Classify(const float* planes, std::vector<float>& probs) override {
+        double left = 0, right = 0;
+        for (uint32_t y = 0; y < kClsHeight; ++y) {
+            for (uint32_t x = 0; x < kClsWidth; ++x) {
+                const double dark = 1.0 - (planes[size_t(y) * kClsWidth + x] * 0.229 + 0.485);
+                (x < kClsWidth / 2 ? left : right) += dark > 0 ? dark : 0;
+            }
+        }
+        const float p = left + right > 0 ? float(right / (left + right)) : 0.0f;
+        probs.assign({1.0f - p, p});
         return RuntimeStatus::Ok;
     }
 

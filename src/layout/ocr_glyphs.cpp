@@ -37,6 +37,14 @@ constexpr uint16_t kGlyphMinWholeConf = 8000;     // ... when every code of the 
 constexpr uint32_t kWholeMinShapes = 4;           // a whole font is replaced from this many shapes read
 constexpr uint32_t kScriptMinLetters = 5;         // the one-script check from this many letters
 constexpr float kWordGapEm = 0.3f;                 // a glyph this close to a letter forms a word with it
+// Words of complex-script fonts (RecogniseWords).
+constexpr float kWordJoinEm = 0.25f;               // a glyph starting this close after the last joins its word
+constexpr float kWordSpaceEm = 0.6f;               // between two words of a line
+constexpr uint32_t kMaxWordGlyphs = 64;
+constexpr uint32_t kMaxWords = 8192;               // distinct words drawn for one font
+constexpr uint32_t kWordsPerLine = 12;
+constexpr uint32_t kWordsPerRetry = 4;
+constexpr float kWordRetryGap = 2.5f;
 
 // A font judged as a whole (FontStats) when it has at least this much text on the pages.
 constexpr uint32_t kWholeMinGlyphs = 4;
@@ -63,6 +71,7 @@ bool Vowel(uint32_t cp) {
 // The script of a letter (0 Latin, 1 Greek, 2 Cyrillic, 3 CJK, 4 any other), -1 for anything else
 // (digits, punctuation, symbols).
 constexpr int kScriptCount = 5;
+constexpr int kComplexScript = 4;
 int ScriptOf(uint32_t cp) {
     if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0xC0 && cp <= 0x24F && cp != 0xD7 && cp != 0xF7) ||
         (cp >= 0x1E00 && cp <= 0x1EFF))
@@ -107,6 +116,17 @@ struct FontWork {
     std::vector<Use> uses;
     std::vector<uint32_t> candidatePages;       // candidate pages (indices into pages) it shows on
     bool plausible = false;                     // RecogniseFont: the recognition looks right
+    // RecogniseFont: the line's scale (pixels per em) and baseline (pixels from the top), and the
+    // letters read with the script most of them have (ScriptOf).
+    double scale = 0, baseline = 0;
+    uint32_t letters = 0;
+    int script = -1;
+    // Words (RecogniseWords): the text of each distinct word, and per use its word (UINT32_MAX:
+    // none) and whether it is the word's first glyph, which takes the word's text.
+    bool words = false;
+    std::vector<std::string> wordTexts;
+    std::vector<uint32_t> useWord;
+    std::vector<uint8_t> useHead;
 };
 
 // Whether a glyph's text is weak: unmapped, guessed or holding junk.
@@ -304,6 +324,7 @@ OcrStatus RecogniseFont(const Document& doc, OcrSession& session, FontWork& work
     const double extent = std::max(top - bottom, kMinExtentEm);
     const double scale = double(kGlyphLineHeight - 2 * kLinePad) / extent;
     const double baseline = kLinePad + top * scale;
+    work.scale = scale, work.baseline = baseline;
     const uint32_t width = static_cast<uint32_t>(std::ceil(kCellEm * scale));
     const uint32_t gap = std::max<uint32_t>(kMinGap, static_cast<uint32_t>(std::ceil(kGapEm * scale)));
 
@@ -418,6 +439,8 @@ OcrStatus RecogniseFont(const Document& doc, OcrSession& session, FontWork& work
         letters += scripts[s];
         if (scripts[s] > dominant) dominant = scripts[s], dominantScript = s;
     }
+    work.letters = letters;
+    work.script = letters > 0 ? int(dominantScript) : -1;
     const uint16_t minConf = work.whole ? kGlyphMinWholeConf : kGlyphMinFontConf;
     work.plausible = cellCount > 0 && confSum >= uint64_t(minConf) * cellCount &&
                      read * 4 >= 3 * uint32_t(inked.size()) && (!work.whole || read >= kWholeMinShapes) &&
@@ -447,12 +470,264 @@ OcrStatus RecogniseFont(const Document& doc, OcrSession& session, FontWork& work
     return OcrStatus::Ok;
 }
 
+// The glyphs of a font of a complex script drawn as the words they form on the pages, and the
+// words recognised (a legacy-encoded Devanagari, Kannada or Tamil font draws a syllable from
+// several glyphs, a vowel sign before its consonant: a glyph alone reads as nothing or as another
+// letter). A word is a run of the font's uses in content order, on one baseline, each glyph the
+// one after the last on its page and starting at most kWordJoinEm after its end. Each distinct
+// word (its glyphs and their offsets) is drawn once at the font's line scale, glyphs at their
+// places, and words go side by side kWordSpaceEm apart into lines; a line whose text splits at its
+// spaces into as many words gives each word its text, the others' words go again, fewer to a line
+// and further apart, and the rest are recognised alone.
+// Plausible as RecogniseFont's: confident, most words read, one script.
+OcrStatus RecogniseWords(const Document& doc, OcrSession& session, const std::vector<PageData>& pages, FontWork& work,
+                         GlyphRecoveryStats& stats) {
+    work.words = true;
+    work.plausible = false;
+    work.wordTexts.clear();
+    work.useWord.assign(work.uses.size(), UINT32_MAX);
+    work.useHead.assign(work.uses.size(), 0);
+    if (!(work.scale > 0)) return OcrStatus::Ok;
+    const auto glyphOf = [&](const Use& use) -> const Glyph& { return pages[use.page].glyphs[use.glyph]; };
+
+    // Words, and the distinct ones (their slots and offsets in 1/16 em as the key).
+    struct Word {
+        uint32_t first = 0, count = 0;  // uses [first, first + count) of the first occurrence
+    };
+    std::vector<Word> distinct;
+    std::unordered_map<std::string, uint32_t> known;
+    std::string key;
+    for (uint32_t i = 0; i < work.uses.size();) {
+        uint32_t end = i + 1;
+        const Glyph& head = glyphOf(work.uses[i]);
+        if (!(head.size >= 1.0f)) {
+            i = end;
+            continue;
+        }
+        for (; end < work.uses.size() && end - i < kMaxWordGlyphs; ++end) {
+            const Use& prev = work.uses[end - 1];
+            const Use& next = work.uses[end];
+            const Glyph& p = glyphOf(prev);
+            const Glyph& n = glyphOf(next);
+            if (next.page != prev.page || next.glyph != prev.glyph + 1 || n.dir != head.dir ||
+                std::fabs(n.v - head.v) > 0.3f * head.size || n.u0 - p.u1 > kWordJoinEm * head.size ||
+                n.u0 < head.u0 - head.size) {
+                break;
+            }
+        }
+        key.clear();
+        for (uint32_t k = i; k < end; ++k) {
+            const Glyph& g = glyphOf(work.uses[k]);
+            const int32_t dx = int32_t(std::lround((g.u0 - head.u0) / head.size * 16));
+            const int32_t dy = int32_t(std::lround((g.v - head.v) / head.size * 16));
+            key.append(reinterpret_cast<const char*>(&work.uses[k].slot), sizeof(uint32_t));
+            key.append(reinterpret_cast<const char*>(&dx), sizeof dx);
+            key.append(reinterpret_cast<const char*>(&dy), sizeof dy);
+        }
+        auto it = known.find(key);
+        if (it == known.end()) {
+            if (distinct.size() >= kMaxWords) break;
+            it = known.emplace(key, static_cast<uint32_t>(distinct.size())).first;
+            distinct.push_back({i, end - i});
+        }
+        for (uint32_t k = i; k < end; ++k) work.useWord[k] = it->second;
+        work.useHead[i] = 1;
+        i = end;
+    }
+    if (distinct.empty()) return OcrStatus::Ok;
+    work.wordTexts.assign(distinct.size(), std::string());
+
+    // Each distinct word drawn: its glyphs at their offsets, the darker pixel winning.
+    GlyphPainter painter(doc, *work.font, *work.glyphs);
+    Cell cell;
+    struct Image {
+        std::string pixels;  // kGlyphLineHeight rows
+        uint32_t width = 0;
+    };
+    std::vector<Image> images(distinct.size());
+    const double scale = work.scale;
+    for (size_t d = 0; d < distinct.size(); ++d) {
+        const Word& word = distinct[d];
+        const Glyph& head = glyphOf(work.uses[word.first]);
+        double right = 0;
+        for (uint32_t k = word.first; k < word.first + word.count; ++k) {
+            const Glyph& g = glyphOf(work.uses[k]);
+            right = std::max(right, double(g.u1 - head.u0) / head.size);
+        }
+        // The word's em extent with an em either side for marks that overhang their origins.
+        const uint32_t width = static_cast<uint32_t>(std::ceil((right + 2.0) * scale));
+        if (width > kMaxLineWidth) continue;
+        std::string canvas(size_t(width) * kGlyphLineHeight, static_cast<char>(0xFF));
+        for (uint32_t k = word.first; k < word.first + word.count; ++k) {
+            const Glyph& g = glyphOf(work.uses[k]);
+            const double x = (1.0 + double(g.u0 - head.u0) / head.size) * scale;
+            const double y = work.baseline - double(g.v - head.v) / head.size * scale;
+            if (painter.Draw(work.glyphIds[work.uses[k].slot], scale, x, y, width, kGlyphLineHeight, cell) !=
+                GlyphPainter::Drawn::Ink)
+                continue;
+            for (size_t p = 0; p < canvas.size(); ++p) canvas[p] = std::min(canvas[p], cell.pixels[p], [](char a, char b) {
+                return static_cast<uint8_t>(a) < static_cast<uint8_t>(b);
+            });
+        }
+        // Cut to the columns with ink.
+        uint32_t x0 = width, x1 = 0;
+        for (uint32_t y = 0; y < kGlyphLineHeight; ++y)
+            for (uint32_t x = 0; x < width; ++x)
+                if (static_cast<uint8_t>(canvas[size_t(y) * width + x]) <= kInk) x0 = std::min(x0, x), x1 = std::max(x1, x + 1);
+        if (x1 <= x0) continue;
+        Image& image = images[d];
+        image.width = x1 - x0;
+        image.pixels.resize(size_t(image.width) * kGlyphLineHeight);
+        for (uint32_t y = 0; y < kGlyphLineHeight; ++y)
+            std::copy_n(canvas.data() + size_t(y) * width + x0, image.width, &image.pixels[size_t(y) * image.width]);
+    }
+
+    // Lines of kWordsPerLine words kWordSpaceEm apart; the words of lines that did not split into
+    // as many go again kWordsPerRetry to a line, kWordRetryGap times as far apart; the rest alone.
+    std::vector<std::vector<uint32_t>> lines;
+    std::vector<uint8_t> read(distinct.size(), 0);
+    uint64_t confSum = 0, confCount = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+        const float space = pass == 1 ? kWordRetryGap * kWordSpaceEm : kWordSpaceEm;
+        const uint32_t gap = std::max<uint32_t>(kMinGap, static_cast<uint32_t>(std::ceil(space * scale)));
+        const size_t perLine = pass == 0 ? kWordsPerLine : pass == 1 ? kWordsPerRetry : 1;
+        lines.clear();
+        std::vector<uint32_t> line;
+        uint32_t x = kLineMargin;
+        for (uint32_t d = 0; d < distinct.size(); ++d) {
+            if (images[d].width == 0 || read[d]) continue;
+            const uint32_t w = images[d].width;
+            if (!line.empty() && (line.size() >= perLine || x + w + kLineMargin > kMaxLineWidth)) {
+                lines.push_back(line);
+                line.clear();
+                x = kLineMargin;
+            }
+            line.push_back(d);
+            x += w + gap;
+        }
+        if (!line.empty()) lines.push_back(line);
+        if (lines.empty()) break;
+        OcrProtocol::Request request;
+        request.op = OcrProtocol::Op::Lines;
+        std::string pixels;
+        for (const std::vector<uint32_t>& l : lines) {
+            uint32_t lineWidth = 2 * kLineMargin;
+            for (uint32_t d : l) lineWidth += images[d].width + gap;
+            lineWidth -= gap;
+            const size_t at = pixels.size();
+            pixels.append(size_t(lineWidth) * kGlyphLineHeight, static_cast<char>(0xFF));
+            uint32_t x0 = kLineMargin;
+            for (uint32_t d : l) {
+                for (uint32_t y = 0; y < kGlyphLineHeight; ++y)
+                    std::copy_n(images[d].pixels.data() + size_t(y) * images[d].width, images[d].width,
+                                &pixels[at + size_t(y) * lineWidth + x0]);
+                x0 += images[d].width + gap;
+            }
+            request.lines.push_back({lineWidth, kGlyphLineHeight});
+        }
+        OcrProtocol::Response response;
+        stats.requests++;
+        const OcrStatus status = session.Recognize(request, pixels, response);
+        if (status != OcrStatus::Ok) return status;
+        if (response.lines.size() != lines.size()) return OcrStatus::Ok;  // nothing usable
+        for (size_t l = 0; l < lines.size(); ++l) {
+            const OcrProtocol::Line& answer = response.lines[l];
+            std::vector<std::string> tokens;
+            std::string token;
+            for (char c : answer.text + " ") {
+                if (c != ' ') {
+                    token.push_back(c);
+                } else if (!token.empty()) {
+                    tokens.push_back(token);
+                    token.clear();
+                }
+            }
+            if (answer.conf < kGlyphMinConf) continue;
+            // A word alone takes the whole reading, whatever spaces it holds.
+            if (lines[l].size() == 1 && !tokens.empty()) {
+                std::string joined;
+                for (const std::string& t : tokens) joined += t;
+                tokens.assign(1, joined);
+            }
+            if (tokens.size() != lines[l].size()) continue;
+            for (size_t k = 0; k < tokens.size(); ++k) {
+                const uint32_t d = lines[l][k];
+                if (tokens[k].size() < 256) work.wordTexts[d] = tokens[k];
+                read[d] = 1;
+                confSum += answer.conf;
+                confCount++;
+            }
+        }
+    }
+    // Plausible: confident, most words read, the letters of one script.
+    uint32_t wordsRead = 0, drawn = 0, scripts[kScriptCount] = {};
+    for (size_t d = 0; d < distinct.size(); ++d) {
+        if (images[d].width == 0) continue;
+        ++drawn;
+        if (work.wordTexts[d].empty()) continue;
+        ++wordsRead;
+        size_t at = 0, length = 0;
+        uint32_t cp = 0;
+        while (Utf8::Decode(work.wordTexts[d], at, cp, length)) {
+            at += length;
+            const int script = ScriptOf(cp);
+            if (script >= 0) scripts[script]++;
+        }
+    }
+    uint32_t letters = 0, dominant = 0;
+    for (uint32_t s = 0; s < kScriptCount; ++s) letters += scripts[s], dominant = std::max(dominant, scripts[s]);
+    work.plausible = confCount > 0 && confSum >= uint64_t(kGlyphMinFontConf) * confCount && wordsRead * 4 >= 3 * drawn &&
+                     letters >= kScriptMinLetters && dominant * 10 >= 9 * letters;
+    stats.glyphsSent += drawn;
+    stats.glyphsRead += wordsRead;
+    return OcrStatus::Ok;
+}
+
 // The new texts of `work` written into the glyphs of its uses on `page` (only weak ones unless
 // the font is whole); `saved` gets each changed glyph as it was. The unreliable glyphs given text.
 uint32_t Apply(const FontWork& work, uint32_t page, std::vector<PageData>& pages,
                std::vector<std::pair<uint32_t, Glyph>>* saved, uint64_t& replaced) {
     PageData& data = pages[page];
     uint32_t unreliable = 0;
+    if (work.words) {
+        // A word's first glyph takes its text and spans the word; its other glyphs give none.
+        for (size_t i = 0; i < work.uses.size(); ++i) {
+            const Use& use = work.uses[i];
+            if (use.page != page || work.useWord[i] == UINT32_MAX || !work.useHead[i]) continue;
+            const std::string& text = work.wordTexts[work.useWord[i]];
+            if (text.empty()) continue;
+            if (data.text.size() + text.size() >= (size_t(1) << 30)) break;
+            size_t end = i + 1;
+            while (end < work.uses.size() && work.useWord[end] == work.useWord[i] && !work.useHead[end] &&
+                   work.uses[end].page == page)
+                ++end;
+            bool live = true;
+            for (size_t k = i; k < end; ++k) {
+                const Glyph& g = data.glyphs[work.uses[k].glyph];
+                live = live && !(g.flags & kGlyphDropped) && g.text == work.uses[k].text;
+            }
+            if (!live) continue;  // covered by ActualText or dropped
+            Glyph& head = data.glyphs[use.glyph];
+            for (size_t k = i; k < end; ++k) {
+                Glyph& g = data.glyphs[work.uses[k].glyph];
+                if (saved) saved->push_back({work.uses[k].glyph, g});
+                if (g.flags & (kGlyphUnmapped | kGlyphGuessed)) unreliable++;
+                g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphUnmapped | kGlyphGuessed | kGlyphSpace));
+                if (k == i) continue;
+                head.x0 = std::min(head.x0, g.x0), head.y0 = std::min(head.y0, g.y0);
+                head.x1 = std::max(head.x1, g.x1), head.y1 = std::max(head.y1, g.y1);
+                head.u0 = std::min(head.u0, g.u0), head.u1 = std::max(head.u1, g.u1);
+                head.vb = std::min(head.vb, g.vb), head.vt = std::max(head.vt, g.vt);
+                g.textLength = 0;
+                replaced++;
+            }
+            head.text = static_cast<uint32_t>(data.text.size());
+            head.textLength = static_cast<uint16_t>(text.size());
+            data.text += text;
+            replaced++;
+        }
+        return unreliable;
+    }
     for (const Use& use : work.uses) {
         if (use.page != page || (!work.whole && !use.weak)) continue;
         const std::string& text = work.texts[use.slot];
@@ -632,10 +907,15 @@ OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, O
         FontWork& w = *wp;
         if (w.glyphIds.empty() || w.candidatePages.empty()) continue;
         stats.fontsExamined++;
-        const OcrStatus status = RecogniseFont(document, session, w, stats);
+        OcrStatus status = RecogniseFont(document, session, w, stats);
         if (status != OcrStatus::Ok) return status;
+        // A whole font read as a complex script (Indic, Arabic, ...): its words, not its glyphs.
+        if (w.whole && w.script == kComplexScript && w.letters >= kScriptMinLetters) {
+            status = RecogniseWords(document, session, pages, w, stats);
+            if (status != OcrStatus::Ok) return status;
+        }
         if (!w.plausible) continue;
-        DropIsolatedLetters(pages, w);
+        if (!w.words) DropIsolatedLetters(pages, w);
 
         // Acceptance on the candidate pages: fewer failed checks, or as many with less junk or
         // fewer unreliable codes and no new check.

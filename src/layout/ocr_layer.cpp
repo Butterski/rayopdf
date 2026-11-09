@@ -40,6 +40,98 @@ uint32_t Decode(const std::string& text, size_t at, size_t& length) {
     return cp;
 }
 
+// A point of the frame of baseline direction `dir` (interpreter.cpp ToFrame) back on the upright
+// page.
+void FromFrame(uint8_t dir, float u, float v, float& x, float& y) {
+    switch (dir) {
+    case 1: x = -v, y = u; break;
+    case 2: x = -u, y = -v; break;
+    case 3: x = v, y = -u; break;
+    default: x = u, y = v; break;
+    }
+}
+
+void ToFrame(uint8_t dir, float x, float y, float& u, float& v) {
+    switch (dir) {
+    case 1: u = y, v = -x; break;
+    case 2: u = -x, v = -y; break;
+    case 3: u = -y, v = x; break;
+    default: u = x, v = y; break;
+    }
+}
+
+// A rectangle of the frame of `dir` as the rectangle it covers on the upright page.
+void RectFromFrame(uint8_t dir, float& x0, float& y0, float& x1, float& y1) {
+    float ax, ay, bx, by;
+    FromFrame(dir, x0, y0, ax, ay);
+    FromFrame(dir, x1, y1, bx, by);
+    x0 = std::min(ax, bx), x1 = std::max(ax, bx), y0 = std::min(ay, by), y1 = std::max(ay, by);
+}
+
+// `canvas` turned so that text of baseline direction `dir` stands upright on it: its pixels turned
+// `dir` quarters clockwise, its region that of the frame of `dir` (the glyphs it gives are in that
+// frame: u along x, v along y).
+void TurnCanvas(const OcrCanvas& canvas, uint8_t dir, OcrCanvas& out) {
+    const uint32_t w = canvas.width, h = canvas.height;
+    const double step = 1.0 / canvas.scale;
+    // The region the pixel grid covers, x0 .. x0 + w/scale by y1 - h/scale .. y1, into the frame.
+    float fx0 = canvas.x0, fy0 = float(canvas.y1 - h * step), fx1 = float(canvas.x0 + w * step), fy1 = canvas.y1;
+    float ax, ay, bx, by;
+    ToFrame(dir, fx0, fy0, ax, ay);
+    ToFrame(dir, fx1, fy1, bx, by);
+    out.x0 = std::min(ax, bx), out.x1 = std::max(ax, bx), out.y0 = std::min(ay, by), out.y1 = std::max(ay, by);
+    out.scale = canvas.scale;
+    const bool quarter = (dir & 1) != 0;
+    out.width = quarter ? h : w;
+    out.height = quarter ? w : h;
+    out.pixels.resize(canvas.pixels.size());
+    const char* in = canvas.pixels.data();
+    char* to = &out.pixels[0];
+    for (uint32_t r = 0; r < out.height; ++r) {
+        for (uint32_t c = 0; c < out.width; ++c) {
+            // Turned clockwise once: out(r, c) = in(h-1-c, r); twice: in(h-1-r, w-1-c); three
+            // times: in(c, w-1-r).
+            size_t from;
+            if (dir == 1) {
+                from = size_t(h - 1 - c) * w + r;
+            } else if (dir == 2) {
+                from = size_t(h - 1 - r) * w + (w - 1 - c);
+            } else {
+                from = size_t(c) * w + (w - 1 - r);
+            }
+            to[size_t(r) * out.width + c] = in[from];
+        }
+    }
+}
+
+// A line of baseline direction `dir` in the pixels of a canvas w x h, as a left-to-right line in
+// the pixels of that canvas turned by TurnCanvas.
+OcrProtocol::Line TurnLine(const OcrProtocol::Line& line, uint8_t dir, int32_t w, int32_t h) {
+    OcrProtocol::Line out = line;
+    out.dir = 0;
+    // Turned clockwise once: (x, y) -> (h - y, x); twice: (w - x, h - y); three times: (y, w - x).
+    const auto point = [&](int32_t x, int32_t y, int32_t& tx, int32_t& ty) {
+        if (dir == 1) {
+            tx = h - y, ty = x;
+        } else if (dir == 2) {
+            tx = w - x, ty = h - y;
+        } else {
+            tx = y, ty = w - x;
+        }
+    };
+    int32_t ax, ay, bx, by;
+    point(line.x0, line.y0, ax, ay);
+    point(line.x1, line.y1, bx, by);
+    out.x0 = std::min(ax, bx), out.x1 = std::max(ax, bx), out.y0 = std::min(ay, by), out.y1 = std::max(ay, by);
+    // Spans run along y for directions 1 and 3, along x for 2; the turned line's along x.
+    for (OcrProtocol::CharSpan& span : out.chars) {
+        const int32_t a = dir == 1 ? h - span.x0 : dir == 2 ? w - span.x0 : span.x0;
+        const int32_t b = dir == 1 ? h - span.x1 : dir == 2 ? w - span.x1 : span.x1;
+        span.x0 = std::min(a, b), span.x1 = std::max(a, b);
+    }
+    return out;
+}
+
 } // namespace
 
 bool StartCanvas(float x0, float y0, float x1, float y1, float scale, OcrCanvas& canvas) {
@@ -135,7 +227,12 @@ uint32_t ComposeImages(const Document& document, const PageData& page, const std
     return drawn;
 }
 
-uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& response, PageData& page) {
+namespace {
+
+// The text layer of lines that run left to right on `canvas` (AddOcrGlyphs); `dir` is the
+// baseline direction they have on the page, whose frame `canvas` shows when it is not 0.
+uint32_t AddUprightGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& response, uint8_t dir,
+                          PageData& page) {
     std::vector<uint32_t> order;
     order.reserve(response.lines.size());
     for (uint32_t i = 0; i < response.lines.size(); ++i) order.push_back(i);
@@ -198,10 +295,61 @@ uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& resp
             }
             g.font = kOcrFont;
             page.text.append(bytes.data(), bytes.size());
+            if (dir != 0) {
+                // The glyph's box (u0..u1, vb..vt) is in the frame; on the page it is the box it covers.
+                RectFromFrame(dir, g.x0, g.y0, g.x1, g.y1);
+                g.dir = dir;
+            }
             page.glyphs.push_back(g);
         }
     }
-    AddOcrRulings(canvas, style, page);
+    if (dir == 0) {
+        AddOcrRulings(canvas, style, page);
+        return added;
+    }
+    // Rules found on the turned canvas, back on the page (the page's own rulings set aside so that
+    // they are compared in the same frame: none of them lie in it).
+    std::vector<Ruling> rulings;
+    std::vector<Shape> shapes;
+    rulings.swap(page.rulings);
+    shapes.swap(page.shapes);
+    bool over = false;
+    for (const Ruling& r : rulings) {
+        float x0 = canvas.x0, y0 = canvas.y0, x1 = canvas.x1, y1 = canvas.y1;
+        RectFromFrame(dir, x0, y0, x1, y1);
+        over = over || (r.x1 > x0 && r.x0 < x1 && r.y1 > y0 && r.y0 < y1);
+    }
+    if (!over) AddOcrRulings(canvas, style, page);
+    for (Ruling& r : page.rulings) RectFromFrame(dir, r.x0, r.y0, r.x1, r.y1);
+    for (Shape& s : page.shapes) RectFromFrame(dir, s.x0, s.y0, s.x1, s.y1);
+    rulings.insert(rulings.end(), page.rulings.begin(), page.rulings.end());
+    shapes.insert(shapes.end(), page.shapes.begin(), page.shapes.end());
+    page.rulings.swap(rulings);
+    page.shapes.swap(shapes);
+    return added;
+}
+
+} // namespace
+
+uint32_t AddOcrGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& response, PageData& page) {
+    bool turned = false;
+    for (const OcrProtocol::Line& line : response.lines) turned = turned || line.dir != 0;
+    if (!turned) return AddUprightGlyphs(canvas, response, 0, page);
+    // Lines of each baseline direction on a canvas turned so that they run left to right.
+    uint32_t added = 0;
+    OcrProtocol::Response part;
+    OcrCanvas turnedCanvas;
+    const int32_t w = static_cast<int32_t>(canvas.width), h = static_cast<int32_t>(canvas.height);
+    for (uint8_t dir = 0; dir < 4; ++dir) {
+        part.lines.clear();
+        for (const OcrProtocol::Line& line : response.lines) {
+            if (line.dir == dir) part.lines.push_back(dir ? TurnLine(line, dir, w, h) : line);
+        }
+        if (part.lines.empty()) continue;
+        if (dir) TurnCanvas(canvas, dir, turnedCanvas);
+        added += AddUprightGlyphs(dir ? turnedCanvas : canvas, part, dir, page);
+    }
+    return added;
     return added;
 }
 

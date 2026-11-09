@@ -45,6 +45,8 @@ struct Info {
     bool pageRef = false;    // a lone page number sits far to its right (a table-of-contents entry)
     bool verbatimMarker = false;  // a list marker Markdown cannot write ("(2)", "(iv)"): kept as text
     bool numbering = false;  // only a section or item number ("1.5.", "IV", "(3)")
+    bool hollowBox = false;  // its marker is "□": an open task box beside done boxes (⊠, ☒)
+    float stripX0 = 0, stripX1 = 0;  // a band of shading behind the line alone (stripX1 > stripX0)
     bool topBand = false;    // the page's topmost line, alone in its top 6 %
     float gapBelow = 0;      // a top-band line's gap to the next line below
     uint32_t note = 0;       // the number of the footnote the line starts or continues
@@ -179,15 +181,30 @@ int SectionDepth(std::string_view t) {
                : 0;
 }
 
-// Text that titles nothing: display math (a math symbol from Mathematical Alphanumeric Symbols,
-// Mathematical Operators, Supplemental Mathematical Operators or "=", and fewer than three letters
-// of ordinary text, or more math symbols than letters: "𝑇(𝑛) = 𝑂(𝑛 log 𝑛)"; or four words and more
-// of a letter or so each: a matrix row "h1 hn · · · h2") or fewer than two letters at all ("20%↑",
-// "1.7X"). "Heading with ∇ ⋅ E" has words around its math and stays a possible heading. Letters
-// are ASCII ones and every code point from U+00C0 up outside the symbol, punctuation, private-use
-// and math blocks.
+// Whether the text holds a math symbol: a Mathematical Alphanumeric Symbol, a Mathematical
+// Operator, a Supplemental Mathematical Operator or "=".
+bool MathSymbol(std::string_view t) {
+    for (size_t at = 0; at < t.size(); ++at) {
+        const unsigned char c = static_cast<unsigned char>(t[at]);
+        if (c == '=') return true;
+        if (c != 0xE2 && c != 0xF0) continue;
+        const uint32_t cp = FirstCodePoint(t.substr(at));
+        if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || (cp >= 0x2A00 && cp <= 0x2AFF))
+            return true;
+    }
+    return false;
+}
+
+// Text that titles nothing: display math (an equation, with "=" and fewer than two words of three
+// letters; a math symbol from Mathematical Alphanumeric Symbols, Mathematical Operators or
+// Supplemental Mathematical Operators and fewer than three letters of ordinary text, or more math
+// symbols than letters: "𝑇(𝑛) ≤ 𝑂(𝑛 log 𝑛)"; or four words and more of a letter or so each: a
+// matrix row "h1 hn · · · h2") or fewer than two letters at all ("20%↑", "1.7X"). "Heading with
+// ∇ ⋅ E = ρ" has words around its math and stays a possible heading. Letters are ASCII ones and
+// every code point from U+00C0 up outside the symbol, punctuation, private-use and math blocks.
 bool NoTitle(std::string_view t) {
-    uint32_t math = 0, letters = 0, words = 0;
+    uint32_t math = 0, letters = 0, words = 0, longWords = 0, run = 0;
+    bool equation = false;
     size_t at = 0;
     bool space = true;
     while (at < t.size()) {
@@ -196,6 +213,8 @@ bool NoTitle(std::string_view t) {
         at += c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
         if (space && cp != ' ') words++;
         space = cp == ' ';
+        equation = equation || cp == '=';
+        bool letter = false;
         if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || (cp >= 0x2A00 && cp <= 0x2AFF) ||
             cp == '=')
             math++;
@@ -203,9 +222,12 @@ bool NoTitle(std::string_view t) {
                  (cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x2000 && cp <= 0x2BFF) &&
                   !(cp >= 0x3000 && cp <= 0x303F) && !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0xFE00 && cp <= 0xFE0F) &&
                   !(cp >= 0xFF00 && cp <= 0xFF20) && cp != 0xFFFD))
-            letters++;
+            letters++, letter = true;
+        run = letter ? run + 1 : 0;
+        if (run == 3) longWords++;
     }
-    return letters < 2 || (math > 0 && letters < 3) || math > letters || (words >= 4 && 2 * letters < 3 * words);
+    return (equation && longWords < 2) || letters < 2 || (math > 0 && letters < 3) || math > letters ||
+           (words >= 4 && 2 * letters < 3 * words);
 }
 
 // Lowercase ASCII letters and digits plus every non-ASCII byte: the outline matching key.
@@ -228,13 +250,18 @@ void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
 struct Marks {
     std::vector<const Shape*> small;  // bullets and boxes
     std::vector<const Shape*> bars;   // thin vertical rules
+    std::vector<const Shape*> strips; // filled bands a line high: shading behind a line
 };
 
 void CollectMarks(const PageData& page, Marks& marks) {
     marks.small.clear();
     marks.bars.clear();
+    marks.strips.clear();
     for (const Shape& s : page.shapes) {
         const float w = s.x1 - s.x0, h = s.y1 - s.y0;
+        if (s.kind == ShapeKind::Rect && s.filled && !s.stroked && h >= 6 && h <= 40 && w >= 4 * h &&
+            marks.strips.size() < 1024)
+            marks.strips.push_back(&s);
         if (w > 0.3f && h > 0.3f && w <= 14 && h <= 14 && w <= 2.5f * h && h <= 2.5f * w) {
             if (marks.small.size() < 4096) marks.small.push_back(&s);
         } else if (w <= 6 && h >= 6 && h >= 3 * w && h <= 0.5f * page.height && s.kind != ShapeKind::Other) {
@@ -321,6 +348,7 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
         // second enumerate level, stays an ordered item like "1." and "a.".)
         info.verbatimMarker = !scratch.empty() && scratch[0] == '(' && (marker == Marker::Number || marker == Marker::Roman);
         info.task = marker == Marker::TaskOpen ? 1 : marker == Marker::TaskDone ? 2 : 0;
+        info.hollowBox = marker == Marker::Bullet && page.GlyphText(firstGlyph) == "\xE2\x96\xA1";  // □
         info.textU0 = skip < line.count ? page.glyphs[page.lineGlyphs[line.first + skip]].u0 : line.u1;
         // A task box right after a bullet: "• ☐ text".
         if (skip < line.count && marker == Marker::Bullet) {
@@ -409,6 +437,15 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
         if (distinct && bars < 4) barX[bars++] = s->x0;
     }
     info.quoteBars = static_cast<uint8_t>(rightRule ? 0 : bars);
+    // Shading behind the line alone: a band about the line's height, centred on it, reaching
+    // past both its ends (a listing's background, drawn line by line).
+    for (const Shape* s : marks.strips) {
+        const float h = s->y1 - s->y0, cy = (s->y0 + s->y1) / 2;
+        if (h > 2.2f * line.size || std::fabs(cy - (line.vb + line.vt) / 2) > 0.5f * line.size) continue;
+        if (s->x0 > line.u0 - 1 || s->x1 < line.u1 + 1) continue;
+        info.stripX0 = s->x0, info.stripX1 = s->x1;
+        break;
+    }
 }
 
 struct RawBlock {
@@ -456,6 +493,8 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     const bool centred = std::fabs((next.u0 + next.u1) - (last.u0 + last.u1)) <= 0.5f * em &&
                          std::fabs(next.u0 - last.u0) >= 0.8f * em;
     if (!centred) {
+        // A line set out to the left of the paragraph's lines ends it (the text after a quote).
+        if (b.count >= 2 && next.u0 < b.bodyU0 - 1.5f * em) return false;
         if (b.count >= 2) {
             // A first-line indent starts a paragraph.
             if (next.u0 > b.bodyU0 + 0.8f * em && std::fabs(last.u0 - b.bodyU0) < 0.5f * em) return false;
@@ -810,6 +849,25 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 top.gapBelow = below ? top.vb - below->vt : INFINITY;
             }
         }
+        // Lines shaded one by one with bands of one width, one under the next: a listing set in a
+        // proportional font (its shading is what marks it as code).
+        for (size_t i = pageFirst; i + 1 < infos.size(); ++i) {
+            Info& a = infos[i];
+            Info& b = infos[i + 1];
+            if (a.stripX1 <= a.stripX0 || b.stripX1 <= b.stripX0 || a.quoteBars || b.quoteBars) continue;
+            if (std::fabs(a.stripX0 - b.stripX0) > 1 || std::fabs(a.stripX1 - b.stripX1) > 1) continue;
+            a.mono = b.mono = 1;
+        }
+        // A "□" bullet in a list of done boxes ("⊠", LaTeX's task lists) is an open task box: one
+        // set on the left edge of a done box's marker within an em.
+        for (size_t i = pageFirst; i < infos.size(); ++i) {
+            if (!infos[i].hollowBox) continue;
+            for (size_t j = pageFirst; j < infos.size(); ++j)
+                if (infos[j].task == 2 && std::fabs(infos[j].markerU0 - infos[i].markerU0) <= infos[i].size) {
+                    infos[i].task = 1;
+                    break;
+                }
+        }
     }
 
     // Body size: the most common size by characters (algorithms §6.1), of prose lines: code blocks
@@ -914,6 +972,52 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         raws.push_back(b);
     }
 
+    // A display formula set in pieces (a fraction's numerator and denominator, an integral's
+    // limits, a matrix's entries each on a baseline of its own): single short lines of formula
+    // text, each within an em of the box of the pieces before it (beside or below them), with a
+    // math symbol among them, make one paragraph in reading order.
+    {
+        // 0: no piece, 1: a piece, 2: a piece with a math symbol; worked out once per block.
+        std::vector<uint8_t> pieceOf(raws.size(), 0);
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const RawBlock& b = raws[r];
+            const Info& in = infos[b.first];
+            if (b.count != 1 || b.note != 0 || b.mono || in.chars == 0 || in.chars > 40 || in.dir != 0 ||
+                in.listStart() || in.quoteBars != 0 || (in.flags & (kLineAnchor | kLineTable)))
+                continue;
+            LineText(pages[in.page], pages[in.page].lines[in.line], scratch);
+            if (NoTitle(scratch)) pieceOf[r] = MathSymbol(scratch) ? 2 : 1;
+        }
+        size_t kept = 0;
+        for (size_t r = 0; r < raws.size();) {
+            bool math = pieceOf[r] == 2;
+            size_t end = r + 1;
+            if (pieceOf[r] != 0) {
+                const Info& head = infos[raws[r].first];
+                float u0 = head.u0, u1 = head.u1, vb = head.vb, vt = head.vt;
+                while (end < raws.size() && end - r < 16 && pieceOf[end] != 0) {
+                    const Info& in = infos[raws[end].first];
+                    const float em = Fmax(head.size, in.size);
+                    if (in.page != head.page || in.vt < vb - em || in.vb > vt + em || in.u0 > u1 + 4 * em ||
+                        in.u1 < u0 - 4 * em)
+                        break;
+                    math = math || pieceOf[end] == 2;
+                    u0 = Fmin(u0, in.u0), u1 = Fmax(u1, in.u1), vb = Fmin(vb, in.vb), vt = Fmax(vt, in.vt);
+                    ++end;
+                }
+            }
+            raws[kept] = raws[r];
+            if (end > r + 1 && math) {
+                raws[kept].count = raws[end - 1].first + raws[end - 1].count - raws[r].first;
+                r = end;
+            } else {
+                ++r;
+            }
+            ++kept;
+        }
+        raws.resize(kept);
+    }
+
     // Outline titles (D5: outline > style > numbering).
     std::unordered_map<std::string, std::vector<uint32_t>> titles;
     std::vector<uint8_t> titleUsed(outline.size(), 0);
@@ -1013,9 +1117,22 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (k.kind != BlockKind::Heading && first.listStart()) k.kind = BlockKind::ListItem;
             continue;
         }
-        // Text rotated to read upwards (an arXiv stamp in the margin) or upside down heads nothing.
+        // Text rotated to read upwards (an arXiv stamp in the margin) or upside down heads nothing,
+        // nor does text that goes on a sentence in lowercase ("and", "yields", "with" between two
+        // formulas), unless its first word is a hyphenated or numbered term ("p-adic Bounds").
+        bool lowerLead = first.startsLower;
+        if (lowerLead) {
+            const PageData& page = pages[first.page];
+            const Line& l = page.lines[first.line];
+            for (uint32_t k = first.skip; k < l.count && k < first.skip + 24; ++k) {
+                const Glyph& g = page.glyphs[page.lineGlyphs[l.first + k]];
+                if (k > first.skip && (g.flags & kGlyphSpaceBefore)) break;
+                const std::string_view t = page.GlyphText(g);
+                if (!t.empty() && (t[0] == '-' || (t[0] >= '0' && t[0] <= '9'))) lowerLead = false;
+            }
+        }
         const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer && !first.pageRef &&
-                                first.dir != 1 && first.dir != 2;
+                                first.dir != 1 && first.dir != 2 && !lowerLead;
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
         // Captions are set apart like headings but title no section; display math set large (an
@@ -1057,7 +1174,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         // and not much larger) titles nothing.
         const bool runningHead = first.topBand && b.count == 1 && !(first.flags & kLineAllBold) &&
                                  size <= 1.2f * body && first.gapBelow >= 2 * body;
-        if (shortBlock && larger && !runningHead && !caption()) {
+        if (shortBlock && larger && !runningHead && last.lastCp != ',' && !caption()) {
             k.kind = BlockKind::Heading;
             k.styleKey = static_cast<int>(std::lround(size * 2)) * 2 + (b.bold ? 1 : 0);
             continue;
@@ -1169,6 +1286,125 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 kinds[r].kind = BlockKind::Paragraph;
             }
         }
+    }
+
+    // Block quotes set by indentation alone (LaTeX's quote and quotation, algorithms §6.5): a
+    // body-size paragraph inset by two em or more on both sides of the body paragraph nearest to
+    // it on its page, its lines (after the first) flush on one left edge. One line alone counts
+    // only when it is not centred (a display line, a short title). Captions and formulas are none.
+    // Inset by four em or more it is a quote in a quote.
+    std::vector<uint8_t> indentQuote(raws.size(), 0);
+    {
+        const auto bodyPara = [&](size_t q) {
+            const RawBlock& c = raws[q];
+            const Info& in = infos[c.first];
+            return kinds[q].kind == BlockKind::Paragraph && !c.mono && in.quoteBars == 0 &&
+                   in.dir == 0 && std::fabs(kinds[q].size - body) <= 0.1f * body && c.note == 0;
+        };
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const RawBlock& b = raws[r];
+            const Info& first = infos[b.first];
+            if (kinds[r].kind != BlockKind::Paragraph || b.mono || b.note != 0 || first.quoteBars != 0 ||
+                first.dir != 0 || (first.flags & (kLineTable | kLineInvisible | kLineAnchor)) ||
+                std::fabs(kinds[r].size - body) > 0.1f * body)
+                continue;
+            const float em = body;
+            float left = INFINITY, u1 = -INFINITY;
+            for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+                if (i > b.first || b.count == 1) left = Fmin(left, infos[i].u0);
+                u1 = Fmax(u1, infos[i].u1);
+            }
+            bool flush = first.u0 >= left - em && first.u0 <= left + 2 * em;  // a quote mark may hang
+            for (uint32_t i = b.first + 1; i < b.first + b.count && flush; ++i) flush = infos[i].u0 <= left + 0.5f * em;
+            if (!flush) continue;
+            // The frame: the body paragraph set farthest left among the 16 blocks on either side on
+            // its page that are left of it, in its column (a nested quote is inset from the text,
+            // not from the quote around it).
+            size_t frame = raws.size();
+            for (size_t d = 1; d <= 16; ++d) {
+                for (int side = 0; side < 2; ++side) {
+                    if (side == 0 && d > r) continue;
+                    const size_t q = side == 0 ? r - d : r + d;
+                    if (q >= raws.size() || infos[raws[q].first].page != first.page || !bodyPara(q)) continue;
+                    // Near it on the page: a frame far above is another text (a newspaper's lead
+                    // above its columns).
+                    const float top = infos[raws[q].first].vt, bottom = infos[raws[q].first + raws[q].count - 1].vb;
+                    const float candTop = first.vt, candBottom = infos[b.first + b.count - 1].vb;
+                    if (Fmax(bottom - candTop, candBottom - top) > 10 * em) continue;
+                    if (raws[q].bodyU0 <= left - 2 * em && raws[q].right > left && raws[q].bodyU0 < u1 &&
+                        (frame == raws.size() || raws[q].bodyU0 < raws[frame].bodyU0 - 0.5f * em))
+                        frame = q;
+                }
+            }
+            if (frame == raws.size()) continue;
+            // A one-line frame ends where it ends: the text's right edge then mirrors its left
+            // edge on the page.
+            const float frameLeft = raws[frame].bodyU0;
+            const float frameRight = raws[frame].count >= 2
+                                         ? raws[frame].right
+                                         : Fmax(raws[frame].right, pages[first.page].width - frameLeft);
+            if (u1 > frameRight - 1.5f * em) continue;
+            // Its insets: equal on both sides when its lines are justified (two or more lines,
+            // the last aside, end on one right edge), the right one no smaller than the left one
+            // when they are ragged (verse). A column of text beside a wider paragraph is no quote.
+            uint32_t flushRight = 0;
+            for (uint32_t i = b.first; i + 1 < b.first + b.count; ++i) flushRight += infos[i].u1 >= u1 - 1 ? 1 : 0;
+            const float leftInset = left - frameLeft, rightInset = frameRight - u1;
+            if (flushRight >= 2 ? std::fabs(leftInset - rightInset) > 1.5f * em : rightInset < leftInset - 1.5f * em)
+                continue;
+            // Lines centred one under the other, none flush with the next (a cover's lines, an
+            // affiliation), bold lines (a title), labels (a chart's) and table rows are none: a
+            // quote is prose that ends a sentence, forty characters at least over several lines.
+            uint32_t chars = 0;
+            bool centred = b.count >= 2, flushLeft = false;
+            for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+                chars += infos[i].chars;
+                centred = centred && std::fabs((infos[i].u0 + infos[i].u1) - (first.u0 + first.u1)) <= 2 * em;
+                if (i > b.first) flushLeft = flushLeft || std::fabs(infos[i].u0 - infos[i - 1].u0) <= 0.3f * em;
+            }
+            if ((centred && !flushLeft) || b.bold || (b.count >= 2 && chars < 40) ||
+                !infos[b.first + b.count - 1].endsTerminal)
+                continue;
+            // One line alone is a quote only as a sentence (a label, a formula piece or a slide's
+            // text line is set apart the same way), when it is not centred, and when it is next
+            // to a quote of more lines (below).
+            if (b.count == 1 && (!first.endsTerminal || first.chars < 20 ||
+                                 std::fabs((left - frameLeft) - (frameRight - u1)) <= 2 * em))
+                continue;
+            LineText(pages[first.page], pages[first.page].lines[first.line], line);
+            // Nor is an abstract or a keyword list ("Abstract. …", or under an "Abstract" heading)
+            // or a formula.
+            if (IsCaption(line) || NoTitle(line) || FrontMatter(line) || MathSymbol(line)) continue;
+            if (r > 0 && kinds[r - 1].kind == BlockKind::Heading) {
+                const Info& h = infos[raws[r - 1].first];
+                LineText(pages[h.page], pages[h.page].lines[h.line], line);
+                if (FrontMatter(line)) continue;
+            }
+            indentQuote[r] = static_cast<uint8_t>((left - frameLeft >= 4 * em ? 2 : 1) | (b.count == 1 ? 0x80 : 0));
+        }
+        // One-line quotes join a run of quotes next to them on their page, in either direction;
+        // two of them one after the other, flush on one left edge, make a run of their own.
+        const auto settled = [&](size_t q, size_t r) {
+            return indentQuote[q] != 0 && !(indentQuote[q] & 0x80) && infos[raws[q].first].page == infos[raws[r].first].page;
+        };
+        for (size_t r = 1; r < raws.size(); ++r) {
+            const Info& a = infos[raws[r - 1].first];
+            const Info& c = infos[raws[r].first];
+            if ((indentQuote[r - 1] & 0x80) && (indentQuote[r] & 0x80) && a.page == c.page &&
+                std::fabs(a.u0 - c.u0) <= 0.5f * body) {
+                indentQuote[r - 1] = static_cast<uint8_t>(indentQuote[r - 1] | 0x40);
+                indentQuote[r] = static_cast<uint8_t>(indentQuote[r] | 0x40);
+            }
+        }
+        for (uint8_t& q : indentQuote)
+            if ((q & 0xC0) == 0xC0) q = static_cast<uint8_t>(q & 0x3F);
+        for (size_t r = 1; r < raws.size(); ++r)
+            if ((indentQuote[r] & 0x80) && settled(r - 1, r)) indentQuote[r] = static_cast<uint8_t>(indentQuote[r] & 0x7F);
+        for (size_t r = raws.size(); r-- > 1;)
+            if ((indentQuote[r - 1] & 0x80) && settled(r, r - 1))
+                indentQuote[r - 1] = static_cast<uint8_t>(indentQuote[r - 1] & 0x7F);
+        for (uint8_t& q : indentQuote)
+            if (q & 0x80) q = 0;
     }
 
     // Heading levels (§6.1). Outline levels where the outline matched; a heading the outline
@@ -1376,6 +1612,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 itemPage = first.page;
                 itemDepth = block.depth;
             } else if (block.kind == BlockKind::Paragraph && itemDepth >= 0 && first.page == itemPage &&
+                       !(indentQuote[r] && b.count >= 2) &&
                        std::fabs(first.u0 - itemTextU0) <= 0.8f * em &&
                        std::fabs(first.u0 - itemTextU0) < std::fabs(first.u0 - itemMarkerU0) && !blocks.empty() &&
                        (blocks.back().kind == BlockKind::ListItem || blocks.back().listParagraph)) {
@@ -1385,6 +1622,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 markerStack.clear();
                 itemDepth = -1;
             }
+            if (!block.listParagraph && block.quote < indentQuote[r]) block.quote = indentQuote[r];
 
             // Continuation across columns and pages (§6.2): the previous paragraph ends without
             // terminal punctuation and this one starts in lowercase.

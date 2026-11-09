@@ -93,15 +93,20 @@ struct Request {
     std::vector<LineSize> lines;     // op lines: the line images, concatenated in the payload
 };
 
+// One character's extent along its line's baseline: x for lines of dir 0 and 2, y for dir 1 and 3
+// (pixels of the request's image, y down).
 struct CharSpan {
     int32_t x0 = 0, x1 = 0;
 };
 
 struct Line {
     int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    std::string text;               // UTF-8
+    std::string text;               // UTF-8, logical order
     uint16_t conf = 0;              // 0 to kConfScale
     std::vector<CharSpan> chars;    // one a code point of `text`
+    // The baseline direction of the text in the image (Layout::Glyph::dir): 0 left to right, 1
+    // bottom to top, 2 upside down (right to left), 3 top to bottom. Written only when not 0.
+    uint8_t dir = 0;
 };
 
 struct Response {

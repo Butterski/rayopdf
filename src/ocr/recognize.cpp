@@ -3,6 +3,7 @@
 
 #include "common/utf8.h"
 
+#include <algorithm>
 #include <cstddef>
 
 namespace RayoPdf::Ocr {
@@ -96,6 +97,39 @@ void InsertSpaces(const float* probs, uint32_t classes, uint32_t spaceClass, flo
         space.cls = spaceClass;
         space.firstStep = space.lastStep = at;
         space.prob = float(some);
+        space.inserted = true;
+        chars.insert(chars.begin() + std::ptrdiff_t(i), space);
+    }
+}
+
+void InsertInkSpaces(const uint8_t* line, uint32_t width, uint32_t height, uint32_t paddedWidth, uint32_t steps,
+                     uint32_t spaceClass, float minGap, std::vector<DecodedChar>& chars) {
+    if (chars.size() < 2 || width == 0 || height == 0 || steps == 0 || !(minGap > 0)) return;
+    uint8_t lo = 255, hi = 0;
+    for (size_t i = 0, n = size_t(width) * height; i < n; ++i) lo = std::min(lo, line[i]), hi = std::max(hi, line[i]);
+    const int ink = (int(lo) + int(hi)) / 2;
+    std::vector<uint8_t> inked(width, 0);
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* row = line + size_t(y) * width;
+        for (uint32_t x = 0; x < width; ++x) inked[x] |= row[x] < ink;
+    }
+    // The column at the middle of timestep `t`.
+    const auto column = [&](uint32_t t) { return uint32_t((double(t) + 0.5) * paddedWidth / steps); };
+    for (size_t i = chars.size() - 1; i > 0; --i) {
+        const DecodedChar& left = chars[i - 1];
+        const DecodedChar& right = chars[i];
+        if (left.cls == spaceClass || right.cls == spaceClass) continue;
+        const uint32_t from = column(left.lastStep), to = std::min(column(right.firstStep), width);
+        uint32_t run = 0, best = 0, bestEnd = 0;
+        for (uint32_t x = from; x < to; ++x) {
+            run = inked[x] ? 0 : run + 1;
+            if (run > best) best = run, bestEnd = x + 1;
+        }
+        if (float(best) < minGap) continue;
+        DecodedChar space;
+        space.cls = spaceClass;
+        space.firstStep = space.lastStep = uint32_t((double(bestEnd) - best / 2.0) * steps / paddedWidth);
+        space.prob = 1.0f;
         space.inserted = true;
         chars.insert(chars.begin() + std::ptrdiff_t(i), space);
     }

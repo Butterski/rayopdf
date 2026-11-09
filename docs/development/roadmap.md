@@ -215,21 +215,22 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.9 (2026-11-08)
+### Status: 0.0.10 (2026-11-09)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
 CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-layer tool on every
 odl metric; 0.0.5 completed the CJK CMaps and UAX #9; 0.0.6 passed olmOCR `table_tests`; 0.0.7
 added tagged PDF (M6), the product front ends (M7 without the performance campaign) and the OCR/ML
-decision (M8); 0.0.8 was the first performance campaign; 0.0.9 builds M8: the OCR add-on, scan
-codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs. Harness results:
+decision (M8); 0.0.8 was the first performance campaign; 0.0.9 built M8: the OCR add-on, scan
+codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs; 0.0.10 adds OCR scripts and
+rotation, two more performance rounds and a quality round. Harness results:
 [0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
 [0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md),
 [0.0.5](../benchmarks/v0.0.5-2026-11-06.md), [0.0.6](../benchmarks/v0.0.6-2026-11-06.md),
 [0.0.7](../benchmarks/v0.0.7-2026-11-07.md), [0.0.8](../benchmarks/v0.0.8-2026-11-07.md),
-[0.0.9](../benchmarks/v0.0.9-2026-11-08.md); performance method and steps:
-[performance.md](performance.md).
+[0.0.9](../benchmarks/v0.0.9-2026-11-08.md), [0.0.10](../benchmarks/v0.0.10-2026-11-09.md);
+performance method and steps: [performance.md](performance.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every filter including CCITT, JBIG2 and JPEG 2000, the Standard security
@@ -240,28 +241,28 @@ codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs. Harness results
 - **M2 Text:** the font → Unicode chain including every predefined CMap of Adobe's five CJK
   collections, detection and repair of untrustworthy ToUnicode maps, glyph-shape recovery through
   the OCR add-on, words, lines, duplicates as bold, ligatures, dehyphenation, uncertainty comments.
-  Gates met: NID above the best text-layer tool on odl (0.917 core, 0.926 with the add-on) and on
-  every untagged synthetic producer; census `broken` pages 1.46 % with the add-on, 1.71 % without,
-  against pdftotext's 3.45 % on the same pages; speed: 1.50 ms per odl document fresh-process
-  median with a native timer (2.90 ms/page when the harness starts each process from Python),
-  and 0.667 ms/page in process against the fastest competitor's 4.88 (edgeparse, in process).
+  Gates met: NID above the best text-layer tool on odl (0.918 core, 0.926 with the add-on) and on
+  every untagged synthetic producer; census `broken` pages 0.99 % with the add-on and its script
+  pack, 1.71 % without, against pdftotext's 3.45 % on the same pages; speed: 1.22 ms per odl
+  document fresh-process median with a native timer, and 0.41 ms/page in process against the
+  fastest competitor's 4.88 (edgeparse, in process).
 - **M3 Layout:** XY cuts with column checks, obstacles, bridging lines and Breuel's partial order
   as fallback; running headers and footers by repetition and, on single pages, by position, style
   and publication metadata; right-to-left lines (full UAX #9). Gates met: odl NID ≥ docling,
-  olmOCR `multi_column` 0.698 ≥ docling's 0.695 (0.716 with the add-on). Open: `headers_footers`
-  0.707 (0.696 with the add-on) against docling's 0.898; `long_tiny_text` passes docling only
-  with the add-on (0.869 against 0.523); `xelatex-2col` NID 0.929 (gate 0.95).
+  olmOCR `multi_column` 0.698 ≥ docling's 0.695 (0.718 with the add-on). Open: `headers_footers`
+  0.732 (0.721 with the add-on) against docling's 0.898; `long_tiny_text` passes docling only
+  with the add-on (0.869 against 0.523); `xelatex-2col` NID 0.936 (gate 0.95).
 - **M4 Semantics:** headings with absolute levels (run-in, numbered), lists, code, quotes, GitHub
   alerts, emphasis with nesting, strikethrough, links, footnotes, image files with alt text from
-  tags, Unicode math. Gates met: odl MHS 0.840 ≥ docling's 0.827, heading-level accuracy 0.975.
-  Open: construct F1 0.930 (gate 0.95; holdout 0.829, gate 0.90), READoc arxiv `head_teds` 0.469
-  against pymupdf's 0.515.
+  tags, Unicode math. Gates met: odl MHS 0.840 ≥ docling's 0.827, heading-level accuracy 0.975,
+  construct F1 0.951 (gate 0.95, no margin). Open: holdout construct F1 0.836 (gate 0.90), READoc
+  arxiv `head_teds` 0.473 against pymupdf's 0.515.
 - **M5 Tables:** ruled, horizontal-rule-only, striped, sideways, form and high-confidence
   borderless tables, GFM or HTML with spans. Gates met: synthetic untagged TEDS 0.987, odl TEDS
-  0.877 ≥ liteparse's 0.818 (docling 0.879), olmOCR `table_tests` 0.618 ≥ pymupdf's 0.615. Open:
-  READoc arxiv `table_teds` 0.481 (0.489 at 0.0.3).
+  0.884 ≥ liteparse's 0.818 and docling's 0.879, olmOCR `table_tests` 0.620 ≥ pymupdf's 0.615
+  (0.672 with the add-on). Open: READoc arxiv `table_teds` 0.483 against pymupdf's 0.685.
 - **M6 Tagged:** structure tree read, checked and used for blocks, tables, lists, figures and
-  order. Tagged synthetic producers: TEDS 0.978 (docling 0.881), construct F1 0.927, above the
+  order. Tagged synthetic producers: TEDS 0.978 (docling 0.881), construct F1 0.928, above the
   untagged path on every tagged producer. Open: construct F1 gate 0.98 (inline code untagged by
   rayomd-pdfua, chromium's title heading, `<sup>`/`<sub>` math).
 - **M7 Product:** `--batch`, `--serve --json`, `--workers`, the record, Windows build, packaging
@@ -271,12 +272,12 @@ codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs. Harness results
   growing with Flate images, JPEG 2000 decoding faster than OpenJPEG's release build. Open: ≥ 2,000
   pages/s warm, ≤ 1 ms/page fresh, and JPEG/JPEG 2000/CCITT/JBIG2 decoded whole
   ([performance.md](performance.md)).
-- **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) (R = 10.4 % of census
-  pages after glyph-shape recovery, CJK present → linked OCR; no table ML, no reading-order or
-  heading ML) and built as the add-on `rayopdf-ocr` (PP-OCRv6 small on ncnn, Linux and Windows):
-  scanned suite NID 0.906, TEDS 0.736, MHS 0.839, construct F1 0.620 against docling with OCR's
-  0.754 / 0.717 / 0.670 / 0.530. Open: Indic legacy fonts, Arabic and Hebrew scans, rotated pages,
-  inline code and footnotes on OCR'd pages, OCR speed (seconds per page).
+- **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) (no table ML, no
+  reading-order or heading ML) and built as the add-on `rayopdf-ocr` (PP-OCRv6 small detection,
+  tiny-first recognition, ncnn, Linux and Windows) with an optional script pack (Cyrillic, Korean,
+  Arabic, Devanagari, Tamil, Kannada) and rotation: scanned suite NID 0.919, TEDS 0.737, MHS 0.847,
+  construct F1 0.623 against docling with OCR's 0.754 / 0.717 / 0.670 / 0.530. Open: Hebrew,
+  Kannada and Arabic quality, inline code and footnotes on OCR'd pages.
 
 ## Engineering conventions
 

@@ -31,6 +31,7 @@ harness answers each condition:
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
+|multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
 
 Suite ids are paths relative to the suite root without `.pdf`. READoc's selection: the ground-truth
 stems of each subset (`<subset>_ground_truth/*.md`) sorted by the SHA-256 of the stem, first 150
@@ -249,12 +250,37 @@ wordnet baked in). Keys: `text_eds`, `text_f1` (text edit similarity and vocabul
 Kendall tau and Spearman, block and token level); the GitHub subset has no formula or table keys.
 READoc normalises headings, formulas and tables and strips links and images before scoring.
 
+## Multiscript suite
+
+`python3 tools/eval.py corpus --suite multiscript` runs `eval/producers/multiscript.py` (the
+repository's `eval/producers/` mounted over the image's) in `rayopdf-eval-producers:1`. The texts
+are `eval/fixtures/multiscript/<script>.md`, original prose written for this suite (Apache-2.0,
+like the repository): latin (English), cyrillic (Russian, Ukrainian, Bulgarian), hangul, arabic
+(with a Persian paragraph), hebrew, devanagari (Hindi, Nepali, Marathi), kannada, tamil, and mixed
+(English, Russian, Korean, Hindi, Arabic paragraphs). Each is set by Pillow with raqm (complex
+shaping; right-to-left paragraphs right-aligned) in Noto Sans or Noto Serif of its script, 11 pt,
+A4, 2.2 cm margins, gray, and written as an image-only PDF (Flate, one image per page; no
+`/Rotate`). Items `<script>-<variant>`: `s300-sans-clean`, `s300-serif-clean`, `s200-sans-clean`,
+`s300-sans-noise` (scan.py's noise), and `rot90`, `rot180`, `rot270` (the 300 dpi sans page turned
+clockwise, the page box following). Ground truth is exact: `gt/<id>.md` is the fixture text,
+`gt/<id>/p<N>.txt` each page's paragraphs; `pgm/<id>/p<N>.pgm` the pages' pixels for the add-on.
+The same inputs give the same bytes.
+
+Scoring (`score --suite multiscript`, `eval/scorer/ocr_text.py` in `rayopdf-eval-scorer:1`): the
+tool's Markdown and the text are both stripped of Markdown markup and HTML comments, zero-width
+(non-)joiners dropped, NFKC and whitespace collapsed; CER = Levenshtein / GT characters, word F1 on
+whitespace tokens with end punctuation stripped; per script, per variant group and in total (mean
+and pooled CER). Reading order counts in the CER. All items are development: the suite measures
+recognition of scripts and orientation, not structure, and its texts are not tuned on; report it
+per script.
+
 ## Competitors
 
 One image per tool, `rayopdf-eval-<tool>:1`, built from `eval/docker/tool-<tool>.Dockerfile`; the
 shared adapter `eval/competitors/convert.py` runs each. "Text-layer tools" are the first six;
 docling is the ML reference. docling-ocr and tesseract are the OCR references: `all` runs them on
-the scanned suites only (`scanned`, `olmocr-scans`); every other tool runs on every suite.
+the scanned suites only (`scanned`, `olmocr-scans`, `multiscript`); every other tool runs on every
+suite.
 
 |Tool|Version|Licence|Mode|Timing|
 |---|---|---|---|---|
@@ -340,6 +366,7 @@ python3 tools/eval.py images [--only NAMES]   # build images, write images.json
 python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
 python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
 python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
+python3 tools/eval.py corpus --suite multiscript [--jobs 6]
 python3 tools/eval.py score --selftest
 python3 tools/eval.py convert --tool T --suite S
 python3 tools/eval.py score --suite S [--tools A,B]
@@ -359,11 +386,13 @@ Output layout under `benchmark-output/eval/` (ignored by git):
 images.json                 image ids, sizes and versions.json of every image
 corpus/                     <producer>/<fixture>.pdf, corpus.json
 scanned/                    s300|s200/<producer>/<fixture>.pdf, scanned.json (about 0.8 GB)
+multiscript/                pdf/<id>.pdf, pgm/<id>/p<N>.pgm, gt/, multiscript.json
 data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, odl-pages.json
 suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
-scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json
+scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
+scores/multiscript/<tool>.json (and .md, the tables)
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
 report.md
@@ -376,7 +405,7 @@ RayoPDF's fully static build runs there as is:
 
 ```sh
 python3 tools/dev.py build --config static        # build/static/rayopdf
-for s in synthetic odl olmocr readoc scanned olmocr-scans; do
+for s in synthetic odl olmocr readoc scanned olmocr-scans multiscript; do
     python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
     python3 tools/eval.py score --suite $s --tools cli
 done

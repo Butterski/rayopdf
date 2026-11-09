@@ -44,6 +44,10 @@ public:
             !Ok(api_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memory_))) {
             return false;
         }
+        if (networks == Networks::Classify) {
+            detail = set.directory + ": the orientation classifier comes for ncnn only";
+            return false;
+        }
         return (networks == Networks::RecognizeOnly || LoadSession(set, "det.ort", det_, detail)) &&
                LoadSession(set, "rec.ort", rec_, detail);
     }
@@ -139,6 +143,15 @@ std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, s
     std::unique_ptr<OrtRuntime> runtime(new OrtRuntime());
     if (!runtime->Load(set, networks, detail)) return nullptr;
     return runtime;
+}
+
+bool RuntimeReads(const ModelSet& set, Networks networks) {
+    switch (networks) {
+    case Networks::DetectAndRecognize: return !ManifestHash(set, "det.ort").empty() && !ManifestHash(set, "rec.ort").empty();
+    case Networks::RecognizeOnly: return !ManifestHash(set, "rec.ort").empty();
+    case Networks::Classify: return false;
+    }
+    return false;
 }
 
 } // namespace RayoPdf::Ocr

@@ -113,8 +113,12 @@ void TestRaster() {
     SampleRect(image, rect, 2, 2, out);
     RAYOPDF_CHECK(out[0] == 100 && out[1] == 200 && out[2] == 110 && out[3] == 210, 1263);
     std::vector<uint8_t> grid = {1, 2, 3, 4, 5, 6}, turned;  // 3 wide, 2 tall
-    RotateCounterClockwise(grid, 3, 2, turned);
+    Turn(GrayView{grid.data(), 3, 2}, 3, turned);  // counter-clockwise
     RAYOPDF_CHECK(turned == std::vector<uint8_t>({3, 6, 2, 5, 1, 4}), 1264);
+    Turn(GrayView{grid.data(), 3, 2}, 1, turned);  // clockwise
+    RAYOPDF_CHECK(turned == std::vector<uint8_t>({4, 1, 5, 2, 6, 3}), 1509);
+    Turn(GrayView{grid.data(), 3, 2}, 2, turned);
+    RAYOPDF_CHECK(turned == std::vector<uint8_t>({6, 5, 4, 3, 2, 1}), 1510);
 }
 
 // A probability map with filled rectangles [x0, x1) x [y0, y1) of probability `p`.
@@ -544,6 +548,130 @@ void TestModelFiles() {
                   1299);
 }
 
+// A script pack of one recogniser, for the routing tests.
+class OnePack final : public ScriptPack {
+public:
+    explicit OnePack(Recognizer recognizer) : recognizer_(recognizer) {}
+    uint32_t loads = 0;
+    size_t Count() const override { return 1; }
+    const Recognizer* Get(size_t) override {
+        ++loads;
+        return &recognizer_;
+    }
+
+private:
+    Recognizer recognizer_;
+};
+
+void TestScripts() {
+    // Script pack and classifier folders: no detection thresholds, a script, an order, letters.
+    ModelSet set;
+    RAYOPDF_CHECK(ParseConfig("model m\nscript cyrillic\norder visual\nletters 0400-052F\nspace_gap 0.16\n", set) &&
+                      !set.detectConfig && set.script == "cyrillic" && set.visualOrder && set.lettersFirst == 0x400 &&
+                      set.lettersLast == 0x52F && std::fabs(set.spaceGap - 0.16f) < 1e-6f,
+                  1511);
+    RAYOPDF_CHECK(!ParseConfig("model m\nscript Cyrillic\n", set) && !ParseConfig("model m\norder up\n", set) &&
+                      !ParseConfig("model m\nletters 52F-400\n", set) && !ParseConfig("model m\nletters x\n", set),
+                  1512);
+
+    // Visual to logical order: Hebrew letters reversed, a number kept, brackets mirrored; each
+    // code point keeps its span.
+    CropText text;
+    text.text = "\xD7\x92\xD7\x91 12 (\xD7\x90";  // visual: gimel bet space 1 2 space ( alef
+    for (int i = 0; i < 8; ++i) text.x0.push_back(float(i)), text.x1.push_back(float(i + 1));
+    ToLogicalOrder(text);
+    RAYOPDF_CHECK(text.text == "\xD7\x90) 12 \xD7\x91\xD7\x92" && text.x0.size() == 8 && text.x0[0] == 7.0f &&
+                      text.x0[3] == 3.0f && text.x0[4] == 4.0f && text.x0[7] == 0.0f,
+                  1513);
+
+    // Unread: too few characters for the length, or a low confidence.
+    CropText reading;
+    reading.text = "a b";
+    reading.conf = 9900;
+    RAYOPDF_CHECK(Unread(reading, 480, 48) && !Unread(reading, 96, 48), 1514);
+    reading.conf = 7000;
+    RAYOPDF_CHECK(Unread(reading, 96, 48), 1515);
+
+    // Spaces from the ink: a gap of 12 blank columns between two characters' steps gives one.
+    std::vector<uint8_t> ink(48 * 40, 255);
+    for (uint32_t y = 0; y < 48; ++y)
+        for (uint32_t x : {2u, 3u, 4u, 30u, 31u, 32u}) ink[size_t(y) * 40 + x] = 0;
+    std::vector<DecodedChar> chars(2);
+    chars[0].cls = 1, chars[0].firstStep = 0, chars[0].lastStep = 0;
+    chars[1].cls = 2, chars[1].firstStep = 7, chars[1].lastStep = 7;
+    InsertInkSpaces(ink.data(), 40, 48, 40, 10, 9, 12.0f, chars);
+    RAYOPDF_CHECK(chars.size() == 3 && chars[1].cls == 9 && chars[1].inserted, 1516);
+    InsertInkSpaces(ink.data(), 40, 48, 40, 10, 9, 40.0f, chars);
+    RAYOPDF_CHECK(chars.size() == 3, 1517);
+
+    // Routing: the tier reads striped lines as spaces (unread), the pack's recogniser as Cyrillic
+    // letters, which replace them; a blank line, probed as well, stays empty; without the pack
+    // nothing changes.
+    Dictionary tier, cyrillic;
+    RAYOPDF_CHECK(tier.Load("a\nb\n ") && cyrillic.Load("a\nb\n\xD0\xB6"), 1518);
+    Testing::FakeRuntime tierRuntime(tier.Classes()), cyrillicRuntime(cyrillic.Classes());
+    PpOcrSettings settings;
+    PpOcrEngine engine(tierRuntime, tier, settings);
+    Recognizer recognizer{&cyrillicRuntime, &cyrillic, false, 0, 0x400, 0x52F};
+    OnePack pack(recognizer);
+    engine.SetScripts(&pack);
+    std::vector<uint8_t> stripes(size_t(48) * 320, 255);
+    for (uint32_t y = 0; y < 48; ++y)
+        for (uint32_t x = 0; x < 320; ++x)
+            if ((x / 8) % 2 == 0) stripes[size_t(y) * 320 + x] = 0;
+    std::vector<OcrProtocol::Line> lines;
+    RAYOPDF_CHECK(engine.Lines({GrayView{stripes.data(), 320, 48}}, lines) == EngineStatus::Ok && lines.size() == 1 &&
+                      lines[0].text.find("\xD0\xB6") != std::string::npos && pack.loads > 0,
+                  1519);
+    std::vector<uint8_t> blank(size_t(48) * 320, 255);
+    pack.loads = 0;
+    RAYOPDF_CHECK(engine.Lines({GrayView{blank.data(), 320, 48}}, lines) == EngineStatus::Ok && pack.loads > 0 &&
+                      lines[0].text.empty(),
+                  1520);
+    engine.SetScripts(nullptr);
+    RAYOPDF_CHECK(engine.Lines({GrayView{stripes.data(), 320, 48}}, lines) == EngineStatus::Ok &&
+                      lines[0].text.find("\xD0\xB6") == std::string::npos,
+                  1521);
+}
+
+void TestOrientation() {
+    // Three standing bars, black at one end and dark gray at the other: the page is turned a
+    // quarter. Turned counter-clockwise a bar is darker on the side its black end lies; the fake
+    // classifier calls the darker right side upside down, and the readings tie, so it decides:
+    // black tops read as text running down (dir 3), black bottoms as text running up (dir 1).
+    const Dictionary dictionary = TestDictionary();
+    Testing::FakeRuntime runtime(dictionary.Classes()), classifier(2);
+    PpOcrSettings settings;
+    PpOcrEngine engine(runtime, dictionary, settings);
+    engine.SetOrientation(&classifier);
+    for (int blackTop = 0; blackTop < 2; ++blackTop) {
+        std::vector<uint8_t> page = Page(300, 400, {{40, 40, 70, 360}, {120, 40, 150, 360}, {200, 40, 230, 360}});
+        for (uint32_t y = 40; y < 360; ++y) {
+            const bool gray = blackTop ? y >= 200 : y < 200;
+            if (!gray) continue;
+            for (uint32_t x = 0; x < 300; ++x)
+                if (page[size_t(y) * 300 + x] == 0) page[size_t(y) * 300 + x] = 90;
+        }
+        std::vector<OcrProtocol::Line> lines;
+        RAYOPDF_CHECK(engine.Page(GrayView{page.data(), 300, 400}, 300, lines) == EngineStatus::Ok && lines.size() == 3 &&
+                          engine.stats.turnedPages == uint32_t(blackTop + 1),
+                      1522);
+        bool ok = true;
+        for (const OcrProtocol::Line& line : lines) {
+            ok = ok && line.dir == (blackTop ? 3 : 1) && line.y1 - line.y0 > 4 * (line.x1 - line.x0);
+            // Spans run along y, inside the box.
+            for (const OcrProtocol::CharSpan& span : line.chars) ok = ok && span.x0 >= line.y0 && span.x1 <= line.y1;
+        }
+        RAYOPDF_CHECK(ok, 1523);
+    }
+    // Lying bars stay as they are: nothing turned, every line runs left to right.
+    const std::vector<uint8_t> upright = Page(400, 300, {{40, 40, 360, 70}, {40, 120, 360, 150}, {40, 200, 360, 230}});
+    std::vector<OcrProtocol::Line> lines;
+    RAYOPDF_CHECK(engine.Page(GrayView{upright.data(), 400, 300}, 300, lines) == EngineStatus::Ok && lines.size() == 3 &&
+                      engine.stats.turnedPages == 2 && lines[0].dir == 0 && lines[2].dir == 0,
+                  1524);
+}
+
 } // namespace
 
 int main() {
@@ -556,5 +684,7 @@ int main() {
     TestServer();
     TestTesseractTsv();
     TestModelFiles();
+    TestScripts();
+    TestOrientation();
     return 0;
 }

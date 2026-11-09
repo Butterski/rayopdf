@@ -360,7 +360,8 @@ private:
     void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb);
     bool Free(float x0, float y0, float x1, float y1) const;
-    bool Validate(Grid& g, bool column);
+    // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
+    bool Validate(Grid& g, bool column, bool* figure = nullptr);
     void CollapseEmpty(Grid& g) const;
     void Boundaries(Grid& g, int32_t root) const;
     void SplitByText(Grid& g) const;
@@ -937,10 +938,15 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
-            // A chart's axis in a cell: no table.
+            // A chart's axis in a cell: no table. Pieces of tall brackets (U+239B-U+23AD): a
+            // matrix set in display math.
             float value = 0;
             const size_t cell = static_cast<size_t>(group * cols + ColumnOf(gaps, (w.x0 + w.x1) / 2));
-            if (ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
+            const std::string_view text = WordText(w, scratch);
+            if (ParseNumber(text, value) && numbers[cell].Add(value)) return;
+            if (text.size() >= 3 && text.substr(0, 2) == "\xE2\x8E" && static_cast<unsigned char>(text[2]) >= 0x9B &&
+                static_cast<unsigned char>(text[2]) <= 0xAD)
+                return;
             // The word before it in the row, when only a word space apart: one cell's text.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
             const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
@@ -1391,9 +1397,15 @@ void Detector::Lattices() {
         }
         // A box drawn around the body rows alone: the header row stands right above it (a shaded
         // row of a striped table, its sides those of a filled area, is no such box).
-        if (!column && drawn && rows == 1 && cols >= 2) HeaderAbove(g);
+        if (!column && drawn && cols >= 2) HeaderAbove(g);
         if (!column && (cols < 2 || g.Rows() < 2 || wholeRows * 2 > g.Rows())) continue;
-        if (!Validate(g, column)) continue;
+        bool figure = false;
+        if (!Validate(g, column, &figure)) {
+            // A chart's gridlines or a diagram's boxes: their lines are no rules of a table either.
+            for (size_t i = 0; i < nh && figure; ++i)
+                if (h_[i].comp == root) hUsed[i] = 1;
+            continue;
+        }
         LatticeHeader(g);
         RowsBelow(g);
         for (size_t i = 0; i < nh; ++i)
@@ -1486,7 +1498,11 @@ void Detector::CollapseEmpty(Grid& g) const {
 
 // A lattice holds a table when text fills enough of its cells and does not run across its rulings
 // (charts and page frames do not qualify).
-bool Detector::Validate(Grid& g, bool column) {
+bool Detector::Validate(Grid& g, bool column, bool* figure) {
+    const auto drawing = [&]() {
+        if (figure) *figure = true;
+        return false;
+    };
     const int cols = g.Cols();
     std::vector<uint32_t> filled(g.cells.size(), 0);  // words per cell
     std::vector<uint8_t> label(g.cells.size(), 0);    // a word with letters and no number
@@ -1526,7 +1542,7 @@ bool Detector::Validate(Grid& g, bool column) {
     // in lowercase), is no table of one column.
     if (column && (2 * mono > inside || 3 * lowerStarts >= static_cast<uint32_t>(g.Rows()))) return false;
     // Four numbers in one cell, evenly stepped (0 0.2 0.4 0.6): a chart's axis inside its frame.
-    if (axis) return false;
+    if (axis) return drawing();
     uint32_t nonEmpty = 0, most = 0;
     for (uint32_t f : filled) nonEmpty += f > 0, most = std::max(most, f);
     if (inside == 0 || nonEmpty < 2) return false;
@@ -1559,6 +1575,16 @@ bool Detector::Validate(Grid& g, bool column) {
         form = labelled >= 3 && 2 * ruledRows >= g.Rows();
     }
     if (fullRows < (column ? 3 : 2) && !form) return false;
+    // A diagram's boxes drawn over a grid (a flowchart, a block diagram, a figure's panels): most
+    // cells span others in a short grid or one with a row of a single filled cell (a table with
+    // stray rulings keeps two filled cells in every row of many), or most cells are empty and the
+    // rest hold a word each.
+    if (!column && g.cells.size() >= 6) {
+        size_t spans = 0;
+        for (const Span& sp : g.cells) spans += sp.rs > 1 || sp.cs > 1;
+        if (2 * spans > g.cells.size() && (g.Rows() < 5 || fullRows < g.Rows())) return drawing();
+        if (!form && 2 * nonEmpty < g.cells.size() && 2 * inside <= 3 * nonEmpty) return drawing();
+    }
     std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
     g.size = sizes[sizes.size() / 2];
     return true;
@@ -1893,7 +1919,12 @@ void Detector::Borderless(float gapFactor) {
             // After two rows of the table at least: a lone line under a header line is a cell.
             return !gaps.empty() && q >= r + 2 && q + 1 < rows.size() && split[q + 1] && rows[q].x1 < gaps[0].b;
         };
-        while (e < rows.size() && (split[e] || isLabel(e)) && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
+        // A line set less than a line below the one above, between split rows: a cell set to the
+        // middle of a row whose other cells hold two lines ("Time t" beside two-line labels).
+        const auto middle = [&](size_t q) {
+            return q + 1 < rows.size() && split[q + 1] && rows[q - 1].base - rows[q].base < 0.85f * Fmax(rows[q - 1].size, rows[q].size);
+        };
+        while (e < rows.size() && (split[e] || isLabel(e) || middle(e)) && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
                std::fabs(rows[e].size - em) <= 0.2f * em) {
             label[e] = isLabel(e);
             const float na = Fmin(xa, rows[e].x0 - 1), nb = Fmax(xb, rows[e].x1 + 1);

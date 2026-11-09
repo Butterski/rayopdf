@@ -155,6 +155,46 @@ void TestListColumn() {
 
 } // namespace
 
+// A nearly empty page (a scanned page's text layer: a title line and a repository footer) loses
+// its URL footer; its other lines stay.
+void TestSparseMetadata() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "New Directions, Vol. 11, Art. 4", 242, 763, 10);
+    AddText(pages[0], "http://dh.example.edu/newdirections/vol11/iss4/4", 22, 22, 10);
+    AddText(pages[0], "NEW DIRECTIONS JULY 1984 2", 489, 19, 6);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "dh.example.edu") == std::string::npos, 764);
+    RAYOPDF_CHECK(Find(md, "New Directions, Vol. 11") != std::string::npos, 765);
+}
+
+// A lone page number a little further in than the running band, set apart from the text, is
+// still a page number.
+void TestInnerFolio() {
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 30; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of a page with deep margins here.", 90,
+                650 - 12.0f * i, 10);
+    AddText(pages[0], "259", 300, 105, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "259") == std::string::npos, 766);
+    RAYOPDF_CHECK(Find(md, "Body line 29 of") != std::string::npos, 767);
+}
+
+// A running title set off the text's left edge (right-aligned) inside the running band is removed;
+// a footer whose folio sits on a slightly lower baseline beside it goes with it.
+void TestOffsetRows() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Effects of Red Fruit Oil on Colitis Cancer", 330, 720, 10);
+    for (int i = 0; i < 30; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the article text runs on.", 72, 690 - 12.0f * i, 10);
+    AddText(pages[0], "J Example Med Assoc, Volume 63, Number 3, 2013", 330, 46, 8);
+    AddText(pages[0], "110", 72, 43, 8);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Red Fruit Oil") == std::string::npos, 768);
+    RAYOPDF_CHECK(Find(md, "Example Med Assoc") == std::string::npos, 769);
+    RAYOPDF_CHECK(Find(md, "Body line 0 of") != std::string::npos && Find(md, "Body line 29 of") != std::string::npos, 770);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -162,6 +202,9 @@ int main() {
     TestDoubleSpacedTop();
     TestMetadataBlock();
     TestListColumn();
+    TestSparseMetadata();
+    TestInnerFolio();
+    TestOffsetRows();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

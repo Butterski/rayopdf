@@ -4,7 +4,7 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.9: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.0.10: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
 are read by the optional OCR add-on; math is written as Unicode text.
@@ -52,15 +52,19 @@ was rejected and the pages converted instead: `unsupported`, `corrupt`, `integri
 
 Pages without a text layer (scans) and text drawn inside images or as outlines are read by a
 separate program, `rayopdf-ocr`, shipped in its own archive with its models
-(`rayopdf-ocr-models/`, PP-OCRv6 small on ncnn; about 7 MB plus 31 MB). Unpacked into the same
-folder as `rayopdf`, it is found and started only when a page needs it; pages with a usable text
-layer never wait for it. It is also used to read the shapes of glyphs whose font maps them to no
-or wrong text. Without the add-on, those pages keep the `<!-- rayopdf: page N has no extractable
-text -->` comment. `--ocr=off` never starts it, `--ocr=force` also re-reads pages that already
-carry an invisible OCR layer; `--ocr-addon=PATH` or the `RAYOPDF_OCR` environment variable name
-it elsewhere (otherwise: beside `rayopdf`, then `PATH`). The record counts routed, recognised and
-failed pages (`ocr_pages_routed`, `ocr_pages`, `ocr_failures`, `ocr_addon_missing`, ...). An OCR
-page takes seconds, not milliseconds: about 2.7 s on one core for a 300 dpi page.
+(`rayopdf-ocr-models/`, PP-OCRv6 small and tiny on ncnn; about 7 MB plus 36 MB). Unpacked into
+the same folder as `rayopdf`, it is found and started only when a page needs it; pages with a
+usable text layer never wait for it. It reads Latin and CJK text, turns pages scanned sideways or
+upside down upright, and also reads the shapes of glyphs whose font maps them to no or wrong text.
+The optional script pack `rayopdf-ocr-scripts-VERSION-<platform>` (about 21 MB), unpacked over
+the add-on, adds Cyrillic, Korean, Arabic, Devanagari, Tamil and (roughly) Kannada; a script's
+model loads only when a page needs it. Hebrew is not read yet. Without the add-on, those pages
+keep the `<!-- rayopdf: page N has no extractable text -->` comment. `--ocr=off` never starts it,
+`--ocr=force` also re-reads pages that already carry an invisible OCR layer; `--ocr-addon=PATH` or
+the `RAYOPDF_OCR` environment variable name it elsewhere (otherwise: beside `rayopdf`, then
+`PATH`). The record counts routed, recognised and failed pages (`ocr_pages_routed`, `ocr_pages`,
+`ocr_failures`, `ocr_addon_missing`, ...). An OCR page takes seconds, not milliseconds: about 2 s
+on one core for a 300 dpi Latin page, more for other scripts.
 
 ### Batch conversion
 
@@ -155,6 +159,8 @@ unpack into the same folder. `tools/package.py` makes them byte for byte reprodu
   codecs, glyph-shape recovery and exact recovery; scanned documents.
 - [OCR engine](docs/development/ocr-engine.md) and [OCR protocol](docs/development/ocr-protocol.md):
   the add-on's measurements, build and pipe protocol.
+- [RayoPDF 0.0.10 on the harness](docs/benchmarks/v0.0.10-2026-11-09.md): OCR scripts and
+  rotation, performance rounds 2 and 3, quality round.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation

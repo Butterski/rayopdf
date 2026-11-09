@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -92,9 +93,14 @@ def main() -> int:
     proc = subprocess.Popen(base + ["--serve", "--models", args.models], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     _, hello = read_frame(proc.stdout)
-    # Model hashes: the tier's files by name, the first pass's as "tiny/<file>" (ocr-protocol.md).
+    # Model hashes: the tier's files by name, the first pass's as "tiny/<file>", the orientation
+    # classifier's as "orient/<file>" and the script pack's as "scripts/<script>/<file>"
+    # (ocr-protocol.md).
     manifests = {}
-    for folder in (tier, "tiny"):
+    folders = [tier, "tiny", "orient"]
+    if os.path.isdir(f"{args.models}/scripts"):
+        folders += [f"scripts/{name}" for name in sorted(os.listdir(f"{args.models}/scripts"))]
+    for folder in folders:
         try:
             with open(f"{args.models}/{folder}/models.txt", encoding="ascii") as f:
                 manifests[folder] = dict((name, digest) for digest, _, name in (line.split() for line in f))

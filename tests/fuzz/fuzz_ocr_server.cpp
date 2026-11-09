@@ -61,6 +61,17 @@ std::string RunOnce(const uint8_t* data, size_t size, const Ocr::Dictionary& dic
     settings.switchAfter = 2;
     Ocr::PpOcrEngine single(runtime, dictionary, settings);
     Ocr::PpOcrEngine cascade(runtime, dictionary, firstRuntime, firstDictionary, settings);
+    // Bit 1: the orientation classifier and a script pack of one recogniser (the first pass's).
+    struct Pack final : Ocr::ScriptPack {
+        Ocr::Recognizer recognizer;
+        size_t Count() const override { return 1; }
+        const Ocr::Recognizer* Get(size_t) override { return &recognizer; }
+    } pack;
+    pack.recognizer = {&firstRuntime, &firstDictionary, true, 0.16f, 0x400, 0x52F};
+    if (size && (data[0] & 2)) {
+        single.SetOrientation(&firstRuntime), cascade.SetOrientation(&firstRuntime);
+        single.SetScripts(&pack), cascade.SetScripts(&pack);
+    }
     Ocr::Engine& engine = size && (data[0] & 1) ? static_cast<Ocr::Engine&>(cascade) : single;
     Input input{data, size, 0};
     std::string output;

@@ -1,0 +1,23 @@
+PaddleOCR recognisers of the script pack and the text-line orientation classifier (PaddleOCR,
+https://github.com/PaddlePaddle/PaddleOCR), shipped with the OCR add-on rayopdf-ocr:
+rayopdf-ocr-models/orient/ in the add-on's archives, rayopdf-ocr-models/scripts/<script>/ in the
+optional script pack archives (never part of rayopdf).
+
+Copyright PaddlePaddle Authors. The model cards declare the Apache License, Version 2.0 (its
+full text is the LICENSE file of this distribution).
+
+Source: PaddlePaddle's models on Hugging Face, pinned by revision and SHA-256 of the network file:
+
+  PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx    2cef88145434beb8afa9dd82d77d799eb1ad7b29  5371ee1ddaa7983cc62d0818d99e982b6804638c85e4f960d59a574094e172e5
+  PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx      5c6f574b8e2230adf4287b33e736d71b9fabd28e  92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08
+  PaddlePaddle/arabic_PP-OCRv5_mobile_rec_onnx      14aaedcd75825982689ecf5cd64ab33ee083215a  799113ebf267fbe742deb99eb36e8d42c9ddc5291ceacf92add41b4d52a59110
+  PaddlePaddle/devanagari_PP-OCRv5_mobile_rec_onnx  251aec19e36739540d35e2cc943f6aa7503b98e5  cb789212ce96c69d3e74728ae4309d179281d68cb3945d0616b67cafab41c986
+  PaddlePaddle/ta_PP-OCRv5_mobile_rec_onnx          0db89798af0d5218fad9ea7ace0557526e9077f1  c6d2b682d2a0ea4cb1fccdba295976f93fd439964d16cdc666cadef531accbee
+  PaddlePaddle/ka_PP-OCRv3_mobile_rec               fd08732bad5fb532cf883cb42a75ed139a72ab18  5abb4f1c00e5fab314b06d55f69b137ee79bef3f59b547166a48e93bd530ff12 (inference.pdiparams)
+  PaddlePaddle/PP-LCNet_x0_25_textline_ori_onnx     aea1f18d97338aaf84b463f90192f2820524a00a  94a6a0a0425f2b5f08b5df72086f2d72abe40f1d22f6d12d2cd83674f11f2ff3
+
+Modifications: the networks are converted, unchanged in their weights, to ncnn's format by pnnx
+20261020 (docker/ocr_models.py); the Kannada model first from Paddle's format to ONNX by
+paddle2onnx 2.1.0 with paddlepaddle 3.3.1 (docker/ocr.Dockerfile, stage `kannada`). dict.txt is
+each model's character list (or the classifier's labels) from its inference.yml; config.txt
+records the model, its script, its text order and settings of rayopdf-ocr.

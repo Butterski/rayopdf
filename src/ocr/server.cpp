@@ -37,6 +37,7 @@ ServeStatus Serve(const ServerIo& io, const OcrProtocol::Handshake& handshake, E
     OcrProtocol::Frame frame;
     OcrProtocol::Request request;
     OcrProtocol::Response response;
+    std::vector<GrayView> images;
     std::string error;
     for (;;) {
         const OcrProtocol::FrameStatus status = OcrProtocol::ReadFrame(io.read, io.readContext, frame);
@@ -72,13 +73,12 @@ ServeStatus Serve(const ServerIo& io, const OcrProtocol::Handshake& handshake, E
             break;
         case OcrProtocol::Op::Lines: {
             size_t at = 0;
-            response.lines.resize(request.lines.size());
-            for (size_t i = 0; i < request.lines.size() && !failed; ++i) {
-                const OcrProtocol::LineSize& size = request.lines[i];
-                failed = engine.Line(GrayView{pixels + at, size.width, size.height}, response.lines[i]) !=
-                         EngineStatus::Ok;
+            images.clear();
+            for (const OcrProtocol::LineSize& size : request.lines) {
+                images.push_back(GrayView{pixels + at, size.width, size.height});
                 at += size_t(size.width) * size.height;
             }
+            failed = engine.Lines(images, response.lines) != EngineStatus::Ok;
             break;
         }
         }

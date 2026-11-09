@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ocr/raster.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace RayoPdf::Ocr {
@@ -135,14 +136,27 @@ void SampleRect(const GrayView& source, const RotatedRect& rect, uint32_t width,
     }
 }
 
-void RotateCounterClockwise(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t height,
-                            std::vector<uint8_t>& out) {
-    out.resize(size_t(width) * height);
-    // out is `height` wide and `width` tall: out(row r, column c) = in(row c, column width-1-r).
-    for (uint32_t r = 0; r < width; ++r) {
-        for (uint32_t c = 0; c < height; ++c) {
-            out[size_t(r) * height + c] = pixels[size_t(c) * width + (width - 1 - r)];
+void Turn(const GrayView& source, uint32_t quarters, std::vector<uint8_t>& out) {
+    const uint32_t w = source.width, h = source.height;
+    out.resize(size_t(w) * h);
+    const uint8_t* in = source.pixels;
+    switch (quarters & 3) {
+    case 0:
+        std::copy(in, in + size_t(w) * h, out.begin());
+        break;
+    case 1:  // h wide, w tall: out(row r, column c) = in(row h-1-c, column r)
+        for (uint32_t r = 0; r < w; ++r) {
+            for (uint32_t c = 0; c < h; ++c) out[size_t(r) * h + c] = in[size_t(h - 1 - c) * w + r];
         }
+        break;
+    case 2:
+        for (size_t i = 0, n = size_t(w) * h; i < n; ++i) out[i] = in[n - 1 - i];
+        break;
+    case 3:  // h wide, w tall: out(row r, column c) = in(row c, column w-1-r)
+        for (uint32_t r = 0; r < w; ++r) {
+            for (uint32_t c = 0; c < h; ++c) out[size_t(r) * h + c] = in[size_t(c) * w + (w - 1 - r)];
+        }
+        break;
     }
 }
 

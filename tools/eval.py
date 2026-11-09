@@ -56,7 +56,9 @@ OCR_TOOLS = ["docling-ocr", "tesseract"]
 # Tools that run in another tool's image (same install and models, different options).
 TOOL_IMAGE = {"docling-ocr": "docling"}
 TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc"]
-SCAN_SUITES = ["scanned", "olmocr-scans"]
+# multiscript: image-only pages in Cyrillic, Hangul, Arabic, Hebrew, Devanagari, Kannada, Tamil,
+# Latin and a mix, upright and turned (eval/producers/multiscript.py); development only.
+SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
 IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
 DATASETS = ["odl", "olmocr", "readoc", "safedocs"]
@@ -240,8 +242,17 @@ def scanned_items(root: Path) -> list[dict]:
     return data["items"]
 
 
+def multiscript_items(root: Path) -> list[dict]:
+    data = read_json(root / "multiscript" / "multiscript.json")
+    if not data:
+        raise SystemExit(f"{root / 'multiscript' / 'multiscript.json'} is missing; run "
+                         "`corpus --suite multiscript` first")
+    return data["items"]
+
+
 def suite_root(root: Path, suite: str) -> Path:
     return {
+        "multiscript": root / "multiscript" / "pdf",
         "synthetic": root / "corpus",
         "odl": root / "data" / "odl-bench" / "pdfs",
         "olmocr": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
@@ -264,6 +275,8 @@ def suite_ids(root: Path, suite: str) -> list[str]:
         return [item["id"] for item in corpus_items(root) if item["valid"]]
     if suite == "scanned":
         return [item["id"] for item in scanned_items(root) if item["valid"]]
+    if suite == "multiscript":
+        return [item["id"] for item in multiscript_items(root) if item["valid"]]
     if suite == "odl":
         ids = pdf_ids(base)
     elif suite == "olmocr":
@@ -454,6 +467,8 @@ def cmd_fetch(args) -> int:
 def cmd_corpus(args) -> int:
     if args.suite == "scanned":
         return corpus_scanned(args)
+    if args.suite == "multiscript":
+        return corpus_multiscript(args)
     out = args.root / "corpus"
     out.mkdir(parents=True, exist_ok=True)
     argv = ["python3", "/opt/eval/producers/render.py", "--fixtures", "/fixtures", "--out", "/out",
@@ -485,6 +500,22 @@ def corpus_scanned(args) -> int:
     valid = sum(1 for i in items if i["valid"])
     log(f"scanned: {valid}/{len(items)} valid, {sum(i['pages'] or 0 for i in items if i['valid'])}"
         " pages")
+    return 0 if valid == len(items) else 1
+
+
+def corpus_multiscript(args) -> int:
+    """Image-only pages of text in nine scripts, upright and turned (eval/producers/multiscript.py).
+    The repository's producers folder replaces the image's copy (the generator imports scan.py)."""
+    out = args.root / "multiscript"
+    out.mkdir(parents=True, exist_ok=True)
+    argv = ["python3", "/opt/eval/producers/multiscript.py", "--fixtures", "/fixtures", "--out", "/out",
+            "--jobs", str(args.jobs)]
+    run(docker_cmd(tag("producers"), argv,
+                   mounts=[(REPO / "eval" / "producers", "/opt/eval/producers", True),
+                           (REPO / "eval" / "fixtures" / "multiscript", "/fixtures", True), (out, "/out", False)]))
+    items = multiscript_items(args.root)
+    valid = sum(1 for i in items if i["valid"])
+    log(f"multiscript: {valid}/{len(items)} valid, {sum(i['pages'] or 0 for i in items if i['valid'])} pages")
     return 0 if valid == len(items) else 1
 
 
@@ -675,6 +706,21 @@ def score_readoc(root: Path, tools: list[str]) -> None:
         shutil.rmtree(work)
 
 
+def score_multiscript(root: Path, tools: list[str]) -> None:
+    """CER and word F1 of each tool's Markdown against the item's text (eval/scorer/ocr_text.py)."""
+    out = root / "scores" / "multiscript"
+    out.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        argv = ["python3", "/opt/eval/scorer/ocr_text.py", "--gt-dir", "/gt", "--pred-dir", "/pred",
+                "--out", f"/out/{tool}.json"]
+        run(docker_cmd(tag("scorer"), argv,
+                       mounts=[(REPO / "eval" / "scorer", "/opt/eval/scorer", True),
+                               (root / "multiscript" / "gt", "/gt", True),
+                               (root / "runs" / tool / "multiscript", "/pred", True), (out, "/out", False)]),
+            stdout_path=out / f"{tool}.md")
+        log(f"multiscript/{tool}: scored")
+
+
 def cmd_score(args) -> int:
     if args.selftest:
         return score_selftest(args)
@@ -691,6 +737,8 @@ def cmd_score(args) -> int:
                             [i for i in scanned_items(args.root) if i["valid"]], tools)
     elif args.suite == "odl":
         score_odl(args.root, tools, args.force)
+    elif args.suite == "multiscript":
+        score_multiscript(args.root, tools)
     elif args.suite in ("olmocr", "olmocr-scans"):
         score_olmocr(args.root, tools, args.suite)
     else:
@@ -1152,7 +1200,23 @@ def report(root: Path) -> str:
         lines += ["Not run.", ""]
     lines += report_scanned(root)
     lines += report_olmocr_scans(root)
+    lines += report_multiscript(root)
     return "\n".join(lines) + "\n"
+
+
+def report_multiscript(root: Path) -> list[str]:
+    lines = ["## 12. Multiscript suite (image-only pages in nine scripts, upright and turned)", "",
+             "CER pooled / word F1 per script (eval/scorer/ocr_text.py; development only, no holdout).", ""]
+    scored = {t: read_json(root / "scores" / "multiscript" / f"{t}.json")
+              for t in TOOLS if (root / "scores" / "multiscript" / f"{t}.json").is_file()}
+    if not scored:
+        return lines + ["Not run.", ""]
+    scripts = sorted({s for res in scored.values() for s in res["scripts"]})
+    rows = []
+    for tool, res in scored.items():
+        cells = [res["scripts"].get(s) for s in scripts] + [res["totals"]]
+        rows.append([tool] + [f"{c['pooled_cer']:.4f} / {c['word_f1']:.4f}" if c else "–" for c in cells])
+    return lines + table(["tool"] + scripts + ["all"], rows)
 
 
 def report_scanned(root: Path) -> list[str]:
@@ -1344,6 +1408,10 @@ def cmd_all(args) -> int:
         log("=== corpus --suite scanned: scanned.json present, skipped (--resume)")
     else:
         step("corpus --suite scanned", cmd_corpus, ns(suite="scanned"))
+    if args.resume and (root / "multiscript" / "multiscript.json").is_file():
+        log("=== corpus --suite multiscript: multiscript.json present, skipped (--resume)")
+    else:
+        step("corpus --suite multiscript", cmd_corpus, ns(suite="multiscript"))
     step("score --selftest", cmd_score, ns(selftest=True))
     for tool in TOOLS[:-1]:
         # The OCR reference tools run on the scanned suites only.
@@ -1392,7 +1460,7 @@ def main() -> int:
     p = add("fetch", cmd_fetch, "download the public benchmarks (network)")
     p.add_argument("--only", help=f"comma-separated subset of: {', '.join(DATASETS)}")
     p = add("corpus", cmd_corpus, "render the synthetic corpus, or build the scanned suite from it")
-    p.add_argument("--suite", choices=["synthetic", "scanned"], default="synthetic")
+    p.add_argument("--suite", choices=["synthetic", "scanned", "multiscript"], default="synthetic")
     p.add_argument("--producers", help="synthetic only: comma-separated producer ids")
     p.add_argument("--only", help="comma-separated fixture ids (synthetic) or source item ids "
                                   "<producer>/<fixture> (scanned)")

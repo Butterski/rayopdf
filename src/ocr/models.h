@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
-// The model folder of the OCR add-on: <models>/<tier>/ as docker/ocr_models.py writes it.
+// The model folders of the OCR add-on, as docker/ocr_models.py writes them: a tier
+// (<models>/<tier>/), a recogniser of the script pack (<models>/scripts/<script>/) and the
+// text-line orientation classifier (<models>/orient/).
 //
-//   models.txt   "<sha256> <bytes> <file>" a line: every file of the tier, checked by size when the
-//                add-on starts (by SHA-256 with `rayopdf-ocr --verify`); the hashes go into the
+//   models.txt   "<sha256> <bytes> <file>" a line: every file of the folder, checked by size when
+//                the add-on loads it (by SHA-256 with `rayopdf-ocr --verify`); the hashes go into the
 //                handshake
-//   config.txt   "<key> <value>" a line: model, det_thresh, det_box_thresh, det_unclip_ratio,
-//                rec_height (unknown keys are ignored)
-//   dict.txt     the recogniser's character list (recognize.h)
-//   det.*, rec.* the networks, in each runtime's format (det.ncnn.param/.bin, det.ort, ...)
+//   config.txt   "<key> <value>" a line: model; det_thresh, det_box_thresh, det_unclip_ratio (a
+//                tier: all three, else none); rec_height; script (a script pack folder: its script);
+//                order (logical, or visual for a recogniser that reads right-to-left text left to
+//                right); space_gap (InsertInkSpaces, in line heights); letters ("XXXX-YYYY",
+//                the script's code points); unknown keys are ignored
+//   dict.txt     the recogniser's character list (recognize.h), or the classifier's labels
+//   det.*, rec.*, cls.*   the networks, in each runtime's format (det.ncnn.param/.bin, det.ort, ...)
 #pragma once
 
 #include "ocr/detect.h"
@@ -27,9 +32,14 @@ struct ModelFile {
 };
 
 struct ModelSet {
-    std::string directory;  // <models>/<tier>, no trailing separator
-    std::string model;      // config "model", e.g. PP-OCRv6_small
+    std::string directory;     // no trailing separator
+    std::string model;         // config "model", e.g. PP-OCRv6_small
+    bool detectConfig = false; // config has the detection thresholds (a tier)
     DetectParams detect;
+    std::string script;        // config "script", empty outside the script pack
+    bool visualOrder = false;  // config "order visual"
+    float spaceGap = 0;        // config "space_gap": InsertInkSpaces' gap in line heights, 0 off
+    uint32_t lettersFirst = 0, lettersLast = 0;  // config "letters": the script's code points
     Dictionary dictionary;
     std::vector<ModelFile> files;
 };
@@ -51,6 +61,8 @@ bool ParseManifest(std::string_view text, std::vector<ModelFile>& files);
 bool ParseConfig(std::string_view text, ModelSet& set);
 // A decimal number such as "0.45" or "2" (no sign, no exponent), in 0 to 1000.
 bool ParseDecimal(std::string_view text, float& value);
+// A code point in hexadecimal, 1 to 6 digits.
+bool ParseHex(std::string_view text, uint32_t& value);
 
 // Reads models.txt, config.txt and dict.txt of `directory` and checks that every file models.txt
 // lists has its size. `detail` names the file at fault.

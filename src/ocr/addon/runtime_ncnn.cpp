@@ -2,7 +2,8 @@
 // The ncnn runtime of rayopdf-ocr (ncnn 20261020, BSD-3-Clause, built by docker/ocr.Dockerfile
 // without OpenMP and Vulkan): networks converted by pnnx (det.ncnn.param/.bin, rec.ncnn.param/.bin;
 // input blob in0, output out0), one thread, float32 storage and arithmetic throughout (no fp16 or
-// bf16 shortcuts), so results match the ONNX models' to float rounding. Winograd and im2col-sgemm
+// bf16 shortcuts), so results match the ONNX models' to float rounding. The script pack's files
+// keep their weights in half precision, which ncnn widens to float32 when it loads them. Winograd and im2col-sgemm
 // convolution are off: measured on scanned pages (small tier, detection side 1280) they raise the
 // peak RSS from about 660 MB to 960 MB for a 6 % gain in time (docs/development/ocr-engine.md).
 #include "ocr/addon/runtime.h"
@@ -28,6 +29,8 @@ class NcnnRuntime final : public Runtime {
 public:
     bool Load(const ModelSet& set, Networks networks, std::string& detail) {
         detector_ = networks == Networks::DetectAndRecognize;
+        classifier_ = networks == Networks::Classify;
+        if (classifier_) return LoadNet(set, "cls", recParam_, recBin_, rec_, detail);
         return (!detector_ || LoadNet(set, "det", detParam_, detBin_, det_, detail)) &&
                LoadNet(set, "rec", recParam_, recBin_, rec_, detail);
     }
@@ -51,6 +54,7 @@ public:
 
     RuntimeStatus Recognize(const float* planes, uint32_t width, std::vector<float>& probs, uint32_t& steps,
                             uint32_t& classes) override {
+        if (classifier_) return RuntimeStatus::Failed;
         ncnn::Mat in(int(width), int(kRecHeight), 3);
         if (in.empty()) return RuntimeStatus::Failed;
         const size_t plane = size_t(width) * kRecHeight;
@@ -66,6 +70,24 @@ public:
             const float* row = out.row(int(t));
             std::memcpy(probs.data() + size_t(t) * classes, row, classes * sizeof(float));
         }
+        return RuntimeStatus::Ok;
+    }
+
+    RuntimeStatus Classify(const float* planes, std::vector<float>& probs) override {
+        if (!classifier_) return RuntimeStatus::Failed;
+        ncnn::Mat in(int(kClsWidth), int(kClsHeight), 3);
+        if (in.empty()) return RuntimeStatus::Failed;
+        const size_t plane = size_t(kClsWidth) * kClsHeight;
+        for (int c = 0; c < 3; ++c) std::memcpy(in.channel(c), planes + plane * c, plane * sizeof(float));
+        ncnn::Extractor ex = rec_.create_extractor();
+        ncnn::Mat out;
+        if (ex.input("in0", in) != 0 || ex.extract("out0", out) != 0) return RuntimeStatus::Failed;
+        const int count = out.w * out.h * out.d * out.c;
+        if (out.elemsize != sizeof(float) || count <= 0 || count > 64) return RuntimeStatus::Failed;
+        const ncnn::Mat flat = out.reshape(count);  // without the channel padding
+        if (flat.empty()) return RuntimeStatus::Failed;
+        const float* data = flat;
+        probs.assign(data, data + count);
         return RuntimeStatus::Ok;
     }
 
@@ -101,8 +123,8 @@ private:
     // The files first: the networks may point into their mappings and go before them.
     std::string detParam_, recParam_;
     File::InputFile detBin_, recBin_;
-    ncnn::Net det_, rec_;
-    bool detector_ = false;
+    ncnn::Net det_, rec_;  // rec_ holds the classifier of a runtime loaded for it
+    bool detector_ = false, classifier_ = false;
 };
 
 } // namespace
@@ -111,6 +133,16 @@ std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, s
     std::unique_ptr<NcnnRuntime> runtime(new NcnnRuntime());
     if (!runtime->Load(set, networks, detail)) return nullptr;
     return runtime;
+}
+
+bool RuntimeReads(const ModelSet& set, Networks networks) {
+    switch (networks) {
+    case Networks::DetectAndRecognize:
+        return !ManifestHash(set, "det.ncnn.bin").empty() && !ManifestHash(set, "rec.ncnn.bin").empty();
+    case Networks::RecognizeOnly: return !ManifestHash(set, "rec.ncnn.bin").empty();
+    case Networks::Classify: return !ManifestHash(set, "cls.ncnn.bin").empty();
+    }
+    return false;
 }
 
 } // namespace RayoPdf::Ocr

@@ -248,6 +248,9 @@ collect-rayopdf --bin <bundle>/rayopdf`, then `measure`): RayoPDF's broken pages
 10.68 % to 10.42 % (14.85 % with image regions). No census page got worse. The decision stands:
 R stays above 5 % and CJK is present. Of the 130 pages still broken, about 121 are Devanagari,
 Kannada and Tamil in legacy font encodings, which the shipped recognition model does not cover.
+With 0.0.10's script pack (Devanagari, Tamil, Kannada recognisers, fonts recovered word by word),
+broken pages fall further to 88 (0.99 %), M3 to 219 of 307 (71.3 %) and R core to 9.95 %; no
+page got worse (re-run of 2026-11-09).
 
 ## Text in images of digital pages
 

@@ -392,4 +392,12 @@ EngineStatus TesseractEngine::Line(const GrayView& image, OcrProtocol::Line& lin
     return EngineStatus::Ok;
 }
 
+EngineStatus TesseractEngine::Lines(const std::vector<GrayView>& images, std::vector<OcrProtocol::Line>& lines) {
+    lines.resize(images.size());
+    for (size_t i = 0; i < images.size(); ++i) {
+        if (Line(images[i], lines[i]) != EngineStatus::Ok) return EngineStatus::Failed;
+    }
+    return EngineStatus::Ok;
+}
+
 } // namespace RayoPdf::Ocr

@@ -90,9 +90,7 @@ Limits:
 - crop and recognition widths as above;
 - a response whose header would exceed 1 MiB is answered `too-large`.
 
-**Angle handling** (a 180° turn) is not implemented. The scanned suite's pages are upright or
-skewed by a few degrees, and skew is handled by the rotated crops. It is added only if a measured
-suite needs it.
+**Scripts and orientation** (round 7, 2026-11-08): § Scripts and rotated pages below.
 
 ## Build, run, package
 
@@ -526,7 +524,116 @@ word F1 at most 0.002 lower and CER at most 1 % higher; `old_scans` not lower.
 - **Windows ONNX Runtime.** ONNX Runtime has no MinGW-w64 build; MSYS2 patches about 80 files for
   1.29. ncnn covers Windows, so the ONNX Runtime variant stays Linux-only.
 - **Reading order of multi-column pages** is left to the core.
-- **Scripts.** Right-to-left scripts (c12-rtl), Cyrillic and Hangul are not in the PP-OCRv6
-  dictionaries shipped: small has no Cyrillic or Hangul entries (Latin 491, Greek 76, kana 180,
-  Han 15,565), and tiny has no kana either. Russian and Korean lines come out as punctuation or
-  look-alikes.
+- **Hebrew** (§ Scripts and rotated pages): a permissive model exists, its ncnn conversion does not
+  work yet.
+- **Right-to-left text on turned pages through the core**: the core reorders right-to-left lines
+  only in direction 0 (`src/layout/lines.cpp`), so Arabic and Hebrew pages turned a quarter or
+  upside down come out in visual order.
+
+## Scripts and rotated pages (round 7), 2026-11-08/09
+
+**Models** (all Apache-2.0, pinned by revision and SHA-256 in docker/ocr_models.py,
+`third_party/licenses/paddleocr-scripts.txt`):
+
+|Folder|Model|Dictionary|`rec.ncnn.bin` (half-precision weights)|
+|---|---|---|---|
+|`scripts/cyrillic`|PP-OCRv5 mobile cyrillic|850 (Cyrillic 365, Latin 115)|3,999,288|
+|`scripts/hangul`|PP-OCRv5 mobile korean|11,945 (Hangul 11,504)|6,684,280|
+|`scripts/arabic`|PP-OCRv5 mobile arabic (reads right to left text left to right: `order visual`)|747|3,974,364|
+|`scripts/devanagari`|PP-OCRv5 mobile devanagari|568|3,931,044|
+|`scripts/kannada`|PP-OCRv3 mobile ka (Paddle format only: paddle2onnx in Docker, output checked by SHA-256; `space_gap 0.16`)|153|4,444,688|
+|`scripts/tamil`|PP-OCRv5 mobile ta|513|3,917,736|
+|`orient`|PP-LCNet_x0_25_textline_ori (0/180 degrees per line; float32)|2 labels|965,612|
+
+Inventoried, not taken: the eslav, el, te, th, latin and en PP-OCRv5 recognisers (scripts the
+census does not show, or covered already); PP-LCNet_x1_0_textline_ori and PP-LCNet_x1_0_doc_ori
+(6.8 MB each; the 1 MB line classifier and the readings suffice). Hebrew: Rivok/paddleocr-hebrew
+(Apache-2.0, published 2026-11-06) reads c12's Hebrew lines nearly exactly under ONNX Runtime with
+its 77 MB server CTC model, but pnnx 20261020 converts its SVTRv2 attention wrongly for widths
+other than its example shapes, also after rewriting the 5-D qkv split, and its 7.4 MB mobile model
+is word-level and misreads whole lines; not shipped. The pack and the classifier are ncnn-only:
+the ONNX Runtime minimal build keeps the six tier models' operators, so `ocr-ort` reads neither.
+
+**Half-precision weights** (pnnx fp16=1; ncnn widens them to float32 on load, arithmetic stays
+float32): per-script CER on the multilingual suite moved by at most 0.0002 (Arabic 0.0374 against
+0.0375; every other script identical to four decimals); adopted for the pack (gate: < 0.002).
+
+**Archives** (`tools/package.py`): the add-on archive gains `rayopdf-ocr-models/orient/`
+(36,076,631 B linux tar.gz, was 35,137,525); the script pack is
+`rayopdf-ocr-scripts-VERSION-linux-x64-static.tar.gz` (21,104,735 B; 45,154,040 B with float32
+weights) and `…-windows-x64.zip`, unpacking into the same folder.
+
+**Engine** (`src/ocr/engine.h`, steps 3 and 6):
+- Script routing. A line is unread when its reading holds too few characters for its length or is
+  below 0.80. Only lines the tier reads nearly empty (below 0.25 characters per line height) are
+  probed, up to three, each by the winners so far first; a winner's reading needs ≥ 0.80, must not
+  be unread, and ≥ 50 % of its letters in its script (config `letters`). Winners re-read the
+  page's unread lines. Once six lines are read and two thirds are nearly empty, routing runs on
+  them, and a winner reads the further lines first (the tier only where it fails): a Cyrillic page
+  is not read three times.
+- Orientation. Quarter turns from the boxes' shape; the direction by the samples' readings, the
+  classifier breaking ties. Upside down: the classifier, confirmed by the readings; and, since the
+  classifier misjudges Cyrillic and Hangul (an upright Cyrillic page scores 0.98 for 180°, an
+  upside-down Hangul one 0.05), a page left with ≥ 80 % of its lines unread, and either a
+  classifier mean ≥ 0.1 or as many lines nearly empty, is read upside down too and kept so only
+  when that leaves under half as many unread. Lines carry `dir` (protocol). A box only a little
+  taller than wide (a digit in a narrow table cell) is read turned but stays a line of direction 0.
+- No memory from page to page: an add-on serves documents of any worker, and the same request
+  bytes must give the same response (determinism), so the script found on one page is not carried
+  to the next; the per-page caps above bound the cost instead.
+
+**Multilingual suite** (harness suite `multiscript`: `eval/producers/multiscript.py`,
+`eval/fixtures/multiscript/`, `eval/scorer/ocr_text.py`; 63 items, 64 pages: each script at 300 dpi
+sans and serif, 200 dpi, noisy, and the 300 dpi page turned 90/180/270°). Add-on text per page,
+CER pooled / word F1:
+
+|Script|Before (f96cb56 add-on)|After|
+|---|---|---|
+|Latin|0.344 / 0.787 (rotated pages fail)|0.0004 / 1.000|
+|Cyrillic|0.957 / 0.015|0.0004 / 0.998|
+|Hangul|0.989 / 0.000|0.019 / 0.890|
+|Arabic|0.994 / 0.001|0.037 / 0.926|
+|Devanagari|0.985 / 0.018|0.018 / 0.928|
+|Tamil|0.964 / 0.024|0.013 / 0.883|
+|Kannada|0.958 / 0.023|0.244 / 0.314 (v3; spaces from ink gaps: F1 0.003 → 0.32)|
+|Hebrew|0.871 / 0.022|0.884 / 0.016 (no model)|
+|Mixed (en, ru, ko, hi, ar)|0.804 / 0.320|0.142 / 0.893|
+|Rotated 90 / 180 / 270, all scripts, F1|0.257 / 0.002 / 0.008|0.770 each (as upright)|
+
+Through the core (`convert --tool cli --suite multiscript`, f96cb56 bundle against this one, CER
+pooled / word F1): Latin 0.359 / 0.672 → 0.0004 / 1.000, Cyrillic 0.961 / 0.015 → 0.0004 / 0.998,
+Hangul 0.993 / 0 → 0.029 / 0.867, Devanagari 0.987 / 0.014 → 0.018 / 0.928, Tamil 0.968 / 0.022 →
+0.013 / 0.883, Kannada 0.962 / 0.020 → 0.244 / 0.314, mixed 0.817 / 0.266 → 0.218 / 0.811, Arabic
+0.996 / 0.001 → 0.460 / 0.477 (upright pages 0.21–0.23: lines split where the recogniser drops a
+number; turned pages 0.78: open item below), Hebrew unchanged; all 0.881 / 0.159 → 0.202 / 0.719.
+
+**Latin/CJK unchanged.**
+- Core alone: Markdown byte-identical to f96cb56's core on synthetic (199), odl (200) and scanned
+  (398) (core built from f96cb56 plus this round's files only).
+- Scanned suite through the core, f96cb56 bundle against this one (development items, 362): NID
+  0.9068 → 0.9192, all of it from the c11/c12 items (Russian, Korean, Arabic, Hebrew lines); without
+  them NID 0.9196 → 0.9197, TEDS 0.7372 → 0.7372, MHS 0.8368 → 0.8368, construct F1 0.6199 →
+  0.6199. Holdout (36 weasyprint items, once, aggregate only): NID 0.8989 → 0.9198.
+- Add-on text on the 908 development pages: 878 identical; 28 of the 30 others are c11/c12 pages
+  now read in their scripts, two are standing boxes now given their direction (a column of code
+  line numbers, one misdetected word).
+- Speed, CPU 3 (`--cpuset-cpus=3 --cpus=1`, no other container pinned to it, base and new
+  interleaved per page, `--image --repeat 3`, median per page; the 41-page sample of B2): median
+  2,119 → 2,143 ms (+1.1 %), mean 2,523 → 2,553 ms (+1.2 %), per-page ratio median 1.008, max
+  1.106 (no extra work on those pages besides five classifier runs: noise).
+- Cost on other scripts, same setup, one 300 dpi page each (base reads them as look-alikes):
+  Cyrillic 8,756 → 12,278 ms, Hangul 7,058 → 9,364, Arabic 5,471 → 5,709, Devanagari 4,668 →
+  5,006, Kannada 6,639 → 10,749, Tamil 8,233 → 7,611, the five-script page 4,591 → 12,804, Latin
+  3,423 → 3,340.
+
+**Glyph-shape recovery and the census** (`tools/ocr_gate.py collect-rayopdf` + `measure`, each
+census page alone, f96cb56 bundle against this bundle; measured before the last rule, standing
+boxes reading fewer than four characters keeping direction 0, and not run again after it): RayoPDF's broken pages 130 → 88 (1.46 % →
+0.99 %), M3 177 → 219 of 307 (57.7 % → 71.3 %), R core 10.42 % → 9.95 %; no page worse (no text
+page lost its text, no new broken page); every page answered within the 600 s per PDF. Fixed: the
+Nepali Preeti/Himali pages of 0000828 (25), the Tamil NC* fonts of 0000707 (7), Hindi Chanakya of
+0000031 (5), Kannada Nudi of 0000028 (3), 0000319 (2). Complex-script fonts are read by words
+(ocr-protocol.md § Glyph shapes): per glyph the Devanagari recogniser reads 20 of 45 Chanakya shapes
+and the font is rejected; by words the Tamil font of 0000707 recovers 7,308 glyphs on a page.
+Remaining: 0000319 (45 pages, Nepali, several fonts per page), Kannada and Hindi pages where the
+words read below the plausibility floor.

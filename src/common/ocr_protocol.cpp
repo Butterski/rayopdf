@@ -188,7 +188,7 @@ bool ReadMagnitude(Cursor& c, bool allowNegative, uint64_t max, uint64_t& magnit
     uint64_t value = 0;
     while (c.p < c.end && *c.p >= '0' && *c.p <= '9') {
         const uint64_t digit = static_cast<uint64_t>(*c.p - '0');
-        if (value > (max - digit) / 10) return false;
+        if (digit > max || value > (max - digit) / 10) return false;
         value = value * 10 + digit;
         ++c.p;
     }
@@ -559,7 +559,12 @@ void WriteResponse(const Response& response, std::string& frame) {
             AppendSigned(frame, line.chars[k].x1);
             frame.push_back(']');
         }
-        frame += "]}";
+        frame += ']';
+        if (line.dir != 0) {
+            frame += ",\"dir\":";
+            AppendSigned(frame, line.dir);
+        }
+        frame += '}';
     }
     frame.push_back(']');
     EndHeader(frame);
@@ -750,9 +755,15 @@ bool ParseResponse(std::string_view header, Response& response, std::string& err
                             return true;
                         });
                     }
+                    if (k == "dir") {
+                        uint64_t dir = 0;
+                        if (!Once(has, 4) || !ReadUnsigned(c, 3, dir)) return false;
+                        line.dir = static_cast<uint8_t>(dir);
+                        return true;
+                    }
                     return SkipValue(c);
                 });
-                return read && has == 15 && line.chars.size() == CodePoints(line.text);
+                return read && (has & 15) == 15 && line.chars.size() == CodePoints(line.text);
             });
         }
         return SkipValue(c);

@@ -1,0 +1,11 @@
+The Riverside Library Reopens After Two Years of Repairs
+
+On 14 March 2025 the public library on Mill Street opened its doors again, after a renovation that took almost two years and cost about 3.8 million euros. The old building, finished in 1932, had a leaking roof, cold reading rooms and wiring that no longer met the safety rules. Workers replaced the roof, insulated the walls and added a lift, so that visitors with prams or wheelchairs can now reach the upper floor without help.
+
+The library director, Helen Marsh, said that the number of visitors in the first week was higher than anyone had expected. Staff counted 6,412 people between Monday and Sunday, compared with roughly 2,500 in an ordinary week before the closure. Many came only to look around, but more than 900 new reader cards were issued, and the children's corner was full every afternoon. Some families arrived before the doors opened at 9:30 and waited patiently in the rain.
+
+The new building uses about 40% less energy for heating than the old one. Heat pumps in the courtyard replace the gas boiler, and solar panels on the south side of the roof supply part of the electricity on bright days. The architects kept the tall windows of the main hall, which let in plenty of daylight, but fitted them with double glazing. A small café near the entrance serves tea, soup and sandwiches at modest prices.
+
+Not everything went smoothly. The opening was delayed twice, first by a shortage of steel beams in the autumn of 2023 and then by a flood in the basement in January 2024, which damaged several hundred old newspapers kept there. Most of them have since been dried and scanned, and the digital copies can be read on the computers in the local history room. The originals will be stored in a dry archive outside the town.
+
+For the coming months the library plans evening lectures, reading groups for teenagers and free computer lessons for older residents. The first lecture, on the history of the river port, will take place on Thursday, 3 April, at 7 p.m. Entry is free, but places are limited to 120, so readers are asked to book a seat at the front desk or by phone. Opening hours are Monday to Saturday, from 9:30 to 19:00.

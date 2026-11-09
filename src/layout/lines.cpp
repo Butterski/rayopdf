@@ -236,6 +236,16 @@ void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
     }
 }
 
+// An opening quote or bracket: ( [ “ ‘ „ «.
+bool OpeningMark(const PageData& page, const Glyph& g) {
+    if (g.textLength == 0) return false;
+    const unsigned char c = static_cast<unsigned char>(page.text[g.text]);
+    if (c == '(' || c == '[') return g.textLength == 1;
+    if (c != 0xE2 && c != 0xC2) return false;
+    const std::string_view t = page.GlyphText(g);
+    return t == "\xE2\x80\x9C" || t == "\xE2\x80\x98" || t == "\xE2\x80\x9E" || t == "\xC2\xAB";
+}
+
 bool StartsWithCombiningMark(std::string_view text) {
     // U+0300-U+036F combining diacritical marks: C3 80..CD AF in UTF-8.
     if (text.size() < 2) return false;
@@ -582,7 +592,7 @@ Marker ParseMarker(std::string_view t, uint32_t& value) {
         "\xE2\x96\xA0", "\xE2\x96\xA1", "\xE2\x96\xBA", "\xE2\x96\xB6", "\xE2\x9E\xA2", "\xE2\x9E\xA4",
         "\xE2\x9D\x96", "\xE2\x99\xA6", "\xE2\x97\x86", "\xE2\x88\x99", "\xE2\x97\xBE", "\xEF\x82\xB7",
         "\xEF\x82\xA7", "\xEF\x83\x98", "\xEF\x81\xB6", "\xEF\x82\xA8", "\xE2\x80\x94", "\xE2\x9C\x93",
-        "\xE2\x9C\x94",
+        "\xE2\x9C\x94", "\xE2\x88\x97",  // ✔ ∗ (LaTeX's third itemize level)
     };
     // Bullets and task boxes are at most three bytes and start with one of these.
     const unsigned char lead = static_cast<unsigned char>(t[0]);
@@ -590,7 +600,7 @@ Marker ParseMarker(std::string_view t, uint32_t& value) {
         for (const std::string_view b : kBullets)
             if (t == b) return Marker::Bullet;
         if (t == "\xE2\x98\x90") return Marker::TaskOpen;                            // ☐
-        if (t == "\xE2\x98\x91" || t == "\xE2\x98\x92") return Marker::TaskDone;     // ☑ ☒
+        if (t == "\xE2\x98\x91" || t == "\xE2\x98\x92" || t == "\xE2\x8A\xA0") return Marker::TaskDone;  // ☑ ☒ ⊠
     }
     // Enumerators: "N." "N)" "(N)" with N digits, one lowercase letter or a lowercase roman numeral.
     std::string_view core = t;
@@ -904,6 +914,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         float previousSize = 0;
         bool first = true;
         Segment seg{0, 0, 0};  // the ink segment being extended, appended when the next starts
+        // A glyph set tight after the one before it (no space, no wide gap) may be an opening
+        // quote or bracket hanging into a column gutter (LaTeX's protrusion): the gap is then also
+        // measured past it, from the ink before it to the glyph after it.
+        bool prevTight = false;   // the previous glyph was set tight
+        float beforePrevious = 0; // the ink's right edge before the previous glyph
         for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
             const uint32_t i = *at;
             Glyph& g = glyphs[i];
@@ -923,9 +938,20 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 if (gap > kGutterCandidate * em) {
                     segments.push_back(seg);
                     seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())};
+                    prevTight = false;
+                } else if (prevTight && g.u0 - beforePrevious > kGutterCandidate * em &&
+                           OpeningMark(page, glyphs[proto.back()])) {
+                    // The previous glyph, a mark set tight after the text before it, hangs into
+                    // the gap: the gap's middle is found from the text after it.
+                    seg.u1 = beforePrevious;
+                    segments.push_back(seg);
+                    seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size() - 1)};
+                    prevTight = false;
                 } else {
                     seg.u1 = M::Max(seg.u1, g.u1);
+                    prevTight = !pendingSpace;
                 }
+                beforePrevious = right;
                 right = M::Max(right, g.u1);
                 p.u0 = M::Min(p.u0, g.u0), p.u1 = M::Max(p.u1, g.u1);
             } else {

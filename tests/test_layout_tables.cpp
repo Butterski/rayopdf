@@ -786,6 +786,98 @@ void TestRowsBelowLattice() {
     RAYOPDF_CHECK(Contains(md, "| Indonesia | 9.4% | 9,651 |\n| Thailand | -0.9% | 8,067 |\n| Viet Nam | 11.5% | 17,200 |"), 854);
 }
 
+// A header cell set to the middle of two header lines ("Time t" beside two-line labels) keeps the
+// first line of the others in the table.
+void TestMiddleHeaderCell() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float y = AddProse(page, 72, 450, 740, 2) - 20;
+    AddText(page, "Observed returns", 160, y);
+    AddText(page, "Returns on new", 300, y);
+    AddText(page, "Time t", 72, y - 5);
+    AddText(page, "on the portfolio", 160, y - 10);
+    AddText(page, "investment", 300, y - 10);
+    y -= 28;
+    for (int r = 0; r < 4; ++r, y -= 16) {
+        AddText(page, std::to_string(2012 + r), 72, y);
+        AddText(page, std::to_string(10 - r) + "%", 160, y);
+        AddText(page, std::to_string(7 - r) + "%", 300, y);
+    }
+    AddProse(page, 72, 450, y - 20, 2);
+    const std::string md = Run(pages);
+    Show("middle header cell", md);
+    RAYOPDF_CHECK(Contains(md, "| Time t | Observed returns on the portfolio | Returns on new investment |\n| --- | --- | --- |\n| 2012 |"), 855);
+}
+
+// A header row right above a box of several ruled rows is its first row.
+void TestHeaderAboveRuledRows() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "OCR", 204, 706);
+    AddText(page, "Search", 304, 706);
+    for (float y : {700.0f, 680.0f, 660.0f}) HLine(page, 72, 400, y);
+    for (float x : {72.0f, 200.0f, 300.0f, 400.0f}) VLine(page, x, 660, 700);
+    AddText(page, "Pack", 76, 686);
+    AddText(page, "Reads text", 204, 686);
+    AddText(page, "Finds items", 304, 686);
+    AddText(page, "Use", 76, 666);
+    AddText(page, "Receipts", 204, 666);
+    AddText(page, "Catalogues", 304, 666);
+    const std::string md = Run(pages);
+    Show("header above ruled rows", md);
+    RAYOPDF_CHECK(Contains(md, "|  | OCR | Search |\n| --- | --- | --- |\n| Pack | Reads text | Finds items |"), 856);
+}
+
+// Diagrams drawn over a grid are no tables: boxes spanning most cells (a block diagram), a few
+// one-word labels in a mostly empty grid (a graph's vertices).
+void TestDiagramGrids() {
+    std::vector<PageData> pages{NewPage(), NewPage(2)};
+    // Block diagram: three rows of boxes that do not line up.
+    PageData& a = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f, 640.0f}) HLine(a, 72, 400, y);
+    VLine(a, 72, 640, 700);
+    VLine(a, 400, 640, 700);
+    VLine(a, 150, 680, 700);
+    VLine(a, 250, 660, 680);
+    VLine(a, 320, 640, 660);
+    AddText(a, "Encoder", 80, 686);
+    AddText(a, "Channel", 160, 686);
+    AddText(a, "Decoder", 80, 666);
+    AddText(a, "Output", 260, 666);
+    AddText(a, "Radar", 80, 646);
+    AddText(a, "Signal", 330, 646);
+    // Graph: four labels in a 4 x 4 grid.
+    PageData& b = pages[1];
+    for (int k = 0; k <= 4; ++k) HLine(b, 72, 312, 700 - 30.0f * float(k)), VLine(b, 72 + 60.0f * float(k), 580, 700);
+    AddText(b, "a", 76, 686);
+    AddText(b, "b", 196, 686);
+    AddText(b, "c", 76, 596);
+    AddText(b, "d", 256, 596);
+    AddText(b, "e", 136, 626);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("diagram grids", md);
+    RAYOPDF_CHECK(report.tables == 0, 857);
+}
+
+// Pieces of tall brackets around aligned figures: a matrix in display math, not a table.
+void TestBracketMatrix() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const char* const left[] = {"\xE2\x8E\xA1", "\xE2\x8E\xA2", "\xE2\x8E\xA2", "\xE2\x8E\xA3"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 700 - 14.0f * float(r);
+        AddText(page, left[r], 100, y);
+        AddText(page, std::to_string(r) + ".25", 130, y);
+        AddText(page, std::to_string(r + 1) + ".50", 200, y);
+        AddText(page, std::to_string(r + 2) + ".75", 270, y);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("bracket matrix", md);
+    RAYOPDF_CHECK(report.tables == 0, 858);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -868,6 +960,10 @@ int main(int argc, char** argv) {
     TestWideHeaderLabels();
     TestRuledGroupHeader();
     TestRowsBelowLattice();
+    TestMiddleHeaderCell();
+    TestHeaderAboveRuledRows();
+    TestDiagramGrids();
+    TestBracketMatrix();
     std::puts("test_layout_tables: ok");
     return 0;
 }

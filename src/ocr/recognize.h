@@ -57,6 +57,14 @@ void InsertSpaces(const float* probs, uint32_t classes, uint32_t spaceClass, flo
                   std::vector<DecodedChar>& chars);
 constexpr float kDefaultSpaceThreshold = 0.25f;
 
+// Space recovery from the ink, for recognisers that drop the spaces between words (PP-OCRv3
+// Kannada, config "space_gap"): between two characters that are not spaces, a run of at least
+// `minGap` columns without ink in `line` (width x height gray, the recogniser's input before its
+// padding to `paddedWidth` columns, which `steps` timesteps cover) inserts a space in the middle
+// of the run. Ink is darker than halfway between the line's darkest and lightest pixel.
+void InsertInkSpaces(const uint8_t* line, uint32_t width, uint32_t height, uint32_t paddedWidth, uint32_t steps,
+                     uint32_t spaceClass, float minGap, std::vector<DecodedChar>& chars);
+
 // A recognised line in the coordinates of its crop: text, confidence, and per code point the span
 // [x0, x1) along the crop's width (contiguous: each boundary is midway between the centres of two
 // neighbouring characters' timesteps). `cropWidth` is the crop's width in the pixels the spans are

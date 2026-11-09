@@ -51,3 +51,8 @@ The OCR add-on rayopdf-ocr (a separate program, never linked into rayopdf) also 
 - Its model folder rayopdf-ocr-models/ holds PP-OCRv6 text detection and recognition models by
   the PaddlePaddle Authors (PaddleOCR, https://github.com/PaddlePaddle/PaddleOCR), licensed under
   the Apache License 2.0, converted to ncnn's format. See third_party/licenses/pp-ocrv6.txt.
+- Its text-line orientation classifier (rayopdf-ocr-models/orient/) and the optional script pack
+  (rayopdf-ocr-models/scripts/: PP-OCRv5 Cyrillic, Korean, Arabic, Devanagari and Tamil
+  recognisers, the PP-OCRv3 Kannada recogniser, PP-LCNet_x0_25_textline_ori) are PaddleOCR
+  models by the PaddlePaddle Authors, licensed under the Apache License 2.0, converted to ncnn's
+  format. See third_party/licenses/paddleocr-scripts.txt.

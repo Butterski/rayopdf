@@ -125,6 +125,7 @@ private:
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
     std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
+    std::vector<uint8_t> kinds_;     // per Word: upright, italic phrase, math or operator (StyleWords)
     std::vector<uint32_t> wordOf_;   // per GlyphRef: its word
     std::vector<uint32_t> runEnd_;   // per style and GlyphRef: where the style's run from it ends
     std::vector<int32_t> before_, after_;  // per GlyphRef: the nearest letter glyph before / after it
@@ -327,48 +328,93 @@ void Writer::StyleWords(bool styles) {
         styles_[k] = s;
     }
     // Math set in an italic text font is no emphasis: an italic word of one letter (but the
-    // pronoun "I"), of up to three letters with a bracket ("T(n)"), with an operator ("x+y",
-    // "z=x−iy") or with a raised or lowered letter ("P<sub>x</sub>"), or a word mixing italic and
-    // upright letters with a bracket, an operator or a script ("O(nlogn)"), unless it belongs to
-    // a longer italic phrase.
-    constexpr uint8_t kUpright = 0, kPhrase = 1, kMath = 2;
+    // pronoun "I"), of up to three letters with a bracket ("T(n)") or a digit ("4ac", "πr²"), with
+    // an operator ("x+y", "z=x−iy") or with a raised or lowered letter ("P<sub>x</sub>"); a word
+    // mixing italic and upright letters with a bracket, an operator or a script ("O(nlogn)"), or
+    // whose italic runs are a letter or two ("n-th", "cosθ"); an italic word of up to three
+    // letters beside an operator or beside math ("ax + by"). Unless it belongs to a longer italic
+    // phrase.
+    constexpr uint8_t kUpright = 0, kPhrase = 1, kMath = 2, kOperator = 3, kShort = 0x10;
     const auto kindOf = [&](size_t i) -> uint8_t {
         const Word& w = words_[i];
-        // No italic glyph: no italic letter.
-        bool anyItalic = false;
-        for (uint32_t k = w.first; k < w.first + w.count; ++k) anyItalic = anyItalic || (styles_[k] & kStyleItalic);
-        if (!anyItalic) return kUpright;
-        uint32_t letters = 0, italic = 0, brackets = 0, ops = 0, scripts = 0;
+        // A word of letters only, none italic, is upright: no glyph needs decoding.
+        bool plain = true;
+        for (uint32_t k = w.first; k < w.first + w.count && plain; ++k)
+            plain = (styles_[k] & (kLetter | kStyleItalic)) == kLetter;
+        if (plain) return kUpright;
+        uint32_t letters = 0, italic = 0, brackets = 0, ops = 0, scripts = 0, digits = 0, run = 0, longest = 0;
         bool pronoun = false;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
             const std::string_view t = Text(refs_[k]);
             const uint32_t cp = FirstOf(t);
-            if ((styles_[k] & kLetter) && !(cp >= '0' && cp <= '9')) {
+            const bool letter = (styles_[k] & kLetter) && !(cp >= '0' && cp <= '9');
+            run = letter && (styles_[k] & kStyleItalic) ? run + 1 : 0;
+            longest = std::max(longest, run);
+            if (refs_[k].script != kScriptNone) scripts++;
+            if (letter) {
                 letters++;
                 if (styles_[k] & kStyleItalic) italic++;
-                if (refs_[k].script != kScriptNone) scripts++;  // a raised or lowered letter: an index
                 pronoun = t == "I";
+            } else if (cp >= '0' && cp <= '9') {
+                digits++;
             } else if (cp == '(' || cp == ')') {
                 brackets++;
             } else if (cp == '=' || cp == '+' || cp == '<' || cp == '>' || cp == '^' || cp == '|' || cp == 0x2212 ||
-                       (cp >= 0x2200 && cp <= 0x22FF)) {
+                       cp == 0xB1 || (cp >= 0x2200 && cp <= 0x22FF)) {
                 ops++;
             }
         }
+        if (letters == 0) return ops > 0 && digits == 0 ? kOperator : kUpright;
         if (italic == 0) return kUpright;
-        if (italic < letters) return brackets + ops > 0 || scripts > 0 ? kMath : kUpright;
-        const bool math = (letters == 1 && !pronoun) || scripts > 0 || ops > 0 || (letters <= 3 && brackets > 0);
-        return math ? kMath : kPhrase;
+        if (italic < letters) return brackets + ops > 0 || scripts > 0 || longest <= 2 ? kMath : kUpright;
+        const bool small = letters <= 3;
+        const bool math = (letters == 1 && !pronoun) || ops > 0 || (small && (brackets + scripts + digits > 0));
+        return math ? kMath : small ? uint8_t(kPhrase | kShort) : kPhrase;
     };
     if (set & kStyleItalic) {
-        uint8_t prev = kUpright, here = words_.empty() ? kUpright : kindOf(0), next = kUpright;
+        kinds_.resize(words_.size());
+        for (size_t i = 0; i < words_.size(); ++i) kinds_[i] = kindOf(i);
+        // Short italic words beside operators or math are math too, in both directions.
+        const auto mathLike = [&](size_t j) { return kinds_[j] == kMath || kinds_[j] == kOperator; };
+        for (size_t i = 0; i < words_.size(); ++i)
+            if (kinds_[i] == (kPhrase | kShort) && i > 0 && mathLike(i - 1)) kinds_[i] = kMath;
+        for (size_t i = words_.size(); i-- > 0;)
+            if (kinds_[i] == (kPhrase | kShort) && i + 1 < words_.size() && mathLike(i + 1)) kinds_[i] = kMath;
         for (size_t i = 0; i < words_.size(); ++i) {
-            next = i + 1 < words_.size() ? kindOf(i + 1) : kUpright;
-            if (here == kMath && prev != kPhrase && next != kPhrase)
+            const bool phraseBefore = i > 0 && (kinds_[i - 1] & ~kShort) == kPhrase;
+            const bool phraseAfter = i + 1 < words_.size() && (kinds_[i + 1] & ~kShort) == kPhrase;
+            if (kinds_[i] == kMath && !phraseBefore && !phraseAfter)
                 for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k)
                     styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleItalic);
-            prev = here;
-            here = next;
+        }
+    }
+    // A bold letter alone in math (a matrix "A𝑖", a vector "∇ ⋅ E = …") is no strong emphasis: one
+    // bold letter in a word with a mathematical alphanumeric, or beside a word that is an operator
+    // or holds one.
+    if (set & kStyleBold) {
+        const auto mathWord = [&](size_t i) {
+            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) {
+                const uint32_t cp = FirstOf(Text(refs_[k]));
+                if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || cp == '=') return true;
+            }
+            return false;
+        };
+        for (size_t i = 0; i < words_.size(); ++i) {
+            // Only a word with one bold letter is a candidate; its code points are read then.
+            uint32_t bold = 0;
+            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count && bold <= 1; ++k)
+                if ((styles_[k] & (kLetter | kStyleBold)) == (kLetter | kStyleBold)) bold++;
+            if (bold != 1) continue;
+            uint32_t letters = 0;
+            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) {
+                if (!(styles_[k] & kLetter)) continue;
+                const uint32_t cp = FirstOf(Text(refs_[k]));
+                if (cp < 0x1D400 || cp > 0x1D7FF) letters++;
+            }
+            if (bold != 1 || letters != 1) continue;
+            if (!mathWord(i) && !(i > 0 && mathWord(i - 1)) && !(i + 1 < words_.size() && mathWord(i + 1))) continue;
+            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k)
+                styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleBold);
         }
     }
     // The nearest letters around each glyph: any letter, and letters outside code ("firm" ones).

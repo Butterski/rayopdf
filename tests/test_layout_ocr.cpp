@@ -101,7 +101,7 @@ bool SameLines(const P::Response& a, const P::Response& b) {
     if (a.lines.size() != b.lines.size()) return false;
     for (size_t i = 0; i < a.lines.size(); ++i) {
         const P::Line &x = a.lines[i], &y = b.lines[i];
-        if (x.x0 != y.x0 || x.y0 != y.y0 || x.x1 != y.x1 || x.y1 != y.y1 || x.text != y.text || x.conf != y.conf ||
+        if (x.x0 != y.x0 || x.y0 != y.y0 || x.x1 != y.x1 || x.y1 != y.y1 || x.text != y.text || x.conf != y.conf || x.dir != y.dir ||
             x.chars.size() != y.chars.size())
             return false;
         for (size_t k = 0; k < x.chars.size(); ++k)
@@ -172,6 +172,18 @@ void TestProtocolRoundTrips() {
     RAYOPDF_CHECK(Contains(bytes, "\"conf\":0,") && Contains(bytes, "\"conf\":1,") && Contains(bytes, "\"conf\":0.5,") &&
                       Contains(bytes, "\"conf\":0.1234,"),
                   1201);
+    // A turned line's baseline direction: written only when not 0, read back, 4 and up refused.
+    response.lines[1].dir = 3;
+    P::WriteResponse(response, bytes);
+    RAYOPDF_CHECK(Contains(bytes, "\"dir\":3}") && ReadOne(bytes, frame) == P::FrameStatus::Ok &&
+                      P::ParseResponse(frame.header, parsed, error) && parsed.lines[1].dir == 3 &&
+                      parsed.lines[0].dir == 0 && SameLines(parsed, response),
+                  1207);
+    std::string turned(frame.header);
+    const size_t dir = turned.find("\"dir\":3");
+    turned[dir + 6] = '4';
+    RAYOPDF_CHECK(!P::ParseResponse(turned, parsed, error), 1208);
+    response.lines[1].dir = 0;
     P::Response failure;
     failure.id = 3;
     failure.ok = false;

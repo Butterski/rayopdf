@@ -92,9 +92,12 @@ other than 1. The other members describe the engine for reports:
 - `models`: the model files the engine reads, with their SHA-256 from `models.txt`. First the tier
   folder's: `config.txt`, `dict.txt`, then the runtime's network files (`det.ort` and `rec.ort` for
   ONNX Runtime). With a tiny first pass (the default, [ocr-engine.md](ocr-engine.md)) the tiny
-  folder's `config.txt`, `dict.txt` and recognition network follow as `tiny/<file>`.
+  folder's `config.txt`, `dict.txt` and recognition network follow as `tiny/<file>`; then the
+  orientation classifier's files as `orient/<file>` and those of each recogniser of the script pack
+  as `scripts/<script>/<file>`, when they are installed ([ocr-engine.md](ocr-engine.md)).
 - `scripts`: the scripts with at least 20 entries in the tier's dictionary, in the order latin,
-  greek, cyrillic, hebrew, arabic, devanagari, thai, kana, han, hangul.
+  greek, cyrillic, hebrew, arabic, devanagari, thai, kana, han, hangul; then the script pack's
+  (cyrillic, hangul, arabic, devanagari, kannada, tamil) not listed yet.
 
 The Tesseract backend announces `"engine":"tesseract"`, its language as `tier`, its version as
 `runtime`, no `models` and its scripts. The handshake must arrive within 30 s (models are loaded
@@ -132,9 +135,17 @@ before it).
 - `lines`: the add-on sends them in reading order (rows top to bottom, then left to right); the
   core orders them again by their boxes. `box` is `[x0,y0,x1,y1]` in pixels of the
   request's image, origin top-left, y down, `x1` and `y1` exclusive. `text` is UTF-8. `conf` is 0
-  to 1 with at most four decimals (both sides hold it as an integer 0–10000). `chars` has exactly
-  one `[x0,x1]` span per Unicode code point of `text`, spaces included (a space gets the gap it
-  spans), from the recogniser's time steps.
+  to 1 with at most four decimals (both sides hold it as an integer 0–10000). `text` is in logical
+  order (right-to-left text as it is read). `chars` has exactly one `[x0,x1]` span per Unicode
+  code point of `text`, spaces included (a space gets the gap it spans), from the recogniser's
+  time steps.
+- `dir` (optional, after `chars`, written only when not 0): the baseline direction of the line's
+  text in the image, as `Glyph::dir`: 1 runs bottom to top, 2 upside down (right to left), 3 top
+  to bottom. The spans of a line of direction 1 or 3 are rows (`[y0,y1]`), of 0 and 2 columns. A
+  page scanned turned a quarter or upside down comes back with every line so; the core lays the
+  glyphs out in the frame of that direction (`src/layout/ocr_layer.cpp`: the canvas is turned so
+  that the lines stand upright, their typography measured there, and the glyphs and rules mapped
+  back), as for rotated text of a digital page. Cores before this member skip it; protocol stays 1.
 - For `lines` requests: one response line per line image, in request order, `box`
   `[0,0,width,height]` of that image; empty text and `conf` 0 when nothing is recognised.
 - Errors: `too-large` (over a limit, or a response whose header would exceed 1 MiB),
@@ -316,10 +327,19 @@ not even the report.
    and no check that did not fire before; otherwise everything is put back. An accepted font's
    glyphs get the text on every page. Glyphs covered by ActualText or dropped keep theirs.
 
-Complex scripts are not recovered per glyph, and their pages are not sent to page OCR either: in
-the census the broken pages that remain are legacy-encoded Devanagari, Kannada and Tamil, which the
-shipped PP-OCRv6 dictionaries do not hold (their handshake lists no Indic script), so page OCR
-could only produce look-alikes.
+**Complex scripts: words, not glyphs.** A legacy-encoded Devanagari, Kannada or Tamil font draws
+a syllable from several glyphs (a vowel sign before its consonant, half forms), so a glyph alone
+reads as nothing or as another letter. When a whole font's glyphs read mostly as letters of such a
+script (the add-on's script pack recognises them, § ocr-engine.md), the font's words are drawn
+instead (`RecogniseWords`): a word is a run of the font's glyphs in content order on one
+baseline, each starting at most 0.25 em after the last one ends; each distinct word (glyphs and
+offsets) is drawn once at the font's line scale with its glyphs at their places, the words go
+0.6 em apart into lines of at most 12, and a line whose text splits at its spaces into as many
+words gives each word its text (the other lines' words go again 4 to a line 1.5 em apart, then
+the rest alone). A word's first glyph takes
+the word's text and spans the word; its other glyphs give no text. Plausibility (≥ 0.70 mean
+confidence, ≥ 75 % of the words read, ≥ 90 % of the letters of one script) and acceptance are as
+above.
 
 **Measured** (2026-11-08, AMD Ryzen 5 PRO 4650GE, Docker; add-on ncnn PP-OCRv6 small; harness
 roots `benchmark-output/eval-glyph*`):
