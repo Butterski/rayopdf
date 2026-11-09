@@ -90,6 +90,8 @@ constexpr uint32_t kMathGreek[58] = {
 // A mathematical alphanumeric (or letterlike stand-in) as its plain letter, digit or Greek letter
 // and its alphabet. False for anything else.
 bool MathAlphanumeric(uint32_t cp, uint32_t& base, Alphabet& alphabet) {
+    // Neither a letterlike stand-in (U+2102-U+2134) nor in the block: most characters.
+    if (cp < 0x2102 || (cp > 0x2134 && cp < 0x1D400) || cp > 0x1D7FF) return false;
     for (const Letterlike& l : kLetterlike) {
         if (l.cp == cp) {
             base = static_cast<unsigned char>(l.letter);
@@ -266,9 +268,28 @@ constexpr std::string_view kFunctions[] = {
     "sinh",   "sup",    "tan",    "tanh", "liminf", "limsup",
 };
 
+// A word of up to 8 bytes as one integer (its first byte lowest), to compare with a name at once.
+constexpr uint64_t Pack(std::string_view word) {
+    uint64_t key = 0;
+    for (size_t i = 0; i < word.size() && i < 8; ++i) key |= uint64_t(static_cast<uint8_t>(word[i])) << (8 * i);
+    return key;
+}
+
+constexpr size_t kFunctionCount = sizeof(kFunctions) / sizeof(kFunctions[0]);
+struct FunctionKeys {
+    uint64_t key[kFunctionCount] = {};
+    uint8_t size[kFunctionCount] = {};
+    constexpr FunctionKeys() {
+        for (size_t i = 0; i < kFunctionCount; ++i) key[i] = Pack(kFunctions[i]), size[i] = static_cast<uint8_t>(kFunctions[i].size());
+    }
+};
+constexpr FunctionKeys kFunctionKeys;
+
 bool IsFunctionName(std::string_view word) {
-    for (std::string_view f : kFunctions)
-        if (f == word) return true;
+    if (word.size() < 2 || word.size() > 6) return false;  // every name has 2 to 6 letters
+    const uint64_t key = Pack(word);
+    for (size_t i = 0; i < kFunctionCount; ++i)
+        if (kFunctionKeys.key[i] == key && kFunctionKeys.size[i] == word.size()) return true;
     return false;
 }
 
@@ -1629,28 +1650,88 @@ void PrepareMathGlyphs(PageData& page) {
     // accent glyph goes down onto the baseline of the glyph under it.
     uint64_t budget = uint64_t(1) << 22;
     const size_t n = page.glyphs.size();
+    // The glyphs an accent may sit on: visible text glyphs of direction 0 whose text starts with no
+    // accent. Nothing below changes which glyphs they are or their boxes (only accents move), so
+    // they are listed once, when the first accent needs them, and after 16 accents sorted by the
+    // left end of their reach, with the furthest right end up to each. With every box finite the
+    // glyph under an accent is the nearest by `d`, the first of equal ones, in any order; otherwise
+    // all glyphs are walked in order as they always were.
+    struct Reach {
+        float lo;
+        uint32_t glyph;
+    };
+    std::vector<Reach> reach;
+    std::vector<float> reachHi;
+    bool listed = false, finite = true, sorted = false;
+    uint32_t accents = 0;
     for (size_t i = 0; i < n && budget > n; ++i) {
         Glyph& a = page.glyphs[i];
         if (a.dir != 0 || a.textLength == 0 || (a.flags & (kGlyphInvisible | kGlyphSpace)) || !Finite(a.v)) continue;
         const std::string_view text = page.GlyphText(a);
+        // No ASCII character is an accent here (^ and ~ are not taken).
+        if (text.size() == 1 && static_cast<unsigned char>(text[0]) < 0x80) continue;
         uint32_t cp = 0;
         size_t length = 0;
         if (!Utf8::Decode(text, 0, cp, length) || length != text.size() || AccentOf(cp).empty() || cp == '^' || cp == '~')
             continue;
         budget -= n;
+        if (!listed) {
+            listed = true;
+            for (size_t k = 0; k < n; ++k) {
+                const Glyph& b = page.glyphs[k];
+                if (b.dir != 0 || b.textLength == 0 || (b.flags & (kGlyphInvisible | kGlyphSpace))) continue;
+                const std::string_view bt = page.GlyphText(b);
+                const unsigned char lead = bt.empty() ? 0 : static_cast<unsigned char>(bt[0]);
+                uint32_t bcp = 0;
+                if (lead < 0x80 ? lead == '^' || lead == '~' : Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty())
+                    continue;
+                finite = finite && Finite(b.u0) && Finite(b.u1) && Finite(b.v) && Finite(b.size);
+                reach.push_back(Reach{b.u0 - 0.1f * b.size, static_cast<uint32_t>(k)});
+            }
+        }
+        // Many accents: the list sorted once pays for itself.
+        if (finite && !sorted && ++accents > 16) {
+            sorted = true;
+            std::sort(reach.begin(), reach.end(), [](const Reach& x, const Reach& y) { return x.lo < y.lo; });
+            reachHi.resize(reach.size());
+            float hi = -INFINITY;
+            for (size_t r = 0; r < reach.size(); ++r) {
+                const Glyph& b = page.glyphs[reach[r].glyph];
+                hi = Fmax(hi, b.u1 + 0.1f * b.size);
+                reachHi[r] = hi;
+            }
+        }
         const float cx = (a.u0 + a.u1) / 2;
         float best = INFINITY;
         size_t under = n;
-        for (size_t k = 0; k < n; ++k) {
-            const Glyph& b = page.glyphs[k];
-            if (k == i || b.dir != 0 || b.textLength == 0 || (b.flags & (kGlyphInvisible | kGlyphSpace))) continue;
-            if (cx < b.u0 - 0.1f * b.size || cx > b.u1 + 0.1f * b.size) continue;
-            const float d = a.v - b.v;
-            if (d < -0.05f * b.size || d > 1.0f * b.size || d >= best) continue;
-            const std::string_view bt = page.GlyphText(b);
-            uint32_t bcp = 0;
-            if (Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty()) continue;
-            best = d, under = k;
+        if (finite) {
+            const auto consider = [&](size_t k) {
+                const Glyph& b = page.glyphs[k];
+                if (k == i || cx < b.u0 - 0.1f * b.size || cx > b.u1 + 0.1f * b.size) return;
+                const float d = a.v - b.v;
+                if (d < -0.05f * b.size || d > 1.0f * b.size) return;
+                if (d < best || (d == best && k < under)) best = d, under = k;
+            };
+            if (!sorted || cx != cx) {
+                for (const Reach& r : reach) consider(r.glyph);
+            } else {
+                // Glyphs whose reach starts left of cx, back to where none reaches it any more.
+                size_t end = std::upper_bound(reach.begin(), reach.end(), cx, [](float x, const Reach& r) { return x < r.lo; }) -
+                             reach.begin();
+                while (end > 0 && !(reachHi[end - 1] < cx)) consider(reach[--end].glyph);
+            }
+        } else {
+            for (size_t k = 0; k < n; ++k) {
+                const Glyph& b = page.glyphs[k];
+                if (k == i || b.dir != 0 || b.textLength == 0 || (b.flags & (kGlyphInvisible | kGlyphSpace))) continue;
+                if (cx < b.u0 - 0.1f * b.size || cx > b.u1 + 0.1f * b.size) continue;
+                const float d = a.v - b.v;
+                if (d < -0.05f * b.size || d > 1.0f * b.size || d >= best) continue;
+                const std::string_view bt = page.GlyphText(b);
+                uint32_t bcp = 0;
+                if (Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty()) continue;
+                best = d, under = k;
+            }
         }
         if (under == n || best <= 0.05f * a.size) continue;
         // Only math: an accent of a math font, or over a glyph of one (text accents are diacritics).
@@ -1670,23 +1751,40 @@ enum GlyphClass : uint8_t {
     kClassStrong,   // a math font's glyph, a math symbol, a mathematical alphanumeric, an italic letter alone
 };
 
-uint32_t FirstCp(std::string_view t) {
+RAYOPDF_HOT_INLINE uint32_t FirstCp(std::string_view t) {
+    if (!t.empty() && static_cast<unsigned char>(t[0]) < 0x80) return static_cast<unsigned char>(t[0]);
     uint32_t cp = 0;
     size_t length = 0;
     return Utf8::Decode(t, 0, cp, length) ? cp : 0;
 }
 
+// The ASCII characters IsNeutral takes: digits, the accents ^ and ~, operators and punctuation.
+struct NeutralAscii {
+    bool is[128] = {};
+    constexpr NeutralAscii() {
+        constexpr char kChars[] = "0123456789^~=+-<>()[]{}/*|!'.,:;_";
+        for (size_t i = 0; i + 1 < sizeof(kChars); ++i) is[static_cast<unsigned char>(kChars[i])] = true;
+    }
+};
+constexpr NeutralAscii kNeutralAscii;
+
 bool IsNeutral(uint32_t cp) {
-    if (cp >= '0' && cp <= '9') return true;
+    if (cp < 0x80) return kNeutralAscii.is[cp];
     if (!AccentOf(cp).empty()) return true;  // an accent over a math letter
     switch (cp) {
-    case '=': case '+': case '-': case '<': case '>': case '(': case ')': case '[': case ']': case '{': case '}':
-    case '/': case '*': case '|': case '!': case '\'': case '.': case ',': case ':': case ';': case 0x2212:
-    case 0x2032: case 0x2033: case 0x2013: case 0xB7: case 0x2026: case '^': case '_':
+    case 0x2212: case 0x2032: case 0x2033: case 0x2013: case 0xB7: case 0x2026:
         return true;
     default:
         return false;
     }
+}
+
+// A glyph's text appended; most are one byte.
+RAYOPDF_HOT_INLINE void AppendText(std::string& out, std::string_view t) {
+    if (t.size() == 1)
+        out.push_back(t[0]);
+    else
+        out.append(t.data(), t.size());
 }
 
 // Symbols of math fonts that text uses too: footnote and section marks, bullets.
@@ -1695,7 +1793,7 @@ bool IsTextMark(uint32_t cp) {
            cp == 0x2023 || cp == 0x2219 || cp == 0x25A1 || cp == 0x2610 || cp == 0x2611 || cp == 0x2612;
 }
 
-bool IsLetterCp(uint32_t cp) {
+RAYOPDF_HOT_INLINE bool IsLetterCp(uint32_t cp) {
     if (cp < 0x80) return IsAsciiLetter(cp);
     return cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x2000 && cp <= 0x2BFF) && !(cp >= 0x3000 && cp <= 0x303F) &&
            !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0x1D400 && cp <= 0x1D7FF) && cp != 0xFFFD;
@@ -1703,6 +1801,17 @@ bool IsLetterCp(uint32_t cp) {
 
 // A glyph's class from its font, text and face; `alone` says it is a word of one letter.
 uint8_t ClassOf(uint8_t font, uint16_t flags, std::string_view text, bool alone) {
+    const unsigned char lead = text.empty() ? 0 : static_cast<unsigned char>(text[0]);
+    if (lead < 0x80) {
+        // ASCII, as below: no text mark, math symbol, alphanumeric or Greek letter is ASCII, and
+        // MathCharacter keeps it.
+        if (lead == 0) return kClassText;
+        if (font != static_cast<uint8_t>(MathFont::None) && !(flags & kGlyphUnmapped)) return kClassStrong;
+        if (IsNeutral(lead)) return kClassNeutral;
+        if (alone && (flags & kGlyphItalic) && IsAsciiLetter(lead) && lead != 'a' && lead != 'A' && lead != 'I')
+            return kClassNeutral;
+        return kClassText;
+    }
     const uint32_t cp = MathCharacter(FirstCp(text), MathFont::None, false);  // ∆ is Δ, µ is μ
     if (cp == 0) return kClassText;
     // Footnote marks are text in any font; bullets and the like only in text fonts.
@@ -1721,7 +1830,15 @@ uint8_t ClassOf(uint8_t font, uint16_t flags, std::string_view text, bool alone)
 }
 
 bool IsFunctionWord(std::string_view word) {
-    return IsFunctionName(word) || word == "mod" || word == "argmax" || word == "argmin" || word == "Re" || word == "Im";
+    if (word.size() < 2 || word.size() > 6) return false;  // every one has 2 to 6 letters
+    if (IsFunctionName(word)) return true;
+    const uint64_t key = Pack(word);
+    switch (word.size()) {
+    case 2: return key == Pack("Re") || key == Pack("Im");
+    case 3: return key == Pack("mod");
+    case 6: return key == Pack("argmax") || key == Pack("argmin");
+    default: return false;
+    }
 }
 
 } // namespace
@@ -1771,7 +1888,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             uint32_t t = s;
             std::string word;
             while (t < e && cls[t] == kClassText && IsLetterCp(FirstCp(glyphs[t].text)) && word.size() < 16)
-                word.append(glyphs[t].text), ++t;
+                AppendText(word, glyphs[t].text), ++t;
             // ... or before the bracket of an argument at the word's start ("GELU(x)").
             const bool before = t < e && t - s <= 4 &&
                                 (glyphs[t].script || cls[t] == kClassStrong || (s == b && FirstCp(glyphs[t].text) == '('));
@@ -1785,7 +1902,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     // glyphs without text letters around a strong glyph.
     const auto wordText = [&](size_t w, std::string& out) {
         out.clear();
-        for (uint32_t i = wordStart[w]; i < wordStart[w + 1]; ++i) out.append(glyphs[i].text);
+        for (uint32_t i = wordStart[w]; i < wordStart[w + 1]; ++i) AppendText(out, glyphs[i].text);
     };
     std::string text;
     uint32_t start = UINT32_MAX;  // the open run's first glyph
@@ -1947,7 +2064,7 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
         const uint32_t cp = FirstCp(t);
         const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
         f.glyphs++;
-        if (f.glyphs <= 16) all.append(t);
+        if (f.glyphs <= 10) AppendText(all, t);  // the equation number test reads it up to 10 glyphs
         f.bottom = Fmin(f.bottom, g.v - 0.25f * g.size);
         f.top = Fmax(f.top, g.v + 0.72f * g.size);
         const uint8_t c = ClassOf(font, g.flags, t, false);
@@ -1955,7 +2072,7 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
         if (IsLetterCp(cp)) {
             wordLetters++;
             if (font != static_cast<uint8_t>(MathFont::None)) textWord = false;
-            if (word.size() < 16) word.append(t);
+            if (word.size() < 16) AppendText(word, t);
         } else if (cp != '-' && cp != 0x2019 && cp != '\'') {
             endWord();
         }
