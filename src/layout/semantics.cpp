@@ -252,12 +252,30 @@ struct Marks {
     std::vector<const Shape*> small;  // bullets and boxes
     std::vector<const Shape*> bars;   // thin vertical rules
     std::vector<const Shape*> strips; // filled bands a line high: shading behind a line
+    // With many small marks and many lines to test, their centres' heights and indexes in `small`,
+    // by height then index (built by LineInfo once `scans` lines tested every mark).
+    struct Height {
+        float cy;
+        uint32_t index;
+    };
+    std::vector<Height> byHeight;
+    uint32_t scans = 0;
 };
+
+// Below this many small marks a line tests each; from it on, after kScansBeforeIndex lines did,
+// those at its height (Marks::byHeight): sorting them costs about as much as that many scans.
+constexpr size_t kIndexedMarks = 16;
+constexpr uint32_t kScansBeforeIndex = 16;
+
+// A small mark's centre height, as LineInfo tests it.
+inline float CentreY(const Shape& s) { return (s.y0 + s.y1) / 2; }
 
 void CollectMarks(const PageData& page, Marks& marks) {
     marks.small.clear();
     marks.bars.clear();
     marks.strips.clear();
+    marks.byHeight.clear();
+    marks.scans = 0;
     for (const Shape& s : page.shapes) {
         const float w = s.x1 - s.x0, h = s.y1 - s.y0;
         if (s.kind == ShapeKind::Rect && s.filled && !s.stroked && h >= 6 && h <= 40 && w >= 4 * h &&
@@ -272,8 +290,16 @@ void CollectMarks(const PageData& page, Marks& marks) {
     }
 }
 
+// A small mark's height is finite and positive, so neither of its y is NaN: no centre is NaN.
+void IndexMarks(Marks& marks) {
+    for (uint32_t i = 0; i < marks.small.size(); ++i) marks.byHeight.push_back(Marks::Height{CentreY(*marks.small[i]), i});
+    std::sort(marks.byHeight.begin(), marks.byHeight.end(), [](const Marks::Height& a, const Marks::Height& b) {
+        return a.cy != b.cy ? a.cy < b.cy : a.index < b.index;
+    });
+}
+
 // `bold` and `italic` go up by the line's bold and italic glyphs (BlockList::boldBody).
-void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks, Info& info, std::string& scratch,
+void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info& info, std::string& scratch,
               uint64_t& bold, uint64_t& italic) {
     const Line& line = page.lines[li];
     info = Info();
@@ -403,12 +429,12 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
     if (info.marker == Marker::None) {
         const Shape* box = nullptr;
         const Shape* bullet = nullptr;
-        for (const Shape* s : marks.small) {
+        const auto consider = [&](const Shape* s) {
             const float w = s->x1 - s->x0, h = s->y1 - s->y0;
-            const float cy = (s->y0 + s->y1) / 2;
-            if (cy < line.vb || cy > line.vt) continue;
-            if (s->x1 > line.u0 + 0.5f || line.u0 - s->x1 > 2.5f * line.size) continue;
-            if (w > 0.9f * line.size || h > 0.9f * line.size) continue;
+            const float cy = CentreY(*s);
+            if (cy < line.vb || cy > line.vt) return;
+            if (s->x1 > line.u0 + 0.5f || line.u0 - s->x1 > 2.5f * line.size) return;
+            if (w > 0.9f * line.size || h > 0.9f * line.size) return;
             // Filled, or a stroked circle (a hollow bullet ◦): a bullet. A larger stroked square: a
             // task box.
             const bool hollowDot = s->stroked && !s->filled && s->curved && w < 0.45f * line.size;
@@ -417,6 +443,32 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
             } else if (s->stroked && w >= 0.4f * line.size) {
                 if (!box) box = s;
             }
+        };
+        // The marks whose centre lies within [vb, vt], taken in their order in `small` as the full
+        // scan takes them (the first of equals wins); the full scan where they are few or many at
+        // the line's height, until enough lines scanned, or where the line's heights are not
+        // ordered numbers.
+        constexpr size_t kMaxAtHeight = 32;
+        uint32_t atHeight[kMaxAtHeight];
+        size_t found = 0;
+        bool scan = marks.small.size() < kIndexedMarks || marks.scans++ < kScansBeforeIndex || !(line.vb <= line.vt);
+        if (!scan && marks.byHeight.empty()) IndexMarks(marks);
+        if (!scan) {
+            auto it = std::lower_bound(marks.byHeight.begin(), marks.byHeight.end(), line.vb,
+                                       [](const Marks::Height& m, float y) { return m.cy < y; });
+            for (; it != marks.byHeight.end() && it->cy <= line.vt; ++it) {
+                if (found == kMaxAtHeight) {
+                    scan = true;
+                    break;
+                }
+                atHeight[found++] = it->index;
+            }
+        }
+        if (scan) {
+            for (const Shape* s : marks.small) consider(s);
+        } else {
+            std::sort(atHeight, atHeight + found);
+            for (size_t i = 0; i < found; ++i) consider(marks.small[atHeight[i]]);
         }
         if (box) {
             info.marker = Marker::Bullet;

@@ -4,6 +4,7 @@
 #include "common/minmax.h"
 #include "common/per_thread.h"
 #include "layout/lines.h"
+#include "layout/word_box.h"
 
 #include <algorithm>
 #include <cmath>
@@ -219,30 +220,47 @@ void ComputeSpans(Grid& g) {
 // (no NaN among them), which gives the same cell. The grid must not change while in use.
 class Locator {
 public:
-    explicit Locator(const Grid& g) : g_(g) {
-        for (size_t k = 0; k + 1 < g.xs.size() && ordered_; ++k) ordered_ = g.xs[k] <= g.xs[k + 1];
-        for (size_t k = 0; k + 1 < g.ys.size() && ordered_; ++k) ordered_ = g.ys[k] >= g.ys[k + 1];
+    explicit Locator(const Grid& g)
+        : xs_(g.xs.data()), ys_(g.ys.data()), nx_(g.xs.size()), ny_(g.ys.size()), left_(g.xs.front()),
+          right_(g.xs.back()), top_(g.ys.front()), bottom_(g.ys.back()), cols_(g.Cols()), rows_(g.Rows()) {
+        for (size_t k = 0; k + 1 < nx_ && ordered_; ++k) ordered_ = xs_[k] <= xs_[k + 1];
+        for (size_t k = 0; k + 1 < ny_ && ordered_; ++k) ordered_ = ys_[k] >= ys_[k + 1];
     }
 
-    bool Find(float x, float y, int& r, int& c) {
-        if (x < g_.xs.front() || x > g_.xs.back() || y > g_.ys.front() || y < g_.ys.back()) return false;
-        const size_t nx = g_.xs.size(), ny = g_.ys.size();
+    RAYOPDF_HOT_INLINE bool Find(float x, float y, int& r, int& c) {
+        if (x < left_ || x > right_ || y > top_ || y < bottom_) return false;
         size_t k = static_cast<size_t>(column_);
-        if (!(ordered_ && column_ >= 0 && g_.xs[k] <= x && (k + 1 == nx || x < g_.xs[k + 1])))
-            column_ = static_cast<int>(std::upper_bound(g_.xs.begin(), g_.xs.end(), x) - g_.xs.begin()) - 1;
+        if (!(ordered_ && column_ >= 0 && xs_[k] <= x && (k + 1 == nx_ || x < xs_[k + 1]))) Column(x);
         if (!(y == y_)) {  // the same y (glyphs of a line) has the same row; NaN is never the same
             y_ = y;
             k = static_cast<size_t>(row_);
-            if (!(ordered_ && row_ >= 0 && g_.ys[k] >= y && (k + 1 == ny || y > g_.ys[k + 1])))
-                row_ = static_cast<int>(std::upper_bound(g_.ys.begin(), g_.ys.end(), y, std::greater<float>()) - g_.ys.begin()) - 1;
+            if (!(ordered_ && row_ >= 0 && ys_[k] >= y && (k + 1 == ny_ || y > ys_[k + 1]))) Row(y);
         }
-        c = std::min(std::max(column_, 0), g_.Cols() - 1);
-        r = std::min(std::max(row_, 0), g_.Rows() - 1);
+        c = std::min(std::max(column_, 0), cols_ - 1);
+        r = std::min(std::max(row_, 0), rows_ - 1);
         return true;
     }
 
 private:
-    const Grid& g_;
+    // The column of x past the last point's: the next one (a line's glyphs left to right), or searched.
+    RAYOPDF_NOINLINE void Column(float x) {
+        const size_t k = static_cast<size_t>(column_) + 1;
+        if (ordered_ && k < nx_ && xs_[k] <= x && (k + 1 == nx_ || x < xs_[k + 1])) {
+            column_ = static_cast<int>(k);
+            return;
+        }
+        column_ = static_cast<int>(std::upper_bound(xs_, xs_ + nx_, x) - xs_) - 1;
+    }
+    RAYOPDF_NOINLINE void Row(float y) {
+        row_ = static_cast<int>(std::upper_bound(ys_, ys_ + ny_, y, std::greater<float>()) - ys_) - 1;
+    }
+
+    // The grid's boundaries, read once (the grid does not change while in use).
+    const float* xs_;
+    const float* ys_;
+    size_t nx_, ny_;
+    float left_, right_, top_, bottom_;  // xs.front(), xs.back(), ys.front(), ys.back()
+    int cols_, rows_;
     bool ordered_ = true;  // xs ascend and ys descend
     int column_ = -1;      // the last point's: the last xs at or left of it
     int row_ = -1;         // the last ys at or above it
@@ -504,6 +522,9 @@ private:
 
 void Detector::CollectWords() {
     words_.clear();
+    // Words are at most the lines' glyphs: one allocation on a thread's first page (up to the
+    // capacity the scratch keeps).
+    words_.reserve(std::min(page_.lineGlyphs.size(), kKeptWords));
     std::vector<float>& sizes = scratch_.sizes;
     std::vector<float>& spaces = scratch_.spaces;
     sizes.clear();
@@ -513,6 +534,8 @@ void Detector::CollectWords() {
         // Lines taken for running headers and footers count too: a table's numbers in the page's
         // margin bands look like page numbers (they return to the text inside a table).
         if (line.dir != dir_ || line.count == 0 || (line.flags & (kLineTableCell | kLineTableAnchor))) continue;
+        const uint32_t* const order = page_.lineGlyphs.data() + line.first;
+        const Glyph* const glyphs = page_.glyphs.data();
         uint32_t k = 0;
         float previousRight = NAN;
         while (k < line.count) {
@@ -521,26 +544,20 @@ void Detector::CollectWords() {
             w.k0 = k;
             w.base = line.baseline;
             w.size = line.size;
-            // Plain comparisons, which equal Fmin and Fmax without a NaN; a word with a NaN in its
-            // glyphs' boxes (the sum turns NaN; infinities of both signs too) takes them again with
-            // Fmin and Fmax, which skip it. A word's box is never NaN.
-            float x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY, sum = 0;
-            do {
-                const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + k]];
-                x0 = x0 < g.u0 ? x0 : g.u0, x1 = x1 > g.u1 ? x1 : g.u1;
-                y0 = y0 < g.vb ? y0 : g.vb, y1 = y1 > g.vt ? y1 : g.vt;
-                sum += (g.u0 + g.u1) + (g.vb + g.vt);
-                ++k;
-            } while (k < line.count && !(page_.glyphs[page_.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore));
-            if (sum != sum) {
-                x0 = INFINITY, x1 = -INFINITY, y0 = INFINITY, y1 = -INFINITY;
+            // Plain comparisons (WordBoxOf), which equal Fmin and Fmax without a NaN; a word with a
+            // NaN in its glyphs' boxes takes them again with Fmin and Fmax, which skip it. A word's
+            // box is never NaN.
+            WordBox box;
+            k = WordBoxOf(glyphs, order, k, line.count, box);
+            if (box.nan) {
+                box.u0 = INFINITY, box.u1 = -INFINITY, box.vb = INFINITY, box.vt = -INFINITY;
                 for (uint32_t j = w.k0; j < k; ++j) {
-                    const Glyph& g = page_.glyphs[page_.lineGlyphs[line.first + j]];
-                    x0 = Fmin(x0, g.u0), x1 = Fmax(x1, g.u1);
-                    y0 = Fmin(y0, g.vb), y1 = Fmax(y1, g.vt);
+                    const Glyph& g = glyphs[order[j]];
+                    box.u0 = Fmin(box.u0, g.u0), box.u1 = Fmax(box.u1, g.u1);
+                    box.vb = Fmin(box.vb, g.vb), box.vt = Fmax(box.vt, g.vt);
                 }
             }
-            w.x0 = x0, w.x1 = x1, w.y0 = y0, w.y1 = y1;
+            w.x0 = box.u0, w.x1 = box.u1, w.y0 = box.vb, w.y1 = box.vt;
             w.k1 = k;
             w.mono = (line.flags & kLineAllMono) != 0;
             w.removed = (line.flags & kLineRemoved) != 0;
@@ -581,6 +598,16 @@ void Detector::SortWords() {
         return a.x0 < b.x0;
     };
     const size_t n = words_.size();
+    // Words already strictly in order (one line, or lines top to bottom) are std::sort's only order.
+    {
+        size_t i = 1;
+        for (; i < n; ++i) {
+            const TWord& a = words_[i - 1];
+            const TWord& b = words_[i];
+            if (!(a.base != b.base ? a.base > b.base : a.x0 < b.x0)) break;
+        }
+        if (i >= n) return;
+    }
     std::vector<Key>& keys = scratch_.keys;
     keys.clear();
     for (size_t i = 0; i < n; ++i) keys.push_back(Key{words_[i].base, words_[i].x0, static_cast<uint32_t>(i)});
@@ -749,10 +776,14 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
         }
         rowWords[count++] = static_cast<uint32_t>(i);
     }
-    // Words of a row left to right (rows may gather words of several lines).
-    for (const Row& r : rows)
-        std::sort(rowWords.begin() + r.first, rowWords.begin() + r.first + r.count,
-                  [&](uint32_t a, uint32_t b) { return words_[a].x0 < words_[b].x0; });
+    // Words of a row left to right (rows may gather words of several lines). Words already strictly
+    // left to right are in the only order std::sort can leave them.
+    for (const Row& r : rows) {
+        const auto first = rowWords.begin() + r.first, last = first + r.count;
+        bool ordered = true;
+        for (auto k = first + 1; k < last && ordered; ++k) ordered = words_[*(k - 1)].x0 < words_[*k].x0;
+        if (!ordered) std::sort(first, last, [&](uint32_t a, uint32_t b) { return words_[a].x0 < words_[b].x0; });
+    }
 }
 
 // Columns of rows [rowBegin, rowEnd): gaps at least `minGap` wide where no row has ink, between the
@@ -1298,16 +1329,29 @@ void Detector::SplitColumnsByText(Grid& g) const {
     };
     std::vector<Ink> ink;
     std::vector<uint8_t> left(static_cast<size_t>(rows)), right(static_cast<size_t>(rows)), any(static_cast<size_t>(rows));
-    Locator locate(g);  // g stays as it is until the end
+    // The words in the grid's band with their cells, in words_' order: Find is a function of the
+    // point alone, and g stays as it is until the end.
+    struct Located {
+        float x0, x1, size;
+        int r, c;
+    };
+    std::vector<Located> located;
+    {
+        Locator locate(g);
+        auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
+        for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
+            int r = 0, c = 0;
+            if (locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) located.push_back(Located{it->x0, it->x1, it->size, r, c});
+        }
+    }
     for (int c = 0; c < cols; ++c) {
         ink.clear();
         float size = 0;
-        auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
-        for (; it != words_.end() && it->base >= g.y0 - 20 && ink.size() < 4096; ++it) {
-            int r = 0, wc = 0;
-            if (!locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, wc) || wc != c || r == 0) continue;
-            ink.push_back(Ink{it->x0, it->x1, r});
-            size = Fmax(size, it->size);
+        for (size_t i = 0; i < located.size() && ink.size() < 4096; ++i) {
+            const Located& w = located[i];
+            if (w.c != c || w.r == 0) continue;
+            ink.push_back(Ink{w.x0, w.x1, w.r});
+            size = Fmax(size, w.size);
         }
         std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
         const float minGap = Fmax(4.0f, size);
@@ -1344,14 +1388,10 @@ void Detector::SplitColumnsByText(Grid& g) const {
     for (int r = 0; r <= rows; ++r)
         for (int j = 0; j < n; ++j) hb[static_cast<size_t>(r * n + j)] = g.hb[static_cast<size_t>(r * cols + parent[static_cast<size_t>(j)])];
     // A word across a new boundary joins the cells beside it.
-    auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
-    for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
-        int r = 0, c = 0;
-        if (!locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) continue;
+    for (const Located& w : located)
         for (int k = 1; k < n; ++k)
-            if (oldBoundary[static_cast<size_t>(k)] < 0 && it->x0 < xs[static_cast<size_t>(k)] - 0.5f && it->x1 > xs[static_cast<size_t>(k)] + 0.5f)
-                vb[static_cast<size_t>(r * (n + 1) + k)] = 0;
-    }
+            if (oldBoundary[static_cast<size_t>(k)] < 0 && w.x0 < xs[static_cast<size_t>(k)] - 0.5f && w.x1 > xs[static_cast<size_t>(k)] + 0.5f)
+                vb[static_cast<size_t>(w.r * (n + 1) + k)] = 0;
     g.xs.swap(xs);
     g.vb.swap(vb);
     g.hb.swap(hb);

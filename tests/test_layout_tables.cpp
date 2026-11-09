@@ -15,6 +15,7 @@
 #include "layout/pipeline.h"
 #include "layout/reading_order.h"
 #include "layout/tables.h"
+#include "layout/word_box.h"
 #include "text/font.h"
 
 #include <chrono>
@@ -927,6 +928,61 @@ int Dump(const char* path, int only) {
     return 0;
 }
 
+// layout/word_box.h: the SSE2 word box has the scalar reference's bits and ends where it does, on
+// random glyphs with NaN, infinities and zeros of both signs mixed in; the reference gives the box
+// of two plain words.
+void TestWordBox() {
+    uint64_t state = 7;
+    const auto next = [&state]() {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(state >> 33);
+    };
+    const auto value = [&]() -> float {
+        switch (next() % 10) {
+        case 0: return (next() & 1) ? 0.0f : -0.0f;
+        case 1: return NAN;
+        case 2: return (next() & 1) ? INFINITY : -INFINITY;
+        case 3: return static_cast<float>(static_cast<int>(next() % 5) - 2);
+        default: return (static_cast<float>(next()) - 2147483648.0f) / 65536.0f;
+        }
+    };
+    std::vector<Glyph> glyphs(64);
+    std::vector<uint32_t> order(64);
+    size_t nan = 0, words = 0;
+    for (int round = 0; round < 20000; ++round) {
+        const uint32_t count = 1 + next() % 64;
+        for (uint32_t i = 0; i < count; ++i) {
+            Glyph& g = glyphs[i];
+            g.u0 = value(), g.u1 = value(), g.vb = value(), g.vt = value();
+            g.flags = (next() % 4 == 0) ? kGlyphSpaceBefore : 0;
+            order[i] = next() % count;
+        }
+        for (uint32_t k = 0; k < count;) {
+            WordBox scalar{}, simd{};
+            const uint32_t endScalar = WordBoxScalar(glyphs.data(), order.data(), k, count, scalar);
+#if defined(RAYOPDF_WORD_BOX_SSE2)
+            const uint32_t endSimd = WordBoxSse2(glyphs.data(), order.data(), k, count, simd);
+#else
+            const uint32_t endSimd = WordBoxScalar(glyphs.data(), order.data(), k, count, simd);
+#endif
+            const float a[4] = {scalar.u0, scalar.u1, scalar.vb, scalar.vt};
+            const float b[4] = {simd.u0, simd.u1, simd.vb, simd.vt};
+            RAYOPDF_CHECK(endScalar == endSimd && endScalar > k && std::memcmp(a, b, sizeof a) == 0 && scalar.nan == simd.nan, 859);
+            nan += scalar.nan;
+            words++;
+            k = endScalar;
+        }
+    }
+    RAYOPDF_CHECK(nan > 0 && nan < words, 860);
+    // Glyphs 0..2 one word ("ab c" with c set apart), boxes 0..1, 1..2 and 3..4 by 0..1.
+    glyphs[0].u0 = 0, glyphs[0].u1 = 1, glyphs[1].u0 = 1, glyphs[1].u1 = 2, glyphs[2].u0 = 3, glyphs[2].u1 = 4;
+    for (int i = 0; i < 3; ++i) glyphs[i].vb = 0, glyphs[i].vt = 1, glyphs[i].flags = 0, order[i] = i;
+    glyphs[2].flags = kGlyphSpaceBefore;
+    WordBox box{};
+    const uint32_t end = WordBoxOf(glyphs.data(), order.data(), 0, 3, box);
+    RAYOPDF_CHECK(end == 2 && box.u0 == 0 && box.u1 == 2 && box.vb == 0 && box.vt == 1 && !box.nan, 861);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -964,6 +1020,7 @@ int main(int argc, char** argv) {
     TestHeaderAboveRuledRows();
     TestDiagramGrids();
     TestBracketMatrix();
+    TestWordBox();
     std::puts("test_layout_tables: ok");
     return 0;
 }
