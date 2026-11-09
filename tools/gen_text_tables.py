@@ -166,6 +166,31 @@ def cstring(s):
     return "".join(out)
 
 
+GLYPH_NAME_HASH_BITS = 14  # tables.h kGlyphNameHashBits
+
+
+def glyph_name_hash(name):
+    """32-bit FNV-1a of the name's bytes (tables.cpp GlyphNameHash)."""
+    h = 2166136261
+    for b in name.encode():
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def glyph_name_slots(names):
+    """Open addressing: name i in the first free slot from its hash's low bits on, in index order."""
+    size = 1 << GLYPH_NAME_HASH_BITS
+    if len(names) * 2 > size:
+        raise SystemExit("gen_text_tables: the glyph name hash is more than half full; raise GLYPH_NAME_HASH_BITS")
+    slots = [0xFFFF] * size
+    for i, name in enumerate(names):
+        s = glyph_name_hash(name) & (size - 1)
+        while slots[s] != 0xFFFF:
+            s = (s + 1) & (size - 1)
+        slots[s] = i
+    return slots
+
+
 def generate(cache):
     raw = {name: fetch(name, cache) for name in SOURCES}
     digests = {name: hashlib.sha256(data).hexdigest() for name, data in raw.items()}
@@ -294,6 +319,12 @@ def generate(cache):
     out.append("// Name i spans [kGlyphNameOffsets[i], kGlyphNameOffsets[i + 1]) of kGlyphNameBytes.")
     out.append(f"const uint16_t kGlyphNameOffsets[{len(offsets)}] = {{")
     out.append(rows(offsets, str))
+    out.append("};")
+    out.append("")
+    out.append(f"static_assert(kGlyphNameHashBits == {GLYPH_NAME_HASH_BITS}, \"tools/gen_text_tables.py GLYPH_NAME_HASH_BITS\");")
+    out.append("// Name i in the first free slot (0xFFFF) from GlyphNameHash(name) on, in index order.")
+    out.append(f"const uint16_t kGlyphNameSlots[{1 << GLYPH_NAME_HASH_BITS}] = {{")
+    out.append(rows(glyph_name_slots(names), str))
     out.append("};")
     out.append("")
     out.append("// The AGL value of name i: 0 none, a BMP code point, or kAglMultiBase + j for kAglMulti entry j.")

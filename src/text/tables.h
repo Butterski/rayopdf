@@ -36,6 +36,9 @@ struct StandardAlias {
 extern const uint16_t kGlyphNameCount;
 extern const char kGlyphNameBytes[];
 extern const uint16_t kGlyphNameOffsets[];
+// Open addressing over the names by GlyphNameHash (tables.cpp), 0xFFFF free; at most half full.
+constexpr int kGlyphNameHashBits = 14;
+extern const uint16_t kGlyphNameSlots[1 << kGlyphNameHashBits];
 extern const uint16_t kAglValues[];
 extern const uint16_t kAglMultiCount;
 extern const uint16_t kAglMultiStarts[];
@@ -70,7 +73,7 @@ inline std::string_view GlyphName(uint16_t index) {
     return std::string_view(kGlyphNameBytes + kGlyphNameOffsets[index],
                             static_cast<size_t>(kGlyphNameOffsets[index + 1] - kGlyphNameOffsets[index]));
 }
-// The index of `name`, kNoName when the tables do not hold it. Binary search.
+// The index of `name`, kNoName when the tables do not hold it. A hash lookup.
 uint16_t FindGlyphName(std::string_view name);
 // The AGL code points of name `index` (zero, one, or a few); `out` has room for 4.
 size_t AglCodePoints(uint16_t index, uint32_t out[4]);

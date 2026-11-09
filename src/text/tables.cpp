@@ -12,34 +12,29 @@
 namespace RayoPdf::Text {
 namespace Tables {
 
+namespace {
+
+// 32-bit FNV-1a of the name's bytes (tools/gen_text_tables.py glyph_name_hash).
+uint32_t GlyphNameHash(std::string_view name) {
+    uint32_t hash = 2166136261u;
+    for (const char ch : name) hash = (hash ^ static_cast<unsigned char>(ch)) * 16777619u;
+    return hash;
+}
+
+} // namespace
+
 uint16_t FindGlyphName(std::string_view name) {
-    // A view into the table itself (EncodingName and the other generated name tables hand those
-    // out, 256 of them for a simple font): its index from the offsets, with no byte compared.
-    // The names are unique (test_text 353), so that is the index the byte search finds.
-    const uintptr_t base = reinterpret_cast<uintptr_t>(kGlyphNameBytes);
-    const uintptr_t at = reinterpret_cast<uintptr_t>(name.data());
-    if (!name.empty() && at >= base && at - base < kGlyphNameOffsets[kGlyphNameCount]) {
-        const size_t offset = at - base;
-        size_t first = 0;
-        size_t last = kGlyphNameCount;
-        while (first < last) {
-            const size_t middle = (first + last) / 2;
-            if (kGlyphNameOffsets[middle] < offset) first = middle + 1;
-            else last = middle;
+    constexpr uint32_t kMask = (1u << kGlyphNameHashBits) - 1;
+    uint32_t slot = GlyphNameHash(name) & kMask;
+    // The table is at most half full: a free slot ends every probe sequence.
+    for (uint32_t probe = 0; probe <= kMask; ++probe, slot = (slot + 1) & kMask) {
+        const uint16_t index = kGlyphNameSlots[slot];
+        if (index == kNoName) return kNoName;
+        const uint32_t begin = kGlyphNameOffsets[index];
+        if (kGlyphNameOffsets[index + 1] - begin == name.size() &&
+            std::memcmp(kGlyphNameBytes + begin, name.data(), name.size()) == 0) {
+            return index;
         }
-        if (first < kGlyphNameCount && kGlyphNameOffsets[first] == offset &&
-            kGlyphNameOffsets[first + 1] - offset == name.size()) {
-            return static_cast<uint16_t>(first);
-        }
-    }
-    size_t low = 0;
-    size_t high = kGlyphNameCount;
-    while (low < high) {
-        const size_t middle = (low + high) / 2;
-        const int order = GlyphName(static_cast<uint16_t>(middle)).compare(name);
-        if (order == 0) return static_cast<uint16_t>(middle);
-        if (order < 0) low = middle + 1;
-        else high = middle;
     }
     return kNoName;
 }
