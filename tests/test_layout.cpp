@@ -454,6 +454,34 @@ void TestPdfForm() {
     RAYOPDF_CHECK(md.find("Inside the form.") == md.rfind("Inside the form."), 459);
 }
 
+// A form whose content is shorter than a string's inline buffer calls a second form, then reads on:
+// the second form's buffer must not move the first's (a use after free before 2026-11-09).
+void TestPdfNestedShortForm() {
+    Test::PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const std::string font = "/Font << /F2 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>";
+    const int inner = b.AddStream("/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << " + font + " >>",
+                                  "BT /F2 12 Tf 72 700 Td (Nested form text.) Tj ET");
+    const int second = b.AddStream("/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << " + font + " >>",
+                                   "BT /F2 12 Tf 72 600 Td (Second inner form.) Tj ET");
+    // 11 bytes: inside the std::string object.
+    const int outer = b.AddStream("/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /XObject << /I " +
+                                      std::to_string(inner) + " 0 R /J " + std::to_string(second) + " 0 R >> >>",
+                                  "/I Do /J Do");
+    const int content = b.AddFlateStream("", "/O Do");
+    const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pages) +
+                           " 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /O " + std::to_string(outer) +
+                           " 0 R >> >> /Contents " + std::to_string(content) + " 0 R >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) + " 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] /Count 1 >>");
+    const std::string md = ConvertPdf(b.Build(catalog));
+    Show("pdf nested short form", md);
+    // The outer form read on after the first inner one returned.
+    RAYOPDF_CHECK(Contains(md, "Nested form text."), 432);
+    RAYOPDF_CHECK(Contains(md, "Second inner form."), 433);
+}
+
 void TestPdfRotation() {
     // /Rotate 90 with text drawn rotated so that it reads upright on screen.
     Test::PdfBuilder b;
@@ -1125,6 +1153,7 @@ int main() {
     TestPdfTjTj();
     TestPdfTextState();
     TestPdfForm();
+    TestPdfNestedShortForm();
     TestPdfRotation();
     TestPdfColumnsAndHeading();
     TestPdfActualText();

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <unordered_set>
 
 namespace RayoPdf::Layout {
@@ -282,7 +283,9 @@ private:
     std::vector<PathPiece> pieces_;
 
     std::vector<uint32_t> formStack_;          // object numbers of the forms being run
-    std::vector<std::string> formBuffers_;     // decoded form content, one per depth
+    // Decoded form content, one per depth. A deque: a deeper form's buffer added while an outer
+    // form's lexer reads its own must not move it (a short one lives inside the string object).
+    std::deque<std::string> formBuffers_;
     std::string_view opSource_;                // the source of the operator being executed
 };
 
