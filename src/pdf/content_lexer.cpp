@@ -85,11 +85,13 @@ bool ReadText(Cursor& c, Syntax::Builder& b, unsigned char ch, PdfValue& out) {
     return true;
 }
 
+} // namespace
+
 // The array at the cursor ('['), as Syntax::ParseValue reads it in Content mode at depth 0 (a TJ
 // array, most often): the same items read the same way, with the cursor left where ParseValue
-// leaves it; short numbers, names and strings here, every other item by ParseValue at depth 1.
-// `numbersEnd` is the lexer's numbersEnd_.
-bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
+// leaves it; short numbers (in the operand loop's steps), names and strings here, every other item
+// by ParseValue at depth 1. `numbersEnd` is the lexer's numbersEnd_.
+bool ContentLexer::ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
     const char* const data = c.data.data();
     const char* const end = data + c.data.size();
     const char* const shortEnd = data + numbersEnd;
@@ -106,11 +108,17 @@ bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) 
             ok = true;
             break;
         }
-        PdfValue item;
-        double number;
-        if ((kClasses.of[ch] & (Classes::kDigit | Classes::kSign)) && p < shortEnd && ReadShortNumber(p, item, number)) {
-            items.push_back(item);
-            continue;
+        const uint8_t kind = kClasses.of[ch];
+        if ((kind & (Classes::kDigit | Classes::kSign)) && p < shortEnd) {
+            // Read in the item's slot; the byte at numbersEnd stops every scan before the end.
+            PdfValue& item = items.emplace_back();
+            double number;
+            const bool read = kind == Classes::kDigit ? ReadDigits<false>(p, p, &item, &number)
+                              : ch == '-' && kClasses.of[static_cast<unsigned char>(p[1])] == Classes::kDigit
+                                  ? ReadDigits<true>(p, p + 1, &item, &number)
+                                  : ReadShortNumber(p, item, number);
+            if (read) continue;
+            items.pop_back();
         }
         c.pos = static_cast<size_t>(p - data);
         if (ch == '%') {
@@ -118,6 +126,7 @@ bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) 
             p = data + c.pos;
             continue;
         }
+        PdfValue item;
         const bool read = ch == '/' || ch == '(' || (ch == '<' && !(p + 1 < end && p[1] == '<'))
                               ? ReadText(c, b, ch, item)
                               : Syntax::ParseValue(c, Syntax::Mode::Content, 1, b, item);
@@ -145,12 +154,14 @@ bool ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) 
 // The value at the cursor ('/', '(', '<' or '['), as Syntax::ParseValue reads it in Content mode at
 // depth 0: arrays, names and strings here, dictionaries by ParseValue. Out of line, so the
 // lexer's loop around it keeps its registers.
-RAYOPDF_NOINLINE bool ReadValue(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
+bool ContentLexer::ReadValue(Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out) {
     const unsigned char ch = c.Peek();
     if (ch == '[') return ReadArray(c, numbersEnd, b, out);
     if (ch == '<' && c.Peek(1) == '<') return Syntax::ParseValue(c, Syntax::Mode::Content, 0, b, out);
     return ReadText(c, b, ch, out);
 }
+
+namespace {
 
 // An inline image entry under its abbreviation or its full name.
 const PdfValue* InlineEntry(const PdfValue& dict, std::string_view abbreviation, std::string_view name) {

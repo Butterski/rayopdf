@@ -99,6 +99,10 @@ private:
     RAYOPDF_NOINLINE void Delimiter();
     RAYOPDF_NOINLINE bool Token(const char* start, const char* end, std::string_view& op);
     void Push(const PdfValue& value);
+    // An operand that starts with '/', '(', '<' or '[' (ReadValue) and its array case (ReadArray):
+    // Syntax::ParseValue's values in Content mode at depth 0. `numbersEnd` is numbersEnd_.
+    RAYOPDF_NOINLINE static bool ReadValue(Syntax::Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out);
+    static bool ReadArray(Syntax::Cursor& c, size_t numbersEnd, Syntax::Builder& b, PdfValue& out);
     void ReadInlineImage();
 
     Syntax::Cursor cursor_;
