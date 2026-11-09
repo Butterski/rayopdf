@@ -31,8 +31,8 @@ struct PageTextQuality {
 // from the pages, structure). `images` null (tests) places no images; `structure` (ReadStructure),
 // when it passes the checks, decides blocks and order instead of the geometry. `math` Latex marks
 // display formulas (layout/math.h) and has the writer write formulas as LaTeX. The page-local
-// stages (math glyphs, lines) run on the threads of `pool` when there is one
-// (layout/page_pool.h), with the same result.
+// stages (math glyphs, lines, tables, reading order) run on the threads of `pool` when there is
+// one (layout/page_pool.h), with the same result.
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images = nullptr, const Structure* structure = nullptr,

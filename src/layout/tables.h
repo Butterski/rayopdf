@@ -60,6 +60,32 @@ struct TableContinuation {
 // from the previous page and is replaced for the next.
 int DetectTables(PageData& page, TableContinuation& continuation);
 
+// What DetectTables changes on a page, to undo it (pages detected on several threads at once,
+// layout/pipeline.cpp): it only appends to page.lines, page.lineGlyphs, page.tableCells and
+// page.tables, and rewrites the flags of the lines there were. SaveTables before DetectTables;
+// UndoTables puts the page back as it was then. (Inline here: tables.cpp's code stays as it is.)
+struct TableUndo {
+    size_t lines = 0, lineGlyphs = 0, tableCells = 0, tables = 0;
+    std::vector<uint16_t> flags;  // of each line there was
+};
+
+inline void SaveTables(const PageData& page, TableUndo& undo) {
+    undo.lines = page.lines.size();
+    undo.lineGlyphs = page.lineGlyphs.size();
+    undo.tableCells = page.tableCells.size();
+    undo.tables = page.tables.size();
+    undo.flags.resize(page.lines.size());
+    for (size_t i = 0; i < page.lines.size(); ++i) undo.flags[i] = page.lines[i].flags;
+}
+
+inline void UndoTables(PageData& page, const TableUndo& undo) {
+    page.lines.resize(undo.lines);
+    page.lineGlyphs.resize(undo.lineGlyphs);
+    page.tableCells.resize(undo.tableCells);
+    page.tables.resize(undo.tables);
+    for (size_t i = 0; i < undo.lines; ++i) page.lines[i].flags = undo.flags[i];
+}
+
 // Whether table `table` of page `page` continues the Table block `previous` (whose lines are in
 // `lines`): its last part ends the page before and has as many columns.
 bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockLine>& lines, const Block& previous,
