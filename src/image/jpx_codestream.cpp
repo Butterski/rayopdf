@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 namespace RayoPdf::Image::Jpx::Internal {
 namespace {
@@ -540,6 +541,25 @@ struct Bio {
     }
 };
 
+// A tile component's samples. Unlike std::vector's, growth leaves the samples unset: the
+// decoder writes or clears every sample before any is read.
+template <typename T>
+class SampleBuffer {
+public:
+    T* Resize(size_t count) {
+        if (count > capacity_) {
+            data_.reset(new T[count]);
+            capacity_ = count;
+        }
+        return data_.get();
+    }
+    T* Data() { return data_.get(); }
+
+private:
+    std::unique_ptr<T[]> data_;
+    size_t capacity_ = 0;
+};
+
 class TileDecoder {
 public:
     TileDecoder(const uint8_t* data, const Header& h, int reduce) : data_(data), h_(h), reduce_(reduce) {}
@@ -586,8 +606,8 @@ private:
     std::vector<uint8_t> blockData_;
     std::vector<uint32_t> segmentLengths_;
     std::vector<uint32_t> segmentPasses_;
-    std::vector<std::vector<int32_t>> ints_;
-    std::vector<std::vector<float>> floats_;
+    std::vector<SampleBuffer<int32_t>> ints_;
+    std::vector<SampleBuffer<float>> floats_;
     std::vector<int32_t> intScratch_;
     std::vector<float> floatScratch_;
 };
@@ -1198,11 +1218,11 @@ Result TileDecoder::DecodeBlocks() {
         }
         const bool exact = covered == count;
         if (tc.style.reversible) {
-            ints_[c].resize(count);
-            if (!exact) std::memset(ints_[c].data(), 0, count * sizeof(int32_t));
+            int32_t* samples = ints_[c].Resize(count);
+            if (!exact) std::memset(samples, 0, count * sizeof(int32_t));
         } else {
-            floats_[c].resize(count);
-            if (!exact) std::memset(floats_[c].data(), 0, count * sizeof(float));
+            float* samples = floats_[c].Resize(count);
+            if (!exact) std::memset(samples, 0, count * sizeof(float));
         }
         for (int r = 0; r < tc.decoded; r++) {
             const Resolution& res = tc.res[r];
@@ -1230,8 +1250,8 @@ Result TileDecoder::DecodeBlocks() {
                             // Both zero kinds are all-zero bytes.
                             const size_t bytes = size_t(w) * (tc.style.reversible ? sizeof(int32_t) : sizeof(float));
                             for (int j = 0; j < hgt; j++) {
-                                if (tc.style.reversible) std::memset(ints_[c].data() + (y + j) * stride + x, 0, bytes);
-                                else std::memset(floats_[c].data() + (y + j) * stride + x, 0, bytes);
+                                if (tc.style.reversible) std::memset(ints_[c].Data() + (y + j) * stride + x, 0, bytes);
+                                else std::memset(floats_[c].Data() + (y + j) * stride + x, 0, bytes);
                             }
                             continue;
                         }
@@ -1263,8 +1283,8 @@ Result TileDecoder::DecodeBlocks() {
                         if (!t1_.Decode(job, coefficients_.data())) return Result::Corrupt;
                         const int32_t* in = coefficients_.data();
                         for (int j = 0; j < hgt; j++, in += w) {
-                            if (tc.style.reversible) Dequantize53(in, ints_[c].data() + (y + j) * stride + x, size_t(w));
-                            else Dequantize97(in, floats_[c].data() + (y + j) * stride + x, size_t(w), step);
+                            if (tc.style.reversible) Dequantize53(in, ints_[c].Data() + (y + j) * stride + x, size_t(w));
+                            else Dequantize97(in, floats_[c].Data() + (y + j) * stride + x, size_t(w), step);
                         }
                     }
                 }
@@ -1284,10 +1304,10 @@ void TileDecoder::Transform(TileSink& sink) {
             const Resolution& res = tc.res[r];
             const Resolution& low = tc.res[r - 1];
             if (tc.style.reversible) {
-                Inverse53(ints_[c].data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
+                Inverse53(ints_[c].Data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
                           (res.x0 & 1) != 0, (res.y0 & 1) != 0, intScratch_);
             } else {
-                Inverse97(floats_[c].data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
+                Inverse97(floats_[c].Data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
                           (res.x0 & 1) != 0, (res.y0 & 1) != 0, floatScratch_);
             }
         }
@@ -1302,8 +1322,8 @@ void TileDecoder::Transform(TileSink& sink) {
         }
         if (same) {
             const size_t count = size_t(a.x1 - a.x0) * (a.y1 - a.y0);
-            if (comps_[0].style.reversible) InverseRct(ints_[0].data(), ints_[1].data(), ints_[2].data(), count);
-            else InverseIct(floats_[0].data(), floats_[1].data(), floats_[2].data(), count);
+            if (comps_[0].style.reversible) InverseRct(ints_[0].Data(), ints_[1].Data(), ints_[2].Data(), count);
+            else InverseIct(floats_[0].Data(), floats_[1].Data(), floats_[2].Data(), count);
         }
     }
     std::vector<TileComponent> out(n);
@@ -1312,8 +1332,8 @@ void TileDecoder::Transform(TileSink& sink) {
         const SizComponent& sc = h_.components[c];
         const Resolution& top = tc.res[tc.decoded - 1];
         TileComponent& t = out[c];
-        if (tc.style.reversible) t.ints = ints_[c].data();
-        else t.floats = floats_[c].data();
+        if (tc.style.reversible) t.ints = ints_[c].Data();
+        else t.floats = floats_[c].Data();
         t.stride = top.x1 - top.x0;
         t.x0 = top.x0;
         t.y0 = top.y0;
