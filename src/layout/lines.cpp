@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <type_traits>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -43,6 +44,7 @@ struct Fragment {
     uint8_t dir = 0;
     bool any = false;    // has a glyph that is not a space
     bool marker = false; // holds only a list marker
+    bool spaces = false; // has a space glyph
 };
 
 // CollectAndFold's working storage, kept by each thread between pages of up to kScratchSlots probe
@@ -169,7 +171,7 @@ struct Folder {
     PageData& page;
     uint32_t* vis = nullptr;
     bool keepInvisible = false;
-    int wordShift = 0;
+    size_t wordMask = 0;
     FoldWord* words = nullptr;
     FoldEntry* entries = nullptr;
     uint32_t* table = nullptr;  // made when the probe is first needed
@@ -183,7 +185,7 @@ struct Folder {
 
     explicit Folder(PageData& p) : page(p) {}
     size_t WordOf(uint64_t key, uint32_t column, uint32_t row) const {
-        return static_cast<size_t>((key + uint64_t(column >> 6) * kColumnMix + uint64_t(row) * kRowMix) >> wordShift);
+        return static_cast<size_t>((key + uint64_t(column >> 6) * kColumnMix + uint64_t(row) * kRowMix) >> 32) & wordMask;
     }
     void Chain(size_t word, uint32_t column, uint32_t glyph) {
         FoldWord& w = words[word];
@@ -360,10 +362,8 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     // The filter: two words per probe slot for all the page's glyphs.
     size_t capacity = 16;
     while (capacity < n * 2) capacity <<= 1;
-    int log = 4;
-    while ((size_t(1) << log) < capacity) ++log;
     const size_t filterWords = capacity * 2;
-    f.wordShift = 64 - (log + 1);
+    f.wordMask = filterWords - 1;
     FoldScratch& fold = PerThread<FoldScratch>();
     f.fold = &fold;
     if (UINT32_MAX - fold.base < n) {
@@ -395,7 +395,11 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     FoldWord* const words = f.words;
     FoldEntry* const entries = f.entries;
     const uint32_t base = f.base;
-    const int wordShift = f.wordShift;
+    const size_t wordMask = f.wordMask;
+    // NearWindow's offsets for the size of the glyph before (most glyphs share it): the same
+    // values, computed once per size.
+    float windowSize = NAN, x0Low = 0, x0High = 0, qyLow = 0, qyHigh = 0;
+    bool windowSmall = false;  // tolerance <= 3.5
     bool probing = false;  // the probe's table exists
     uint32_t kept = 0, entryCount = 0, placed = 0;
     float sum = 0;
@@ -428,15 +432,24 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
             continue;
         }
         if (RAYOPDF_LIKELY(Near(g))) {
-            const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
-            uint32_t ca, cb, ra, rb;
-            NearWindow(g, tolerance, ca, cb, ra, rb);
-            if (tolerance <= 3.5f && ((ca ^ cb) >> 6) == 0 && size_t(g.text) + g.textLength <= textSize) {
+            if (!(g.size == windowSize)) {
+                const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
+                const float rx = tolerance + 1.0f / 512, ry = tolerance * 0.125f + 1.0f / 2048;
+                x0Low = 4096.0f - rx, x0High = 4096.0f + rx, qyLow = 1024.0f - ry, qyHigh = 1024.0f + ry;
+                windowSmall = tolerance <= 3.5f;
+                windowSize = g.size;
+            }
+            const float qy = g.y0 * 0.125f;
+            const uint32_t ca = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + x0Low));
+            const uint32_t cb = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + x0High));
+            if (windowSmall && ((ca ^ cb) >> 6) == 0 && size_t(g.text) + g.textLength <= textSize) {
+                const uint32_t ra = static_cast<uint32_t>(static_cast<int32_t>(qy + qyLow));
+                const uint32_t rb = static_cast<uint32_t>(static_cast<int32_t>(qy + qyHigh));
                 const uint64_t key = KeyOf(textData + g.text, g.textLength, g.dir);
                 const uint64_t columns = ((uint64_t(2) << (cb - ca)) - 1) << (ca & 63);
                 const uint64_t block = key + uint64_t(ca >> 6) * kColumnMix;
-                const size_t wa = static_cast<size_t>((block + uint64_t(ra) * kRowMix) >> wordShift);
-                const size_t wb = static_cast<size_t>((block + uint64_t(rb) * kRowMix) >> wordShift);
+                const size_t wa = static_cast<size_t>((block + uint64_t(ra) * kRowMix) >> 32) & wordMask;
+                const size_t wb = static_cast<size_t>((block + uint64_t(rb) * kRowMix) >> 32) & wordMask;
                 if (((words[wa].bits | words[wb].bits) & columns) == 0) {
                     // Kept: its column and row lie in the window, so its word is wa or wb.
                     uint32_t column, row;
@@ -913,7 +926,11 @@ struct Proto {
     uint32_t first = 0, count = 0;  // in `proto`
     uint32_t segFirst = 0, segCount = 0;
     float baseline = 0, size = 0, u0 = 0, u1 = 0;
+    // As its line when it does not split (PlaceGlyphs with finite values).
+    float vb = 0, vt = 0, lineSize = 0;
+    uint16_t allFlags = 0;
     uint8_t dir = 0;
+    bool split = false;  // a gutter splits it
 };
 
 struct Segment {
@@ -932,6 +949,44 @@ struct PlaceScratch {
     std::vector<Segment> segments;
     std::vector<uint8_t> splitBefore;
 };
+
+// A line's sizes: buckets of sizes within 0.25 of the first in each, the first kLineSizes kept.
+struct SizeCount {
+    float size;
+    uint32_t count;
+};
+constexpr uint32_t kLineSizes = 32, kProtoSizes = 16;
+
+// The glyph flags a line has when all its glyphs have them.
+constexpr uint16_t kLineFlagGlyphs = kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
+
+// The size of the bucket with the most glyphs, of equal ones the larger size.
+float MostSize(const SizeCount* sizes, uint32_t count) {
+    SizeCount best{0, 0};
+    for (uint32_t s = 0; s < count; ++s)
+        if (sizes[s].count > best.count || (sizes[s].count == best.count && sizes[s].size > best.size)) best = sizes[s];
+    return best.size;
+}
+
+// Sets a measured line's size, baseline (that of its first glyph of that size, else the proto's)
+// and flags from its glyphs' common ones, and appends it.
+void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t allFlags) {
+    line.size = size;
+    line.baseline = baseline;
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (std::fabs(g.size - size) < 0.25f) {
+            line.baseline = g.v;
+            break;
+        }
+    }
+    if (allFlags & kGlyphBold) line.flags |= kLineAllBold;
+    if (allFlags & kGlyphItalic) line.flags |= kLineAllItalic;
+    if (allFlags & kGlyphMonospace) line.flags |= kLineAllMono;
+    if (allFlags & kGlyphArtifact) line.flags |= kLineArtifact;
+    if ((allFlags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
+    page.lines.push_back(line);
+}
 
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
@@ -976,6 +1031,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                         if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
                     }
                     f.marker = false;
+                } else {
+                    f.spaces = true;
                 }
                 continue;
             }
@@ -991,6 +1048,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         f.lastU1 = g.u1;
         f.lastSize = g.size;
         f.any = !space;
+        f.spaces = space;
         if (f.any) {
             uint32_t value;
             f.marker = ParseMarker(page.GlyphText(g), value) != Marker::None;
@@ -1094,32 +1152,48 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     }
 
     // Proto lines in `proto`, which becomes the page's lineGlyphs: the lines split from them below
-    // take their glyphs in that order.
+    // take their glyphs in that order. Glyphs and segments are written into storage sized for all
+    // placed glyphs: a glyph enters one proto at most and starts one segment at most.
+    //
+    // With finite values (FiniteMinMax) the pass also measures each proto as the lines below
+    // measure a line, for the protos that do not split: Min and Max then give the same values
+    // whether or not the first glyph is applied twice, and both size rules find a glyph's bucket
+    // by the same first match (|a - b| >= 0.25 is !(|a - b| < 0.25) without NaN).
+    constexpr bool kMeasured = std::is_same<M, FiniteMinMax>::value;
     std::vector<uint32_t>& proto = page.lineGlyphs;
-    proto.reserve(vis.size());
+    proto.resize(vis.size());
+    uint32_t* const protoAt = proto.data();
+    uint32_t protoCount = 0;
     std::vector<Proto>& protos = place.protos;
     protos.clear();
-    std::vector<Segment>& segments = place.segments;
-    segments.clear();
+    std::vector<Segment>& segmentVector = place.segments;
+    if (segmentVector.size() < vis.size()) segmentVector.resize(vis.size());
+    Segment* const segments = segmentVector.data();
+    uint32_t segmentCount = 0;
     std::vector<uint32_t>& lineVis = place.lineVis;
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         const Group& grp = groups[gi];
         if (grp.merged) continue;
-        // The group's glyphs: a lone fragment's are a run of `vis` already.
+        // The group's glyphs: a lone fragment's are a run of `vis` already. Explicit spaces decide
+        // the word breaks of lines that have them (algorithms §4.1).
         const uint32_t *lineBegin, *lineEnd;
+        bool spaces = false;
         if (grp.count == 1 && extraOf[gi] == kEmpty) {
             const Fragment& f = frags[members[grp.first]];
             lineBegin = vis.data() + f.begin, lineEnd = vis.data() + f.end;
+            spaces = f.spaces;
         } else {
             lineVis.clear();
             for (uint32_t m = 0; m < grp.count; ++m) {
                 const Fragment& f = frags[members[grp.first + m]];
                 lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
+                spaces = spaces || f.spaces;
             }
             if (extraOf[gi] != kEmpty) {
                 for (uint32_t fi : extra[extraOf[gi]]) {
                     const Fragment& f = frags[fi];
                     lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
+                    spaces = spaces || f.spaces;
                 }
             }
             if (grp.scripts) {
@@ -1129,13 +1203,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             }
             lineBegin = lineVis.data(), lineEnd = lineVis.data() + lineVis.size();
         }
-        // Explicit spaces decide the word breaks of lines that have them (algorithms §4.1).
-        const bool spaces =
-            std::any_of(lineBegin, lineEnd, [&](uint32_t i) { return (glyphs[i].flags & kGlyphSpace) != 0; });
         const float wordGap = spaces ? kWordGapWithSpaces : kWordGap;
         Proto p;
-        p.first = static_cast<uint32_t>(proto.size());
-        p.segFirst = static_cast<uint32_t>(segments.size());
+        p.first = protoCount;
+        p.segFirst = segmentCount;
         p.dir = grp.dir;
         p.baseline = grp.baseline;
         p.size = grp.size;
@@ -1149,6 +1220,13 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         // measured past it, from the ink before it to the glyph after it.
         bool prevTight = false;   // the previous glyph was set tight
         float beforePrevious = 0; // the ink's right edge before the previous glyph
+        // Sizes (kMeasured): the proto's is the size of most of its glyphs (not a drop cap's:
+        // gutter windows and gaps scale with it), the first of the first 16 sizes to lead; the
+        // line's is MostSize of the first 32.
+        SizeCount sizes[kLineSizes];
+        uint32_t sizeCount = 0, sizeBest = 0;
+        float pu0 = 0, pu1 = 0, vb = 0, vt = 0;
+        uint16_t allFlags = kLineFlagGlyphs;
         for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
             const uint32_t i = *at;
             Glyph& g = glyphs[i];
@@ -1160,22 +1238,23 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             if (!first) {
                 const float em = M::Max(M::Min(previousSize, g.size), 0.5f * M::Max(previousSize, g.size));
                 const float gap = g.u0 - right;
-                const bool combining = StartsWithCombiningMark(page.GlyphText(g));
+                // A combining mark takes two bytes at least.
+                const bool combining = g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g));
                 if (!combining && (pendingSpace || gap > wordGap * em)) g.flags |= kGlyphSpaceBefore;
                 // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.
                 if (gap > kGutterCandidate * em) {
-                    segments.push_back(seg);
-                    seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())};
+                    segments[segmentCount++] = seg;
+                    seg = Segment{g.u0, g.u1, protoCount};
                     prevTight = false;
                 } else if (prevTight && g.u0 - beforePrevious > kGutterCandidate * em &&
-                           OpeningMark(page, glyphs[proto.back()])) {
+                           OpeningMark(page, glyphs[protoAt[protoCount - 1]])) {
                     // The previous glyph, a mark set tight after the text before it, hangs into
                     // the gap: the gap's middle is found from the text after it.
                     seg.u1 = beforePrevious;
-                    segments.push_back(seg);
-                    seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size() - 1)};
+                    segments[segmentCount++] = seg;
+                    seg = Segment{g.u0, g.u1, protoCount - 1};
                     prevTight = false;
                 } else {
                     seg.u1 = M::Max(seg.u1, g.u1);
@@ -1183,38 +1262,55 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 }
                 beforePrevious = right;
                 right = M::Max(right, g.u1);
-                p.u0 = M::Min(p.u0, g.u0), p.u1 = M::Max(p.u1, g.u1);
+                pu0 = M::Min(pu0, g.u0), pu1 = M::Max(pu1, g.u1);
+                if (kMeasured) vb = M::Min(vb, g.vb), vt = M::Max(vt, g.vt);
             } else {
-                seg = Segment{g.u0, g.u1, static_cast<uint32_t>(proto.size())};
+                seg = Segment{g.u0, g.u1, protoCount};
                 right = g.u1;
-                p.u0 = g.u0, p.u1 = g.u1;
+                pu0 = g.u0, pu1 = g.u1;
+                vb = g.vb, vt = g.vt;
+            }
+            if (kMeasured) {
+                allFlags &= g.flags;
+                uint32_t d = 0;
+                while (d < sizeCount && !(std::fabs(sizes[d].size - g.size) < 0.25f)) ++d;
+                if (d < kLineSizes) {
+                    if (d == sizeCount) sizes[sizeCount++] = SizeCount{g.size, 0};
+                    if (++sizes[d].count > sizes[sizeBest].count && d < kProtoSizes) sizeBest = d;
+                }
             }
             pendingSpace = false;
             first = false;
             previousSize = g.size;
-            proto.push_back(i);
+            protoAt[protoCount++] = i;
         }
-        if (!first) segments.push_back(seg);
-        p.count = static_cast<uint32_t>(proto.size() - p.first);
-        p.segCount = static_cast<uint32_t>(segments.size() - p.segFirst);
-        // The size of most of its glyphs (not a drop cap's): gutter windows and gaps scale with it.
-        {
-            float sizes[16];
-            uint32_t counts[16] = {}, distinct = 0, best = 0;
+        if (!first) segments[segmentCount++] = seg;
+        p.u0 = pu0, p.u1 = pu1;
+        p.count = protoCount - p.first;
+        p.segCount = segmentCount - p.segFirst;
+        if (kMeasured) {
+            if (sizeCount > 0) p.size = sizes[sizeBest].size;
+            p.vb = vb, p.vt = vt;
+            p.allFlags = allFlags;
+            p.lineSize = MostSize(sizes, sizeCount);
+        } else {
+            float sizes16[kProtoSizes];
+            uint32_t counts[kProtoSizes] = {}, distinct = 0, best = 0;
             for (uint32_t k = p.first; k < p.first + p.count; ++k) {
-                const float s = glyphs[proto[k]].size;
+                const float s = glyphs[protoAt[k]].size;
                 uint32_t d = 0;
-                while (d < distinct && std::fabs(sizes[d] - s) >= 0.25f) ++d;
+                while (d < distinct && std::fabs(sizes16[d] - s) >= 0.25f) ++d;
                 if (d == distinct) {
-                    if (distinct == 16) continue;
-                    sizes[distinct++] = s;
+                    if (distinct == kProtoSizes) continue;
+                    sizes16[distinct++] = s;
                 }
                 if (++counts[d] > counts[best]) best = d;
             }
-            if (distinct > 0) p.size = sizes[best];
+            if (distinct > 0) p.size = sizes16[best];
         }
         if (p.count > 0) protos.push_back(p);
     }
+    proto.resize(protoCount);
 
     // Gutters (Breuel's whitespace columns, algorithms §5.1): a wide gap in a line is a column or
     // cell boundary when the lines around it have no ink at that place either, and text bounds it
@@ -1277,18 +1373,25 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 }
                 const bool bounded = clear >= 1 || (leftSide && rightSide);
                 const bool gutter = bounded && (clear + oneSide >= 2) && blocked * 8 <= clear + oneSide;
-                if (gutter) splitBefore[start] = 1, splits++;
+                if (gutter) splitBefore[start] = 1, splits++, protos[byBase[r]].split = true;
             }
         }
     }
 
     // Lines: metrics of each piece; a piece's glyphs stay where they are in `proto`.
-    struct SizeCount {
-        float size;
-        uint32_t count;
-    };
     page.lines.reserve(protos.size() + splits);
     for (const Proto& p : protos) {
+        if (kMeasured && !p.split) {
+            // The whole proto, measured above (its first glyph has no word break before it).
+            Line line;
+            line.first = p.first;
+            line.dir = p.dir;
+            line.u0 = p.u0, line.u1 = p.u1, line.vb = p.vb, line.vt = p.vt;
+            line.chars = p.count;
+            line.count = p.count;
+            FinishLine(page, line, p.lineSize, p.baseline, p.allFlags);
+            continue;
+        }
         uint32_t at = p.first;
         const uint32_t end = p.first + p.count;
         while (at < end) {
@@ -1297,9 +1400,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             Line line;
             line.first = at;
             line.dir = p.dir;
-            uint16_t allFlags =
-                kGlyphBold | kGlyphItalic | kGlyphMonospace | kGlyphArtifact | kGlyphInvisible | kGlyphOcr;
-            SizeCount sizes[32];
+            uint16_t allFlags = kLineFlagGlyphs;
+            SizeCount sizes[kLineSizes];
             uint32_t sizeCount = 0;
             for (uint32_t k = at; k < stop; ++k) {
                 Glyph& g = glyphs[proto[k]];
@@ -1318,27 +1420,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                         counted = true;
                         break;
                     }
-                if (!counted && sizeCount < 32) sizes[sizeCount++] = SizeCount{g.size, 1};
+                if (!counted && sizeCount < kLineSizes) sizes[sizeCount++] = SizeCount{g.size, 1};
             }
             line.count = stop - at;
-            SizeCount best{0, 0};
-            for (uint32_t s = 0; s < sizeCount; ++s)
-                if (sizes[s].count > best.count || (sizes[s].count == best.count && sizes[s].size > best.size)) best = sizes[s];
-            line.size = best.size;
-            line.baseline = p.baseline;
-            for (uint32_t k = 0; k < line.count; ++k) {
-                const Glyph& g = glyphs[page.lineGlyphs[line.first + k]];
-                if (std::fabs(g.size - best.size) < 0.25f) {
-                    line.baseline = g.v;
-                    break;
-                }
-            }
-            if (allFlags & kGlyphBold) line.flags |= kLineAllBold;
-            if (allFlags & kGlyphItalic) line.flags |= kLineAllItalic;
-            if (allFlags & kGlyphMonospace) line.flags |= kLineAllMono;
-            if (allFlags & kGlyphArtifact) line.flags |= kLineArtifact;
-            if ((allFlags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
-            page.lines.push_back(line);
+            FinishLine(page, line, MostSize(sizes, sizeCount), p.baseline, allFlags);
             at = stop;
         }
     }
