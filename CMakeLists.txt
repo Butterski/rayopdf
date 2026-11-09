@@ -33,7 +33,9 @@ endif()
 # Threads for the batch modes' workers (--batch, --serve --json --workers=N).
 find_package(Threads REQUIRED)
 
-# Flags of all own code: no exceptions and no RTTI anywhere (roadmap D1), warnings on.
+# Flags of all own code: no exceptions and no RTTI anywhere (roadmap D1), warnings on. Release
+# builds on Linux also have no unwind tables: nothing unwinds (a throw of libstdc++'s ends the
+# process with or without them), and the tables only take file space.
 function(rayopdf_flags target)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE
@@ -41,6 +43,11 @@ function(rayopdf_flags target)
             $<$<CONFIG:Release>:-O2>
             $<$<CONFIG:Release>:-ffunction-sections>
             $<$<CONFIG:Release>:-fdata-sections>)
+        if(NOT WIN32)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-fno-asynchronous-unwind-tables>
+                $<$<CONFIG:Release>:-fno-unwind-tables>)
+        endif()
         if(RAYOPDF_SANITIZE)
             target_compile_options(${target} PRIVATE -fsanitize=address,undefined
                 -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
@@ -95,6 +102,17 @@ foreach(module ${RAYOPDF_MODULES})
     endif()
 endforeach()
 
+# GNU ld (not gold, lld or a PE linker) takes the INSERT scripts below.
+set(RAYOPDF_GNU_LD OFF)
+if(NOT WIN32 AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    separate_arguments(rayopdf_linker_flags UNIX_COMMAND "${CMAKE_EXE_LINKER_FLAGS}")
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} ${rayopdf_linker_flags} -Wl,--version
+        OUTPUT_VARIABLE rayopdf_linker_version ERROR_QUIET)
+    if(rayopdf_linker_version MATCHES "^GNU ld")
+        set(RAYOPDF_GNU_LD ON)
+    endif()
+endif()
+
 if(TARGET rayopdf_layout)
     add_executable(rayopdf src/cli/main.cpp)
     target_link_libraries(rayopdf PRIVATE rayopdf_layout)
@@ -103,12 +121,26 @@ if(TARGET rayopdf_layout)
         if(WIN32 OR APPLE)
             message(FATAL_ERROR "RAYOPDF_STATIC is for Linux.")
         endif()
-        target_link_options(rayopdf PRIVATE -static-pie)
+        # Relative relocations packed (DT_RELR): 53 KB less to read and apply at start. The static
+        # binary carries its own start code, so this needs no newer glibc where it runs.
+        target_link_options(rayopdf PRIVATE -static-pie $<$<CONFIG:Release>:-Wl,-z,pack-relative-relocs>)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)
         target_link_options(rayopdf PRIVATE -static-libstdc++ -static-libgcc)
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
         target_link_options(rayopdf PRIVATE $<$<CONFIG:Release>:-Wl,--gc-sections>)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT WIN32 AND NOT APPLE)
+        # Release builds: a throw ends the process without unwinding (no_unwind.cpp, which also
+        # stands for what glibc's libc.a calls of the unwinder in the static build), so libgcc's
+        # unwinder, the personality routines and the demangler are not linked, and no_unwind.ld
+        # drops the unwind tables nothing reads.
+        target_sources(rayopdf PRIVATE $<$<CONFIG:Release>:${CMAKE_CURRENT_SOURCE_DIR}/src/cli/no_unwind.cpp>)
+        if(RAYOPDF_GNU_LD)
+            set(script "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/no_unwind.ld")
+            target_link_options(rayopdf PRIVATE "$<$<CONFIG:Release>:-Wl,-T,${script}>")
+            set_property(TARGET rayopdf APPEND PROPERTY LINK_DEPENDS "${script}")
+        endif()
     endif()
 endif()
 
