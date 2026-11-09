@@ -1897,8 +1897,20 @@ uint8_t ClassOfOther(uint8_t font, uint16_t flags, std::string_view text, bool a
     return kClassText;
 }
 
+// The first bytes of the function words: the names' and those of Re, Im, mod, argmax, argmin.
+struct FunctionLeads {
+    bool is[256] = {};
+    constexpr FunctionLeads() {
+        for (size_t i = 0; i < kFunctionCount; ++i) is[static_cast<unsigned char>(kFunctions[i][0])] = true;
+        is[static_cast<unsigned char>('R')] = is[static_cast<unsigned char>('I')] = true;
+        is[static_cast<unsigned char>('m')] = is[static_cast<unsigned char>('a')] = true;
+    }
+};
+constexpr FunctionLeads kFunctionLeads;
+
 bool IsFunctionWord(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every one has 2 to 6 letters
+    if (!kFunctionLeads.is[static_cast<unsigned char>(word[0])]) return false;
     if (IsFunctionName(word)) return true;
     const uint64_t key = Pack(word);
     switch (word.size()) {
@@ -1937,6 +1949,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             letters += IsLetterCp(c) ? 1 : 0;
             greek += IsGreek(c) ? 1 : 0;
         }
+        bool strongWord = false;  // a strong glyph in the word: its class is final once set
         for (uint32_t i = b; i < e; ++i) {
             const InlineGlyph& g = glyphs[i];
             if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) continue;
@@ -1948,11 +1961,10 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             // Raised or lowered glyphs next to math are its scripts.
             if (cls[i] == kClassText && g.script && i > b && cls[i - 1] != kClassText) cls[i] = kClassNeutral;
             any = any || cls[i] == kClassStrong;
+            strongWord = strongWord || cls[i] == kClassStrong;
         }
         // Letters of a text font in a word with math: a function name ("max_j", "log x") or up to
         // four letters right before a script or a math glyph ("GoE_m", "h_1") are math too.
-        bool strongWord = false;
-        for (uint32_t i = b; i < e; ++i) strongWord = strongWord || cls[i] == kClassStrong;
         if (!strongWord) continue;
         for (uint32_t s = b; s < e;) {
             if (cls[s] != kClassText || !IsLetterCp(FirstCp(glyphs[s].text))) {
@@ -2020,8 +2032,16 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             // A word of neutral glyphs ("=", "2", "(a,"), or a function name, continues an open run
             // when math follows it (through further neutral words) or it is an operator.
             bool neutral = !textLetter;
-            wordText(w, text);
-            const bool function = !neutral && IsFunctionWord(text);
+            // A function word has 2 to 6 bytes: the word's text is put together only then.
+            bool function = false;
+            if (!neutral) {
+                size_t bytes = 0;
+                for (uint32_t i = b; i < e; ++i) bytes += glyphs[i].text.size();
+                if (bytes >= 2 && bytes <= 6) {
+                    wordText(w, text);
+                    function = IsFunctionWord(text);
+                }
+            }
             if (!neutral && !function) {
                 close();
                 continue;
