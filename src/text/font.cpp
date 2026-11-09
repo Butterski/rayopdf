@@ -384,7 +384,9 @@ struct Font::Impl {
     std::vector<uint16_t> cidToGid;    // empty: CID = glyph id
     std::vector<TextRef> glyphText;    // by glyph id, into `pool` (FontProgram)
     std::vector<WidthRange> widths;    // sorted by low
+    std::vector<float> denseWidths;    // WidthOf by CID below its size (IndexWidths), may be empty
     float defaultWidth = 1.0f;
+    uint32_t denseCount = 0;           // denseWidths.size(), read first by WidthOf
     std::vector<VerticalRange> verticals;
     float defaultVertical = -1.0f;
 
@@ -427,6 +429,7 @@ const Range* FindByCid(const std::vector<Range>& ranges, uint32_t cid) {
 } // namespace
 
 float Font::Impl::WidthOf(uint32_t cid) const {
+    if (cid < denseCount) return denseWidths[cid];
     const WidthRange* range = FindByCid(widths, cid);
     return range ? range->width : defaultWidth;
 }
@@ -1287,7 +1290,9 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
             uint16_t w = 0;
             double width = kNotdefWidth;
             if (!names[c].empty()) {
-                const uint16_t index = Tables::FindGlyphName(names[c]);
+                // A base-encoding name is that table's entry (FindGlyphName would give it back).
+                const uint16_t index = simple.fromBase[c] ? Tables::kEncodings[static_cast<int>(simple.base)][c]
+                                                          : Tables::FindGlyphName(names[c]);
                 if (Tables::StandardWidth(metrics, index, w)) width = w / 1000.0;
                 else if (desc.missingWidth > 0) width = desc.missingWidth / 1000.0;
             }
@@ -1427,7 +1432,26 @@ void ReadWidths(const Document& doc, const PdfValue& w, std::vector<WidthRange>&
         }
         i += 3;
     }
-    std::stable_sort(out.begin(), out.end(), [](const WidthRange& a, const WidthRange& b) { return a.low < b.low; });
+    // Most /W arrays list their CIDs in increasing order: then they are kept as read.
+    const auto before = [](const WidthRange& a, const WidthRange& b) { return a.low < b.low; };
+    if (!std::is_sorted(out.begin(), out.end(), before)) std::stable_sort(out.begin(), out.end(), before);
+}
+
+// WidthOf for every CID up to the largest one /W covers, as a table, when that table is small
+// next to /W itself (at most 8 entries a range, or 1024): a CID gets the width of the last range
+// in sorted order that starts at or below it, if it reaches the CID, else /DW (FindByCid's answer).
+void IndexWidths(Font::Impl& font) {
+    const std::vector<WidthRange>& ranges = font.widths;
+    uint64_t end = 0;  // past the largest CID a range covers
+    for (const WidthRange& range : ranges) end = std::max<uint64_t>(end, static_cast<uint64_t>(range.high) + 1);
+    if (end == 0 || end > std::max<uint64_t>(1024, 8 * static_cast<uint64_t>(ranges.size()))) return;
+    font.denseWidths.assign(static_cast<size_t>(end), font.defaultWidth);
+    font.denseCount = static_cast<uint32_t>(end);
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        uint64_t stop = static_cast<uint64_t>(ranges[i].high) + 1;
+        if (i + 1 < ranges.size() && ranges[i + 1].low < stop) stop = ranges[i + 1].low;
+        for (uint64_t cid = ranges[i].low; cid < stop; ++cid) font.denseWidths[static_cast<size_t>(cid)] = ranges[i].width;
+    }
 }
 
 // /W2: [c [w1y vx vy ...] cfirst clast w1y vx vy ...]; only w1y (the vertical advance) is kept.
@@ -1668,6 +1692,7 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     double value = 0;
     font.defaultWidth = doc.Number(doc.Get(cidFont, "DW"), value) ? static_cast<float>(value / 1000) : 1.0f;
     ReadWidths(doc, doc.Get(cidFont, "W"), font.widths);
+    IndexWidths(font);
     if (font.vertical) {
         const PdfSpan<PdfValue> dw2 = doc.Get(cidFont, "DW2").Array();
         double advance = -1000;
