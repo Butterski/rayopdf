@@ -1036,7 +1036,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 }
                 continue;
             }
-            frags.push_back(f);
+            frags.emplace_back() = f;  // f's address never escapes: it stays in registers
         }
         f = Fragment();
         f.begin = k;
@@ -1055,7 +1055,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         }
         open = true;
     }
-    if (open) frags.push_back(f);
+    if (open) frags.emplace_back() = f;
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
     std::vector<uint32_t>& fo = place.fo;
@@ -1224,7 +1224,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         // gutter windows and gaps scale with it), the first of the first 16 sizes to lead; the
         // line's is MostSize of the first 32.
         SizeCount sizes[kLineSizes];
-        uint32_t sizeCount = 0, sizeBest = 0;
+        uint32_t sizeCount = 0, sizeBest = 0, sizeAt = 0;  // sizeAt: the bucket of the glyph before
         float pu0 = 0, pu1 = 0, vb = 0, vt = 0;
         uint16_t allFlags = kLineFlagGlyphs;
         for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
@@ -1272,8 +1272,14 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             }
             if (kMeasured) {
                 allFlags &= g.flags;
-                uint32_t d = 0;
-                while (d < sizeCount && !(std::fabs(sizes[d].size - g.size) < 0.25f)) ++d;
+                // A size equal to the glyph before's has its bucket: buckets are only added, and
+                // the earlier ones did not match it then either.
+                uint32_t d = sizeAt;
+                if (first || !(g.size == previousSize)) {
+                    d = 0;
+                    while (d < sizeCount && !(std::fabs(sizes[d].size - g.size) < 0.25f)) ++d;
+                    sizeAt = d;
+                }
                 if (d < kLineSizes) {
                     if (d == sizeCount) sizes[sizeCount++] = SizeCount{g.size, 0};
                     if (++sizes[d].count > sizes[sizeBest].count && d < kProtoSizes) sizeBest = d;
