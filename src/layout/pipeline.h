@@ -28,9 +28,11 @@ struct PageTextQuality {
 // codeBlocks, tables, links, footnotes, images, imagesSkipped, imagesMaskDropped,
 // headerFooterLines, contentErrors
 // from the pages, structure). `images` null (tests) places no images; `structure` (ReadStructure),
-// when it passes the checks, decides blocks and order instead of the geometry.
+// when it passes the checks, decides blocks and order instead of the geometry. `math` Latex marks
+// display formulas (layout/math.h) and has the writer write formulas as LaTeX.
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
-                  const ImageOutput* images = nullptr, const Structure* structure = nullptr);
+                  const ImageOutput* images = nullptr, const Structure* structure = nullptr,
+                  MathMode math = MathMode::Unicode);
 
 } // namespace RayoPdf::Layout

@@ -49,7 +49,7 @@ void ConvertDocument(const Document& document, const ConvertOptions& options, st
     images.linkPrefix = options.imageLinkPrefix;
     Structure structure;
     if (options.structure && first <= last) ReadStructure(document, first - 1, last - 1, structure);
-    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure);
+    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure, options.math);
 }
 
 } // namespace
@@ -62,12 +62,13 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         if (options.firstPage > 1 || (options.lastPage > 0 && options.lastPage < count)) use = ExactUse::Pages;
     }
     if (use == ExactUse::Used) {
-        // The check converts the pages without writing images or running OCR; when the caller asked
-        // for neither, that conversion is also the fallback.
+        // The check converts the pages without writing images or running OCR, with Unicode math;
+        // when the caller asked for none of these, that conversion is also the fallback.
         ConvertOptions check = options;
         check.imageDirectory.clear();
         check.imageLinkPrefix.clear();
         check.ocr.mode = OcrMode::Off;
+        check.math = MathMode::Unicode;
         ConvertDocument(document, check, markdown, report);
         ExactMatch match;
         if (SourceMatchesPages(source, markdown, match)) {
@@ -76,7 +77,7 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
             return;
         }
         use = ExactUse::Mismatch;
-        if (options.imageDirectory.empty() && options.ocr.mode == OcrMode::Off) {
+        if (options.imageDirectory.empty() && options.ocr.mode == OcrMode::Off && options.math == MathMode::Unicode) {
             report.exact = use;
             return;
         }

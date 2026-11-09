@@ -6,6 +6,7 @@
 // unmapped glyphs and a repaired file get a `<!-- rayopdf: ... -->` comment where they apply.
 #pragma once
 
+#include "layout/math.h"
 #include "layout/ocr_options.h"
 #include "pdf/document.h"
 
@@ -27,6 +28,8 @@ struct ConvertOptions {
     std::string imageLinkPrefix;
     // OCR where the text layer fails (layout/ocr.h); without an add-on the output is the same.
     OcrOptions ocr;
+    // Formulas as Unicode (D6, the default) or as LaTeX between $ and $$ (layout/math.h).
+    MathMode math = MathMode::Unicode;
 };
 
 // What became of the document's structure tree (tagged PDF, roadmap D5; layout/structure.h).

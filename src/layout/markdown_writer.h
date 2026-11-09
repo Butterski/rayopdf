@@ -5,8 +5,10 @@
 // link annotations over words (§6.8), superscripts and subscripts as <sup>/<sub> (D6), footnote
 // references as [^n] and definitions as [^n]: text (§6.9), fenced code with its spacing rebuilt
 // on the character grid (§6.4). Escapes are limited to what would otherwise change the structure.
+// With MathMode::Latex formulas are written as $…$ and $$…$$ LaTeX (layout/math.h).
 #pragma once
 
+#include "layout/math.h"
 #include "layout/page.h"
 #include "layout/semantics.h"
 
@@ -27,6 +29,6 @@ struct WriteCounts {
 
 // Appends the Markdown of `blocks` to `out`; `repaired` puts the repair comment first.
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired, std::string& out,
-                   WriteCounts& counts);
+                   WriteCounts& counts, MathMode math = MathMode::Unicode);
 
 } // namespace RayoPdf::Layout

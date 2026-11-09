@@ -4,10 +4,11 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.10: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.0.11: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
-are read by the optional OCR add-on; math is written as Unicode text.
+are read by the optional OCR add-on; math is written as Unicode text, or as LaTeX with
+`--math=latex`.
 The [roadmap](docs/development/roadmap.md) lists what comes next.
 
 ## Usage
@@ -16,6 +17,7 @@ The [roadmap](docs/development/roadmap.md) lists what comes next.
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
                                 [--ocr=auto|off|force] [--ocr-addon=PATH]
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
+                                [--math=unicode|latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -27,6 +29,12 @@ PDF's own JPEG data when that file shows what the PDF shows) unless `--images` s
 Text that could not be read is never dropped silently: a `<!-- rayopdf: ... -->` comment marks
 the spot. Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair, 11
 password required, 12 unwritable output, 13 unsupported encryption.
+
+Formulas are written as Unicode text with `<sup>`/`<sub>` by default. `--math=latex` writes them
+as LaTeX instead, rebuilt from the glyphs' positions: inline formulas as `$…$`, displayed ones as
+`$$…$$` (an equation number follows as `(n)`), with fractions, radicals, scripts, limits,
+matrices and cases; a formula it cannot rebuild stays Unicode text, and a `$` of the text is
+written `\$`.
 
 `--report` prints one JSON record of the document: `input`, `output`, `status` (`ok`, `skipped`
 or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,
@@ -88,7 +96,7 @@ line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
 Markdown as `markdown` and no images are written) and `args` (flags of `--convert`:
-`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, over those
+`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, `--math`, over those
 the session started with). A malformed request gets an error record (code 2) and the session goes
 on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
 converted N at a time, and the answers still come in request order.
@@ -163,6 +171,7 @@ unpack into the same folder. `tools/package.py` makes them byte for byte reprodu
   rotation, performance rounds 2 and 3, quality round.
 - [Release check, 2026-11-09](docs/benchmarks/release-check-2026-11-09.md): 0.0.10 against the
   0.1.0 bar (security and footprint met; quality, tables and speed not yet).
+- [RayoPDF 0.0.11 on the harness](docs/benchmarks/v0.0.11-2026-11-09.md): optional LaTeX math.
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation

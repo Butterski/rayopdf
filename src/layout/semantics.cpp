@@ -467,7 +467,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
         return true;
     if (next.listStart()) return false;
     if ((next.flags ^ last.flags) & kLineTable) return false;
-    if ((next.flags | last.flags) & kLineAnchor) return false;
+    if ((next.flags | last.flags) & (kLineAnchor | kLineFormula)) return false;
     if (next.quoteBars != last.quoteBars) return false;
     const float em = Fmax(last.size, next.size);
     // A size change starts a block, except in an OCR layer whose sizes are fitted word boxes.
@@ -650,6 +650,8 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
     std::unordered_map<uint32_t, std::vector<uint32_t>> byKey;
     std::string text;
     for (uint32_t i = 0; i < infos.size() && refs.size() < kMaxNoteRefs; ++i) {
+        // A display formula's raised glyphs are its scripts and limits (--math=latex).
+        if (pages[infos[i].page].lines[infos[i].line].flags & kLineFormula) continue;
         const PageData& page = pages[infos[i].page];
         const Line& line = page.lines[infos[i].line];
         uint32_t k = 0;
@@ -694,7 +696,7 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
         // document's characters, and so define its body size.
         uint32_t key = 0, skip = 0;
         bool enumerated = false, backLink = false;
-        if (line.count >= 2) {
+        if (line.count >= 2 && !(line.flags & kLineFormula)) {
             const uint32_t end = SuperscriptRun(page, line, 0, text);
             if (end > 0 && end < line.count) {
                 key = NoteKey(text);
@@ -810,6 +812,15 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 continue;
             }
             LineInfo(page, p, li, marks, infos.back(), scratch, boldGlyphs, italicGlyphs);
+            // A display formula (--math=latex) is no list item, heading number or task.
+            if (tl.flags & kLineFormula) {
+                Info& f = infos.back();
+                f.marker = Marker::None;
+                f.skip = 0;
+                f.numbering = false;
+                f.verbatimMarker = false;
+                f.task = 0;
+            }
         }
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
         // (a table header), not headings; a heading beside the other column's text has no peer. A
@@ -983,7 +994,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             const RawBlock& b = raws[r];
             const Info& in = infos[b.first];
             if (b.count != 1 || b.note != 0 || b.mono || in.chars == 0 || in.chars > 40 || in.dir != 0 ||
-                in.listStart() || in.quoteBars != 0 || (in.flags & (kLineAnchor | kLineTable)))
+                in.listStart() || in.quoteBars != 0 || (in.flags & (kLineAnchor | kLineTable | kLineFormula)))
                 continue;
             LineText(pages[in.page], pages[in.page].lines[in.line], scratch);
             if (NoTitle(scratch)) pieceOf[r] = MathSymbol(scratch) ? 2 : 1;
@@ -1084,7 +1095,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             k.kind = BlockKind::Table;
             continue;
         }
-        if (first.flags & kLineTable) continue;
+        if (first.flags & (kLineTable | kLineFormula)) continue;
         if (b.mono && !monoDocument) {
             k.kind = BlockKind::Code;
             continue;
@@ -1305,7 +1316,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             const RawBlock& b = raws[r];
             const Info& first = infos[b.first];
             if (kinds[r].kind != BlockKind::Paragraph || b.mono || b.note != 0 || first.quoteBars != 0 ||
-                first.dir != 0 || (first.flags & (kLineTable | kLineInvisible | kLineAnchor)) ||
+                first.dir != 0 || (first.flags & (kLineTable | kLineInvisible | kLineAnchor | kLineFormula)) ||
                 std::fabs(kinds[r].size - body) > 0.1f * body)
                 continue;
             const float em = body;
@@ -1627,7 +1638,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             // Continuation across columns and pages (§6.2): the previous paragraph ends without
             // terminal punctuation and this one starts in lowercase.
             if (block.kind == BlockKind::Paragraph && !block.listParagraph && !blocks.empty() &&
-                !(first.flags & kLineTable)) {
+                !(first.flags & (kLineTable | kLineFormula))) {
                 Block& prev = blocks.back();
                 const BlockLine& pl = lines[prev.first + prev.count - 1];
                 const Info* prevLast = nullptr;
@@ -1638,6 +1649,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 if (before > 0) prevLast = &infos[before - 1];
                 if ((prev.kind == BlockKind::Paragraph || prev.kind == BlockKind::ListItem) && prevLast &&
                     prevLast->page == pl.page && prevLast->line == pl.line && !prevLast->endsTerminal &&
+                    !(prevLast->flags & kLineFormula) &&
                     first.startsLower && std::fabs(prevLast->size - first.size) <= 0.1f * em &&
                     prev.quote == block.quote && block.alert == 0 &&
                     (prevLast->page != first.page || first.baseline > prevLast->baseline)) {

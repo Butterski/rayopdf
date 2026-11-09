@@ -12,9 +12,12 @@ namespace RayoPdf::Layout {
 
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
-                  const ImageOutput* images, const Structure* structure) {
+                  const ImageOutput* images, const Structure* structure, MathMode math) {
     // Page-local stages first: they depend on nothing outside their page (D4: pages in parallel).
-    for (PageData& page : pages) BuildLines(page);
+    for (PageData& page : pages) {
+        if (math == MathMode::Latex) PrepareMathGlyphs(page);
+        BuildLines(page);
+    }
     // A structure tree that passes the checks decides blocks and order (D5, layout/structure.h).
     TaggedLayout tagged;
     if (structure && structure->use != StructureUse::None) {
@@ -34,6 +37,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
             report.headerFooterLines -= DetectTables(page, continuation);
             OrderLines(page);
             SplitRunInHeadings(page);
+            if (math == MathMode::Latex) MarkDisplayFormulas(page);
         }
         report.hiddenGlyphs += page.hiddenGlyphs;
         report.contentErrors += page.contentErrors;
@@ -46,7 +50,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     BuildBlocks(pages, outline, unmapped, blocks);
     if (tree) tagged.Blocks(pages, blocks);
     WriteCounts counts;
-    WriteMarkdown(pages, blocks, repaired, markdown, counts);
+    WriteMarkdown(pages, blocks, repaired, markdown, counts, math);
     report.headings += counts.headings;
     report.paragraphs += counts.paragraphs;
     report.listItems += counts.listItems;

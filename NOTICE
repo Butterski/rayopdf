@@ -26,6 +26,11 @@ This repository includes third-party material:
   third_party/licenses/cmap-resources.txt. It also holds data derived from the Unicode
   Ideographic Variation Database 2022-09-13 (IVD_Sequences.txt), https://www.unicode.org/ivd/,
   under the Unicode License v3 (third_party/licenses/unicode.txt).
+- src/layout/math_data.cpp holds tables generated from KaTeX v0.16.21
+  (https://github.com/KaTeX/KaTeX, commit 923f2aa), Copyright 2013-2020 Khan Academy and other
+  contributors, licensed under the MIT License (src/symbols.js, src/macros.js; src/metrics/
+  mapping.pl, which KaTeX adapted from MathJax-dev under the Apache License 2.0). See
+  third_party/licenses/katex.txt.
 - eval/fixtures/md/d01-tester.md is derived from RayoMD's tester.md
   (Apache-2.0, https://github.com/Butterski/rayomd, commit ef106ca).
 - eval/fixtures/md/d05-book-chapter.md holds chapters I and II of "Alice's Adventures in

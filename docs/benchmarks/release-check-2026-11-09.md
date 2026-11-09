@@ -129,3 +129,14 @@ images, which are decoded whole. The OCR add-on, when a page needs it, peaks at 
    optional LaTeX output mode for formulas.
 3. **arXiv-like documents (a, b):** text order, heading structure and tables on scientific papers,
    worked on through development analogs only.
+
+## Update, 0.0.11 (same day)
+
+The user chose an optional LaTeX output (`--math=latex`, [v0.0.11](v0.0.11-2026-11-09.md)); the
+two LaTeX-math metrics are now measured in that mode, everything else in the default mode (D6). Both
+pass: olmOCR `arxiv_math` 0.718 against liteparse's 0.538, READoc arxiv `inline_eds` 0.650 against
+0.369 (holdout, measured once). Still open for the bar, unchanged in the default mode: READoc arxiv
+`text_eds` 0.747, `head_teds` 0.473, `table_teds` 0.483 and `seg_kt` 0.953 against the best tools'
+0.826 / 0.515 / 0.685 / 0.976 (a, b), and speed (c). Security (d) holds: ASan sweeps of 2,802 PDFs
+in both math modes are clean, and the new `fuzz_layout_math` target needs its share of a release
+campaign before the next tag.

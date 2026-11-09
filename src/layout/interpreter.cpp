@@ -3,6 +3,7 @@
 
 #include "common/minmax.h"
 #include "common/utf8.h"
+#include "layout/math.h"
 #include "pdf/content_lexer.h"
 
 #include <cmath>
@@ -92,6 +93,7 @@ struct GState {
     int render = 0;
     const Text::Font* font = nullptr;
     uint16_t fontId = 0;
+    uint8_t fontMath = 0;  // PageData::fontMath class of the font (layout/math.h), 0 for text fonts
     bool transparent = false;  // fill alpha 0 (/ca 0)
 };
 
@@ -698,8 +700,12 @@ void Interpreter::SetFontEntry(const PdfValue& entry, double size) {
     gs_.font = &font;
     size_t id = 0;
     while (id < fontIds_.size() && fontIds_[id] != &font) ++id;
-    if (id == fontIds_.size() && fontIds_.size() < 65535) fontIds_.push_back(&font);
+    if (id == fontIds_.size() && fontIds_.size() < 65535) {
+        fontIds_.push_back(&font);
+        page_.fontMath.push_back(static_cast<uint8_t>(MathFontOf(font.BaseName())));
+    }
     gs_.fontId = static_cast<uint16_t>(id < 65535 ? id : 65534);
+    gs_.fontMath = id < page_.fontMath.size() ? static_cast<uint8_t>(page_.fontMath[id] & kMathFontClass) : 0;
 }
 
 void Interpreter::ApplyExtGState(const PdfValue& resources, std::string_view name) {
@@ -1142,6 +1148,16 @@ void Interpreter::EmitGlyph(const Text::Code& code, double e, double f, const Gl
         flags |= kGlyphClipped;
     if (code.source == Text::UnicodeSource::None) flags |= kGlyphUnmapped;
     if (code.source == Text::UnicodeSource::Guess) flags |= kGlyphGuessed;
+    if (RAYOPDF_UNLIKELY(gs_.fontMath != 0)) {
+        // Math fonts (layout/math.h): glyphs left without text keep their code for --math=latex,
+        // and math italic fonts read through glyph names are marked (TeX's \phi is AGL's "phi1").
+        if (code.source == Text::UnicodeSource::None && code.bytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage)
+            page_.mathCodes.push_back(MathCode{static_cast<uint32_t>(page_.glyphs.size()), static_cast<uint8_t>(code.code)});
+        if (gs_.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
+            (code.source == Text::UnicodeSource::Encoding || code.source == Text::UnicodeSource::FontProgram) &&
+            gs_.fontId < page_.fontMath.size())
+            page_.fontMath[gs_.fontId] |= kMathFontNamed;
+    }
 
     g.text = static_cast<uint32_t>(page_.text.size());
     flags |= AppendGlyphText(code.unicode, page_.text);

@@ -158,6 +158,9 @@ enum : uint16_t {
     // the image's box.
     kLineImage = 1u << 9,
     kLineRtl = 1u << 10,      // reordered to logical order; its paragraph direction is right-to-left
+    // A display formula's lines merged into one (--math=latex only, layout/math.h): its glyphs are
+    // those of the formula's lines in reading order; it makes a block of its own.
+    kLineFormula = 1u << 11,
 };
 constexpr uint16_t kLineAnchor = kLineTableAnchor | kLineImage;  // lines with no glyphs
 
@@ -174,6 +177,12 @@ struct Line {
     uint8_t reserved = 0;
 };
 
+// A math font's glyph without text, and its code (PageData::mathCodes).
+struct MathCode {
+    uint32_t glyph = 0;  // index into PageData::glyphs
+    uint8_t code = 0;
+};
+
 struct PageData {
     int number = 0;              // 1-based page number
     float width = 0, height = 0; // upright page size
@@ -187,6 +196,12 @@ struct PageData {
     // Object numbers of the Form XObjects whose own marked-content ids glyphs and images carry
     // (Glyph::mcStream), at most kMaxMarkStreams.
     std::vector<uint32_t> markStreams;
+    // Per page-local font (Glyph::font): its MathFont class (layout/math.h), from its name; fonts
+    // past the end are text fonts.
+    std::vector<uint8_t> fontMath;
+    // Glyphs of math fonts left without text (kGlyphUnmapped), with their one-byte code: --math=latex
+    // reads them through TeX's font encodings (layout/math.h PrepareMathGlyphs).
+    std::vector<MathCode> mathCodes;
     int contentErrors = 0;       // content streams not fully read or interpreted
     bool limitHit = false;       // the operator or glyph budget ran out
 
@@ -219,6 +234,8 @@ struct PageData {
         rulings.clear();
         inlineImages.clear();
         markStreams.clear();
+        fontMath.clear();
+        mathCodes.clear();
         lines.clear();
         lineGlyphs.clear();
         order.clear();

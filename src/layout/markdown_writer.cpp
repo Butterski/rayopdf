@@ -34,6 +34,7 @@ struct GlyphRef {
     uint16_t length;
     uint16_t flags;  // the glyph's flags
     uint8_t script;
+    uint8_t lineStart;  // the first glyph of one of the block's lines
 };
 
 struct Word {
@@ -75,14 +76,17 @@ bool IsCjk(uint32_t cp) {
 
 class Writer {
 public:
-    Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts)
+    Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
-          boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument) {}
+          boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math) {}
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
     // A fenced code block; `prefix` starts every line (block quotes).
     void Code(const Block& block, const std::string& prefix);
+    // A display formula's block (one kLineFormula line) as $$…$$ LaTeX; false (nothing written)
+    // when the formula cannot be rebuilt.
+    bool Display(const Block& block);
 
 private:
     void CollectWords(const Block& block);
@@ -91,6 +95,10 @@ private:
     // `at` is the glyph they apply from (styles that run longer open first, outside).
     void SetStyle(uint8_t target, uint32_t at);
     void AppendEscaped(std::string_view text, bool blockStart);
+    // LaTeX mode: the inline formulas of the collected glyphs (mathRun_).
+    void FindFormulas();
+    // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
+    bool WriteFormula(uint32_t from, uint32_t to);
     // The footnote number of the superscript run starting at `r`, `count` glyphs long; 0 when none.
     uint32_t NoteNumber(const GlyphRef& r, uint32_t count) const {
         const auto it = std::lower_bound(noteRefs_.begin(), noteRefs_.end(), r, [](const NoteRef& n, const GlyphRef& g) {
@@ -122,6 +130,7 @@ private:
     bool boldIsBody_ = false;
     bool italicIsBody_ = false;
     bool monoIsBody_ = false;  // the document is typeset in a monospace font (BlockList::monoDocument)
+    MathMode math_ = MathMode::Unicode;
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
     std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
@@ -133,6 +142,11 @@ private:
     int depth_ = 0;
     std::string plain_;
     std::string other_;
+    // LaTeX mode.
+    std::vector<InlineGlyph> inline_;
+    std::vector<uint32_t> mathRun_;  // per GlyphRef: the end of the formula starting there, or 0
+    MathInput mathIn_;
+    std::string latex_, tag_;
 };
 
 void Writer::CollectWords(const Block& block) {
@@ -143,6 +157,7 @@ void Writer::CollectWords(const Block& block) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
+        const uint32_t lineFirst = static_cast<uint32_t>(refs_.size());
         for (uint32_t k = ref.skip; k < line.count; ++k) {
             const uint32_t gi = page.lineGlyphs[line.first + k];
             const Glyph& g = page.glyphs[gi];
@@ -165,7 +180,8 @@ void Writer::CollectWords(const Block& block) {
                 script = kScriptSup;
             else if (IsSubscript(g, line))
                 script = kScriptSub;
-            refs_.push_back(GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), g.flags, script});
+            refs_.push_back(GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), g.flags, script,
+                                     static_cast<uint8_t>(refs_.size() == lineFirst)});
             words_.back().count++;
         }
         joinNext = false;
@@ -577,6 +593,11 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
             if (j > i + 1 && j < t.size() && t[j] == ';') out_.push_back('\\');
             break;
         }
+        case '$':
+            // LaTeX mode: a dollar of the text opens no formula. One before a digit or a space
+            // ("$8,000") opens none anyway and stays as it is.
+            if (math_ == MathMode::Latex && !(next >= '0' && next <= '9') && next != ' ') out_.push_back('\\');
+            break;
         default:
             break;
         }
@@ -588,6 +609,10 @@ void Writer::Inline(const Block& block, bool styles) {
     CollectWords(block);
     StyleWords(styles);
     depth_ = 0;
+    // LaTeX mode: formulas found among the glyphs are written as $…$ in their place.
+    const bool latex = math_ == MathMode::Latex;
+    if (latex) FindFormulas();
+    uint32_t skipTo = 0;  // the glyphs before it went into a formula
     int32_t openLink = -1;
     // Heading and table cell text is inline: "## 1. Installation" opens no list.
     bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
@@ -615,29 +640,54 @@ void Writer::Inline(const Block& block, bool styles) {
     };
     for (size_t i = 0; i < words_.size(); ++i) {
         const Word& w = words_[i];
-        const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words_[i - 1], w)) : w.link >= 0;
-        if (linkChanges) {
-            closeLink();
-        } else if (w.spaceBefore) {
-            // Styles that do not go on past the space close before it, so that delimiters stay
-            // flanking.
-            SetStyle(static_cast<uint8_t>(open() & styles_[w.first]), w.first);
-        }
-        if (w.spaceBefore) out_.push_back(' ');
-        if (w.link >= 0 && openLink < 0) {
-            out_.push_back('[');
-            openLink = w.link;
-            openUri = Uri(w);
-            blockStart = false;
+        if (latex && skipTo >= w.first + w.count) continue;
+        // A formula that ended inside the word: the rest of the word follows it directly.
+        const bool resumed = latex && skipTo > w.first;
+        if (!resumed) {
+            const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words_[i - 1], w)) : w.link >= 0;
+            if (linkChanges) {
+                closeLink();
+            } else if (w.spaceBefore) {
+                // Styles that do not go on past the space close before it, so that delimiters stay
+                // flanking; all of them before a formula.
+                const uint8_t keep = latex && mathRun_[w.first] ? 0 : static_cast<uint8_t>(open() & styles_[w.first]);
+                SetStyle(keep, w.first);
+            }
+            if (w.spaceBefore) out_.push_back(' ');
+            if (w.link >= 0 && openLink < 0) {
+                out_.push_back('[');
+                openLink = w.link;
+                openUri = Uri(w);
+                blockStart = false;
+            }
         }
         // The word in runs of one script and one style; the link closes before punctuation that
         // follows it.
-        uint32_t k = w.first;
+        uint32_t k = resumed ? skipTo : w.first;
         const uint32_t end = w.first + w.count;
         const uint32_t trimAt = openLink >= 0 && w.linkTrim > 0 ? end - w.linkTrim : end;
         while (k < end) {
             if (k == trimAt && openLink >= 0) closeLink();
-            const uint32_t stop = k < trimAt ? trimAt : end;
+            uint32_t stop = k < trimAt ? trimAt : end;
+            if (latex) {
+                if (const uint32_t to = mathRun_[k]) {
+                    SetStyle(0, k);
+                    if (WriteFormula(k, to)) {
+                        blockStart = false;
+                        if (to >= end) {
+                            skipTo = to;
+                            break;
+                        }
+                        k = to;
+                        continue;
+                    }
+                }
+                for (uint32_t j = k + 1; j < stop; ++j)
+                    if (mathRun_[j]) {
+                        stop = j;
+                        break;
+                    }
+            }
             const uint8_t script = refs_[k].script;
             if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs_[k - 1].script != kScriptSup)) {
                 uint32_t supEnd = k + 1;
@@ -689,7 +739,8 @@ void Writer::Inline(const Block& block, bool styles) {
                         for (const char c : t) escapes |= MayEscape(c);
                     }
                 }
-                const bool plain = !(blockStart && script == kScriptNone) && !escapes;
+                bool plain = !(blockStart && script == kScriptNone) && !escapes;
+                if (latex && plain) plain = std::string_view(out_).substr(mark).find('$') == std::string_view::npos;
                 if (!plain) {
                     other_.assign(out_, mark, std::string::npos);
                     out_.resize(mark);
@@ -705,6 +756,88 @@ void Writer::Inline(const Block& block, bool styles) {
     closeLink();
     // No trailing spaces.
     while (!out_.empty() && out_.back() == ' ') out_.pop_back();
+}
+
+void Writer::FindFormulas() {
+    const uint32_t n = static_cast<uint32_t>(refs_.size());
+    inline_.resize(n);
+    for (uint32_t k = 0; k < n; ++k) {
+        const GlyphRef& r = refs_[k];
+        const PageData& page = pages_[r.page];
+        const Glyph& g = page.glyphs[r.glyph];
+        InlineGlyph& ig = inline_[k];
+        ig.glyph = &g;
+        ig.font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
+        ig.wordStart = false;
+        ig.lineStart = r.lineStart != 0;
+        ig.script = r.script != kScriptNone;
+        ig.note = false;
+        ig.text = Text(r);
+    }
+    for (const Word& w : words_) inline_[w.first].wordStart = true;
+    // Footnote references are never math.
+    if (!noteRefs_.empty()) {
+        for (uint32_t k = 0; k < n;) {
+            if (refs_[k].script != kScriptSup || (k > 0 && refs_[k - 1].script == kScriptSup)) {
+                ++k;
+                continue;
+            }
+            uint32_t end = k + 1;
+            while (end < n && refs_[end].script == kScriptSup && !inline_[end].wordStart) ++end;
+            if (NoteNumber(refs_[k], end - k))
+                for (uint32_t j = k; j < end; ++j) inline_[j].note = true;
+            k = end;
+        }
+    }
+    FindInlineFormulas(inline_, mathRun_);
+}
+
+bool Writer::WriteFormula(uint32_t from, uint32_t to) {
+    mathIn_.Clear();
+    const uint32_t pageIndex = refs_[from].page;
+    const PageData& page = pages_[pageIndex];
+    float u0 = INFINITY, u1 = -INFINITY, vb = INFINITY, vt = -INFINITY;
+    for (uint32_t k = from; k < to; ++k) {
+        if (refs_[k].page != pageIndex) return false;
+        const Glyph& g = page.glyphs[refs_[k].glyph];
+        if (g.dir != 0) return false;
+        const size_t before = mathIn_.glyphs.size();
+        AddMathGlyph(page, g, mathIn_);
+        if (mathIn_.glyphs.size() > before && k > from && refs_[k].lineStart) mathIn_.glyphs.back().flags |= kMathLineStart;
+        u0 = Fmin(u0, g.u0), u1 = Fmax(u1, g.u1);
+        vb = Fmin(vb, g.v - 0.4f * g.size), vt = Fmax(vt, g.v + 0.9f * g.size);
+    }
+    AddMathRules(page, u0 - 1, u1 + 1, vb, vt, mathIn_);
+    latex_.clear();
+    if (BuildLatex(mathIn_, false, latex_, tag_) != MathStatus::Ok) return false;
+    out_.push_back('$');
+    out_.append(latex_);
+    out_.push_back('$');
+    return true;
+}
+
+bool Writer::Display(const Block& block) {
+    if (block.count != 1) return false;
+    const BlockLine& ref = lines_[block.first];
+    const PageData& page = pages_[ref.page];
+    const Line& line = page.lines[ref.line];
+    if (!(line.flags & kLineFormula) || line.dir != 0) return false;
+    mathIn_.Clear();
+    for (uint32_t k = 0; k < line.count; ++k) AddMathGlyph(page, page.glyphs[page.lineGlyphs[line.first + k]], mathIn_);
+    AddMathRules(page, line.u0 - 1, line.u1 + 1, line.vb - line.size, line.vt + line.size, mathIn_);
+    latex_.clear();
+    if (BuildLatex(mathIn_, true, latex_, tag_) != MathStatus::Ok) return false;
+    out_.append("$$");
+    out_.append(latex_);
+    out_.append("$$");
+    // The equation number stays outside the formula: as \tag it makes olmOCR's KaTeX comparison
+    // fail more often (2026-11-09, arxiv_math 0.648 with \tag, 0.664 without).
+    if (!tag_.empty()) {
+        out_.append(" (");
+        out_.append(tag_);
+        out_.push_back(')');
+    }
+    return true;
 }
 
 void Writer::Code(const Block& block, const std::string& prefix) {
@@ -805,8 +938,8 @@ void Writer::Code(const Block& block, const std::string& prefix) {
 } // namespace
 
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bool repaired, std::string& out,
-                   WriteCounts& counts) {
-    Writer writer(pages, list, out, counts);
+                   WriteCounts& counts, MathMode math) {
+    Writer writer(pages, list, out, counts, math);
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
     int contentColumn[9] = {};
     const Block* previous = nullptr;
@@ -867,6 +1000,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             counts.paragraphs++;
             out += prefix;
             if (block.listParagraph) out.append(static_cast<size_t>(contentColumn[std::min<int>(block.depth, 8)]), ' ');
+            if (math == MathMode::Latex && writer.Display(block)) break;
             writer.Inline(block, true);
             break;
         }

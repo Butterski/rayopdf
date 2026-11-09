@@ -118,7 +118,11 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 - Footnotes are `[^n]`.
 - Images are written as `![alt](<stem>-images/p<page>-<n>.<ext>)`: DCT streams as `.jpg`, JPX
   streams as `.jp2`, everything else decoded to `.png`.
-- Math is Unicode with `<sup>`/`<sub>`, wrapped in `$…$` only for linear inline math.
+- Math is Unicode with `<sup>`/`<sub>`, wrapped in `$…$` only for linear inline math. Optional
+  `--math=latex` (decided 2026-11-09) writes formulas as `$…$` / `$$…$$` LaTeX rebuilt from glyph
+  geometry (an equation number after a display as `(n)`); the default stays Unicode and its output
+  byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
+  `inline_eds`) are measured with `--math=latex`, everything else in the default mode.
 
 ### D7 Command line
 
@@ -215,7 +219,7 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status: 0.0.10 (2026-11-09)
+### Status: 0.0.11 (2026-11-09)
 
 The first converter (0.0.1) covered M1 and the core of M2, M3 and M4 at once, so that every later
 step is measured on a working pipeline; 0.0.2 added tables, images, footnotes, right-to-left and
@@ -223,14 +227,16 @@ CJK text; 0.0.3 closed READoc's GitHub regression; 0.0.4 passed the best text-la
 odl metric; 0.0.5 completed the CJK CMaps and UAX #9; 0.0.6 passed olmOCR `table_tests`; 0.0.7
 added tagged PDF (M6), the product front ends (M7 without the performance campaign) and the OCR/ML
 decision (M8); 0.0.8 was the first performance campaign; 0.0.9 built M8: the OCR add-on, scan
-codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs; 0.0.10 adds OCR scripts and
-rotation, two more performance rounds and a quality round. Harness results:
+codecs, glyph-shape recovery, and exact recovery of RayoMD PDFs; 0.0.10 added OCR scripts and
+rotation, two more performance rounds and a quality round; 0.0.11 adds optional LaTeX math
+(`--math=latex`: olmOCR `arxiv_math` 0.718, READoc `inline_eds` 0.650). Harness results:
 [0.0.1](../benchmarks/v0-2026-11-05.md), [0.0.2](../benchmarks/v0.0.2-2026-11-06.md),
 [0.0.3](../benchmarks/v0.0.3-2026-11-06.md), [0.0.4](../benchmarks/v0.0.4-2026-11-06.md),
 [0.0.5](../benchmarks/v0.0.5-2026-11-06.md), [0.0.6](../benchmarks/v0.0.6-2026-11-06.md),
 [0.0.7](../benchmarks/v0.0.7-2026-11-07.md), [0.0.8](../benchmarks/v0.0.8-2026-11-07.md),
-[0.0.9](../benchmarks/v0.0.9-2026-11-08.md), [0.0.10](../benchmarks/v0.0.10-2026-11-09.md);
-performance method and steps: [performance.md](performance.md).
+[0.0.9](../benchmarks/v0.0.9-2026-11-08.md), [0.0.10](../benchmarks/v0.0.10-2026-11-09.md),
+[0.0.11](../benchmarks/v0.0.11-2026-11-09.md); performance method and steps:
+[performance.md](performance.md).
 
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every filter including CCITT, JBIG2 and JPEG 2000, the Standard security

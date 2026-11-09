@@ -102,6 +102,8 @@ void PrintUsage(std::FILE* out) {
         "                     (by default a verified rayomd-source/1 payload is written as it is)\n"
         "  --no-annotations   do not turn link annotations into Markdown links\n"
         "  --no-structure     ignore the structure tree of a tagged PDF (layout analysis only)\n"
+        "  --math=MODE        unicode (default): formulas as Unicode text with <sup>/<sub>;\n"
+        "                     latex: formulas rebuilt as LaTeX, $...$ inline and $$...$$ displayed\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"
@@ -220,6 +222,16 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
         options.convert.ocr.addon = std::string(arg.substr(12));
         if (options.convert.ocr.addon.empty()) {
             error = "--ocr-addon needs a path";
+            return FlagStatus::Invalid;
+        }
+    } else if (StartsWith(arg, "--math=")) {
+        const std::string_view mode = arg.substr(7);
+        if (mode == "unicode") {
+            options.convert.math = Layout::MathMode::Unicode;
+        } else if (mode == "latex") {
+            options.convert.math = Layout::MathMode::Latex;
+        } else {
+            error = "--math takes unicode or latex: " + std::string(mode);
             return FlagStatus::Invalid;
         }
     } else {
