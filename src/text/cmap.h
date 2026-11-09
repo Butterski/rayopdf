@@ -69,7 +69,9 @@ struct ToUnicodeMap {
     bool truncated = false;  // a limit was reached
 
     const UnicodeEntry* Find(uint32_t code) const;
-    std::string_view Text(const UnicodeEntry& entry) const { return std::string_view(text).substr(entry.offset, entry.length); }
+    // An entry's text; every entry of the map lies within `text` (ParseToUnicode and LoadToUnicode
+    // keep that), so no bound is tested.
+    std::string_view Text(const UnicodeEntry& entry) const { return std::string_view(text.data() + entry.offset, entry.length); }
 };
 
 // Reads a ToUnicode CMap: codespacerange, bfchar and bfrange (string and array destinations,
