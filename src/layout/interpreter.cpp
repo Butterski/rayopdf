@@ -209,12 +209,23 @@ struct GlyphRun {
     // All eight terms above are finite: with a finite glyph edge and a finite origin no corner
     // sum meets two opposite infinities, so no corner is NaN (PlaceGlyphs skips its NaN test).
     bool termsFinite = false;
+    // HorizontalBox applies (horizontal, all terms finite), and its terms.
+    bool boxTerms = false;
+    BoxTerms box = {};
 };
 
 // The glyph flags a code's Unicode source implies, by Text::UnicodeSource.
 constexpr uint16_t kSourceFlags[] = {0, 0, 0, 0, kGlyphGuessed, kGlyphUnmapped};
 static_assert(static_cast<int>(Text::UnicodeSource::Guess) == 4 && static_cast<int>(Text::UnicodeSource::None) == 5,
               "kSourceFlags follows Text::UnicodeSource");
+
+// The same value bit for bit (a -0 is no 0).
+inline bool SameBits(double x, double y) {
+    uint64_t u, v;
+    std::memcpy(&u, &x, sizeof u);
+    std::memcpy(&v, &y, sizeof v);
+    return u == v;
+}
 
 // What placing a text operator's glyphs needs (Interpreter::ShowText), in one local: the
 // graphics state's text parameters, Tm × CTM's linear part and what the glyph loop reads of the
@@ -233,17 +244,25 @@ struct Placement {
     bool vertical, usable;
     bool boxTerms;                // HorizontalBox applies: horizontal, all run terms finite
     uint16_t runFlags;
-    BoxTerms box;
-    // What every glyph record of the string starts from: size, direction, page-local font and
-    // marked content.
-    Glyph proto;
+    const BoxTerms* box;          // the run's
+    // What every glyph record of the string has besides its box, text and flags: size,
+    // direction, page-local font and marked content.
+    float size;
+    uint8_t dir, mcStream;
+    uint16_t fontId;
+    int32_t mcid;
     uint8_t fontMath;
     std::vector<GlyphUse>* uses;
+    // A TJ adjustment, Multiply([1 0 0 1 tx ty], Tm), leaves Tm's linear part with its bits: each
+    // term plus a zero product keeps its bits unless it is -0 or the product is not 0.
+    bool keepsLinear;
 
     void Read(const GState& gs, const Matrix& textMatrix, const Matrix& tm, const GlyphRun& r) {
         ready = true;
         run = &r;
         ta = textMatrix.a, tb = textMatrix.b, tc = textMatrix.c, td = textMatrix.d;
+        keepsLinear = SameBits(ta + 0.0 * tc, ta) && SameBits(tb + 0.0 * td, tb) && SameBits(0.0 * ta + tc, tc) &&
+                      SameBits(0.0 * tb + td, td);
         tma = tm.a, tmb = tm.b, tmc = tm.c, tmd = tm.d;
         ctmA = gs.ctm.a, ctmB = gs.ctm.b, ctmC = gs.ctm.c, ctmD = gs.ctm.d, ctmE = gs.ctm.e, ctmF = gs.ctm.f;
         font = gs.font;
@@ -252,20 +271,12 @@ struct Placement {
         tfs = gs.fontSize, th = gs.hScale, charSpace = gs.charSpace, wordSpace = gs.wordSpace;
         riseC = gs.rise * tm.c, riseD = gs.rise * tm.d;
         vertical = r.vertical, usable = r.usable;
-        boxTerms = !r.vertical && r.termsFinite;
+        boxTerms = r.boxTerms;
         runFlags = r.flags;
-        box.r[0] = r.a, box.r[1] = r.b;
-        box.s0[0] = r.xa[0] + r.yc[0], box.s0[1] = r.xb[0] + r.yd[0];
-        box.s1[0] = r.xa[0] + r.yc[1], box.s1[1] = r.xb[0] + r.yd[1];
-        box.y0[0] = r.yc[0], box.y0[1] = r.yd[0];
-        box.y1[0] = r.yc[1], box.y1[1] = r.yd[1];
-        box.clipLo[0] = r.clipX0, box.clipLo[1] = r.clipY0;
-        box.clipHi[0] = r.clipX1, box.clipHi[1] = r.clipY1;
-        box.clipEmpty = r.clipEmpty;
-        proto = Glyph();
-        proto.size = r.size;
-        proto.dir = r.dir;
-        proto.font = gs.fontId;
+        box = &r.box;
+        size = r.size;
+        dir = r.dir;
+        fontId = gs.fontId;
         fontMath = gs.fontMath;
     }
 };
@@ -278,14 +289,6 @@ struct GlyphCursor {
     uint64_t shown = 0, unmapped = 0, guessed = 0;
     size_t placed = 0;
 };
-
-// The same value bit for bit (a -0 is no 0).
-inline bool SameBits(double x, double y) {
-    uint64_t u, v;
-    std::memcpy(&u, &x, sizeof u);
-    std::memcpy(&v, &y, sizeof v);
-    return u == v;
-}
 
 // A glyph's box outside HorizontalBox's case (a vertical run, a term or the width not finite): the
 // corners [x y] × Trm with the glyph's own edge, its width (the right edge) or its vertical advance
@@ -313,7 +316,7 @@ RAYOPDF_NOINLINE bool GeneralGlyphBox(const Placement& p, double width, double v
                    dy[1] == dy[1] && dy[2] == dy[2] && dy[3] == dy[3])) {
         BoxExtremes(dx[0], dx[1], dx[2], dx[3], bx0, bx1);
         BoxExtremes(dy[0], dy[1], dy[2], dy[3], by0, by1);
-        WriteBox(bx0, by0, bx1, by1, p.proto.dir, g);
+        WriteBox(bx0, by0, bx1, by1, p.dir, g);
     } else {
         double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
         bx0 = bx1 = dx[0], by0 = by1 = dy[0];
@@ -321,7 +324,7 @@ RAYOPDF_NOINLINE bool GeneralGlyphBox(const Placement& p, double width, double v
             bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
             by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
             double u, v;
-            ToFrame(p.proto.dir, dx[i], dy[i], u, v);
+            ToFrame(p.dir, dx[i], dy[i], u, v);
             if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
             fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
             fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
@@ -1170,6 +1173,16 @@ const GlyphRun& Interpreter::RunFor(const Text::Font& font, const Matrix& tm) {
         finite = finite && std::isfinite(run.xa[i]) && std::isfinite(run.xb[i]) && std::isfinite(run.yc[i]) &&
                  std::isfinite(run.yd[i]);
     run.termsFinite = finite;
+    run.boxTerms = !run.vertical && finite;
+    BoxTerms& box = run.box;
+    box.r[0] = run.a, box.r[1] = run.b;
+    box.s0[0] = run.xa[0] + run.yc[0], box.s0[1] = run.xb[0] + run.yd[0];
+    box.s1[0] = run.xa[0] + run.yc[1], box.s1[1] = run.xb[0] + run.yd[1];
+    box.y0[0] = run.yc[0], box.y0[1] = run.yd[0];
+    box.y1[0] = run.yc[1], box.y1[1] = run.yd[1];
+    box.clipLo[0] = run.clipX0, box.clipLo[1] = run.clipY0;
+    box.clipHi[0] = run.clipX1, box.clipHi[1] = run.clipY1;
+    box.clipEmpty = run.clipEmpty;
     return run;
 }
 
@@ -1245,8 +1258,8 @@ RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t cou
             const Matrix tm = Multiply(textMatrix_, gs_.ctm);
             tme = tm.e, tmf = tm.f;
             p.Read(gs_, textMatrix_, tm, RunFor(*font, tm));
-            p.proto.mcid = mcid_;
-            p.proto.mcStream = mcStream_;
+            p.mcid = mcid_;
+            p.mcStream = mcStream_;
             p.uses = stats_.uses;
         }
         // The common case: a horizontal run with finite terms and size, no math font, no glyph
@@ -1279,12 +1292,11 @@ RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t cou
                     const double adjust = item.Number();
                     if (!std::isfinite(adjust)) continue;
                     const double tx = -adjust / 1000 * p.tfs * p.th, ty = 0;
-                    const double a = p.ta + 0.0 * p.tc, b = p.tb + 0.0 * p.td;
-                    const double c = 0.0 * p.ta + p.tc, d = 0.0 * p.tb + p.td;
-                    const double e = tx * p.ta + ty * p.tc + cur.te, f = tx * p.tb + ty * p.td + cur.tf;
-                    cur.te = e, cur.tf = f;
-                    if (!SameBits(a, p.ta) || !SameBits(b, p.tb) || !SameBits(c, p.tc) || !SameBits(d, p.td)) {
-                        textMatrix_.a = a, textMatrix_.b = b, textMatrix_.c = c, textMatrix_.d = d;
+                    cur.te = tx * p.ta + ty * p.tc + cur.te;
+                    cur.tf = tx * p.tb + ty * p.td + cur.tf;
+                    if (!p.keepsLinear) {
+                        textMatrix_.a = p.ta + 0.0 * p.tc, textMatrix_.b = p.tb + 0.0 * p.td;
+                        textMatrix_.c = 0.0 * p.ta + p.tc, textMatrix_.d = 0.0 * p.tb + p.td;
                         adjusted = true;
                         break;
                     }
@@ -1353,7 +1365,9 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
             unicode = std::string_view(p.pool + slot.offset, slot.length);
         } else {
             Text::Code code;
-            if (!font->Next(bytes, at, code)) break;
+            size_t after = at;  // Next takes the offset by reference: `at` itself stays a register
+            if (!font->Next(bytes, after, code)) break;
+            at = after;
             codeValue = code.code;
             codeBytes = code.bytes;
             width = code.width;
@@ -1403,27 +1417,25 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
                     page_.mathCodes.push_back(MathCode{static_cast<uint32_t>(glyphs.size()), static_cast<uint8_t>(codeValue)});
                 if (p.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
                     (source == Text::UnicodeSource::Encoding || source == Text::UnicodeSource::FontProgram) &&
-                    p.proto.font < page_.fontMath.size())
-                    page_.fontMath[p.proto.font] |= kMathFontNamed;
+                    p.fontId < page_.fontMath.size())
+                    page_.fontMath[p.fontId] |= kMathFontNamed;
             }
 
-            // The record: in kFast a default one the vector was grown by, given every field (the
-            // prototype's, then the box's and the glyph's own); else appended as the prototype.
-            // Its box: the corners [x y] × Trm, the run's terms with the glyph's own edge, its
-            // width (the right edge) or its vertical advance (the bottom edge).
-            Glyph& g = kFast ? records[placed++] : glyphs.emplace_back(p.proto);
-            if (kFast) {
-                g.size = p.proto.size;
-                g.dir = p.proto.dir;
-                g.mcStream = p.proto.mcStream;
-                g.font = p.proto.font;
-                g.mcid = p.proto.mcid;
-            }
+            // The record: in kFast a default one the vector was grown by, else a default one
+            // appended; given every field: the string's, then the box's and the glyph's own. Its
+            // box: the corners [x y] × Trm, the run's terms with the glyph's own edge, its width
+            // (the right edge) or its vertical advance (the bottom edge).
+            Glyph& g = kFast ? records[placed++] : glyphs.emplace_back();
+            g.size = p.size;
+            g.dir = p.dir;
+            g.mcStream = p.mcStream;
+            g.font = p.fontId;
+            g.mcid = p.mcid;
             const bool clipped = (kFast || p.boxTerms) && std::isfinite(width)
-                                     ? HorizontalBox(p.box, width, e, f, p.proto.dir, g)  // no NaN corner (termsFinite)
+                                     ? HorizontalBox(*p.box, width, e, f, p.dir, g)  // no NaN corner (termsFinite)
                                      : GeneralGlyphBox(p, width, verticalAdvance, e, f, g);
             double ou, ov = f;
-            if (RAYOPDF_UNLIKELY(p.proto.dir != 0)) ToFrame(p.proto.dir, e, f, ou, ov);
+            if (RAYOPDF_UNLIKELY(p.dir != 0)) ToFrame(p.dir, e, f, ou, ov);
             g.v = float(ov);
             g.text = textAt;
             g.textLength = static_cast<uint16_t>(length < 65535 ? length : 65535);
