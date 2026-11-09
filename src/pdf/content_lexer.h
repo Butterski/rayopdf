@@ -18,20 +18,23 @@
 
 namespace RayoPdf {
 
-// Syntax::ByteClasses with digits and the other bytes that can start a number (signs and the
-// point) in classes of their own: one load tells white space, a delimiter, a digit, a sign
-// or point, or another regular byte (0).
+// Syntax::ByteClasses with digits, the other bytes that can start a number (signs and the point)
+// and the first bytes of true, false and null in classes of their own: one load tells white
+// space, a delimiter, a digit, a sign or point, a keyword's start, or another regular byte (0),
+// which starts an operator.
 struct ContentClasses {
     static constexpr uint8_t kWhite = Syntax::ByteClasses::kWhite;
     static constexpr uint8_t kDelimiter = Syntax::ByteClasses::kDelimiter;
     static constexpr uint8_t kNotRegular = kWhite | kDelimiter;
     static constexpr uint8_t kDigit = 4;
-    static constexpr uint8_t kSign = 8;  // '+', '-' or '.'
+    static constexpr uint8_t kSign = 8;      // '+', '-' or '.'
+    static constexpr uint8_t kKeyword = 16;  // 't', 'f' or 'n'
     uint8_t of[256] = {};
     constexpr ContentClasses() {
         for (int c = 0; c < 256; ++c) of[c] = Syntax::kByteClasses.of[c];
         for (int c = '0'; c <= '9'; ++c) of[c] = kDigit;
         of['+'] = of['-'] = of['.'] = kSign;
+        of['t'] = of['f'] = of['n'] = kKeyword;
     }
 };
 inline constexpr ContentClasses kContentClasses;
@@ -255,7 +258,7 @@ RAYOPDF_HOT_INLINE bool ContentLexer::Scan(std::string_view& op) {
                 p = q + (next & Classes::kWhite);
                 goto pushed;
             }
-            if (kind == 0) goto token;
+            if (!(kind & Classes::kDelimiter)) goto token;  // an operator or a keyword's start
         } else {
             // The data's last token: tests against its end.
             const char* const data = cursor_.data.data();
@@ -278,7 +281,7 @@ RAYOPDF_HOT_INLINE bool ContentLexer::Scan(std::string_view& op) {
                 }
                 goto token;
             }
-            if (kind == 0) goto token;
+            if (!(kind & Classes::kDelimiter)) goto token;
         }
         // A delimiter: a comment, a name, string, array or dictionary, or a stray byte.
         cursor_.pos = static_cast<size_t>(p - cursor_.data.data());
@@ -315,9 +318,9 @@ RAYOPDF_HOT_INLINE bool ContentLexer::Scan(std::string_view& op) {
                 const char* const end = cursor_.data.data() + cursor_.data.size();
                 while (q < end && !(kContentClasses.of[static_cast<unsigned char>(*q)] & Classes::kNotRegular)) ++q;
             }
-            // The operators start with letters or quotes: most need no test of what they are.
-            if (RAYOPDF_LIKELY(c != 't' && c != 'f' && c != 'n' &&
-                               !(kContentClasses.of[c] & (Classes::kDigit | Classes::kSign)))) {
+            // The operators start with letters or quotes: most need no test of what they are,
+            // those not starting like true, false, null or a number.
+            if (RAYOPDF_LIKELY(kContentClasses.of[c] == 0)) {
                 cursor_.pos = static_cast<size_t>(q - cursor_.data.data());
                 op = std::string_view(p, static_cast<size_t>(q - p));
                 if (RAYOPDF_UNLIKELY(q - p == 2 && c == 'B' && p[1] == 'I')) ReadInlineImage();
