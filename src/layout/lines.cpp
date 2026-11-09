@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <type_traits>
@@ -47,25 +48,38 @@ struct Fragment {
     bool spaces = false; // has a space glyph
 };
 
+// Storage from calloc: the kernel maps a fresh allocation's pages zeroed on first touch, so a page
+// faults in only what it writes (vector's value-initialization writes every element).
+struct FreeDeleter {
+    void operator()(void* p) const { std::free(p); }
+};
+template <typename T>
+using Buffer = std::unique_ptr<T[], FreeDeleter>;
+template <typename T>
+Buffer<T> Zeroed(size_t count) {
+    T* p = static_cast<T*>(std::calloc(count > 0 ? count : 1, sizeof(T)));
+    if (!p) std::abort();
+    return Buffer<T>(p);
+}
+
 // CollectAndFold's working storage, kept by each thread between pages of up to kScratchSlots probe
 // slots, so a page fills none of it whole: a filter word empties by clearing the words its page's
 // entries set; chain heads and the probe's table hold base + an index, and values below `base` are
 // empty, so moving the base past a page's indices at its end empties both.
 constexpr size_t kScratchSlots = size_t(1) << 16;
-struct FoldWord {
-    uint64_t bits;  // a bit per column of a kept glyph here; 0 outside a call
-    uint32_t head;  // base + the last entry chained here; below `base` when none
-    uint32_t spare;
-};
 struct FoldEntry {
     uint32_t next;   // base + the entry chained here before, or below `base`
     uint32_t word;   // its filter word
     uint32_t glyph;  // the kept glyph
 };
 struct FoldScratch {
-    std::vector<FoldWord> words;
-    std::vector<FoldEntry> entries;
-    std::vector<uint32_t> table;  // the probe's table; below `base` outside a call
+    Buffer<uint64_t> bits;   // per filter word, a bit per column of a kept glyph; 0 outside a call
+    Buffer<uint32_t> heads;  // per filter word, base + its last entry; below `base` when none
+    size_t words = 0;
+    Buffer<FoldEntry> entries;
+    size_t entryCount = 0;
+    Buffer<uint32_t> table;  // the probe's table; below `base` outside a call
+    size_t tableSize = 0;
     uint32_t base = 1;
 };
 
@@ -172,26 +186,27 @@ struct Folder {
     uint32_t* vis = nullptr;
     bool keepInvisible = false;
     size_t wordMask = 0;
-    FoldWord* words = nullptr;
+    uint64_t* bits = nullptr;
+    uint32_t* heads = nullptr;
     FoldEntry* entries = nullptr;
     uint32_t* table = nullptr;  // made when the probe is first needed
     uint64_t mask = 0;
     uint32_t base = 1, kept = 0, entryCount = 0;
     uint32_t placed = 0;  // glyphs placed so far, the current one included
     FoldScratch* fold = nullptr;
-    std::vector<FoldWord> ownWords;
-    std::vector<FoldEntry> ownEntries;
-    std::vector<uint32_t> ownTable;
+    Buffer<uint64_t> ownBits;
+    Buffer<uint32_t> ownHeads;
+    Buffer<FoldEntry> ownEntries;
+    Buffer<uint32_t> ownTable;
 
     explicit Folder(PageData& p) : page(p) {}
     size_t WordOf(uint64_t key, uint32_t column, uint32_t row) const {
         return static_cast<size_t>((key + uint64_t(column >> 6) * kColumnMix + uint64_t(row) * kRowMix) >> 32) & wordMask;
     }
     void Chain(size_t word, uint32_t column, uint32_t glyph) {
-        FoldWord& w = words[word];
-        w.bits |= uint64_t(1) << (column & 63);
-        entries[entryCount] = FoldEntry{w.head, static_cast<uint32_t>(word), glyph};
-        w.head = base + entryCount++;
+        bits[word] |= uint64_t(1) << (column & 63);
+        entries[entryCount] = FoldEntry{heads[word], static_cast<uint32_t>(word), glyph};
+        heads[word] = base + entryCount++;
     }
     void Insert(uint32_t position, const Glyph& g, uint64_t h) {
         int64_t cx, cy;
@@ -221,11 +236,11 @@ void Folder::MakeTable(uint32_t i) {
     while (capacity < count * 2) capacity <<= 1;
     mask = capacity - 1;
     if (capacity <= kScratchSlots) {
-        if (fold->table.size() < capacity) fold->table.assign(capacity, 0);
-        table = fold->table.data();
+        if (fold->tableSize < capacity) fold->table = Zeroed<uint32_t>(capacity), fold->tableSize = capacity;
+        table = fold->table.get();
     } else {
-        ownTable.assign(capacity, 0);
-        table = ownTable.data();
+        ownTable = Zeroed<uint32_t>(capacity);
+        table = ownTable.get();
     }
     for (uint32_t p = 0; p < kept; ++p) {
         const Glyph& o = glyphs[vis[p]];
@@ -249,7 +264,7 @@ void Folder::Place(uint32_t i) {
         // The window's words (at most two blocks of columns by three rows), each once, with the
         // bits of its columns.
         size_t at[6];
-        uint64_t bits[6];
+        uint64_t wanted[6];
         uint32_t distinct = 0;
         if (ca <= cb && ra <= rb && cb - ca <= 64 && rb - ra <= 2) {
             for (uint32_t b = 0; b <= (cb >> 6) - (ca >> 6); ++b) {
@@ -261,18 +276,18 @@ void Folder::Place(uint32_t i) {
                     const size_t word = WordOf(key, lo, row);
                     uint32_t d = 0;
                     while (d < distinct && at[d] != word) ++d;
-                    if (d == distinct) at[distinct] = word, bits[distinct++] = 0;
-                    bits[d] |= columns;
+                    if (d == distinct) at[distinct] = word, wanted[distinct++] = 0;
+                    wanted[d] |= columns;
                 }
             }
             bool hit = false;
-            for (uint32_t d = 0; d < distinct; ++d) hit = hit || (words[at[d]].bits & bits[d]) != 0;
+            for (uint32_t d = 0; d < distinct; ++d) hit = hit || (bits[at[d]] & wanted[d]) != 0;
             if (!hit) {
                 probe = false;
             } else {
                 uint32_t count = 0, steps = 0;
                 for (uint32_t d = 0; d < distinct; ++d) {
-                    for (uint32_t p = words[at[d]].head; p >= base && steps < kMaxChainSteps; ++steps) {
+                    for (uint32_t p = heads[at[d]]; p >= base && steps < kMaxChainSteps; ++steps) {
                         const FoldEntry& e = entries[p - base];
                         if (Matches(glyphs[e.glyph], g, tolerance, text)) count++, found = e.glyph;
                         p = e.next;
@@ -362,27 +377,30 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     // The filter: two words per probe slot for all the page's glyphs.
     size_t capacity = 16;
     while (capacity < n * 2) capacity <<= 1;
-    const size_t filterWords = capacity * 2;
+    const size_t filterWords = capacity;
     f.wordMask = filterWords - 1;
     FoldScratch& fold = PerThread<FoldScratch>();
     f.fold = &fold;
     if (UINT32_MAX - fold.base < n) {
-        for (FoldWord& w : fold.words) w.head = 0;
-        fold.table.assign(fold.table.size(), 0);
+        if (fold.words > 0) std::memset(fold.heads.get(), 0, fold.words * sizeof(uint32_t));
+        if (fold.tableSize > 0) std::memset(fold.table.get(), 0, fold.tableSize * sizeof(uint32_t));
         fold.base = 1;
     }
     f.base = fold.base;
     const bool scratch = capacity <= kScratchSlots;
     if (scratch) {
-        if (fold.words.size() < filterWords) fold.words.resize(filterWords, FoldWord{0, 0, 0});
-        if (fold.entries.size() < n) fold.entries.resize(n);
-        f.words = fold.words.data();
-        f.entries = fold.entries.data();
+        if (fold.words < filterWords) {
+            fold.bits = Zeroed<uint64_t>(filterWords), fold.heads = Zeroed<uint32_t>(filterWords);
+            fold.words = filterWords;
+        }
+        if (fold.entryCount < n) fold.entries = Zeroed<FoldEntry>(n), fold.entryCount = n;
+        f.bits = fold.bits.get(), f.heads = fold.heads.get();
+        f.entries = fold.entries.get();
     } else {
-        f.ownWords.assign(filterWords, FoldWord{0, 0, 0});
-        f.ownEntries.resize(n);
-        f.words = f.ownWords.data();
-        f.entries = f.ownEntries.data();
+        f.ownBits = Zeroed<uint64_t>(filterWords), f.ownHeads = Zeroed<uint32_t>(filterWords);
+        f.ownEntries = Zeroed<FoldEntry>(n);
+        f.bits = f.ownBits.get(), f.heads = f.ownHeads.get();
+        f.entries = f.ownEntries.get();
     }
     // The common case in locals: a placed glyph near the origin, of a tolerance up to 3.5 (its
     // window has one or two rows: under one row high, rounding included), whose window's columns
@@ -392,7 +410,8 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     Glyph* const glyphs = glyphVector.data();
     const char* const textData = page.text.data();
     const size_t textSize = page.text.size();
-    FoldWord* const words = f.words;
+    uint64_t* const bits = f.bits;
+    uint32_t* const heads = f.heads;
     FoldEntry* const entries = f.entries;
     const uint32_t base = f.base;
     const size_t wordMask = f.wordMask;
@@ -450,15 +469,14 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 const uint64_t block = key + uint64_t(ca >> 6) * kColumnMix;
                 const size_t wa = static_cast<size_t>((block + uint64_t(ra) * kRowMix) >> 32) & wordMask;
                 const size_t wb = static_cast<size_t>((block + uint64_t(rb) * kRowMix) >> 32) & wordMask;
-                if (((words[wa].bits | words[wb].bits) & columns) == 0) {
+                if (((bits[wa] | bits[wb]) & columns) == 0) {
                     // Kept: its column and row lie in the window, so its word is wa or wb.
                     uint32_t column, row;
                     NearCells(g, column, row);
                     const size_t word = row == ra ? wa : wb;
-                    FoldWord& w = words[word];
-                    w.bits |= uint64_t(1) << (column & 63);
-                    entries[entryCount] = FoldEntry{w.head, static_cast<uint32_t>(word), i};
-                    w.head = base + entryCount++;
+                    bits[word] |= uint64_t(1) << (column & 63);
+                    entries[entryCount] = FoldEntry{heads[word], static_cast<uint32_t>(word), i};
+                    heads[word] = base + entryCount++;
                     if (RAYOPDF_UNLIKELY(probing)) f.InsertKept(kept, g);
                     order[kept++] = i;
                     continue;
@@ -476,7 +494,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     vis.resize(kept);
     fold.base = base + kept;
     if (scratch)
-        for (uint32_t e = 0; e < entryCount; ++e) words[entries[e].word].bits = 0;
+        for (uint32_t e = 0; e < entryCount; ++e) bits[entries[e].word] = 0;
     return sum - sum == 0;
 }
 
@@ -946,7 +964,8 @@ struct PlaceScratch {
     std::vector<Fragment> frags;
     std::vector<Group> groups;
     std::vector<Proto> protos;
-    std::vector<Segment> segments;
+    Buffer<Segment> segments;  // Zeroed: a page faults in only the segments it writes
+    size_t segmentCapacity = 0;
     std::vector<uint8_t> splitBefore;
 };
 
@@ -1166,9 +1185,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     uint32_t protoCount = 0;
     std::vector<Proto>& protos = place.protos;
     protos.clear();
-    std::vector<Segment>& segmentVector = place.segments;
-    if (segmentVector.size() < vis.size()) segmentVector.resize(vis.size());
-    Segment* const segments = segmentVector.data();
+    if (place.segmentCapacity < vis.size()) place.segments = Zeroed<Segment>(vis.size()), place.segmentCapacity = vis.size();
+    Segment* const segments = place.segments.get();
     uint32_t segmentCount = 0;
     std::vector<uint32_t>& lineVis = place.lineVis;
     for (size_t gi = 0; gi < groups.size(); ++gi) {
