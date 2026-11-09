@@ -223,23 +223,34 @@ void TestCrcAndFilters() {
     for (size_t size : {0, 1, 7, 8, 9, 100, 1000}) {
         RAYOPDF_CHECK(Image::Png::Crc32(data.data(), size) == BitwiseCrc(data.data(), size), 501);
     }
-    // The SSE2 filters against the scalar reference, every filter, bpp and row length to 70, on
-    // random rows and on smooth ones (where the filters' costs tie).
-    std::vector<uint8_t> row(80), up(80), a(80), b(80);
-    for (int pass = 0; pass < 2; pass++) {
+    // The SSE2 filter against the scalar reference, every bpp and row length to 70: on random rows,
+    // on smooth ones (where the filters' costs tie), and on rows that each filter 1 to 4 predicts
+    // to within 1 (so that each wins): the same filter and residuals.
+    const size_t slot = 71;
+    std::vector<uint8_t> row(80), up(80), a(4 * slot), b(4 * slot);
+    for (int pass = 0; pass < 6; pass++) {
         for (size_t bpp = 1; bpp <= 4; bpp++) {
             for (size_t n = bpp; n <= 70; n++) {
                 for (size_t i = 0; i < n; i++) {
-                    row[i] = pass == 0 ? RandomByte() : static_cast<uint8_t>(i * 3);
-                    up[i] = pass == 0 ? RandomByte() : static_cast<uint8_t>(i * 3 + 1);
+                    if (pass == 1) {
+                        row[i] = static_cast<uint8_t>(i * 3);
+                        up[i] = static_cast<uint8_t>(i * 3 + 1);
+                        continue;
+                    }
+                    up[i] = RandomByte();
+                    const int left = i >= bpp ? row[i - bpp] : 0, above = up[i], corner = i >= bpp ? up[i - bpp] : 0;
+                    const int p = left + above - corner;
+                    const int pa = std::abs(p - left), pb = std::abs(p - above), pc = std::abs(p - corner);
+                    const int paeth = pa <= pb && pa <= pc ? left : (pb <= pc ? above : corner);
+                    const int predictors[6] = {0, 0, left, above, (left + above) >> 1, paeth};
+                    row[i] = pass == 0 ? RandomByte() : static_cast<uint8_t>(predictors[pass] + (RandomByte() & 1));
                 }
-                RAYOPDF_CHECK(Image::Png::ChooseFilter(row.data(), up.data(), n, bpp) ==
-                                  Image::Png::ChooseFilterScalar(row.data(), up.data(), n, bpp),
-                              502);
-                for (int filter = 0; filter < 5; filter++) {
-                    Image::Png::FilterRow(filter, row.data(), up.data(), n, bpp, a.data());
-                    Image::Png::FilterRowScalar(filter, row.data(), up.data(), n, bpp, b.data());
-                    RAYOPDF_CHECK(std::memcmp(a.data(), b.data(), n) == 0, 502);
+                // Slots of n + 1 bytes, as the encoder lays them out.
+                const int filter = Image::Png::FilterBest(row.data(), up.data(), n, bpp, a.data());
+                RAYOPDF_CHECK(filter == Image::Png::FilterBestScalar(row.data(), up.data(), n, bpp, b.data()), 502);
+                if (filter > 0) {
+                    const size_t at = size_t(filter - 1) * (n + 1) + 1;
+                    RAYOPDF_CHECK(std::memcmp(a.data() + at, b.data() + at, n) == 0, 502);
                 }
             }
         }

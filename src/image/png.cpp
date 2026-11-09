@@ -119,38 +119,31 @@ void FilterBytes(int filter, const uint8_t* row, const uint8_t* up, size_t from,
 }
 
 #if RAYOPDF_PNG_SSE2
-// Sixteen residual magnitudes, min(r, 256 - r) per byte, added up into two 64-bit lanes.
-RAYOPDF_HOT_INLINE __m128i Cost16(__m128i value, __m128i predictor) {
-    const __m128i zero = _mm_setzero_si128();
-    const __m128i r = _mm_sub_epi8(value, predictor);
-    return _mm_sad_epu8(_mm_min_epu8(r, _mm_sub_epi8(zero, r)), zero);
-}
-
 // floor((a + b) / 2) per byte: pavgb rounds up, so take back the odd bit.
 RAYOPDF_HOT_INLINE __m128i Average16(__m128i a, __m128i b) {
     return _mm_sub_epi8(_mm_avg_epu8(a, b), _mm_and_si128(_mm_xor_si128(a, b), _mm_set1_epi8(1)));
 }
 
-RAYOPDF_HOT_INLINE __m128i Abs16(__m128i x) { return _mm_max_epi16(x, _mm_sub_epi16(_mm_setzero_si128(), x)); }
-
-// Paeth on eight 16-bit lanes, the same comparisons as the scalar one.
-RAYOPDF_HOT_INLINE __m128i PaethLanes(__m128i a, __m128i b, __m128i c) {
-    const __m128i bc = _mm_sub_epi16(b, c);
-    const __m128i ac = _mm_sub_epi16(a, c);
-    const __m128i pa = Abs16(bc);
-    const __m128i pb = Abs16(ac);
-    const __m128i pc = Abs16(_mm_add_epi16(bc, ac));
-    const __m128i notA = _mm_or_si128(_mm_cmpgt_epi16(pa, pb), _mm_cmpgt_epi16(pa, pc));
-    const __m128i useC = _mm_cmpgt_epi16(pb, pc);
-    const __m128i bOrC = _mm_or_si128(_mm_andnot_si128(useC, b), _mm_and_si128(useC, c));
-    return _mm_or_si128(_mm_andnot_si128(notA, a), _mm_and_si128(notA, bOrC));
-}
-
+// Paeth on sixteen bytes, the same comparisons as the scalar one without widening: pa = |b - c|
+// and pb = |a - c| fit a byte, and pc = |(b - c) + (a - c)| is |pa - pb| when the two differences
+// have opposite signs, else pa + pb, which saturates at 255 only where it exceeds both pa and pb
+// anyway (so every comparison with it keeps its outcome). x <= y is subs(x, y) == 0.
 RAYOPDF_HOT_INLINE __m128i Paeth16(__m128i a, __m128i b, __m128i c) {
     const __m128i zero = _mm_setzero_si128();
-    const __m128i lo = PaethLanes(_mm_unpacklo_epi8(a, zero), _mm_unpacklo_epi8(b, zero), _mm_unpacklo_epi8(c, zero));
-    const __m128i hi = PaethLanes(_mm_unpackhi_epi8(a, zero), _mm_unpackhi_epi8(b, zero), _mm_unpackhi_epi8(c, zero));
-    return _mm_packus_epi16(lo, hi);
+    const __m128i cb = _mm_subs_epu8(c, b);
+    const __m128i ca = _mm_subs_epu8(c, a);
+    const __m128i pa = _mm_or_si128(_mm_subs_epu8(b, c), cb);
+    const __m128i pb = _mm_or_si128(_mm_subs_epu8(a, c), ca);
+    // b >= c and a >= c: the signs are opposite where exactly one holds (a zero difference
+    // gives pb or pa either way).
+    const __m128i opposite = _mm_xor_si128(_mm_cmpeq_epi8(cb, zero), _mm_cmpeq_epi8(ca, zero));
+    const __m128i papb = _mm_subs_epu8(pa, pb);
+    const __m128i difference = _mm_or_si128(papb, _mm_subs_epu8(pb, pa));
+    const __m128i pc = _mm_or_si128(_mm_and_si128(opposite, difference), _mm_andnot_si128(opposite, _mm_adds_epu8(pa, pb)));
+    const __m128i useA = _mm_and_si128(_mm_cmpeq_epi8(papb, zero), _mm_cmpeq_epi8(_mm_subs_epu8(pa, pc), zero));
+    const __m128i useB = _mm_cmpeq_epi8(_mm_subs_epu8(pb, pc), zero);
+    const __m128i bOrC = _mm_or_si128(_mm_and_si128(useB, b), _mm_andnot_si128(useB, c));
+    return _mm_or_si128(_mm_and_si128(useA, a), _mm_andnot_si128(useA, bOrC));
 }
 
 RAYOPDF_HOT_INLINE __m128i Load16(const uint8_t* p) { return _mm_loadu_si128(reinterpret_cast<const __m128i*>(p)); }
@@ -171,94 +164,65 @@ constexpr std::array<uint8_t, 32> MakeTailMask() {
 }
 constexpr std::array<uint8_t, 32> kTailMask = MakeTailMask();
 
-// Adds the cost of `predictor` for `value` to `sum`, of the bytes `keep` keeps when Masked.
+// Adds the magnitudes of the residuals `r` to `sum`, of the bytes `keep` keeps when Masked.
 template <bool Masked>
-RAYOPDF_HOT_INLINE __m128i AddCost16(__m128i sum, __m128i value, __m128i predictor, __m128i keep) {
-    if constexpr (!Masked) {
-        (void)keep;
-        return _mm_add_epi64(sum, Cost16(value, predictor));
-    } else {
-        const __m128i zero = _mm_setzero_si128();
-        const __m128i r = _mm_sub_epi8(value, predictor);
-        return _mm_add_epi64(sum, _mm_sad_epu8(_mm_and_si128(_mm_min_epu8(r, _mm_sub_epi8(zero, r)), keep), zero));
-    }
+RAYOPDF_HOT_INLINE __m128i AddMagnitudes16(__m128i sum, __m128i r, __m128i keep) {
+    const __m128i zero = _mm_setzero_si128();
+    __m128i magnitude = _mm_min_epu8(r, _mm_sub_epi8(zero, r));
+    if constexpr (Masked) magnitude = _mm_and_si128(magnitude, keep);
+    else (void)keep;
+    return _mm_add_epi64(sum, _mm_sad_epu8(magnitude, zero));
 }
 
-// The five filters' costs of the 16 bytes at x (x >= bpp).
+// The four filters' residuals of the 16 bytes at x (x >= bpp) into their slots, and the five
+// filters' costs.
 template <bool Masked>
-RAYOPDF_HOT_INLINE void AddCosts16(const uint8_t* row, const uint8_t* up, size_t x, size_t bpp, __m128i keep,
-                                   __m128i& s0, __m128i& s1, __m128i& s2, __m128i& s3, __m128i& s4) {
+RAYOPDF_HOT_INLINE void FilterCosts16(const uint8_t* row, const uint8_t* up, size_t x, size_t bpp, __m128i keep,
+                                      uint8_t* const* slots, __m128i* sums) {
     const __m128i v = Load16(row + x);
     const __m128i a = Load16(row + x - bpp);
     const __m128i b = Load16(up + x);
     const __m128i c = Load16(up + x - bpp);
-    s0 = AddCost16<Masked>(s0, v, _mm_setzero_si128(), keep);
-    s1 = AddCost16<Masked>(s1, v, a, keep);
-    s2 = AddCost16<Masked>(s2, v, b, keep);
-    s3 = AddCost16<Masked>(s3, v, Average16(a, b), keep);
-    s4 = AddCost16<Masked>(s4, v, Paeth16(a, b, c), keep);
+    const __m128i r1 = _mm_sub_epi8(v, a);
+    const __m128i r2 = _mm_sub_epi8(v, b);
+    const __m128i r3 = _mm_sub_epi8(v, Average16(a, b));
+    const __m128i r4 = _mm_sub_epi8(v, Paeth16(a, b, c));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(slots[0] + x), r1);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(slots[1] + x), r2);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(slots[2] + x), r3);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(slots[3] + x), r4);
+    sums[0] = AddMagnitudes16<Masked>(sums[0], v, keep);
+    sums[1] = AddMagnitudes16<Masked>(sums[1], r1, keep);
+    sums[2] = AddMagnitudes16<Masked>(sums[2], r2, keep);
+    sums[3] = AddMagnitudes16<Masked>(sums[3], r3, keep);
+    sums[4] = AddMagnitudes16<Masked>(sums[4], r4, keep);
 }
 
-template <int Filter>
-RAYOPDF_HOT_INLINE __m128i Predictor16(const uint8_t* row, const uint8_t* up, size_t x, size_t bpp) {
-    if constexpr (Filter == 1) return Load16(row + x - bpp);
-    else if constexpr (Filter == 2) return Load16(up + x);
-    else if constexpr (Filter == 3) return Average16(Load16(row + x - bpp), Load16(up + x));
-    else return Paeth16(Load16(row + x - bpp), Load16(up + x), Load16(up + x - bpp));
-}
-
-int ChooseFilterSse2(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp) {
-    FilterCosts costs;
-    size_t x = std::min(bpp, rowBytes);
-    costs.Add(row, up, 0, x, bpp);
-    if (rowBytes >= bpp + 16) {
-        const __m128i zero = _mm_setzero_si128();
-        __m128i s0 = zero, s1 = zero, s2 = zero, s3 = zero, s4 = zero;
-        for (; x + 16 <= rowBytes; x += 16) AddCosts16<false>(row, up, x, bpp, zero, s0, s1, s2, s3, s4);
-        if (x < rowBytes) {
-            const __m128i keep = Load16(kTailMask.data() + (rowBytes - x));
-            AddCosts16<true>(row, up, rowBytes - 16, bpp, keep, s0, s1, s2, s3, s4);
-            x = rowBytes;
-        }
-        costs.sum[0] += LaneSum(s0);
-        costs.sum[1] += LaneSum(s1);
-        costs.sum[2] += LaneSum(s2);
-        costs.sum[3] += LaneSum(s3);
-        costs.sum[4] += LaneSum(s4);
-    }
-    costs.Add(row, up, x, rowBytes, bpp);
-    return costs.Best();
-}
-
-// Bytes [bpp, rowBytes) of a row of at least bpp + 16, 16 a step; the last step is the row's last
-// 16 bytes, which writes some of the step before's again, the same values (Sub, Average and
-// Paeth read the input row only, never `out`).
-template <int Filter>
-void FilterSteps16(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
-    for (size_t x = bpp;; x += 16) {
-        if (x + 16 > rowBytes) x = rowBytes - 16;
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(out + x),
-                         _mm_sub_epi8(Load16(row + x), Predictor16<Filter>(row, up, x, bpp)));
-        if (x + 16 == rowBytes) return;
-    }
-}
-
-void FilterRowSse2(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
-    if (filter == 0) {
-        std::memcpy(out, row, rowBytes);
-        return;
-    }
+// One pass over the row: every filter's residuals and cost at once. A row's last bytes take its
+// last full step again, those counted before masked off the costs; the residuals they store
+// again are the same values (the filters read the input row only).
+int FilterBestSse2(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
+    uint8_t* const slots[4] = {out + 1, out + rowBytes + 2, out + 2 * (rowBytes + 1) + 1, out + 3 * (rowBytes + 1) + 1};
     if (rowBytes < bpp + 16) {
-        FilterBytes(filter, row, up, 0, rowBytes, bpp, out);
-        return;
+        FilterCosts costs;
+        costs.Add(row, up, 0, rowBytes, bpp);
+        const int best = costs.Best();
+        if (best != 0) FilterBytes(best, row, up, 0, rowBytes, bpp, slots[best - 1]);
+        return best;
     }
-    FilterBytes(filter, row, up, 0, bpp, bpp, out);
-    switch (filter) {
-    case 1: FilterSteps16<1>(row, up, rowBytes, bpp, out); break;
-    case 2: FilterSteps16<2>(row, up, rowBytes, bpp, out); break;
-    case 3: FilterSteps16<3>(row, up, rowBytes, bpp, out); break;
-    default: FilterSteps16<4>(row, up, rowBytes, bpp, out); break;
+    FilterCosts costs;
+    costs.Add(row, up, 0, bpp, bpp);
+    for (int filter = 1; filter < 5; filter++) FilterBytes(filter, row, up, 0, bpp, bpp, slots[filter - 1]);
+    const __m128i zero = _mm_setzero_si128();
+    __m128i sums[5] = {zero, zero, zero, zero, zero};
+    size_t x = bpp;
+    for (; x + 16 <= rowBytes; x += 16) FilterCosts16<false>(row, up, x, bpp, zero, slots, sums);
+    if (x < rowBytes) {
+        const __m128i keep = Load16(kTailMask.data() + (rowBytes - x));
+        FilterCosts16<true>(row, up, rowBytes - 16, bpp, keep, slots, sums);
     }
+    for (int filter = 0; filter < 5; filter++) costs.sum[filter] += LaneSum(sums[filter]);
+    return costs.Best();
 }
 #endif
 
@@ -278,30 +242,19 @@ uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc) {
     return ~crc;
 }
 
-int ChooseFilterScalar(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp) {
+int FilterBestScalar(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
     FilterCosts costs;
     costs.Add(row, up, 0, rowBytes, bpp);
-    return costs.Best();
+    const int best = costs.Best();
+    if (best != 0) FilterBytes(best, row, up, 0, rowBytes, bpp, out + (best - 1) * (rowBytes + 1) + 1);
+    return best;
 }
 
-void FilterRowScalar(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
-    if (filter == 0) std::memcpy(out, row, rowBytes);
-    else FilterBytes(filter, row, up, 0, rowBytes, bpp, out);
-}
-
-int ChooseFilter(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp) {
+int FilterBest(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
 #if RAYOPDF_PNG_SSE2
-    return ChooseFilterSse2(row, up, rowBytes, bpp);
+    return FilterBestSse2(row, up, rowBytes, bpp, out);
 #else
-    return ChooseFilterScalar(row, up, rowBytes, bpp);
-#endif
-}
-
-void FilterRow(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {
-#if RAYOPDF_PNG_SSE2
-    FilterRowSse2(filter, row, up, rowBytes, bpp, out);
-#else
-    FilterRowScalar(filter, row, up, rowBytes, bpp, out);
+    return FilterBestScalar(row, up, rowBytes, bpp, out);
 #endif
 }
 
@@ -462,16 +415,21 @@ bool EncodeFormatted(uint32_t width, uint32_t height, const RowFormat& format, P
     IdatSink sink{&output, Png::Crc32(idat + 4, 4), 0};
     Deflate::ZlibStream stream(static_cast<size_t>(filtered64), scratch, AppendIdat, &sink);
     // One filter byte, then the residuals, per row; the source's rows are asked for once each.
-    std::vector<uint8_t> filtered(rowBytes + 1);
+    // Filters 1 to 4 fill slots of a filter byte and a row each; filter 0's residuals are the row.
+    std::vector<uint8_t> slots(4 * (rowBytes + 1));
+    for (int filter = 1; filter < 5; filter++) slots[size_t(filter - 1) * (rowBytes + 1)] = static_cast<uint8_t>(filter);
     std::vector<uint8_t> zeros(rowBytes, 0);
     const uint8_t* up = zeros.data();
     for (uint32_t y = 0; y < height; y++) {
         const uint8_t* row = source(context, y);
         if (!row) return false;
-        const int filter = Png::ChooseFilter(row, up, rowBytes, bpp);
-        filtered[0] = static_cast<uint8_t>(filter);
-        Png::FilterRow(filter, row, up, rowBytes, bpp, filtered.data() + 1);
-        if (!stream.Write(filtered.data(), filtered.size())) return false;
+        const int filter = Png::FilterBest(row, up, rowBytes, bpp, slots.data());
+        if (filter == 0) {
+            const uint8_t none = 0;
+            if (!stream.Write(&none, 1) || !stream.Write(row, rowBytes)) return false;
+        } else if (!stream.Write(slots.data() + size_t(filter - 1) * (rowBytes + 1), rowBytes + 1)) {
+            return false;
+        }
         up = row;
     }
     if (!stream.Finish() || sink.size > 0x7FFFFFFFu) return false;

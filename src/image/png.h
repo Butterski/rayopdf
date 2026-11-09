@@ -19,16 +19,16 @@ namespace RayoPdf::Image::Png {
 uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc = 0);
 
 // PNG row filters. One row per call; `up` is the row above, or zeros for the first row, and `bpp`
-// the bytes per pixel (1 to 4). The scalar functions are the reference that the SSE2 ones match
+// the bytes per pixel (1 to 4). The scalar function is the reference that the SSE2 one matches
 // byte for byte (the tests compare them).
 //
-// The filter, 0 to 4, that the PNG encoder heuristic picks for `row`: the smallest sum of the
-// residuals' magnitudes read as signed bytes, the lowest filter on ties.
-int ChooseFilter(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp);
-int ChooseFilterScalar(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp);
-// Writes the residuals of `row` under `filter` (0 to 4) to `out`, rowBytes bytes.
-void FilterRow(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out);
-void FilterRowScalar(int filter, const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out);
+// Returns the filter, 0 to 4, that the PNG encoder heuristic picks for `row` (the smallest sum of
+// the residuals' magnitudes read as signed bytes, the lowest filter on ties) and writes the
+// residuals under it: `out` holds four slots of rowBytes + 1 bytes, one for each of filters 1 to
+// 4, the residuals from a slot's second byte on. Only the returned filter's slot is defined
+// (filter 0 writes none: its residuals are the row); first bytes are never written.
+int FilterBest(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out);
+int FilterBestScalar(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out);
 
 // Row y (rowBytes bytes) of an image EncodeRows writes, asked for once each, top to bottom; the
 // pointer stays valid until the call after next (the filters read the row above). Null ends the
