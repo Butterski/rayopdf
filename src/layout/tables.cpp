@@ -223,16 +223,6 @@ bool Locate(const Grid& g, float x, float y, int& r, int& c) {
     return true;
 }
 
-// A numeric cell: digits, and few letters (units, currency, percent and signs aside).
-bool Numeric(std::string_view t) {
-    int digits = 0, letters = 0;
-    for (char c : t) {
-        if (c >= '0' && c <= '9') digits++;
-        else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) letters++;
-    }
-    return digits > 0 && letters * 2 <= digits;
-}
-
 // A page reference of a contents list: a number of four digits at most, or a roman numeral.
 bool PageNumber(std::string_view t) {
     if (t.empty() || t.size() > 6) return false;
@@ -335,6 +325,24 @@ bool InkColumns(const Ink& ink, float xa, float xb, float minGap, std::vector<Ga
     return !gaps.empty();
 }
 
+// What the table tests read of a word's text, gathered once a page (Detector::Chars): its length
+// in bytes, its first three bytes, its ASCII digits and letters (Numeric adds them up over a
+// cell), and whether every byte could belong to a number ParseNumber reads (digits, '.', and an
+// ASCII or U+2212 minus): ParseNumber accepts no text that is not.
+struct WordChars {
+    uint32_t size = 0, digits = 0, letters = 0;
+    unsigned char head[3] = {0, 0, 0};
+    bool numberish = true;
+    uint32_t page = 0;  // the page they were gathered for (TableScratch::charsPage)
+};
+
+// A numeric cell: digits, and few letters (units, currency, percent and signs aside), counted as
+// ASCII bytes of its text (a cell's counts are its words' added up).
+bool NumericCounts(uint32_t digits, uint32_t letters) { return digits > 0 && letters * 2 <= digits; }
+bool Numeric(const WordChars& c) { return NumericCounts(c.digits, c.letters); }
+
+int ColumnOf(const std::vector<Gap>& gaps, float x);
+
 // A word's sort key (Detector::SortWords).
 struct WordKey {
     float base, x0;
@@ -358,6 +366,13 @@ struct TableScratch {
     std::vector<uint8_t> split, label;
     std::vector<Gap> gaps, trial, narrowed;
     Ink ink, grown;
+    std::vector<WordChars> chars;  // per word of words; the page's entries bear its charsPage
+    uint32_t charsPage = 0;
+    // Per word of a row range (from its rows' first word on): its column for a set of gaps
+    // (ColumnOf), for Texty, Borderless's cells and TextGrid.
+    std::vector<int> textyColumns, cellColumns, gridColumns;
+    std::vector<float> widths;
+    std::vector<float> middles;  // WordColumns: the gaps' middles (ColumnOf's bounds)
 };
 constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
 
@@ -423,6 +438,11 @@ private:
     void Commit();
     void MarkUsed(const Grid& g);
     std::string_view WordText(const TWord& w, std::string& scratch) const;
+    const WordChars& Chars(const TWord& w) const;  // w is one of words_
+    unsigned char FirstByte(const TWord& w) const;  // of its text, 0 when it has none
+    // out[k - rows[rowBegin].first]: ColumnOf(gaps, centre) of each word k of rows [rowBegin, rowEnd).
+    void WordColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                     const std::vector<Gap>& gaps, std::vector<int>& out) const;
     bool MathWord(const TWord& w) const;
 
     PageData& page_;
@@ -497,6 +517,12 @@ void Detector::CollectWords() {
     }
     SortWords();
     wordUsed_.assign(words_.size(), 0);
+    // A new stamp for the page's word texts (Chars): earlier pages' entries stay, stamped otherwise.
+    if (scratch_.chars.size() < words_.size()) scratch_.chars.resize(words_.size());
+    if (++scratch_.charsPage == 0) {
+        for (WordChars& c : scratch_.chars) c.page = 0;
+        scratch_.charsPage = 1;
+    }
     if (!sizes.empty()) {
         std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
         bodySize_ = Fmax(1.0f, sizes[sizes.size() / 2]);
@@ -556,6 +582,55 @@ std::string_view Detector::WordText(const TWord& w, std::string& scratch) const 
     const Line& line = page_.lines[w.line];
     for (uint32_t k = w.k0; k < w.k1; ++k) scratch.append(page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]]));
     return scratch;
+}
+
+unsigned char Detector::FirstByte(const TWord& w) const {
+    const Line& line = page_.lines[w.line];
+    for (uint32_t k = w.k0; k < w.k1; ++k) {
+        const std::string_view t = page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]]);
+        if (!t.empty()) return static_cast<unsigned char>(t[0]);
+    }
+    return 0;
+}
+
+const WordChars& Detector::Chars(const TWord& w) const {
+    WordChars& c = scratch_.chars[static_cast<size_t>(&w - words_.data())];
+    if (c.page == scratch_.charsPage) return c;
+    c = WordChars{};
+    c.page = scratch_.charsPage;
+    const Line& line = page_.lines[w.line];
+    for (uint32_t k = w.k0; k < w.k1; ++k) {
+        for (const char ch : page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]])) {
+            const unsigned char u = static_cast<unsigned char>(ch);
+            if (c.size < 3) c.head[c.size] = u;
+            c.size++;
+            const bool digit = ch >= '0' && ch <= '9';
+            if (digit) c.digits++;
+            else if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) c.letters++;
+            c.numberish = c.numberish && (digit || ch == '.' || ch == '-' || u == 0xE2 || u == 0x88 || u == 0x92);
+        }
+    }
+    return c;
+}
+
+void Detector::WordColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                           size_t rowEnd, const std::vector<Gap>& gaps, std::vector<int>& out) const {
+    if (rowEnd <= rowBegin) {
+        out.clear();
+        return;
+    }
+    const uint32_t first = rows[rowBegin].first, end = rows[rowEnd - 1].first + rows[rowEnd - 1].count;
+    std::vector<float>& middles = scratch_.middles;
+    middles.resize(gaps.size());
+    for (size_t g = 0; g < gaps.size(); ++g) middles[g] = (gaps[g].a + gaps[g].b) / 2;
+    const int n = static_cast<int>(middles.size());
+    out.resize(end - first);
+    for (uint32_t k = first; k < end; ++k) {
+        const float x = (words_[rowWords[k]].x0 + words_[rowWords[k]].x1) / 2;
+        int c = 0;
+        while (c < n && x > middles[static_cast<size_t>(c)]) ++c;
+        out[k - first] = c;
+    }
 }
 
 // A word of displayed math: a few glyphs, each an italic letter, a digit or an operator, with an
@@ -783,8 +858,10 @@ bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& 
     int sentenceColumns = 0;
     const int cols = static_cast<int>(gaps.size()) + 1;
     int texty = 0;
-    std::vector<float> widths;
-    std::string scratch;
+    std::vector<float>& widths = scratch_.widths;
+    std::vector<int>& columns = scratch_.textyColumns;
+    WordColumns(rows, rowWords, rowBegin, rowEnd, gaps, columns);
+    const uint32_t base = rowEnd > rowBegin ? rows[rowBegin].first : 0;
     for (int c = 0; c < cols; ++c) {
         float lo = INFINITY, hi = -INFINITY;
         widths.clear();
@@ -792,11 +869,11 @@ bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& 
         for (size_t r = rowBegin; r < rowEnd; ++r) {
             float a = INFINITY, b = -INFINITY;
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                if (columns[k - base] != c) continue;
                 const TWord& w = words_[rowWords[k]];
-                if (ColumnOf(gaps, (w.x0 + w.x1) / 2) != c) continue;
                 if (!(b > a)) {
-                    const std::string_view t = WordText(w, scratch);
-                    if (!t.empty() && t[0] >= 'a' && t[0] <= 'z') lower++;
+                    const unsigned char h = FirstByte(w);
+                    if (h >= 'a' && h <= 'z') lower++;
                 }
                 a = Fmin(a, w.x0), b = Fmax(b, w.x1);
                 wordsIn++;
@@ -857,11 +934,14 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     for (const Gap& gap : gaps) g.xs.push_back((gap.a + gap.b) / 2);
     g.xs.push_back(right);
 
+    std::vector<int>& columns = scratch_.gridColumns;
+    WordColumns(rows, rowWords, rowBegin, rowEnd, gaps, columns);
+    const uint32_t base = rows[rowBegin].first;
     std::vector<float> colLeft(static_cast<size_t>(cols), INFINITY), colRight(static_cast<size_t>(cols), -INFINITY);
     for (size_t r = rowBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
-            const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+            const size_t c = static_cast<size_t>(columns[k - base]);
             colLeft[c] = Fmin(colLeft[c], w.x0), colRight[c] = Fmax(colRight[c], w.x1);
         }
     // Rows of multi-line cells. Where the whitespace between lines is of two kinds, the wider parts
@@ -873,10 +953,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const size_t n = rowEnd - rowBegin;
     std::vector<uint64_t> mask(n, 0);
     for (size_t r = rowBegin; r < rowEnd; ++r)
-        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
-            const TWord& w = words_[rowWords[k]];
-            mask[r - rowBegin] |= uint64_t(1) << ColumnOf(gaps, (w.x0 + w.x1) / 2);
-        }
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k)
+            mask[r - rowBegin] |= uint64_t(1) << columns[k - base];
     // Lines closer than a line pitch are cells of one row set to the middle at different heights.
     const auto offset = [&](size_t r) {
         return rows[r - 1].base - rows[r].base < 0.85f * Fmax(rows[r - 1].size, rows[r].size);
@@ -919,9 +997,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         const auto rights = [&](size_t r, std::vector<float>& out) {
             std::fill(out.begin(), out.end(), -INFINITY);
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
-                const TWord& w = words_[rowWords[k]];
-                const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
-                out[c] = Fmax(out[c], w.x1);
+                const size_t c = static_cast<size_t>(columns[k - base]);
+                out[c] = Fmax(out[c], words_[rowWords[k]].x1);
             }
         };
         rights(rowBegin, above);
@@ -937,20 +1014,19 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // Without a header rule: up to four leading lines with no number in any cell, above a body whose
     // rows mostly hold numbers, are the header ("Aug 21," over "2011").
     if (headerRows == 0 && n >= 4) {
-        std::string scratch, cell;
+        // Numeric() of a cell's text from its words' digits and letters.
         const auto numbers = [&](size_t r) {
             int count = 0, last = -1;
-            cell.clear();
+            uint32_t size = 0, digits = 0, letters = 0;
             for (uint32_t k = rows[r].first; k <= rows[r].first + rows[r].count; ++k) {
-                const int c = k < rows[r].first + rows[r].count
-                                  ? ColumnOf(gaps, (words_[rowWords[k]].x0 + words_[rowWords[k]].x1) / 2)
-                                  : -2;
-                if (c != last && !cell.empty()) {
-                    count += Numeric(cell);
-                    cell.clear();
+                const int c = k < rows[r].first + rows[r].count ? columns[k - base] : -2;
+                if (c != last && size > 0) {
+                    count += NumericCounts(digits, letters);
+                    size = digits = letters = 0;
                 }
                 if (c == -2) break;
-                cell += WordText(words_[rowWords[k]], scratch);
+                const WordChars& t = Chars(words_[rowWords[k]]);
+                size += t.size, digits += t.digits, letters += t.letters;
                 last = c;
             }
             return count;
@@ -1016,12 +1092,10 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             // A chart's axis in a cell: no table. Pieces of tall brackets (U+239B-U+23AD): a
             // matrix set in display math.
             float value = 0;
-            const size_t cell = static_cast<size_t>(group * cols + ColumnOf(gaps, (w.x0 + w.x1) / 2));
-            const std::string_view text = WordText(w, scratch);
-            if (ParseNumber(text, value) && numbers[cell].Add(value)) return;
-            if (text.size() >= 3 && text.substr(0, 2) == "\xE2\x8E" && static_cast<unsigned char>(text[2]) >= 0x9B &&
-                static_cast<unsigned char>(text[2]) <= 0xAD)
-                return;
+            const size_t cell = static_cast<size_t>(group * cols + columns[k - base]);
+            const WordChars& t = Chars(w);
+            if (t.numberish && ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
+            if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
             // The word before it in the row, when only a word space apart: one cell's text.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
             const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
@@ -1112,7 +1186,6 @@ void Detector::SplitRowsByLines(Grid& g) const {
     std::vector<Baseline> lines;
     std::vector<float> ys{g.ys.front()}, cuts;
     std::vector<uint8_t> vb, hb(g.hb.begin(), g.hb.begin() + cols);
-    std::string scratch;
     uint64_t first = 0;  // the row's first column with text
     const auto full = [&](const Baseline& l) { return (l.mask & first) && Bits(l.mask) >= 2; };
     for (int r = 0; r < rows; ++r) {
@@ -1125,7 +1198,7 @@ void Detector::SplitRowsByLines(Grid& g) const {
             int wr = 0, c = 0;
             if (!Locate(g, (w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, wr, c) || wr != r) continue;
             const uint64_t bit = uint64_t(1) << c;
-            const uint64_t number = Numeric(WordText(w, scratch)) ? bit : 0;
+            const uint64_t number = Numeric(Chars(w)) ? bit : 0;
             if (!lines.empty() && lines.back().base - w.base <= 0.35f * w.size) {
                 lines.back().mask |= bit, lines.back().numeric |= number;
             } else {
@@ -1265,11 +1338,10 @@ void Detector::LatticeHeader(Grid& g) const {
     // Under titles alone, the next row holds the column labels: text without numbers.
     if (titles && header > 0 && header < rows) {
         bool numbers = false;
-        std::string scratch;
         it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
         for (; it != words_.end() && it->base >= g.y0 - 20 && !numbers; ++it) {
             int r = 0, c = 0;
-            numbers = Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c) && r == header && Numeric(WordText(*it, scratch));
+            numbers = Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c) && r == header && Numeric(Chars(*it));
         }
         if (!numbers) ++header;
     }
@@ -1599,15 +1671,15 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
         if (column && !started[static_cast<size_t>(r)]) {
             // The first word of the row (words come top to bottom, left to right).
             started[static_cast<size_t>(r)] = 1;
-            const std::string_view t = WordText(w, scratch);
-            if (!t.empty() && t[0] >= 'a' && t[0] <= 'z') lowerStarts++;
+            const WordChars& t = Chars(w);
+            if (t.size > 0 && t.head[0] >= 'a' && t.head[0] <= 'z') lowerStarts++;
         }
         const size_t cell = static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)]);
         filled[cell]++;
         float value = 0;
-        const std::string_view text = WordText(w, scratch);
-        if (!Numeric(text)) label[cell] = 1;
-        if (ParseNumber(text, value)) axis = numbers[cell].Add(value) || axis;
+        const WordChars& t = Chars(w);
+        if (!Numeric(t)) label[cell] = 1;
+        if (t.numberish && ParseNumber(WordText(w, scratch), value)) axis = numbers[cell].Add(value) || axis;
         for (int k = 1; k < cols; ++k) {
             const float x = g.xs[static_cast<size_t>(k)];
             if (g.vb[static_cast<size_t>(r * (cols + 1) + k)] && w.x0 < x - 1 && w.x1 > x + 1) crossing++;
@@ -1866,10 +1938,9 @@ void Detector::RuleStacks() {
                 // No rule under the header (a top and a bottom rule only): the leading rows without
                 // a number, three at most, over three rows or more that start with one.
                 if (header == 0) {
-                    std::string scratch;
                     const auto numbers = [&](size_t q) {
                         for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
-                            if (Numeric(WordText(words_[rowWords[k]], scratch))) return true;
+                            if (Numeric(Chars(words_[rowWords[k]]))) return true;
                         return false;
                     };
                     size_t lead = 0;
@@ -2045,7 +2116,7 @@ void Detector::Borderless(float gapFactor) {
                     if (w.x0 >= n.b - 0.5f && (!after || w.x0 < after->x0)) after = &w;
                 }
                 if (before && after && after->x0 - before->x1 < minGap)
-                    kept = Numeric(WordText(*before, scratch)) && Numeric(WordText(*after, cellText));
+                    kept = Numeric(Chars(*before)) && Numeric(Chars(*after));
             }
             if (!kept) {
                 label[e] = 0;
@@ -2072,24 +2143,31 @@ void Detector::Borderless(float gapFactor) {
         // Cells: filled, numeric, per row; leading rows without a number over a body with numbers
         // are the header, whose cells may be set otherwise (centred over the column) and further
         // apart.
+        std::vector<int>& columns = scratch_.cellColumns;
+        WordColumns(rows, rowWords, begin, e, gaps, columns);
+        const uint32_t base = rows[begin].first;
         std::vector<uint8_t> numericRow(static_cast<size_t>(n), 0);
         int filled = 0, numeric = 0, cellWords = 0, lastFilled = 0, pageRefs = 0;
         for (size_t q = begin; q < e; ++q) {
             if (label[q]) continue;
             int last = -1;
+            // The cell's text by its words' counts; its bytes only in the last column (page numbers).
+            uint32_t size = 0, digits = 0, letters = 0;
             cellText.clear();
             for (uint32_t k = rows[q].first; k <= rows[q].first + rows[q].count; ++k) {
-                const int c = k < rows[q].first + rows[q].count
-                                  ? ColumnOf(gaps, (words_[rowWords[k]].x0 + words_[rowWords[k]].x1) / 2)
-                                  : -2;
-                if (c != last && !cellText.empty()) {
+                const int c = k < rows[q].first + rows[q].count ? columns[k - base] : -2;
+                if (c != last && size > 0) {
                     filled++;
-                    if (Numeric(cellText)) numeric++, numericRow[q - begin] = 1;
+                    if (NumericCounts(digits, letters)) numeric++, numericRow[q - begin] = 1;
                     if (last == m - 1) lastFilled++, pageRefs += PageNumber(cellText);
+                    size = digits = letters = 0;
                     cellText.clear();
                 }
                 if (c == -2) break;
-                cellText += WordText(words_[rowWords[k]], scratch);
+                const TWord& w = words_[rowWords[k]];
+                const WordChars& t = Chars(w);
+                size += t.size, digits += t.digits, letters += t.letters;
+                if (c == m - 1) cellText += WordText(w, scratch);
                 cellWords++;
                 last = c;
             }
@@ -2107,7 +2185,7 @@ void Detector::Borderless(float gapFactor) {
                 float a = INFINITY, b = -INFINITY;
                 for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
                     const TWord& w = words_[rowWords[k]];
-                    if (ColumnOf(gaps, (w.x0 + w.x1) / 2) == c) a = Fmin(a, w.x0), b = Fmax(b, w.x1);
+                    if (columns[k - base] == c) a = Fmin(a, w.x0), b = Fmax(b, w.x1);
                 }
                 if (b > a) lefts.push_back(a), rights.push_back(b), centres.push_back((a + b) / 2);
             }
@@ -2152,7 +2230,7 @@ void Detector::Borderless(float gapFactor) {
             for (uint32_t k = h.first; k < h.first + h.count; ++k) {
                 const int c = ColumnOf(gaps, (words_[rowWords[k]].x0 + words_[rowWords[k]].x1) / 2);
                 if (c != last) occupied++, last = c;
-                numbers = numbers || Numeric(WordText(words_[rowWords[k]], scratch));
+                numbers = numbers || Numeric(Chars(words_[rowWords[k]]));
             }
             const bool near = h.bottom - rows[begin].top <= 2.0f * em && SizeFits(h, em) && !numbers;
             if (near && h.x0 >= xa - em && h.x1 <= xb + em && occupied >= 2 &&
