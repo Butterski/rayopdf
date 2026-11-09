@@ -235,9 +235,10 @@ performance method and steps: [performance.md](performance.md).
 - **M1 Reader:** implemented in full (classic and stream cross-reference data, object streams,
   hybrid files, repair, every filter including CCITT, JBIG2 and JPEG 2000, the Standard security
   handler R2–R6, the page tree, `--inspect`, exact recovery of `rayomd-source/1` PDFs). Gates met:
-  page counts (996 of 996), 0 crashes and hangs under ASan, 24 h of aggregate fuzzing over the 11
-  targets of 0.0.3, `--inspect` 0.286 ms fresh-process median on odl. Open: 24 h for the targets
-  added since (release campaign).
+  page counts (996 of 996), 0 crashes and hangs under ASan, 24 h of clean aggregate fuzzing over
+  all 22 targets in the release campaign of 2026-11-09, `--inspect` 0.286 ms fresh-process median
+  on odl. Release bar: (d) and (e) met, (a), (b) and (c) not
+  ([release check](../benchmarks/release-check-2026-11-09.md)).
 - **M2 Text:** the font → Unicode chain including every predefined CMap of Adobe's five CJK
   collections, detection and repair of untrustworthy ToUnicode maps, glyph-shape recovery through
   the OCR add-on, words, lines, duplicates as bold, ligatures, dehyphenation, uncertainty comments.

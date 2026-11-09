@@ -161,6 +161,8 @@ unpack into the same folder. `tools/package.py` makes them byte for byte reprodu
   the add-on's measurements, build and pipe protocol.
 - [RayoPDF 0.0.10 on the harness](docs/benchmarks/v0.0.10-2026-11-09.md): OCR scripts and
   rotation, performance rounds 2 and 3, quality round.
+- [Release check, 2026-11-09](docs/benchmarks/release-check-2026-11-09.md): 0.0.10 against the
+  0.1.0 bar (security and footprint met; quality, tables and speed not yet).
 - [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
 
 ## Running the evaluation
