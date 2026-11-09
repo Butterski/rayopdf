@@ -22,7 +22,7 @@ namespace RayoPdf::Image::Deflate {
 // Working memory kept from call to call: about 300 KB once used. One per thread.
 struct Scratch {
     std::vector<uint32_t> table;   // two most recent positions per bucket, keyed on 8 bytes
-    std::vector<uint32_t> tokens;  // literal byte, or length << 16 | (distance - 1)
+    std::vector<uint32_t> tokens;  // literal byte, or length << 16 | (distance - 1); then an end mark
     uint32_t base = 0;             // table position of the next input's first byte
 };
 

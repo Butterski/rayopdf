@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstring>
+#include <type_traits>
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
 #include <emmintrin.h>
@@ -34,6 +35,8 @@ constexpr size_t kInsertEdge = 4;
 // After 32 literals in a row the data is taken to be incompressible there (photographs, noise):
 // each further literal takes the next (run >> kSkipShift) bytes along unsearched, as LZ4 does.
 constexpr unsigned kSkipShift = 5;
+// The token after a block's last: no literal (a token below 256 is one).
+constexpr uint32_t kTokenEnd = 0xFFFFFFFFu;
 
 constexpr uint16_t kLengthBase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                       31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
@@ -258,14 +261,26 @@ const Code& FixedCode() {
     return code;
 }
 
+// `tokens[count]` is a sentinel that is no literal (kTokenEnd), so a run of literals ends without
+// a count check.
 void EmitTokens(BitWriter& target, const uint32_t* tokens, size_t count, const Code& code) {
     // A local copy: stores through `out` could alias the caller's writer, which would then be
     // reloaded from memory for every token.
     BitWriter writer = target;
-    for (size_t index = 0; index < count; index++) {
-        const uint32_t token = tokens[index];
+    size_t index = 0;
+    while (index < count) {
+        const uint32_t token = tokens[index++];
         if (token < 256) {
             writer.Put(code.litCode[token], code.litLength[token]);
+            // Up to two more literals fit before a Flush: 7 bits left over and three of 15.
+            if (tokens[index] < 256) {
+                writer.Put(code.litCode[tokens[index]], code.litLength[tokens[index]]);
+                index++;
+                if (tokens[index] < 256) {
+                    writer.Put(code.litCode[tokens[index]], code.litLength[tokens[index]]);
+                    index++;
+                }
+            }
         } else {
             const unsigned length = token >> 16;
             const unsigned lengthSymbol = kLengthSymbol[length];
@@ -419,7 +434,7 @@ uint32_t PrepareTable(size_t size, Scratch& scratch, unsigned& bits) {
     }
     const uint32_t base = scratch.base;
     scratch.base += static_cast<uint32_t>(size) + kWindow;
-    const size_t tokenRoom = std::min(size, kBlockStart);
+    const size_t tokenRoom = std::min(size, kBlockStart) + 1;  // and the sentinel
     if (scratch.tokens.size() < tokenRoom) scratch.tokens.resize(tokenRoom);
     return base;
 }
@@ -605,62 +620,82 @@ void ZlibStream::CompressBlock() {
     uint32_t distanceFreq[kDistanceSymbols] = {};
     size_t count = 0;
     size_t literals = 0;  // since the last match
-    while (at < limit) {
-        if (at + 8 > size) {
-            tokens[count++] = in[at];
-            litFreq[in[at++]]++;
-            continue;
-        }
-        const uint64_t sequence = Load64(in + at);
-        uint32_t* const bucket = table + 2 * static_cast<size_t>((sequence * kMultiplier) >> shift);
-        const uint32_t first = bucket[0];
-        const uint32_t second = bucket[1];
-        const uint32_t here = base + static_cast<uint32_t>(at);
-        bucket[1] = first;
-        bucket[0] = here;
-
-        const uint32_t limitLength = static_cast<uint32_t>(std::min<size_t>(kMaxMatch, size - at));
-        uint32_t best = 0;
-        uint32_t bestDistance = 0;
-        if (here - first - 1 < kWindow) {
-            best = MatchLength(in + (first - base), in + at, limitLength);
-            bestDistance = here - first;
-        }
-        if (here - second - 1 < kWindow) {
-            const uint32_t length = MatchLength(in + (second - base), in + at, limitLength);
-            if (length > best) {
-                best = length;
-                bestDistance = here - second;
-            }
-        }
-        if (best >= kMinMatch) {
-            tokens[count++] = best << 16 | (bestDistance - 1);
-            litFreq[257 + kLengthSymbol[best]]++;
-            distanceFreq[DistanceSymbol(bestDistance - 1)]++;
-            const size_t end = at + best;
-            const size_t insertEnd = std::min(end, size - 7);  // a position needs 8 bytes to hash
-            if (best <= kInsertAll) {
-                for (size_t inside = at + 1; inside < insertEnd; inside++) insert(inside, Load64(in + inside));
-            } else {
-                const size_t headEnd = std::min(at + 1 + kInsertEdge, insertEnd);
-                for (size_t inside = at + 1; inside < headEnd; inside++) insert(inside, Load64(in + inside));
-                for (size_t inside = std::max(headEnd, end - kInsertEdge); inside < insertEnd; inside++) {
-                    insert(inside, Load64(in + inside));
-                }
-            }
-            at = end;
-            literals = 0;
-        } else {
-            tokens[count++] = in[at];
-            litFreq[in[at++]]++;
-            for (size_t skip = ++literals >> kSkipShift; skip > 0 && at < limit; skip--) {
+    // A candidate's match length, or 0 when it is under kMinMatch (4): such a match never wins,
+    // so a candidate whose first 4 bytes differ needs no more work. `sequence` holds the 8 bytes
+    // at `at`, and the match may run `limitLength` (at least 8) bytes.
+    const auto candidateLength = [&](uint32_t candidate, uint64_t sequence, uint32_t limitLength) -> uint32_t {
+        const uint8_t* const earlier = in + (candidate - base);
+        const uint64_t difference = Load64(earlier) ^ sequence;
+        if ((difference & 0xFFFFFFFFu) != 0) return 0;
+        if (difference != 0) return FirstDifferentByte(difference);
+        return 8 + MatchLength(earlier + 8, in + at + 8, limitLength - 8);
+    };
+    // Parses up to `stop`. Without `tail`, every position has kMaxMatch bytes and the 8 bytes a
+    // hash takes after every position a match covers; the tail checks both.
+    const auto parse = [&](size_t stop, auto tail) {
+        constexpr bool kTail = decltype(tail)::value;
+        while (at < stop) {
+            if (kTail && at + 8 > size) {
                 tokens[count++] = in[at];
                 litFreq[in[at++]]++;
+                continue;
+            }
+            const uint64_t sequence = Load64(in + at);
+            uint32_t* const bucket = table + 2 * static_cast<size_t>((sequence * kMultiplier) >> shift);
+            const uint32_t first = bucket[0];
+            const uint32_t second = bucket[1];
+            const uint32_t here = base + static_cast<uint32_t>(at);
+            bucket[1] = first;
+            bucket[0] = here;
+
+            const uint32_t limitLength = kTail ? static_cast<uint32_t>(std::min<size_t>(kMaxMatch, size - at)) : kMaxMatch;
+            uint32_t best = 0;
+            uint32_t bestDistance = 0;
+            if (here - first - 1 < kWindow) {
+                best = candidateLength(first, sequence, limitLength);
+                bestDistance = here - first;
+            }
+            if (here - second - 1 < kWindow) {
+                const uint32_t length = candidateLength(second, sequence, limitLength);
+                if (length > best) {
+                    best = length;
+                    bestDistance = here - second;
+                }
+            }
+            if (best >= kMinMatch) {
+                tokens[count++] = best << 16 | (bestDistance - 1);
+                litFreq[257 + kLengthSymbol[best]]++;
+                distanceFreq[DistanceSymbol(bestDistance - 1)]++;
+                const size_t end = at + best;
+                const size_t insertEnd = kTail ? std::min(end, size - 7) : end;  // a position needs 8 bytes to hash
+                if (best <= kInsertAll) {
+                    for (size_t inside = at + 1; inside < insertEnd; inside++) insert(inside, Load64(in + inside));
+                } else {
+                    const size_t headEnd = std::min(at + 1 + kInsertEdge, insertEnd);
+                    for (size_t inside = at + 1; inside < headEnd; inside++) insert(inside, Load64(in + inside));
+                    for (size_t inside = std::max(headEnd, end - kInsertEdge); inside < insertEnd; inside++) {
+                        insert(inside, Load64(in + inside));
+                    }
+                }
+                at = end;
+                literals = 0;
+            } else {
+                tokens[count++] = in[at];
+                litFreq[in[at++]]++;
+                for (size_t skip = ++literals >> kSkipShift; skip > 0 && at < limit; skip--) {
+                    tokens[count++] = in[at];
+                    litFreq[in[at++]]++;
+                }
             }
         }
-    }
+    };
+    // Positions before size - kMaxMatch - 7 meet the main loop's conditions: a match from one
+    // ends at most at size - 8.
+    parse(size > kMaxMatch + 7 ? std::min(limit, size - kMaxMatch - 7) : 0, std::false_type{});
+    parse(limit, std::true_type{});
     litFreq[256] = 1;  // end of block
     BitWriter writer{stage_.data(), bits_, count_};
+    tokens[count] = kTokenEnd;
     EmitBlock(writer, in + blockStart, at - blockStart, tokens, count, litFreq, distanceFreq, at >= size);
     bits_ = writer.buffer;
     count_ = writer.count;
