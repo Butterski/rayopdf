@@ -10,6 +10,7 @@
 #include "pdf/content_lexer.h"
 #include "pdf/document.h"
 #include "pdf/filters.h"
+#include "pdf/inflate.h"
 
 #include <algorithm>
 #include <cmath>
@@ -216,6 +217,60 @@ std::string DeflateLongCodes(std::string& expected) {
         for (int i = 0; i < 3; i++) expected.push_back(expected[expected.size() - back]);
     }
     w.Code(codes[256], lengths[256]);
+    return w.Finish();
+}
+
+// A raw deflate block of fixed codes for `data`: greedy matches of 3-258 bytes found through the
+// last position of each 3-byte prefix, at distances up to 32768 (overlapping ones included).
+std::string DeflateFixed(std::string_view data) {
+    static const uint16_t kLengthBase[29] = {3,  4,  5,  6,  7,  8,  9,  10,  11,  13,  15,  17,  19,  23, 27,
+                                             31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static const uint8_t kLengthExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                             2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    static const uint16_t kDistanceBase[30] = {1,    2,    3,    4,    5,    7,     9,     13,    17,   25,
+                                               33,   49,   65,   97,   129,  193,   257,   385,   513,  769,
+                                               1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    BitWriter w;
+    w.Put(1, 1);  // final
+    w.Put(1, 2);  // fixed codes
+    const auto symbol = [&](unsigned s) {
+        if (s < 144) w.Code(0x30 + s, 8);
+        else if (s < 256) w.Code(0x190 + s - 144, 9);
+        else if (s < 280) w.Code(s - 256, 7);
+        else w.Code(0xc0 + s - 280, 8);
+    };
+    const auto byte = [&](size_t i) { return static_cast<uint32_t>(static_cast<uint8_t>(data[i])); };
+    std::vector<int64_t> last(size_t(1) << 16, -1);
+    size_t i = 0;
+    while (i < data.size()) {
+        size_t length = 0;
+        size_t distance = 0;
+        if (i + 3 <= data.size()) {
+            const uint32_t key = ((byte(i) * 251u + byte(i + 1)) * 251u + byte(i + 2)) & 0xffffu;
+            const int64_t at = last[key];
+            last[key] = static_cast<int64_t>(i);
+            if (at >= 0 && i - static_cast<size_t>(at) <= 32768) {
+                const size_t from = static_cast<size_t>(at);
+                while (length < 258 && i + length < data.size() && data[from + length] == data[i + length]) length++;
+                distance = i - from;
+            }
+        }
+        if (length < 3) {
+            symbol(byte(i));
+            i++;
+            continue;
+        }
+        int c = 28;
+        while (kLengthBase[c] > length) c--;
+        symbol(257u + static_cast<unsigned>(c));
+        w.Put(static_cast<uint32_t>(length - kLengthBase[c]), kLengthExtra[c]);
+        int d = 29;
+        while (kDistanceBase[d] > distance) d--;
+        w.Code(static_cast<uint32_t>(d), 5);
+        w.Put(static_cast<uint32_t>(distance - kDistanceBase[d]), d < 2 ? 0 : d / 2 - 1);
+        i += length;
+    }
+    symbol(256);
     return w.Finish();
 }
 
@@ -427,6 +482,41 @@ void TestFlate() {
         const StreamStatus status = Decode(Filters::Kind::Flate, longCodes.substr(0, cut), out);
         RAYOPDF_CHECK(status == StreamStatus::Salvaged || (status == StreamStatus::Corrupt && out.empty()), 270);
         RAYOPDF_CHECK(longExpected.compare(0, out.size(), out) == 0, 270);
+    }
+
+    // The BMI2 decode loop (where the CPU has it) against the portable one: the same bytes and
+    // Result for whole, cut and limited streams of dynamic and fixed codes.
+    std::string mixed;
+    for (int round = 0; round < 40; round++) {
+        mixed += text.substr(static_cast<size_t>(round) * 97, 3000);
+        mixed += Noise(static_cast<size_t>(round) * 13 + 1, static_cast<uint32_t>(round));
+        const std::string period = Noise(static_cast<size_t>(round % 9) + 1, static_cast<uint32_t>(round) + 50);
+        for (int k = 0; k < 300; k++) mixed += period;
+    }
+    const std::string fixed = DeflateFixed(mixed);
+    RAYOPDF_CHECK(Decode(Filters::Kind::Flate, fixed, out) == StreamStatus::Ok && out == mixed, 265);
+    for (const std::string& stream : {zlib, Unhex(kRawHex), Unhex(kFixedHex), longCodes, small, fixed}) {
+        for (size_t cut : {stream.size(), stream.size() / 3, stream.size() - 1}) {
+            for (size_t limit : {size_t(1) << 30, size_t(1000), size_t(1)}) {
+                const std::string_view in(stream.data(), cut);
+                std::string fast;
+                std::string portable;
+                Inflate::ForcePortable(true);
+                const Inflate::Result portableResult = Inflate::Inflate(in, portable, limit);
+                Inflate::ForcePortable(false);
+                const Inflate::Result fastResult = Inflate::Inflate(in, fast, limit);
+                RAYOPDF_CHECK(fastResult == portableResult && fast == portable, 265);
+                // Onto a buffer from byte 5 on: the prefix kept, the bytes and Result Inflate's.
+                Inflate::Output onto;
+                std::memcpy(onto.Reserve(5), "head!", 5);
+                size_t length = 0;
+                const Inflate::Result intoResult = Inflate::InflateInto(in, onto, 5, limit, length);
+                RAYOPDF_CHECK(intoResult == fastResult && length == fast.size() &&
+                                  std::memcmp(onto.Data(), "head!", 5) == 0 &&
+                                  std::memcmp(onto.Data() + 5, fast.data(), length) == 0,
+                              266);
+            }
+        }
     }
 }
 

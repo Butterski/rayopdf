@@ -55,6 +55,10 @@ Result Inflate(std::string_view in, std::string& out, size_t limit);
 // grow; bytes past `at + length` are undefined.
 Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length);
 
+// For tests: true decodes with the portable loop where the BMI2 one would run (the reference the
+// BMI2 loop is checked against). Not thread-safe; false by default.
+void ForcePortable(bool portable);
+
 // Inflate's output a piece at a time, holding the 32 KB window and one piece (kPiece bytes) of
 // output instead of all of it: the same bytes in order, and the same Result.
 class Stream {

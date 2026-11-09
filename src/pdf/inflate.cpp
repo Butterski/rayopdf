@@ -18,27 +18,45 @@
 #include <emmintrin.h>
 #define RAYOPDF_INFLATE_SSE2 1
 #endif
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+#define RAYOPDF_INFLATE_BMI2 1
+#endif
 
 namespace RayoPdf::Inflate {
 namespace {
+
+bool gPortable = false;  // ForcePortable
+
+#if RAYOPDF_INFLATE_BMI2
+// The decode loop compiled for BMI2 (BZHI, SHRX: fewer instructions for the bit fields) runs where
+// the CPU has it; the portable one is its reference.
+bool UseBmi2() {
+    static const bool kHasBmi2 = __builtin_cpu_supports("bmi2");
+    return kHasBmi2 && !gPortable;
+}
+#endif
 
 // Past the target the fast loop may write two literals and a match of 258 bytes, whose copy goes
 // up to 31 bytes further.
 constexpr size_t kSlack = 2 + 258 + 32 + 8;
 
 // A decode table entry: the value in the high half (a literal, a base length or distance, or a
-// subtable's offset), the code's kind, a field, and in the low byte only the bits to take, so
-// that a shift by the entry needs no mask on x86. A length or distance takes its code and extra
-// bits at once, the field giving the code's bits, under which the extra ones start; a subtable's
-// field gives its bits.
+// subtable's offset), flags, a field, and in the low byte only the bits to take, so that a shift
+// by the entry needs no mask on x86. A literal has the top bit (one sign test tells it); the end
+// of the block, a subtable and an invalid code have kExceptional; a length, a distance and a code
+// length have no flag. A length or distance takes its code and extra bits at once, the field
+// giving the code's bits, under which the extra ones start; a subtable's field gives its bits.
 enum : uint32_t {
-    kLiteral = 0,  // also a distance or a code length
-    kLength = 1u << 13,
-    kEnd = 2u << 13,
-    kSubtable = 3u << 13,
-    kInvalid = 4u << 13,
+    kPlain = 0,  // a length, a distance or a code length
+    kLiteral = 1u << 31,
+    kExceptional = 1u << 15,
+    kSubtableBit = 1u << 14,
+    kEndBit = 1u << 13,
+    kSubtable = kExceptional | kSubtableBit,
+    kEnd = kExceptional | kEndBit,
+    kInvalid = kExceptional,
 };
-constexpr uint32_t kKindMask = 7u << 13;
+inline bool IsLiteral(uint32_t entry) { return static_cast<int32_t>(entry) < 0; }
 
 constexpr uint32_t Entry(uint32_t value, uint32_t field, uint32_t kind, uint32_t bits) {
     return value << 16 | kind | field << 8 | bits;
@@ -46,9 +64,24 @@ constexpr uint32_t Entry(uint32_t value, uint32_t field, uint32_t kind, uint32_t
 inline unsigned TakenBits(uint32_t entry) { return entry & 63; }
 inline unsigned Field(uint32_t entry) { return (entry >> 8) & 31; }
 inline uint32_t Value(uint32_t entry) { return entry >> 16; }
+// The masks of the low 0 to 63 bits: without BMI2's BZHI one load is fewer instructions than a
+// mask made by a shift.
+struct LowMasks {
+    uint64_t of[64] = {};
+    constexpr LowMasks() {
+        for (unsigned n = 1; n < 64; n++) of[n] = (uint64_t(1) << n) - 1;
+    }
+};
+constexpr LowMasks kLowMasks;
+// The low `n` bits of `bits` (n < 64): BZHI where kBmi2, a mask from kLowMasks elsewhere.
+template <bool kBmi2>
+RAYOPDF_HOT_INLINE uint64_t LowBits(uint64_t bits, unsigned n) {
+    return kBmi2 ? bits & ((uint64_t(1) << n) - 1) : bits & kLowMasks.of[n];
+}
 // The base plus the extra bits of a length or distance `entry` read from `bits`.
-inline size_t ValuePlusExtra(uint32_t entry, uint64_t bits) {
-    return Value(entry) + static_cast<size_t>((bits & ((uint64_t(1) << TakenBits(entry)) - 1)) >> Field(entry));
+template <bool kBmi2>
+RAYOPDF_HOT_INLINE size_t ValuePlusExtra(uint32_t entry, uint64_t bits) {
+    return Value(entry) + static_cast<size_t>(LowBits<kBmi2>(bits, TakenBits(entry)) >> Field(entry));
 }
 
 // Codes are looked up by their first kRootBits bits; a longer code's prefix leads to a subtable of
@@ -96,7 +129,7 @@ struct LitLenEntries : EntryTable<288> {
             } else if (symbol == 256) {
                 base[symbol] = Entry(0, 0, kEnd, 0);
             } else if (symbol < 286) {
-                base[symbol] = Entry(kLengthBase[symbol - 257], 0, kLength, kLengthExtra[symbol - 257]);
+                base[symbol] = Entry(kLengthBase[symbol - 257], 0, kPlain, kLengthExtra[symbol - 257]);
                 step[symbol] = 0x101;
             } else {
                 base[symbol] = Entry(0, 0, kInvalid, 0);  // 286 and 287 have fixed codes but no meaning
@@ -111,7 +144,7 @@ struct DistanceEntries : EntryTable<32> {
         for (unsigned symbol = 0; symbol < 32; symbol++) {
             step[symbol] = 1;
             if (symbol < 30) {
-                base[symbol] = Entry(kDistanceBase[symbol], 0, kLiteral, kDistanceExtra[symbol]);
+                base[symbol] = Entry(kDistanceBase[symbol], 0, kPlain, kDistanceExtra[symbol]);
                 step[symbol] = 0x101;
             } else {
                 base[symbol] = Entry(0, 0, kInvalid, 0);
@@ -122,7 +155,7 @@ struct DistanceEntries : EntryTable<32> {
 constexpr DistanceEntries kDistanceEntries;
 
 struct PrecodeEntry {
-    uint32_t operator()(unsigned symbol, unsigned bits) const { return Entry(symbol, 0, kLiteral, bits); }
+    uint32_t operator()(unsigned symbol, unsigned bits) const { return Entry(symbol, 0, kPlain, bits); }
 };
 
 inline unsigned HighestBit(uint32_t value) {
@@ -277,11 +310,10 @@ inline uint64_t Load64(const uint8_t* at) {
 inline void Store64(uint8_t* at, uint64_t value) { std::memcpy(at, &value, 8); }
 
 // The entry for the code at the bottom of `bits`, through its subtable when it is longer than `root`.
+template <bool kBmi2>
 RAYOPDF_HOT_INLINE uint32_t Lookup(const uint32_t* table, uint64_t bits, unsigned root) {
     uint32_t entry = table[bits & ((uint64_t(1) << root) - 1)];
-    if ((entry & kKindMask) == kSubtable) {
-        entry = table[Value(entry) + ((bits >> root) & ((uint64_t(1) << Field(entry)) - 1))];
-    }
+    if (entry & kSubtableBit) entry = table[Value(entry) + LowBits<kBmi2>(bits >> root, Field(entry))];
     return entry;
 }
 
@@ -322,7 +354,9 @@ RAYOPDF_HOT_INLINE void CopyMatch(uint8_t* to, size_t back, size_t length) {
     }
     // Words a period apart, each right in its first `back` bytes, until the whole periods that fit
     // in a word are there; then words that far apart. Each load reads what the store before wrote.
-    const size_t step = back * (8 / back);
+    // The step is back * (8 / back), from a table (a division costs 15 to 40 cycles).
+    constexpr uint8_t kWholePeriods[8] = {0, 8, 8, 6, 8, 5, 6, 7};
+    const size_t step = kWholePeriods[back];
     uint8_t* at = to;
     for (uint8_t* const periods = to + step; at < periods; at += back) Store64(at, Load64(at - back));
     for (; at < stop; at += step) Store64(at, Load64(at - step));
@@ -650,11 +684,24 @@ private:
     }
 
     // Decodes codes until the buffer holds cap_ bytes or the block ends; a match may run past
-    // cap_, into the slack. While 16 input bytes are left, a refill is a single load, and the next
-    // code's entry is looked up before it from the bits already there, which keeps the refill off
-    // the chain of lookups; up to three literals go between refills. The last bytes go a code at a
-    // time, each checked against the end of the input so that no byte comes from padding.
+    // cap_, into the slack. With BMI2 (runtime dispatch) the same code compiled for it.
     Step DecodeCodes() {
+#if RAYOPDF_INFLATE_BMI2
+        if (UseBmi2()) return DecodeCodesBmi2();
+#endif
+        return DecodeCodesWith<false>();
+    }
+
+#if RAYOPDF_INFLATE_BMI2
+    __attribute__((target("bmi2"), noinline)) Step DecodeCodesBmi2() { return DecodeCodesWith<true>(); }
+#endif
+
+    // DecodeCodes. While 16 input bytes are left, a refill is a single load, and the next code's
+    // entry is looked up before it from the bits already there, which keeps the refill off the
+    // chain of lookups; up to three literals go between refills. The last bytes go a code at a
+    // time, each checked against the end of the input so that no byte comes from padding.
+    template <bool kBmi2>
+    RAYOPDF_HOT_INLINE Step DecodeCodesWith() {
         uint8_t* const w = buf_;
         size_t o = o_;
         const size_t target = cap_;
@@ -663,16 +710,18 @@ private:
         if (end_ - in_ >= 16) {
             const uint8_t* const fastEnd = end_ - 16;
             uint64_t bb = bitbuf_;
-            unsigned bl = bitsleft_;
+            // The bits left in the low byte of `bl`; above it whatever entries subtracted whole
+            // (an entry's low byte is its bits to take, so no mask is needed per code).
+            uint32_t bl = bitsleft_;
             const uint8_t* ip = in_;
             const auto refill = [&]() {
-                bb |= Load64(ip) << bl;
-                ip += (63 - bl) >> 3;
+                bb |= Load64(ip) << (bl & 63);
+                ip += 7 - ((bl >> 3) & 7);
                 bl |= 56;
             };
             const auto consume = [&](uint32_t entry) {
                 bb >>= TakenBits(entry);
-                bl -= TakenBits(entry);
+                bl -= entry;
             };
             constexpr uint64_t kRootMask = (1u << kLitLenRoot) - 1;
             bool ok = true;
@@ -683,21 +732,16 @@ private:
             while (o < target && ip <= fastEnd) {
                 uint64_t saved = bb;
                 consume(entry);  // nothing for a subtable
-                if ((entry & kKindMask) == kSubtable) {
-                    entry = lit[Value(entry) + ((bb >> kLitLenRoot) & ((1u << Field(entry)) - 1))];
-                    saved = bb;
-                    consume(entry);
-                }
-                if ((entry & kKindMask) == kLiteral) {
+                if (IsLiteral(entry)) {
                     // Up to two more codes of 11 bits whole in the root table: 15 + 22 bits.
                     uint8_t literal = static_cast<uint8_t>(Value(entry));
                     entry = lit[bb & kRootMask];
-                    if ((entry & kKindMask) == kLiteral) {
+                    if (IsLiteral(entry)) {
                         consume(entry);
                         w[o++] = literal;
                         literal = static_cast<uint8_t>(Value(entry));
                         entry = lit[bb & kRootMask];
-                        if ((entry & kKindMask) == kLiteral) {
+                        if (IsLiteral(entry)) {
                             consume(entry);
                             w[o++] = literal;
                             literal = static_cast<uint8_t>(Value(entry));
@@ -708,18 +752,31 @@ private:
                     w[o++] = literal;
                     continue;
                 }
-                const uint32_t kind = entry & kKindMask;
-                if (kind != kLength) {
-                    if (kind == kEnd) ended = true;
-                    else ok = false;
-                    break;
+                if (entry & kExceptional) {
+                    if (entry & kSubtableBit) {
+                        entry = lit[Value(entry) + LowBits<kBmi2>(bb >> kLitLenRoot, Field(entry))];
+                        saved = bb;
+                        consume(entry);
+                        if (IsLiteral(entry)) {
+                            const uint8_t literal = static_cast<uint8_t>(Value(entry));
+                            refill();
+                            entry = lit[bb & kRootMask];
+                            w[o++] = literal;
+                            continue;
+                        }
+                    }
+                    if (entry & kExceptional) {
+                        if (entry & kEndBit) ended = true;
+                        else ok = false;
+                        break;
+                    }
                 }
                 // At least 36 bits left for the distance's 15 and 13.
-                const size_t length = ValuePlusExtra(entry, saved);
-                const uint32_t code = Lookup(dist, bb, kDistRoot);
-                const size_t back = ValuePlusExtra(code, bb);
+                const size_t length = ValuePlusExtra<kBmi2>(entry, saved);
+                const uint32_t code = Lookup<kBmi2>(dist, bb, kDistRoot);
+                const size_t back = ValuePlusExtra<kBmi2>(code, bb);
                 consume(code);
-                if ((code & kKindMask) == kInvalid || back > o) {  // before the start of the output
+                if ((code & kExceptional) || back > o) {  // invalid, or before the start of the output
                     ok = false;
                     break;
                 }
@@ -729,7 +786,7 @@ private:
                 o += length;
             }
             bitbuf_ = bb;
-            bitsleft_ = bl;
+            bitsleft_ = bl & 63;
             in_ = ip;
             o_ = o;
             if (!ok) return Step::Corrupt;
@@ -739,29 +796,28 @@ private:
         while (o < target) {
             Refill();
             const size_t before = o;
-            const uint32_t entry = Lookup(lit, bitbuf_, kLitLenRoot);
+            const uint32_t entry = Lookup<kBmi2>(lit, bitbuf_, kLitLenRoot);
             const uint64_t lengthBits = bitbuf_;
             Bits(TakenBits(entry));
-            const uint32_t kind = entry & kKindMask;
-            if (kind == kLiteral) {
+            if (IsLiteral(entry)) {
                 w[o++] = static_cast<uint8_t>(Value(entry));
-            } else if (kind == kEnd) {
+            } else if ((entry & kEnd) == kEnd) {
                 o_ = o;
                 return Within() ? Step::Ok : Step::Truncated;
-            } else if (kind == kInvalid) {
+            } else if (entry & kExceptional) {
                 o_ = o;
                 return Within() ? Step::Corrupt : Step::Truncated;
             } else {
                 // At least 56 bits after the refill: 20 for the length, 28 for the distance.
-                const size_t length = ValuePlusExtra(entry, lengthBits);
-                const uint32_t code = Lookup(dist, bitbuf_, kDistRoot);
-                const size_t back = ValuePlusExtra(code, bitbuf_);
+                const size_t length = ValuePlusExtra<kBmi2>(entry, lengthBits);
+                const uint32_t code = Lookup<kBmi2>(dist, bitbuf_, kDistRoot);
+                const size_t back = ValuePlusExtra<kBmi2>(code, bitbuf_);
                 Bits(TakenBits(code));
                 if (!Within()) {
                     o_ = before;
                     return Step::Truncated;
                 }
-                if ((code & kKindMask) == kInvalid || back > o) {
+                if ((code & kExceptional) || back > o) {
                     o_ = o;
                     return Step::Corrupt;
                 }
@@ -813,6 +869,8 @@ private:
 constexpr size_t kKeptBuffer = size_t(1) << 20;
 
 } // namespace
+
+void ForcePortable(bool portable) { gPortable = portable; }
 
 Output::~Output() { std::free(data_); }
 
