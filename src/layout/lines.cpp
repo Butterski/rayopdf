@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/lines.h"
 
+#include "common/compiler.h"
 #include "common/minmax.h"
 #include "common/per_thread.h"
 #include "common/utf8.h"
@@ -17,8 +18,11 @@ namespace {
 constexpr uint32_t kEmpty = UINT32_MAX;
 
 uint64_t HashText(std::string_view s) {
-    uint64_t h = 1469598103934665603ull;
-    for (unsigned char c : s) h = (h ^ c) * 1099511628211ull;
+    constexpr uint64_t kBasis = 1469598103934665603ull, kPrime = 1099511628211ull;
+    // One byte (most glyphs): the loop's single step.
+    if (s.size() == 1) return (kBasis ^ static_cast<unsigned char>(s[0])) * kPrime;
+    uint64_t h = kBasis;
+    for (unsigned char c : s) h = (h ^ c) * kPrime;
     return h;
 }
 
@@ -41,199 +45,426 @@ struct Fragment {
     bool marker = false; // holds only a list marker
 };
 
-// FoldDuplicates' probe table and filter, kept by each thread between pages of up to kScratchSlots
-// slots, so a page fills neither whole (eight bytes a slot, two to four slots a glyph): the table
-// empties by its base (FoldDuplicates), the filter by clearing the words the page set, or all of
-// its first words on a page of up to kRecordSlots slots (a few hundred bytes).
-constexpr size_t kScratchSlots = size_t(1) << 16, kRecordSlots = 512;
+// CollectAndFold's working storage, kept by each thread between pages of up to kScratchSlots probe
+// slots, so a page fills none of it whole: a filter word empties by clearing the words its page's
+// entries set; chain heads and the probe's table hold base + an index, and values below `base` are
+// empty, so moving the base past a page's indices at its end empties both.
+constexpr size_t kScratchSlots = size_t(1) << 16;
+struct FoldWord {
+    uint64_t bits;  // a bit per column of a kept glyph here; 0 outside a call
+    uint32_t head;  // base + the last entry chained here; below `base` when none
+    uint32_t spare;
+};
+struct FoldEntry {
+    uint32_t next;   // base + the entry chained here before, or below `base`
+    uint32_t word;   // its filter word
+    uint32_t glyph;  // the kept glyph
+};
 struct FoldScratch {
-    std::vector<uint32_t> table;   // below `base` everywhere outside a call
-    std::vector<uint64_t> filter;  // 0 outside a call
-    std::vector<uint32_t> words;   // filter words set by the call
+    std::vector<FoldWord> words;
+    std::vector<FoldEntry> entries;
+    std::vector<uint32_t> table;  // the probe's table; below `base` outside a call
     uint32_t base = 1;
 };
 
-// Folds overprinted duplicates (the same text drawn again within 0.15 em, algorithms §4.2) into one
-// glyph marked bold. `vis` keeps the survivors.
-//
-// Most glyphs have no duplicate, and the probe of nine cells walks chains whose ends no branch
-// predictor guesses. A filter answers "no duplicate" first, exactly: a bit per (text hash,
-// direction, 4-unit cell) of every glyph kept so far. The probe can only find a kept glyph of the
-// same direction and text whose x0 and y0 lie within the tolerance (|a - b| < t in float implies
-// it for the real difference too), so when no bit of the cells under that window (widened by
-// 1/1024 against rounding at its ends) is set, the probe would find nothing and is skipped. A set
-// bit (a duplicate, the same letter close by, a collision) runs the probe as before, and every
-// kept glyph goes into the probe's table as before, so what the probe finds is unchanged.
-//
-// A kept glyph's filter cell is its probe cell halved (floor(floor(v / 2) / 2) = floor(v / 4); v / 2
-// errs by 2^-150 at most, far inside the margin). Below 2048 the window's cells come from float
-// sums biased by 1024, whose truncation is their floor: q = v / 4 is exact, r = t / 4 + 2^-12 errs
-// by 2^-23 at most, 1024 -+ r by 2^-14 and q + (1024 -+ r) by 2^-14, together less than the
-// 2^-12 (1/1024 in page units) by which r widens the window, so the float window holds the exact
-// one. Larger coordinates take the same window in double.
-void FoldDuplicates(PageData& page, std::vector<uint32_t>& vis) {
-    std::vector<Glyph>& glyphs = page.glyphs;
-    size_t capacity = 16;
-    while (capacity < vis.size() * 2) capacity <<= 1;
-    const uint64_t mask = capacity - 1;
-    // The filter: 32 bits a table slot, indexed by multiply-shift hashing of (key, cell x, cell y).
-    const size_t filterWords = capacity / 2;
-    // A slot holds base + glyph index; slots below `base` are empty, so moving the thread's base
-    // past this page's indices at the end empties its table without a fill.
+constexpr uint32_t kMaxChainSteps = 256;  // chain entries a glyph looks at before taking the probe
+constexpr float kProbeCell = 2.0f;
+constexpr float kTestReach = 1e7f;      // glyphs beyond take the probe
+constexpr float kKeepReach = 2e7f;      // kept glyphs beyond cannot be within reach + 8
+constexpr float kTestTolerance = 8.0f;  // glyphs of larger tolerances take the probe
+constexpr float kFloatReach = 2048.0f;  // glyphs nearer the origin have their cells in float
+// Columns floor(x0) + kColumnOrigin and rows floor(y0 / 8) + kRowOrigin, modulo 2^32: positive
+// near the origin, so that truncation is the floor there.
+constexpr int64_t kColumnOrigin = 4096, kRowOrigin = 1024;
+// A filter word: the top bits of key + column block * kColumnMix + row * kRowMix.
+constexpr uint64_t kColumnMix = 0x9E3779B97F4A7C15ull, kRowMix = 0xC2B2AE3D27D4EB4Full;
+constexpr uint64_t kKeyMix = 0xBF58476D1CE4E5B9ull;
+
+// The filter's key of a text and direction: equal for equal texts and directions.
+RAYOPDF_HOT_INLINE uint64_t KeyOf(const char* text, uint32_t length, uint8_t dir) {
+    if (length == 1) return (static_cast<uint64_t>(static_cast<unsigned char>(text[0])) | (static_cast<uint64_t>(dir) << 8)) * kKeyMix;
+    return (HashText(std::string_view(text, length)) ^ (static_cast<uint64_t>(dir) << 56)) * kKeyMix;
+}
+
+// floor(c) for |c| < 2^62 without a libm call.
+int64_t FloorOf(double c) {
+    const int64_t t = static_cast<int64_t>(c);
+    return t - (c < static_cast<double>(t) ? 1 : 0);
+}
+
+// floor(v) of a clamped coordinate (|v| <= 1e15) by one integer conversion: a float of 2^23 or more
+// is an integer, so the conversion and the float of its result are exact.
+int64_t FloorOf(float v) {
+    const int64_t t = static_cast<int64_t>(v);
+    return t - (v < static_cast<float>(t) ? 1 : 0);
+}
+
+bool Near(const Glyph& g) { return std::fabs(g.x0) < kFloatReach && std::fabs(g.y0) < kFloatReach; }
+
+// A near glyph's column and row.
+RAYOPDF_HOT_INLINE void NearCells(const Glyph& g, uint32_t& column, uint32_t& row) {
+    column = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + 4096.0f));
+    row = static_cast<uint32_t>(static_cast<int32_t>(g.y0 * 0.125f + 1024.0f));
+}
+
+// A glyph's column and row; false beyond kKeepReach (or NaN).
+bool CellsOf(const Glyph& g, uint32_t& column, uint32_t& row) {
+    if (Near(g)) {
+        NearCells(g, column, row);
+        return true;
+    }
+    if (!(std::fabs(g.x0) < kKeepReach && std::fabs(g.y0) < kKeepReach)) return false;
+    column = static_cast<uint32_t>(FloorOf(static_cast<double>(g.x0)) + kColumnOrigin);
+    row = static_cast<uint32_t>(FloorOf(static_cast<double>(g.y0) / 8) + kRowOrigin);
+    return true;
+}
+
+// The columns [ca, cb] and rows [ra, rb] under a near glyph's window.
+RAYOPDF_HOT_INLINE void NearWindow(const Glyph& g, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
+    const float rx = tolerance + 1.0f / 512, ry = tolerance * 0.125f + 1.0f / 2048;
+    const float qy = g.y0 * 0.125f;
+    ca = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + (4096.0f - rx)));
+    cb = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + (4096.0f + rx)));
+    ra = static_cast<uint32_t>(static_cast<int32_t>(qy + (1024.0f - ry)));
+    rb = static_cast<uint32_t>(static_cast<int32_t>(qy + (1024.0f + ry)));
+}
+
+// The same for any glyph within kTestReach. Far from the origin the columns and rows may wrap
+// around 2^32 inside the window (cb < ca or rb < ra).
+void WindowOf(const Glyph& g, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
+    if (Near(g)) {
+        NearWindow(g, tolerance, ca, cb, ra, rb);
+        return;
+    }
+    const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
+    ca = static_cast<uint32_t>(FloorOf(g.x0 - reach) + kColumnOrigin);
+    cb = static_cast<uint32_t>(FloorOf(g.x0 + reach) + kColumnOrigin);
+    ra = static_cast<uint32_t>(FloorOf((g.y0 - reach) / 8) + kRowOrigin);
+    rb = static_cast<uint32_t>(FloorOf((g.y0 + reach) / 8) + kRowOrigin);
+}
+
+// The probe's home cell of a glyph. Coordinates are finite but may be huge: clamped before the
+// integer conversion.
+void ProbeCell(const Glyph& g, int64_t& cx, int64_t& cy) {
+    if (Near(g)) {
+        cx = FloorOf(g.x0 / kProbeCell);
+        cy = FloorOf(g.y0 / kProbeCell);
+    } else {
+        cx = FloorOf(Fmin(Fmax(g.x0 / kProbeCell, -1e15f), 1e15f));
+        cy = FloorOf(Fmin(Fmax(g.y0 / kProbeCell, -1e15f), 1e15f));
+    }
+}
+
+// Whether BuildLines places glyph g (not yet looked at): not dropped, not hidden, with text.
+bool Placed(const Glyph& g, bool keepInvisible) {
+    if (g.flags & kGlyphDropped) return false;
+    if ((g.flags & kGlyphClipped) || g.size < 1.0f ||
+        ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible))
+        return false;
+    return g.textLength != 0;
+}
+
+// One page's CollectAndFold (below): its storage, and the whole rule for a glyph.
+struct Folder {
+    PageData& page;
+    uint32_t* vis = nullptr;
+    bool keepInvisible = false;
+    int wordShift = 0;
+    FoldWord* words = nullptr;
+    FoldEntry* entries = nullptr;
+    uint32_t* table = nullptr;  // made when the probe is first needed
+    uint64_t mask = 0;
+    uint32_t base = 1, kept = 0, entryCount = 0;
+    uint32_t placed = 0;  // glyphs placed so far, the current one included
+    FoldScratch* fold = nullptr;
+    std::vector<FoldWord> ownWords;
+    std::vector<FoldEntry> ownEntries;
     std::vector<uint32_t> ownTable;
-    std::vector<uint64_t> ownFilter;
-    uint32_t* table;
-    uint64_t* filter;
-    uint32_t* setWords = nullptr;  // filter words this call sets, to clear at its end
-    uint32_t base = 1;
-    const bool scratch = capacity <= kScratchSlots;
-    // Pages up to kRecordSlots slots clear their filter whole: cheaper than recording the words.
-    const bool record = scratch && capacity > kRecordSlots;
-    FoldScratch& fold = PerThread<FoldScratch>();
-    if (scratch) {
-        if (fold.table.size() < capacity || UINT32_MAX - fold.base < glyphs.size()) {
-            fold.table.assign(std::max(capacity, fold.table.size()), 0);
-            fold.base = 1;
-        }
-        if (fold.filter.size() < filterWords) fold.filter.assign(filterWords, 0);
-        if (record && fold.words.size() < vis.size()) fold.words.resize(vis.size());
-        table = fold.table.data();
-        filter = fold.filter.data();
-        setWords = fold.words.data();
-        base = fold.base;
+
+    explicit Folder(PageData& p) : page(p) {}
+    size_t WordOf(uint64_t key, uint32_t column, uint32_t row) const {
+        return static_cast<size_t>((key + uint64_t(column >> 6) * kColumnMix + uint64_t(row) * kRowMix) >> wordShift);
+    }
+    void Chain(size_t word, uint32_t column, uint32_t glyph) {
+        FoldWord& w = words[word];
+        w.bits |= uint64_t(1) << (column & 63);
+        entries[entryCount] = FoldEntry{w.head, static_cast<uint32_t>(word), glyph};
+        w.head = base + entryCount++;
+    }
+    void Insert(uint32_t position, const Glyph& g, uint64_t h) {
+        int64_t cx, cy;
+        ProbeCell(g, cx, cy);
+        uint64_t slot = Mix(cx, cy, h) & mask;
+        while (table[slot] >= base) slot = (slot + 1) & mask;
+        table[slot] = base + position;
+    }
+    // A glyph kept outside Place while the table exists joins it as Place would add it.
+    RAYOPDF_NOINLINE void InsertKept(uint32_t position, const Glyph& g) { Insert(position, g, HashText(page.GlyphText(g))); }
+    // Whether kept glyph `o` is one the probe takes for `g` (whose text, and so its key, it has).
+    bool Matches(const Glyph& o, const Glyph& g, float tolerance, std::string_view text) const {
+        return o.dir == g.dir && std::fabs(o.x0 - g.x0) < tolerance && std::fabs(o.y0 - g.y0) < tolerance &&
+               std::fabs(o.size - g.size) < tolerance && page.GlyphText(o) == text;
+    }
+    void MakeTable(uint32_t i);
+    RAYOPDF_NOINLINE void Place(uint32_t i);
+};
+
+// The probe's table, sized as for all the page's placed glyphs (those after glyph i counted
+// ahead), filled with the glyphs kept before i in their order.
+void Folder::MakeTable(uint32_t i) {
+    const std::vector<Glyph>& glyphs = page.glyphs;
+    size_t count = placed;
+    for (size_t j = size_t(i) + 1; j < glyphs.size(); ++j) count += Placed(glyphs[j], keepInvisible) ? 1 : 0;
+    size_t capacity = 16;
+    while (capacity < count * 2) capacity <<= 1;
+    mask = capacity - 1;
+    if (capacity <= kScratchSlots) {
+        if (fold->table.size() < capacity) fold->table.assign(capacity, 0);
+        table = fold->table.data();
     } else {
         ownTable.assign(capacity, 0);
-        ownFilter.assign(filterWords, 0);
         table = ownTable.data();
-        filter = ownFilter.data();
     }
-    size_t wordCount = 0;
-    constexpr float kCell = 2.0f;
-    // Read only for glyphs in the table, each written before it goes in: no fill needed.
-    const std::unique_ptr<uint64_t[]> hashes(new uint64_t[glyphs.size()]);
-    constexpr double kFilterCell = 4.0;
-    constexpr float kFilterReach = 1e7f;  // windows of glyphs beyond are not tested
-    constexpr float kFilterKeep = 2e7f;   // kept glyphs beyond cannot be within reach + 8
-    constexpr float kFilterTolerance = 8.0f;
-    int filterLog = 5;
-    while ((size_t(1) << filterLog) < capacity * 32) ++filterLog;
-    const auto filterBit = [filterLog](uint64_t keyAndX, int64_t y) {
-        const uint64_t k = keyAndX ^ (static_cast<uint64_t>(y) * 0xC2B2AE3D27D4EB4Full);
-        return static_cast<size_t>((k * 0xBF58476D1CE4E5B9ull) >> (64 - filterLog));
-    };
-    const auto keyAndX = [](uint64_t key, int64_t x) { return key + static_cast<uint64_t>(x) * 0x9E3779B97F4A7C15ull; };
-    // floor(c / 4) for |c| < 2^62 without a libm call.
-    const auto cellOf = [](double c) {
-        const double q = c / kFilterCell;
-        const int64_t t = static_cast<int64_t>(q);
-        return t - (q < static_cast<double>(t) ? 1 : 0);
-    };
-    // floor(v) of a clamped coordinate (|v| <= 1e15) by one integer conversion: a float of 2^23
-    // or more is an integer, so the conversion and the float of its result are exact.
-    const auto floorOf = [](float v) {
-        const int64_t t = static_cast<int64_t>(v);
-        return t - (v < static_cast<float>(t) ? 1 : 0);
-    };
-    constexpr float kFloatReach = 2048.0f;  // windows of glyphs nearer the origin are found in float
-    size_t kept = 0;
-    for (size_t k = 0; k < vis.size(); ++k) {
-        const uint32_t i = vis[k];
-        Glyph& g = glyphs[i];
-        if (g.flags & kGlyphSpace) {
-            vis[kept++] = i;
-            continue;
-        }
-        const std::string_view text = page.GlyphText(g);
-        const uint64_t h = HashText(text);
-        hashes[i] = h;
-        // Coordinates are finite but may be huge: clamped before the integer conversion.
-        const bool near = std::fabs(g.x0) < kFloatReach && std::fabs(g.y0) < kFloatReach;
-        int64_t cx, cy;
-        if (near) {
-            cx = floorOf(g.x0 / kCell);
-            cy = floorOf(g.y0 / kCell);
-        } else {
-            cx = floorOf(Fmin(Fmax(g.x0 / kCell, -1e15f), 1e15f));
-            cy = floorOf(Fmin(Fmax(g.y0 / kCell, -1e15f), 1e15f));
-        }
-        // Fmax against a constant: a NaN size gives 0.5 either way.
-        const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
-        const uint64_t key = h ^ (static_cast<uint64_t>(g.dir) << 56);
-        bool candidate = true;
-        if (tolerance <= kFilterTolerance && (near || (std::fabs(g.x0) < kFilterReach && std::fabs(g.y0) < kFilterReach))) {
-            int64_t xa, xb, ya, yb;
-            if (near) {
-                const float r = tolerance * 0.25f + 1.0f / 4096;
-                const float below = 1024.0f - r, above = 1024.0f + r;
-                const float qx = g.x0 * 0.25f, qy = g.y0 * 0.25f;
-                xa = int64_t(static_cast<int32_t>(qx + below)) - 1024, xb = int64_t(static_cast<int32_t>(qx + above)) - 1024;
-                ya = int64_t(static_cast<int32_t>(qy + below)) - 1024, yb = int64_t(static_cast<int32_t>(qy + above)) - 1024;
-            } else {
-                const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
-                xa = cellOf(g.x0 - reach), xb = cellOf(g.x0 + reach);
-                ya = cellOf(g.y0 - reach), yb = cellOf(g.y0 + reach);
-            }
-            uint64_t any = 0;
-            if (xb - xa <= 1 && yb - ya <= 1) {
-                // At most two cells each way (tolerances up to about 2): the four corners, a cell
-                // tested twice when the window holds one.
-                const uint64_t ka = keyAndX(key, xa), kb = keyAndX(key, xb);
-                const size_t b0 = filterBit(ka, ya), b1 = filterBit(ka, yb), b2 = filterBit(kb, ya), b3 = filterBit(kb, yb);
-                any = (filter[b0 >> 6] >> (b0 & 63)) | (filter[b1 >> 6] >> (b1 & 63)) | (filter[b2 >> 6] >> (b2 & 63)) |
-                      (filter[b3 >> 6] >> (b3 & 63));
-            } else {
-                for (int64_t x = xa; x <= xb; ++x) {
-                    const uint64_t kx = keyAndX(key, x);
-                    for (int64_t y = ya; y <= yb; ++y) {
-                        const size_t b = filterBit(kx, y);
-                        any |= filter[b >> 6] >> (b & 63);
-                    }
+    for (uint32_t p = 0; p < kept; ++p) {
+        const Glyph& o = glyphs[vis[p]];
+        if (!(o.flags & kGlyphSpace)) Insert(p, o, HashText(page.GlyphText(o)));
+    }
+}
+
+// The rule for glyph i (placed, no space), kept or dropped.
+void Folder::Place(uint32_t i) {
+    std::vector<Glyph>& glyphs = page.glyphs;
+    Glyph& g = glyphs[i];
+    const std::string_view text = page.GlyphText(g);
+    const uint64_t key = KeyOf(text.data(), static_cast<uint32_t>(text.size()), g.dir);
+    // Fmax against a constant: a NaN size gives 0.5 either way.
+    const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
+    bool probe = true;
+    uint32_t found = kEmpty;
+    if (tolerance <= kTestTolerance && std::fabs(g.x0) < kTestReach && std::fabs(g.y0) < kTestReach) {
+        uint32_t ca, cb, ra, rb;
+        WindowOf(g, tolerance, ca, cb, ra, rb);
+        // The window's words (at most two blocks of columns by three rows), each once, with the
+        // bits of its columns.
+        size_t at[6];
+        uint64_t bits[6];
+        uint32_t distinct = 0;
+        if (ca <= cb && ra <= rb && cb - ca <= 64 && rb - ra <= 2) {
+            for (uint32_t b = 0; b <= (cb >> 6) - (ca >> 6); ++b) {
+                const uint32_t block = (ca >> 6) + b;
+                const uint32_t lo = std::max(ca, block << 6), hi = std::min(cb, (block << 6) + 63);
+                const uint64_t columns = ((uint64_t(2) << (hi - lo)) - 1) << (lo & 63);
+                for (uint32_t r = 0; r <= rb - ra; ++r) {
+                    const uint32_t row = ra + r;
+                    const size_t word = WordOf(key, lo, row);
+                    uint32_t d = 0;
+                    while (d < distinct && at[d] != word) ++d;
+                    if (d == distinct) at[distinct] = word, bits[distinct++] = 0;
+                    bits[d] |= columns;
                 }
             }
-            candidate = (any & 1) != 0;
+            bool hit = false;
+            for (uint32_t d = 0; d < distinct; ++d) hit = hit || (words[at[d]].bits & bits[d]) != 0;
+            if (!hit) {
+                probe = false;
+            } else {
+                uint32_t count = 0, steps = 0;
+                for (uint32_t d = 0; d < distinct; ++d) {
+                    for (uint32_t p = words[at[d]].head; p >= base && steps < kMaxChainSteps; ++steps) {
+                        const FoldEntry& e = entries[p - base];
+                        if (Matches(glyphs[e.glyph], g, tolerance, text)) count++, found = e.glyph;
+                        p = e.next;
+                    }
+                }
+                probe = count > 1 || (count == 1 && tolerance > 2.0f) || steps == kMaxChainSteps;
+            }
         }
-        uint32_t found = kEmpty;
-        for (int dx = -1; dx <= 1 && found == kEmpty && candidate; ++dx) {
+    }
+    if (probe) {
+        if (!table) MakeTable(i);
+        const uint64_t h = HashText(text);
+        int64_t cx, cy;
+        ProbeCell(g, cx, cy);
+        found = kEmpty;
+        for (int dx = -1; dx <= 1 && found == kEmpty; ++dx) {
             for (int dy = -1; dy <= 1 && found == kEmpty; ++dy) {
                 uint64_t slot = Mix(cx + dx, cy + dy, h) & mask;
-                for (size_t probes = 0; table[slot] >= base && probes < capacity; ++probes) {
-                    const uint32_t j = table[slot] - base;
-                    const Glyph& o = glyphs[j];
-                    if (hashes[j] == h && o.dir == g.dir && std::fabs(o.x0 - g.x0) < tolerance &&
-                        std::fabs(o.y0 - g.y0) < tolerance && std::fabs(o.size - g.size) < tolerance &&
-                        page.GlyphText(o) == text) {
-                        found = j;
+                for (size_t probes = 0; table[slot] >= base && probes <= mask; ++probes) {
+                    const uint32_t p = table[slot] - base;
+                    if (Matches(glyphs[vis[p]], g, tolerance, text)) {
+                        found = vis[p];
                         break;
                     }
                     slot = (slot + 1) & mask;
                 }
             }
         }
-        if (found != kEmpty) {
-            g.flags |= kGlyphDropped;
-            if (!(glyphs[found].flags & kGlyphInvisible)) glyphs[found].flags |= kGlyphBold;
-            page.hiddenGlyphs++;
+    }
+    if (found != kEmpty) {
+        g.flags |= kGlyphDropped;
+        if (!(glyphs[found].flags & kGlyphInvisible)) glyphs[found].flags |= kGlyphBold;
+        page.hiddenGlyphs++;
+        return;
+    }
+    if (table) Insert(kept, g, HashText(text));
+    uint32_t column, row;
+    if (CellsOf(g, column, row)) Chain(WordOf(key, column, row), column, i);
+    vis[kept++] = i;
+}
+
+// Collects the glyphs BuildLines places into `vis`, in content order: hidden text (algorithms
+// §4.3: invisible, clipped or tiny glyphs, except invisible text when `keepInvisible`) leaves, and
+// overprinted duplicates (the same text drawn again within 0.15 em, algorithms §4.2) fold into
+// one glyph marked bold. True when the frame box, baseline and size of every placed glyph are
+// finite (when they may not be, false).
+//
+// The duplicate rule is the probe's: it looks in the nine 2-unit cells around a glyph (a hash
+// table filled in content order, linear probing) for a kept glyph of the same direction and text
+// (hash, then bytes) whose x0, y0 and size lie within the glyph's tolerance t, and takes the first
+// it meets. A kept glyph it could take lies in the window [x0 - t, x0 + t] x [y0 - t, y0 + t]
+// (|a - b| < t in float implies it for the real difference too). Most glyphs have none, and exact
+// steps find that out before the probe, each looking only at cells under that window: kept glyphs
+// are placed by column (1 unit wide) and row (8 units high), and each sets the bit of its column
+// in the 64-bit word of (text and direction key, row, its column's block of 64), and is chained
+// to that word.
+// 1. No bit of the window's columns set in the words of its rows: nothing to find. Most glyphs
+//    stop here, in the loop below; the rest take Folder::Place, which runs the whole rule.
+// 2. Otherwise the words' chains are walked, each entry tested as the probe tests (equal texts
+//    have equal keys):
+//    - none matches: the probe would find none either;
+//    - one, and t <= 2: the window lies within the probe's nine cells (a match's 2-unit cell is
+//      floor((x0 +- t) / 2), within one of the glyph's), and the probe walks the run of slots from
+//      each cell's home slot, which reaches every glyph homed there: it would take that one.
+// 3. Otherwise (two or more, which the probe orders by its slots; a larger t, where the probe sees
+//    only part of the window; a chain too long to walk; a window not tested) the probe decides.
+//    Its table is built when first needed, sized for all the page's placed glyphs, from the glyphs
+//    kept before, in their order, then grows with each kept glyph: the same slots as a table
+//    filled from the page's first glyph.
+//
+// Cells in float below 2048 units (so that truncation, of sums made positive, is the floor):
+// x0 + 4096 and y0 / 8 + 1024 (y0 / 8 exact) round by at most 2^-12 and 2^-14 (half their ulp),
+// a kept glyph's cell by as much, and a window's ends add the rounding of r (2^-21) and of the
+// origin -+ r (as much again): 3 * 2^-12 + 2^-21 and 3 * 2^-14 + 2^-21, less than the margins of
+// 2^-9 and 2^-11 by which the windows widen. Larger coordinates take exact cells in double, and
+// windows widened by 1/1024. Rounding is monotonic, so a glyph's own cell lies within its window.
+//
+// Finiteness: the sum of the six values of each placed glyph, summed over the page, is finite when
+// all are (an overflow only sends a page with finite values the checked way).
+bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisible) {
+    std::vector<Glyph>& glyphVector = page.glyphs;
+    const size_t n = glyphVector.size();
+    if (vis.size() < n) vis.resize(n);
+    Folder f(page);
+    f.vis = vis.data();
+    f.keepInvisible = keepInvisible;
+    // The filter: two words per probe slot for all the page's glyphs.
+    size_t capacity = 16;
+    while (capacity < n * 2) capacity <<= 1;
+    int log = 4;
+    while ((size_t(1) << log) < capacity) ++log;
+    const size_t filterWords = capacity * 2;
+    f.wordShift = 64 - (log + 1);
+    FoldScratch& fold = PerThread<FoldScratch>();
+    f.fold = &fold;
+    if (UINT32_MAX - fold.base < n) {
+        for (FoldWord& w : fold.words) w.head = 0;
+        fold.table.assign(fold.table.size(), 0);
+        fold.base = 1;
+    }
+    f.base = fold.base;
+    const bool scratch = capacity <= kScratchSlots;
+    if (scratch) {
+        if (fold.words.size() < filterWords) fold.words.resize(filterWords, FoldWord{0, 0, 0});
+        if (fold.entries.size() < n) fold.entries.resize(n);
+        f.words = fold.words.data();
+        f.entries = fold.entries.data();
+    } else {
+        f.ownWords.assign(filterWords, FoldWord{0, 0, 0});
+        f.ownEntries.resize(n);
+        f.words = f.ownWords.data();
+        f.entries = f.ownEntries.data();
+    }
+    // The common case in locals: a placed glyph near the origin, of a tolerance up to 3.5 (its
+    // window has one or two rows: under one row high, rounding included), whose window's columns
+    // lie in one block, with no filter bit set there (kept, and added to the probe's table when
+    // that exists).
+    uint32_t* const order = f.vis;
+    Glyph* const glyphs = glyphVector.data();
+    const char* const textData = page.text.data();
+    const size_t textSize = page.text.size();
+    FoldWord* const words = f.words;
+    FoldEntry* const entries = f.entries;
+    const uint32_t base = f.base;
+    const int wordShift = f.wordShift;
+    bool probing = false;  // the probe's table exists
+    uint32_t kept = 0, entryCount = 0, placed = 0;
+    float sum = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        Glyph& g = glyphs[i];
+        if (RAYOPDF_UNLIKELY((g.flags & (kGlyphDropped | kGlyphClipped | kGlyphInvisible)) != 0 || g.size < 1.0f ||
+                             g.textLength == 0)) {
+            const uint16_t flags = g.flags;
+            if (flags & kGlyphDropped) continue;
+            const bool hidden = (flags & kGlyphClipped) || g.size < 1.0f ||
+                                ((flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible);
+            if (hidden) {
+                g.flags |= kGlyphDropped;
+                if (!(flags & kGlyphSpace)) page.hiddenGlyphs++;
+                continue;
+            }
+            // Codes without text carry nothing to place.
+            if (g.textLength == 0) continue;
+            // Typographic signals come from rendered text only: an invisible layer that came with
+            // the PDF (OCR text over a scan) has no face to be bold, italic or fixed-pitch in,
+            // whatever its font says. The add-on's OCR layer (kGlyphOcr) carries what the scan's
+            // pixels show.
+            if ((flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
+                g.flags = static_cast<uint16_t>(flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
+        }
+        placed++;
+        sum += ((g.u0 + g.u1) + (g.vb + g.vt)) + (g.v + g.size);
+        if (g.flags & kGlyphSpace) {
+            order[kept++] = i;
             continue;
         }
-        uint64_t slot = Mix(cx, cy, h) & mask;
-        while (table[slot] >= base) slot = (slot + 1) & mask;
-        table[slot] = base + i;
-        if (near || (std::fabs(g.x0) < kFilterKeep && std::fabs(g.y0) < kFilterKeep)) {
-            const size_t b = filterBit(keyAndX(key, cx >> 1), cy >> 1);
-            filter[b >> 6] |= uint64_t(1) << (b & 63);
-            if (record) setWords[wordCount++] = static_cast<uint32_t>(b >> 6);
+        if (RAYOPDF_LIKELY(Near(g))) {
+            const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
+            uint32_t ca, cb, ra, rb;
+            NearWindow(g, tolerance, ca, cb, ra, rb);
+            if (tolerance <= 3.5f && ((ca ^ cb) >> 6) == 0 && size_t(g.text) + g.textLength <= textSize) {
+                const uint64_t key = KeyOf(textData + g.text, g.textLength, g.dir);
+                const uint64_t columns = ((uint64_t(2) << (cb - ca)) - 1) << (ca & 63);
+                const uint64_t block = key + uint64_t(ca >> 6) * kColumnMix;
+                const size_t wa = static_cast<size_t>((block + uint64_t(ra) * kRowMix) >> wordShift);
+                const size_t wb = static_cast<size_t>((block + uint64_t(rb) * kRowMix) >> wordShift);
+                if (((words[wa].bits | words[wb].bits) & columns) == 0) {
+                    // Kept: its column and row lie in the window, so its word is wa or wb.
+                    uint32_t column, row;
+                    NearCells(g, column, row);
+                    const size_t word = row == ra ? wa : wb;
+                    FoldWord& w = words[word];
+                    w.bits |= uint64_t(1) << (column & 63);
+                    entries[entryCount] = FoldEntry{w.head, static_cast<uint32_t>(word), i};
+                    w.head = base + entryCount++;
+                    if (RAYOPDF_UNLIKELY(probing)) f.InsertKept(kept, g);
+                    order[kept++] = i;
+                    continue;
+                }
+            }
         }
-        vis[kept++] = i;
+        f.kept = kept;
+        f.entryCount = entryCount;
+        f.placed = placed;
+        f.Place(i);
+        kept = f.kept;
+        entryCount = f.entryCount;
+        probing = f.table != nullptr;
     }
     vis.resize(kept);
-    if (scratch) {
-        fold.base = base + static_cast<uint32_t>(glyphs.size());
-        if (record) {
-            for (size_t s = 0; s < wordCount; ++s) filter[setWords[s]] = 0;
-        } else {
-            std::memset(filter, 0, filterWords * sizeof(uint64_t));
-        }
-    }
+    fold.base = base + kept;
+    if (scratch)
+        for (uint32_t e = 0; e < entryCount; ++e) words[entries[e].word].bits = 0;
+    return sum - sum == 0;
 }
 
 // An opening quote or bracket: ( [ “ ‘ „ «.
@@ -707,7 +938,6 @@ template <typename M>
 void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     std::vector<Glyph>& glyphs = page.glyphs;
     PlaceScratch& place = PerThread<PlaceScratch>();
-    FoldDuplicates(page, vis);
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
     // current line while direction and baseline match).
@@ -1121,9 +1351,9 @@ void BuildLines(PageData& page) {
     page.lineGlyphs.clear();
     std::vector<Glyph>& glyphs = page.glyphs;
 
-    // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave, except that invisible
-    // text is the page's text when nothing visible is (an OCR layer). The add-on's OCR layer
-    // (kGlyphOcr) stays whatever else the page has.
+    // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave (CollectAndFold),
+    // except that invisible text is the page's text when nothing visible is (an OCR layer). The
+    // add-on's OCR layer (kGlyphOcr) stays whatever else the page has.
     bool visibleText = false, invisibleText = false;
     for (const Glyph& g : glyphs) {
         if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
@@ -1137,34 +1367,7 @@ void BuildLines(PageData& page) {
     const bool keepInvisible = !visibleText && invisibleText;
     PlaceScratch& place = PerThread<PlaceScratch>();
     std::vector<uint32_t>& vis = place.vis;
-    if (vis.size() < glyphs.size()) vis.resize(glyphs.size());
-    uint32_t* const placed = vis.data();
-    size_t count = 0;
-    // Stays 0 while every placed glyph's frame box, baseline and size are finite: x - x is 0 for
-    // a finite x and NaN otherwise, and a NaN stays in the sum.
-    float nonFinite = 0;
-    for (uint32_t i = 0; i < glyphs.size(); ++i) {
-        Glyph& g = glyphs[i];
-        if (g.flags & kGlyphDropped) continue;
-        const bool hidden = (g.flags & kGlyphClipped) || g.size < 1.0f ||
-                            ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible && !keepInvisible);
-        if (hidden) {
-            g.flags |= kGlyphDropped;
-            if (!(g.flags & kGlyphSpace)) page.hiddenGlyphs++;
-            continue;
-        }
-        // Codes without text carry nothing to place.
-        if (g.textLength == 0) continue;
-        // Typographic signals come from rendered text only: an invisible layer that came with the
-        // PDF (OCR text over a scan) has no face to be bold, italic or fixed-pitch in, whatever its
-        // font says. The add-on's OCR layer (kGlyphOcr) carries what the scan's pixels show.
-        if ((g.flags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible)
-            g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
-        nonFinite += ((g.u0 - g.u0) + (g.u1 - g.u1)) + ((g.vb - g.vb) + (g.vt - g.vt)) + ((g.v - g.v) + (g.size - g.size));
-        placed[count++] = i;
-    }
-    vis.resize(count);
-    if (nonFinite == 0)
+    if (CollectAndFold(page, vis, keepInvisible))
         PlaceGlyphs<FiniteMinMax>(page, vis);
     else
         PlaceGlyphs<CheckedMinMax>(page, vis);
