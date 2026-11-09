@@ -291,6 +291,50 @@ struct Progression {
     }
 };
 
+// The bin of x in Columns' whitespace histogram of n bins of width `bin` from xa. Monotone in x:
+// a larger x never gets a smaller bin.
+inline int BinOf(float x, float xa, float bin, int n) {
+    const float t = (x - xa) / bin;  // compared before conversion: x may be far off or not finite
+    if (!(t > 0)) return 0;
+    if (t >= float(n - 1)) return n - 1;
+    return static_cast<int>(t);
+}
+
+// The ink of a set of words along x, for Columns: their extents merged where they overlap or touch,
+// ascending. Columns' result depends only on which of its bins some word covers; BinOf is monotone,
+// so words whose extents overlap or touch cover every bin from the leftmost one's first to the
+// rightmost one's last, and the merged extents cover the same bins as the words. Rows added one at
+// a time then cost their own words, not all words so far. A word whose x0 exceeds its x1 (glyph
+// boxes inverted or infinite) takes from Columns' cover instead: `proper` turns false, and Columns
+// counts the rows' words itself.
+struct Ink {
+    std::vector<Gap> spans;
+    bool proper = true;
+    void Clear() {
+        spans.clear();
+        proper = true;
+    }
+};
+
+// Columns' gaps from the ink of its rows: the same as Columns over those rows when ink.proper.
+bool InkColumns(const Ink& ink, float xa, float xb, float minGap, std::vector<Gap>& gaps) {
+    gaps.clear();
+    if (!(xb > xa) || !std::isfinite(xb - xa)) return false;
+    const float bin = Fmax(0.5f, (xb - xa) / kMaxBins);
+    const int n = std::min(kMaxBins, static_cast<int>((xb - xa) / bin) + 1);
+    // The spans are disjoint and ascending: their bins ascend too, each span's first bin at or
+    // after the last bin of the span before. Uncovered bins between two spans are a run of
+    // whitespace, measured and placed as Columns does.
+    int end = -1;  // the last covered bin so far
+    for (const Gap& s : ink.spans) {
+        const int i = BinOf(s.a, xa, bin, n);
+        const int run = end >= 0 ? i - end - 1 : 0;
+        if (run > 0 && float(run) * bin >= minGap) gaps.push_back(Gap{xa + float(i - run) * bin, xa + float(i) * bin});
+        end = BinOf(s.b, xa, bin, n);
+    }
+    return !gaps.empty();
+}
+
 // A word's sort key (Detector::SortWords).
 struct WordKey {
     float base, x0;
@@ -312,7 +356,8 @@ struct TableScratch {
     std::vector<uint32_t> pageRowWords;
     std::vector<float> sizes, spaces, lefts, rights, centres, pitches;
     std::vector<uint8_t> split, label;
-    std::vector<Gap> gaps, trial;
+    std::vector<Gap> gaps, trial, narrowed;
+    Ink ink, grown;
 };
 constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
 
@@ -353,6 +398,8 @@ private:
     void BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords);
     bool Columns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                  float xa, float xb, float minGap, std::vector<Gap>& gaps, const std::vector<uint8_t>* skip = nullptr);
+    // `to`: the ink of `from` and of row `row`'s words.
+    void AddInk(const Row& row, const std::vector<uint32_t>& rowWords, const Ink& from, Ink& to) const;
     bool Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                const std::vector<Gap>& gaps, float em, bool closed = true);
     bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
@@ -604,12 +651,7 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
     if (rowEnd <= rowBegin || !(xb > xa) || !std::isfinite(xb - xa)) return false;
     const float bin = Fmax(0.5f, (xb - xa) / kMaxBins);
     const int n = std::min(kMaxBins, static_cast<int>((xb - xa) / bin) + 1);
-    const auto binOf = [&](float x) {
-        const float t = (x - xa) / bin;  // compared before conversion: x may be far off or not finite
-        if (!(t > 0)) return 0;
-        if (t >= float(n - 1)) return n - 1;
-        return static_cast<int>(t);
-    };
+    const auto binOf = [&](float x) { return BinOf(x, xa, bin, n); };
     // Each word covers bins binOf(x0) to binOf(x1): an ink start there and an end after it. A bin
     // is covered while starts outnumber ends; gaps are the uncovered runs between covered bins.
     size_t words = 0;
@@ -663,6 +705,38 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
     return !gaps.empty();
 }
 
+void Detector::AddInk(const Row& row, const std::vector<uint32_t>& rowWords, const Ink& from, Ink& to) const {
+    to.spans.clear();
+    to.proper = from.proper;
+    // Both lists ascend by start (a row's words by x0): merged into one, joining what overlaps.
+    const std::vector<Gap>& old = from.spans;
+    size_t i = 0;
+    Gap cur{0, 0};
+    bool open = false;
+    const auto take = [&](float a, float b) {
+        if (open && a <= cur.b) {
+            if (b > cur.b) cur.b = b;
+            return;
+        }
+        if (open) to.spans.push_back(cur);
+        cur = Gap{a, b};
+        open = true;
+    };
+    float previous = -INFINITY;
+    for (uint32_t k = row.first; k < row.first + row.count; ++k) {
+        const TWord& w = words_[rowWords[k]];
+        if (!(w.x0 <= w.x1) || w.x0 < previous) {
+            to.proper = false;
+            continue;
+        }
+        previous = w.x0;
+        for (; i < old.size() && old[i].a <= w.x0; ++i) take(old[i].a, old[i].b);
+        take(w.x0, w.x1);
+    }
+    for (; i < old.size(); ++i) take(old[i].a, old[i].b);
+    if (open) to.spans.push_back(cur);
+}
+
 // The column of x for gaps.
 int ColumnOf(const std::vector<Gap>& gaps, float x) {
     int c = 0;
@@ -682,9 +756,10 @@ bool KeepsGaps(const std::vector<Gap>& old, const std::vector<Gap>& now) {
 
 // The gaps after rows were added: each gap of `old` as `now` narrows it (the widest gap of `now`
 // over it; KeepsGaps holds), and gaps of `now` over no old gap that are `minGap` wide (whitespace
-// that the rows so far left open and the new row leaves open too: a header row's).
-void Narrow(std::vector<Gap>& old, const std::vector<Gap>& now, float minGap) {
-    std::vector<Gap> out;
+// that the rows so far left open and the new row leaves open too: a header row's). `out` is a
+// buffer of the caller's.
+void Narrow(std::vector<Gap>& old, const std::vector<Gap>& now, float minGap, std::vector<Gap>& out) {
+    out.clear();
     for (size_t i = 0; i < now.size(); ++i) {
         const Gap& n = now[i];
         bool over = false, widest = true;
@@ -1699,6 +1774,13 @@ void Detector::RuleStacks() {
                 // Rows a above b are close enough to belong to one table.
                 return rows[a].bottom - rows[b].top < 1.6f * Fmax(rows[a].size, rows[b].size);
             };
+            // The ink of rows [begin, end), grown with them; Columns over those rows from it.
+            Ink& ink = scratch_.ink;
+            Ink& grown = scratch_.grown;
+            const auto columns = [&](const Ink& rowsInk, size_t from, size_t to, std::vector<Gap>& out) {
+                return rowsInk.proper ? InkColumns(rowsInk, xa, xb, minGap, out)
+                                      : Columns(rows, rowWords, from, to, xa, xb, minGap, out);
+            };
             const auto extend = [&](size_t& from, size_t& to, bool down) {
                 for (;;) {
                     const size_t next = down ? to : from - 1;
@@ -1706,7 +1788,8 @@ void Detector::RuleStacks() {
                     if (down ? !pitchOk(to - 1, next) : !pitchOk(next, from)) return;
                     if (!SizeFits(rows[next], em) || running(next)) return;
                     const size_t nb = down ? from : next, ne = down ? to + 1 : to;
-                    if (!Columns(rows, rowWords, nb, ne, xa, xb, minGap, trial)) return;
+                    AddInk(rows[next], rowWords, ink, grown);
+                    if (!columns(grown, nb, ne, trial)) return;
                     // Every gap still there (gaps of fewer than three rows may be chance word spaces
                     // that close), and the new row in two columns at least; or, below, one cell set
                     // as close as the closest rows so far (a row of empty cells).
@@ -1724,11 +1807,17 @@ void Detector::RuleStacks() {
                         if (rows[to - 1].bottom - rows[next].top > closest + 0.15f * em) return;
                     }
                     gaps = trial;
+                    std::swap(ink, grown);
                     if (down) to = ne;
                     else from = next;
                 }
             };
-            Columns(rows, rowWords, begin, end, xa, xb, minGap, gaps);
+            ink.Clear();
+            for (size_t q = begin; q < end; ++q) {
+                AddInk(rows[q], rowWords, ink, grown);
+                std::swap(ink, grown);
+            }
+            columns(ink, begin, end, gaps);
             if (open) extend(begin, end, true);
             if (single) extend(begin, end, false);
             const auto multiCell = [&]() {
@@ -1761,7 +1850,7 @@ void Detector::RuleStacks() {
                 return 2 * mono > all || 10 * math >= 4 * all;
             };
             // A single rule closes nothing: its table needs three rows at least.
-            if (end - begin >= (single ? 3u : 2u) && Columns(rows, rowWords, begin, end, xa, xb, minGap, gaps) &&
+            if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&
                 multiCell() && !code() &&
                 !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
@@ -1911,6 +2000,14 @@ void Detector::Borderless(float gapFactor) {
         const float minGap = Fmax(4.0f, gapFactor * em), keepGap = gapFactor < 1.0f ? minGap : Fmin(minGap, Fmax(4.0f, 0.5f * em));
         float xa = rows[r].x0 - 1, xb = rows[r].x1 + 1;
         Columns(rows, rowWords, r, r + 1, xa, xb, minGap, gaps);
+        // The ink of the run's rows but labels, grown a row at a time.
+        Ink& ink = scratch_.ink;
+        Ink& grown = scratch_.grown;
+        ink.Clear();
+        if (!label[r]) {
+            AddInk(rows[r], rowWords, ink, grown);
+            std::swap(ink, grown);
+        }
         size_t e = r + 1;
         // A row of one cell that ends before the second column's text, between split rows, is a
         // section label of the table ("Revenue:" over its quarters) or the wrapped text of the cell
@@ -1927,11 +2024,17 @@ void Detector::Borderless(float gapFactor) {
         while (e < rows.size() && (split[e] || isLabel(e) || middle(e)) && rows[e - 1].bottom - rows[e].top <= 1.0f * em &&
                std::fabs(rows[e].size - em) <= 0.2f * em) {
             label[e] = isLabel(e);
+            if (!label[e]) {
+                AddInk(rows[e], rowWords, ink, grown);
+                std::swap(ink, grown);
+            }
             const float na = Fmin(xa, rows[e].x0 - 1), nb = Fmax(xb, rows[e].x1 + 1);
             // Rows after the first keep its gaps half an em wide at least where figures stand on both
             // sides of the gap in that row (close columns of numbers), else as wide as the first; in
             // the second pass, its gaps already that close, as wide as the first.
-            bool kept = Columns(rows, rowWords, r, e + 1, na, nb, keepGap, trial, &label) && KeepsGaps(gaps, trial);
+            bool kept = (ink.proper ? InkColumns(ink, na, nb, keepGap, trial)
+                                    : Columns(rows, rowWords, r, e + 1, na, nb, keepGap, trial, &label)) &&
+                        KeepsGaps(gaps, trial);
             for (size_t gi = 0; gi < trial.size() && kept; ++gi) {
                 const Gap& n = trial[gi];
                 if (n.b - n.a >= minGap) continue;
@@ -1948,7 +2051,7 @@ void Detector::Borderless(float gapFactor) {
                 label[e] = 0;
                 break;
             }
-            Narrow(gaps, trial, minGap);
+            Narrow(gaps, trial, minGap, scratch_.narrowed);
             xa = na, xb = nb;
             ++e;
         }
