@@ -52,6 +52,7 @@ struct Info {
     uint32_t note = 0;       // the number of the footnote the line starts or continues
     bool noteStart = false;
     uint32_t noteSkip = 0;   // marker glyphs of a note's first line
+    bool raised = false;     // a raised glyph after those it starts with (LineInfo; FindNotes reads it)
     bool listStart() const { return marker != Marker::None; }
 };
 
@@ -286,12 +287,17 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
     uint32_t mono = 0, boldHere = 0, italicHere = 0;
     bool letter = false;
     bool numbering = line.chars <= 8;
-    for (uint32_t k = 0; k < line.count; ++k) {
+    // A raised glyph after those the line starts with: a footnote reference FindNotes looks for.
+    bool lead = true, raised = false;
+    uint32_t k = 0;
+    for (; k < line.count && !(letter && !numbering); ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         boldHere += (g.flags & kGlyphBold) != 0;
         italicHere += (g.flags & kGlyphItalic) != 0;
-        // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
-        if (letter && !numbering && !(g.flags & kGlyphMonospace)) continue;
+        if (!IsSuperscript(g, line))
+            lead = false;
+        else if (!lead)
+            raised = true;
         const uint32_t cp = FirstCodePoint(page.GlyphText(g));
         // Mathematical alphanumerics (𝑥, 𝐸) are math whatever the font's pitch: no code.
         if ((g.flags & kGlyphMonospace) && !(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
@@ -300,8 +306,24 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, const Marks& marks
                            cp == 'V' || cp == 'X' || (k == 0 && cp >= 'A' && cp <= 'Z')))
             numbering = false;
     }
+    // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
+    for (; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        const uint16_t f = g.flags;
+        boldHere += (f & kGlyphBold) != 0;
+        italicHere += (f & kGlyphItalic) != 0;
+        if (!IsSuperscript(g, line))
+            lead = false;
+        else if (!lead)
+            raised = true;
+        if (f & kGlyphMonospace) {
+            const uint32_t cp = FirstCodePoint(page.GlyphText(g));
+            if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
+        }
+    }
     bold += boldHere;
     italic += italicHere;
+    info.raised = raised;
     info.hasLetter = letter;
     info.numbering = numbering;
     info.mono = line.count ? float(mono) / float(line.count) : 0;
@@ -652,6 +674,7 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
     for (uint32_t i = 0; i < infos.size() && refs.size() < kMaxNoteRefs; ++i) {
         // A display formula's raised glyphs are its scripts and limits (--math=latex).
         if (pages[infos[i].page].lines[infos[i].line].flags & kLineFormula) continue;
+        if (!infos[i].raised) continue;  // no superscript run after the line's first glyphs
         const PageData& page = pages[infos[i].page];
         const Line& line = page.lines[infos[i].line];
         uint32_t k = 0;
@@ -803,6 +826,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 t.u0 = tl.u0, t.u1 = tl.u1, t.vb = tl.vb, t.vt = tl.vt, t.baseline = tl.baseline, t.size = tl.size;
                 t.markerU0 = t.textU0 = tl.u0;
                 t.endsTerminal = true;
+                t.raised = true;  // its glyphs, should it have any, are looked at by FindNotes
                 // Its glyphs, should it have any, count for the faces like any line's.
                 for (uint32_t k = 0; k < tl.count; ++k) {
                     const uint16_t f = page.glyphs[page.lineGlyphs[tl.first + k]].flags;
