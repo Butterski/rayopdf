@@ -122,13 +122,13 @@ constexpr MqRow kMqRows[47] = {
     {0x0001, 45, 43, 0}, {0x5601, 46, 46, 0},
 };
 
-// A context is one word: its state's Qe in the high half, the state index times two plus the MPS
-// in the low bits, so a decision reads Qe and the MPS without another load. kMqNext gives the
-// words after decoding the MPS ([0]) and the LPS ([1]).
-constexpr uint32_t MqWord(int state, int mps) { return (uint32_t(kMqRows[state].qe) << 16) | uint32_t(2 * state + mps); }
+// A context is one word: its state's Qe in the top 16 bits (where the decoder keeps A and
+// Chigh), the state index times two plus the MPS in the low bits, so a decision reads Qe and the
+// MPS without another load. kMqNext gives the words after decoding the MPS ([0]) and the LPS ([1]).
+constexpr uint64_t MqWord(int state, int mps) { return (uint64_t(kMqRows[state].qe) << 48) | uint64_t(2 * state + mps); }
 
 struct MqNext {
-    uint32_t next[94][2];
+    uint64_t next[94][2];
 };
 constexpr MqNext MakeMqNext() {
     MqNext t{};
@@ -142,96 +142,153 @@ constexpr MqNext MakeMqNext() {
 }
 constexpr MqNext kMqNext = MakeMqNext();
 
-void ResetContexts(uint32_t* contexts) {
+void ResetContexts(uint64_t* contexts) {
     for (int i = 0; i < kContexts; i++) contexts[i] = MqWord(0, 0);
     contexts[0] = MqWord(4, 0);
     contexts[kCtxRunLength] = MqWord(3, 0);
     contexts[kCtxUniform] = MqWord(46, 0);
 }
 
+// Each pass is a function of its own, so that its loop has the registers to itself.
 #if defined(__GNUC__)
 #define JPX_INLINE inline __attribute__((always_inline))
+#define JPX_NOINLINE __attribute__((noinline))
 #else
 #define JPX_INLINE inline
+#define JPX_NOINLINE
 #endif
+
+// The index of the lowest set bit of `v` (not zero).
+JPX_INLINE int LowestBit(uint64_t v) {
+#if defined(__GNUC__)
+    return __builtin_ctzll(v);
+#else
+    int n = 0;
+    while ((v & 1u) == 0) {
+        v >>= 1;
+        n++;
+    }
+    return n;
+#endif
+}
+
+// The number of leading zero bits of `v` (not zero).
+JPX_INLINE uint32_t LeadingZeros(uint64_t v) {
+#if defined(__GNUC__)
+    return static_cast<uint32_t>(__builtin_clzll(v));
+#else
+    uint32_t n = 0;
+    while ((v & 0x8000000000000000u) == 0) {
+        v <<= 1;
+        n++;
+    }
+    return n;
+#endif
+}
 
 // The MQ decoder (C.3) as OpenJPEG implements it: the segment ends in a 0xFF 0xFF marker that
 // BYTEIN never passes, feeding 1-bits. The passes copy it into a local, so its registers stay in
 // machine registers.
+//
+// C is held in 64 bits: OpenJPEG's 32-bit C register is bits 32-63 (Chigh, compared with Qe, is
+// bits 48-63), and below it CT bits of bytes read ahead, up to 48. Bytes come in as BYTEIN takes
+// them (a byte after 0xFF gives 7 bits, the marker endless 1-bits), only earlier, which adds the
+// same bits at the same places into bits that are still zero, so the decisions do not change.
+// The one exception waits: a byte after 0xFF with its top bit set carries into the 0xFF byte, so
+// it is added only when CT runs out, as BYTEIN adds it. A is held at bits 48-63 too, its low
+// bits zero, as Qe is in a context word.
 struct Mq {
-    const uint8_t* bp;
-    uint32_t a;
-    uint32_t c;
+    const uint8_t* bp;  // the last byte taken in
+    uint64_t a;
     uint32_t ct;
+    uint64_t c;
+
+    // The input side, passed by value to the rare refills so that the decoder itself never
+    // has its address taken and stays in registers.
+    struct Feed {
+        const uint8_t* bp;
+        uint64_t c;
+        uint32_t ct;
+    };
 
     void Init(const uint8_t* start) {
-        bp = start;
-        c = static_cast<uint32_t>(*bp) << 16;
-        ByteIn();
-        c <<= 7;
-        ct -= 7;
-        a = 0x8000;
+        const Feed in = Refill(Feed{start, static_cast<uint64_t>(*start) << 48, 0});
+        bp = in.bp;
+        c = in.c << 7;
+        ct = in.ct - 7;
+        a = uint64_t(0x8000) << 48;
     }
 
-    JPX_INLINE void ByteIn() {
-        const uint32_t next = bp[1];
-        if (*bp == 0xFF) {
-            if (next > 0x8F) {
-                c += 0xFF00;
-                ct = 8;
+    // Takes in bytes while CT leaves room for one; at least one when CT is 0.
+    static Feed Refill(Feed in) {
+        while (in.ct <= 40) {
+            const uint32_t next = in.bp[1];
+            if (*in.bp == 0xFF) {
+                if (next > 0x8F) {
+                    in.c += uint64_t(0xFF) << (40 - in.ct);
+                    in.ct += 8;
+                    continue;
+                }
+                if (next >= 0x80 && in.ct != 0) break;
+                in.bp++;
+                in.c += uint64_t(next) << (41 - in.ct);
+                in.ct += 7;
             } else {
-                bp++;
-                c += next << 9;
-                ct = 7;
+                in.bp++;
+                in.c += uint64_t(next) << (40 - in.ct);
+                in.ct += 8;
             }
-        } else {
-            bp++;
-            c += next << 8;
-            ct = 8;
         }
+        return in;
     }
 
-    // Shifts A (below 0x8000, not zero) and C left until A reaches 0x8000, reading a byte each
-    // time CT runs out: the shifts at once when CT covers them.
+    // Shifts C left by n (more than CT), taking in bytes, each when CT runs out.
+    static Feed ShiftIn(Feed in, uint32_t n) {
+        in = Refill(in);
+        while (n > 0) {
+            if (in.ct == 0) in = Refill(in);
+            const uint32_t s = n < in.ct ? n : in.ct;
+            in.c <<= s;
+            in.ct -= s;
+            n -= s;
+        }
+        return in;
+    }
+
+    // Shifts A (below 0x8000, not zero) and C left until A reaches 0x8000: at once when CT
+    // covers the shift, else taking in bytes.
     JPX_INLINE void Renormalize() {
-#if defined(__GNUC__)
-        const uint32_t n = static_cast<uint32_t>(__builtin_clz(a)) - 16;
+        const uint32_t n = LeadingZeros(a);
+        a <<= n;
         if (n <= ct) {
-            a <<= n;
             c <<= n;
             ct -= n;
             return;
         }
-#endif
-        do {
-            if (ct == 0) ByteIn();
-            a <<= 1;
-            c <<= 1;
-            ct--;
-        } while (a < 0x8000);
+        const Feed in = ShiftIn(Feed{bp, c, ct}, n);
+        bp = in.bp;
+        c = in.c;
+        ct = in.ct;
     }
 
-    // C.3.2 with the conditional exchanges: `lps` is whether the decision is the LPS.
-    JPX_INLINE uint32_t Decode(uint32_t& context) {
-        const uint32_t word = context;
-        const uint32_t qe = word >> 16;
-        const uint32_t mps = word & 1u;
+    // C.3.2 with the conditional exchanges. The common case, the MPS without renormalisation,
+    // is one branch; the others are worked out without branches: `lower` is whether Chigh lies
+    // below Qe, `lps` whether the decision is the LPS.
+    JPX_INLINE uint32_t Decode(uint64_t& context) {
+        const uint64_t word = context;
+        const uint64_t qe = word & ~uint64_t(0xFFFF);
         a -= qe;
-        if ((c >> 16) < qe) {
-            const uint32_t lps = a < qe ? 0 : 1;
-            context = kMqNext.next[word & 0x7F][lps];
-            a = qe;
-            Renormalize();
-            return mps ^ lps;
+        const uint32_t lower = c < qe;
+        if ((lower | static_cast<uint32_t>((a >> 63) ^ 1u)) == 0) {
+            c -= qe;
+            return static_cast<uint32_t>(word) & 1u;
         }
-        c -= qe << 16;
-        if ((a & 0x8000) == 0) {
-            const uint32_t lps = a < qe ? 1 : 0;
-            context = kMqNext.next[word & 0x7F][lps];
-            Renormalize();
-            return mps ^ lps;
-        }
-        return mps;
+        const uint32_t lps = lower ^ static_cast<uint32_t>(a < qe);
+        c -= qe & (uint64_t(lower) - 1);
+        a = lower ? qe : a;
+        context = kMqNext.next[word & 0x7F][lps];
+        Renormalize();
+        return (static_cast<uint32_t>(word) & 1u) ^ lps;
     }
 };
 
@@ -278,21 +335,24 @@ struct Block {
     int32_t* data;
     const uint8_t* zeroCoding;
     bool causal;
-    uint32_t contexts[kContexts];
+    size_t rowAt[14];  // by a row's own significance bit (4 + 3k): its offset in `data`, k * width
+    // By a bit of two adjacent column words read as one 64-bit word (the second at bit 32 + 4 +
+    // 3k): the row's offset in `data` from the first column.
+    size_t pairAt[46];
+    uint64_t contexts[kContexts];
 
-    // Row k of the column at `fp` (local word f) became significant with sign s.
-    JPX_INLINE void SetSignificant(uint32_t& f, uint32_t* fp, int k, uint32_t s) const {
-        const int shift = 3 * k;
+    // The row at `shift` (3k) of the column at `fp` (local word f) became significant with sign s.
+    JPX_INLINE void SetSignificant(uint32_t& f, uint32_t* fp, int shift, uint32_t s) const {
         f |= (kSigThis | (s << kSignShift)) << shift;
         fp[-1] |= (1u << 5) << shift;
         fp[1] |= (1u << 3) << shift;
-        if (k == 0 && !causal) {
+        if (shift == 0 && !causal) {
             uint32_t* north = fp - stride;
             north[0] |= (1u << 16) | (s << 31);
             north[-1] |= 1u << 17;
             north[1] |= 1u << 15;
         }
-        if (k == 3) {
+        if (shift == 9) {
             uint32_t* south = fp + stride;
             south[0] |= (1u << 1) | (s << 18);
             south[-1] |= 1u << 2;
@@ -300,29 +360,44 @@ struct Block {
         }
     }
 
-    // The sign context index of row k (Luts::sign).
-    JPX_INLINE static uint32_t SignIndex(uint32_t f, const uint32_t* fp, int k) {
-        const int shift = 3 * k;
+    // The sign context index of the row at `shift` (Luts::sign). The sign of the row above is bit
+    // 18 for row 0, else that row's sign bit 19 + shift - 3.
+    JPX_INLINE static uint32_t SignIndex(uint32_t f, const uint32_t* fp, int shift) {
         uint32_t lu = (f >> shift) & 0xAAu;
         lu |= (fp[-1] >> (kSignShift + shift)) & 1u;
         lu |= (fp[1] >> (kSignShift - 2 + shift)) & 4u;
-        lu |= k == 0 ? (f >> 14) & 16u : (f >> (12 + shift)) & 16u;
+        lu |= (f >> (12 + shift + (shift == 0 ? 2 : 0))) & 16u;
         lu |= (f >> (16 + shift)) & 64u;
         return lu;
     }
 
-    JPX_INLINE void DecodeSign(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
-        const uint8_t sc = kLuts.sign[SignIndex(f, fp, k)];
+    JPX_INLINE void DecodeSign(Mq& mq, uint32_t& f, uint32_t* fp, int shift, int32_t* d, int32_t oneplushalf) {
+        const uint8_t sc = kLuts.sign[SignIndex(f, fp, shift)];
         const uint32_t s = mq.Decode(contexts[sc & 0x1F]) ^ (sc >> 7);
         *d = s ? -oneplushalf : oneplushalf;
-        SetSignificant(f, fp, k, s);
+        SetSignificant(f, fp, shift, s);
     }
 
-    JPX_INLINE void SignificanceStep(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
-        const uint32_t window = f >> (3 * k);
-        if ((window & (kSigThis | kVisited)) != 0 || (window & kNeighbours) == 0) return;
-        if (mq.Decode(contexts[zeroCoding[window & 0x1FF]])) DecodeSign(mq, f, fp, k, d, oneplushalf);
-        f |= kVisited << (3 * k);
+    // The rows of the column word `f` that the significance pass codes, as their own significance
+    // bits (kSigThis << 3k): not significant, not yet visited, and with a significant neighbour
+    // in the 3 x 3 window (rows k - 1 and k + 1 whole, W and E of row k).
+    JPX_INLINE static uint32_t SignificanceRows(uint32_t f, uint32_t rowMask) {
+        const uint32_t g = f & 0x3FFFFu;
+        const uint32_t rowAny = (g | (g >> 1) | (g >> 2)) & 0x9249u;  // bit 3j: a row j - 1 bit set
+        const uint32_t neighbours = (rowAny << 4) | (rowAny >> 2) | (g << 1) | (g >> 1);
+        return neighbours & ~(f | (f >> 17)) & rowMask;
+    }
+
+    // The row at `shift`'s zero coding (and its sign when it becomes significant); the row is
+    // marked visited. A newly significant row makes the row below it a candidate of `rows`.
+    JPX_INLINE void SignificanceRow(Mq& mq, uint32_t& f, uint32_t* fp, int shift, int32_t* d, int32_t oneplushalf,
+                                    uint32_t& rows, uint32_t rowMask) {
+        const uint32_t window = f >> shift;
+        if (mq.Decode(contexts[zeroCoding[window & 0x1FF]])) {
+            DecodeSign(mq, f, fp, shift, d, oneplushalf);
+            rows |= (kSigThis << (shift + 3)) & ~(f | (f >> 17)) & rowMask;
+        }
+        f |= kVisited << shift;
     }
 
     JPX_INLINE void SignificanceStepRaw(Raw& raw, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
@@ -331,18 +406,31 @@ struct Block {
         if (raw.Decode()) {
             const uint32_t s = raw.Decode();
             *d = s ? -oneplushalf : oneplushalf;
-            SetSignificant(f, fp, k, s);
+            SetSignificant(f, fp, 3 * k, s);
         }
         f |= kVisited << (3 * k);
     }
 
-    JPX_INLINE void RefinementStep(Mq& mq, uint32_t& f, int k, int32_t* d, int32_t half) {
-        const uint32_t window = f >> (3 * k);
-        if ((window & (kSigThis | kVisited)) != kSigThis) return;
-        const int context = (window & kRefined) ? 16 : ((window & kNeighbours) ? 15 : 14);
-        const uint32_t bit = mq.Decode(contexts[context]);
-        *d += (bit ^ static_cast<uint32_t>(*d < 0)) ? half : -half;
-        f |= kRefined << (3 * k);
+    // The refinement contexts of two adjacent columns' rows (the words read as one 64-bit word),
+    // two bits a row at its own significance bit (4 + 3k, 32 + 4 + 3k): context 14 plus 2 after
+    // the row's first refinement, else plus 1 with a significant neighbour. Bits that one half
+    // shifts into the other are masked off. The refinement pass changes no significance, so the
+    // contexts hold for the whole pass over the two columns.
+    JPX_INLINE static uint64_t RefinementContexts(uint64_t pair) {
+        constexpr uint64_t kBoth = 0x100000001u;
+        const uint64_t g = pair & (0x3FFFFu * kBoth);
+        const uint64_t rowAny = (g | (g >> 1) | (g >> 2)) & (0x9249u * kBoth);
+        const uint64_t sigRows = kSigRows * kBoth;
+        const uint64_t neighbours = ((rowAny << 4) | (rowAny >> 2) | (g << 1) | (g >> 1)) & sigRows;
+        const uint64_t refined = (pair >> 16) & sigRows;
+        return (neighbours & ~refined) | (refined << 1);
+    }
+
+    // The magnitude refinement of the row at bit `bit` of the column pair whose contexts are
+    // `selector`.
+    JPX_INLINE void RefinementRow(Mq& mq, uint64_t selector, int bit, int32_t* d, int32_t half) {
+        const uint32_t refine = mq.Decode(contexts[14 + ((selector >> bit) & 3u)]);
+        *d += (refine ^ static_cast<uint32_t>(*d < 0)) ? half : -half;
     }
 
     JPX_INLINE static void RefinementStepRaw(Raw& raw, uint32_t& f, int k, int32_t* d, int32_t half) {
@@ -353,39 +441,43 @@ struct Block {
         f |= kRefined << (3 * k);
     }
 
-    JPX_INLINE void CleanupStep(Mq& mq, uint32_t& f, uint32_t* fp, int k, int32_t* d, int32_t oneplushalf) {
-        const uint32_t window = f >> (3 * k);
-        if ((window & (kSigThis | kVisited)) == 0 && mq.Decode(contexts[zeroCoding[window & 0x1FF]])) {
-            DecodeSign(mq, f, fp, k, d, oneplushalf);
-        }
+    // The row at `shift`'s zero coding in the cleanup pass (the row is neither significant nor
+    // visited).
+    JPX_INLINE void CleanupRow(Mq& mq, uint32_t& f, uint32_t* fp, int shift, int32_t* d, int32_t oneplushalf) {
+        if (mq.Decode(contexts[zeroCoding[(f >> shift) & 0x1FF]])) DecodeSign(mq, f, fp, shift, d, oneplushalf);
     }
 
-    void SignificancePass(Mq& state, int bp) {
+    // The rows of a stripe of `rows` rows, as their own significance bits.
+    static uint32_t RowMask(int rows) { return kSigRows & ((kSigThis << (3 * rows)) - 1); }
+
+    // Each pass codes the rows of a column it has to, found from the column word, lowest first:
+    // a set bit at 4 + 3k is row k, so the bit's index less 4 is the row's shift in the word.
+
+    JPX_NOINLINE void SignificancePass(Mq& state, int bp) {
         Mq mq = state;
         const int32_t one = 1 << bp;
         const int32_t oneplushalf = one | (one >> 1);
         const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
-            const int rows = std::min(4, height - y0);
-            uint32_t* fp = flags + stripe * stride;
-            int32_t* d = data + static_cast<size_t>(y0) * w;
-            if (rows == 4) {
-                for (size_t x = 0; x < w; x++, fp++, d++) {
-                    uint32_t f = *fp;
-                    if (f == 0) continue;
-                    SignificanceStep(mq, f, fp, 0, d, oneplushalf);
-                    SignificanceStep(mq, f, fp, 1, d + w, oneplushalf);
-                    SignificanceStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
-                    SignificanceStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
-                    *fp = f;
-                }
-            } else {
-                for (size_t x = 0; x < w; x++, fp++, d++) {
-                    uint32_t f = *fp;
-                    if (f == 0) continue;
-                    for (int k = 0; k < rows; k++) SignificanceStep(mq, f, fp, k, d + k * w, oneplushalf);
-                    *fp = f;
-                }
+            const uint32_t rowMask = RowMask(std::min(4, height - y0));
+            uint32_t* const start = flags + stripe * stride;
+            uint32_t* const end = start + w;
+            int32_t* const dStart = data + static_cast<size_t>(y0) * w;
+            // Columns without a flag are skipped in a loop of their own, so that the pointers
+            // the coding derives from the column's are not stepped along for every column.
+            for (uint32_t* fp = start;; fp++) {
+                while (fp < end && *fp == 0) fp++;
+                if (fp >= end) break;
+                uint32_t f = *fp;
+                uint32_t rows = SignificanceRows(f, rowMask);
+                if (rows == 0) continue;
+                int32_t* const d = dStart + (fp - start);
+                do {
+                    const int bit = LowestBit(rows);
+                    rows &= rows - 1;
+                    SignificanceRow(mq, f, fp, bit - 4, d + rowAt[bit], oneplushalf, rows, rowMask);
+                } while (rows != 0);
+                *fp = f;
             }
         }
         state = mq;
@@ -410,31 +502,33 @@ struct Block {
         state = raw;
     }
 
-    void RefinementPass(Mq& state, int bp) {
+    JPX_NOINLINE void RefinementPass(Mq& state, int bp) {
         Mq mq = state;
         const int32_t half = (1 << bp) >> 1;
         const size_t w = static_cast<size_t>(width);
         for (int y0 = 0, stripe = 0; y0 < height; y0 += 4, stripe++) {
-            const int rows = std::min(4, height - y0);
+            const uint64_t rowMask = RowMask(std::min(4, height - y0));
+            const uint64_t pairMask = rowMask | (rowMask << 32);
             uint32_t* fp = flags + stripe * stride;
+            uint32_t* const end = fp + w;
             int32_t* d = data + static_cast<size_t>(y0) * w;
-            if (rows == 4) {
-                for (size_t x = 0; x < w; x++, fp++, d++) {
-                    uint32_t f = *fp;
-                    if ((f & kSigRows) == 0) continue;
-                    RefinementStep(mq, f, 0, d, half);
-                    RefinementStep(mq, f, 1, d + w, half);
-                    RefinementStep(mq, f, 2, d + 2 * w, half);
-                    RefinementStep(mq, f, 3, d + 3 * w, half);
-                    *fp = f;
-                }
-            } else {
-                for (size_t x = 0; x < w; x++, fp++, d++) {
-                    uint32_t f = *fp;
-                    if ((f & kSigRows) == 0) continue;
-                    for (int k = 0; k < rows; k++) RefinementStep(mq, f, k, d + k * w, half);
-                    *fp = f;
-                }
+            // Two columns at a time: every bit operation stays within its 32-bit half where
+            // it matters, and the border column after an odd last one has no significant row.
+            for (; fp < end; fp += 2, d += 2) {
+                uint64_t pair;
+                std::memcpy(&pair, fp, sizeof pair);
+                // Significant and not visited in this bit-plane's significance pass.
+                const uint64_t candidates = pair & ~(pair >> 17) & pairMask;
+                if (candidates == 0) continue;
+                const uint64_t selector = RefinementContexts(pair);
+                const uint64_t refined = pair | (candidates << 16);
+                std::memcpy(fp, &refined, sizeof refined);
+                uint64_t rows = candidates;
+                do {
+                    const int bit = LowestBit(rows);
+                    rows &= rows - 1;
+                    RefinementRow(mq, selector, bit, d + pairAt[bit], half);
+                } while (rows != 0);
             }
         }
         state = mq;
@@ -458,7 +552,7 @@ struct Block {
         state = raw;
     }
 
-    void CleanupPass(Mq& state, int bp, bool segmentation) {
+    JPX_NOINLINE void CleanupPass(Mq& state, int bp, bool segmentation) {
         Mq mq = state;
         const int32_t one = 1 << bp;
         const int32_t oneplushalf = one | (one >> 1);
@@ -468,47 +562,45 @@ struct Block {
             uint32_t* fp = flags + stripe * stride;
             int32_t* d = data + static_cast<size_t>(y0) * w;
             if (rows == 4) {
-                for (size_t x = 0; x < w; x++, fp++, d++) {
+                uint32_t* const start = fp;
+                uint32_t* const end = start + w;
+                int32_t* const dStart = d;
+                for (fp = start;; fp++) {
+                    // Run-length mode (no row significant, visited or with a significant
+                    // neighbour) with a run-length decision of 0 codes nothing else: such
+                    // columns are passed in a loop of their own.
+                    while (fp < end && *fp == 0 && !mq.Decode(contexts[kCtxRunLength])) fp++;
+                    if (fp >= end) break;
                     uint32_t f = *fp;
+                    int32_t* const column = dStart + (fp - start);
+                    uint32_t todo;
                     if (f == 0) {
-                        // Run-length mode: no row significant, visited or with a significant
-                        // neighbour.
-                        if (!mq.Decode(contexts[kCtxRunLength])) continue;
+                        // The run-length decision was 1: the first significant row follows,
+                        // then the rows below it are coded as usual.
                         uint32_t k = mq.Decode(contexts[kCtxUniform]) << 1;
                         k |= mq.Decode(contexts[kCtxUniform]);
-                        switch (k) {
-                        case 0:
-                            DecodeSign(mq, f, fp, 0, d, oneplushalf);
-                            CleanupStep(mq, f, fp, 1, d + w, oneplushalf);
-                            CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
-                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
-                            break;
-                        case 1:
-                            DecodeSign(mq, f, fp, 1, d + w, oneplushalf);
-                            CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
-                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
-                            break;
-                        case 2:
-                            DecodeSign(mq, f, fp, 2, d + 2 * w, oneplushalf);
-                            CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
-                            break;
-                        default:
-                            DecodeSign(mq, f, fp, 3, d + 3 * w, oneplushalf);
-                            break;
-                        }
-                        *fp = f;
-                        continue;
+                        DecodeSign(mq, f, fp, static_cast<int>(3 * k), column + rowAt[4 + 3 * k], oneplushalf);
+                        todo = kSigRows & ~((kSigThis << (3 * k + 3)) - 1);
+                    } else {
+                        todo = ~(f | (f >> 17)) & kSigRows;
                     }
-                    CleanupStep(mq, f, fp, 0, d, oneplushalf);
-                    CleanupStep(mq, f, fp, 1, d + w, oneplushalf);
-                    CleanupStep(mq, f, fp, 2, d + 2 * w, oneplushalf);
-                    CleanupStep(mq, f, fp, 3, d + 3 * w, oneplushalf);
+                    while (todo != 0) {
+                        const int bit = LowestBit(todo);
+                        todo &= todo - 1;
+                        CleanupRow(mq, f, fp, bit - 4, column + rowAt[bit], oneplushalf);
+                    }
                     *fp = f & ~kVisitedRows;
                 }
             } else {
+                const uint32_t rowMask = RowMask(rows);
                 for (size_t x = 0; x < w; x++, fp++, d++) {
                     uint32_t f = *fp;
-                    for (int k = 0; k < rows; k++) CleanupStep(mq, f, fp, k, d + k * w, oneplushalf);
+                    uint32_t todo = ~(f | (f >> 17)) & rowMask;
+                    while (todo != 0) {
+                        const int bit = LowestBit(todo);
+                        todo &= todo - 1;
+                        CleanupRow(mq, f, fp, bit - 4, d + rowAt[bit], oneplushalf);
+                    }
                     *fp = f & ~kVisitedRows;
                 }
             }
@@ -540,6 +632,12 @@ bool T1Decoder::Decode(const CodeBlockJob& job, int32_t* out) {
     block.data = out;
     block.zeroCoding = kLuts.zeroCoding[job.orientation & 3];
     block.causal = (job.style & kStyleCausal) != 0;
+    for (int k = 0; k < 4; k++) {
+        const size_t row = static_cast<size_t>(k) * static_cast<size_t>(width);
+        block.rowAt[4 + 3 * k] = row;
+        block.pairAt[4 + 3 * k] = row;
+        block.pairAt[36 + 3 * k] = row + 1;
+    }
     ResetContexts(block.contexts);
 
     int passType = 2;  // the first pass is a cleanup pass
