@@ -89,6 +89,8 @@ void ConvertDocument(const Document& document, const ConvertOptions& options, st
             Tally(stats, quality[slot], report);
         }
     }
+    // The pages' content is read: its buffer (this thread's) goes back to the heap for what follows.
+    if (options.oneShot) Document::ReleasePageContent();
     report.pages = static_cast<int>(pages.size());
     RecognisePages(document, fonts, options.ocr, pages, quality, report, !options.imageDirectory.empty());
     std::vector<OutlineEntry> outline;

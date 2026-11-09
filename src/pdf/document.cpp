@@ -1852,6 +1852,12 @@ StreamStatus Document::PageContent(int index, std::string_view& out) const {
     return status;
 }
 
+void Document::ReleasePageContent() {
+    PageBuffer& buffer = PerThread<PageBuffer>();
+    buffer.bytes.Release();
+    std::string().swap(buffer.piece);
+}
+
 bool Document::BeginShared() const {
     Impl& d = *impl_;
     if (!d.uncounted.empty()) return false;

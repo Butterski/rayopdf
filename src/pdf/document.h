@@ -118,6 +118,10 @@ public:
     // a newline, decoded. `out` views a buffer of the calling thread, valid until its next call of
     // PageContent. The worst status of its streams.
     StreamStatus PageContent(int index, std::string_view& out) const;
+    // Frees the calling thread's PageContent buffer (a later PageContent starts a new one): for a
+    // process that converts one document, once its pages are read, so that the memory serves what
+    // comes next instead of the pages it would touch afresh.
+    static void ReleasePageContent();
 
     // Shared mode, for pages read on several threads at once (roadmap D4): between BeginShared and
     // EndShared, which the thread that owns the document calls while no other thread uses it, every

@@ -1016,6 +1016,7 @@ int main(int argc, char** argv) {
         case Mode::Convert: {
             SetOneShotAllocator();
             Layout::ConvertOptions options = document.convert;
+            options.oneShot = true;
             ChooseImageTarget(output, document, options);
             const int code = ConvertFile(input, output, document, options, report);
             // No exit handlers, static destructors or frees after the output is written (ConvertFile).
