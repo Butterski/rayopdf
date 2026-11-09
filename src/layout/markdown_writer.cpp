@@ -91,9 +91,11 @@ public:
 
 private:
     // Inline's path for a block that needs none of its passes: no glyph in a style it writes, no
-    // script, no inline image, no link annotation on its pages (with styles) and Unicode math. Its
-    // words go to out_ as they are collected, by CollectWords' word, soft hyphen and dehyphenation
-    // rules and Inline's escaping. False, with out_ as it was, when the block needs the full path.
+    // script, no inline image, no link annotation on its pages (with styles) and, in LaTeX mode
+    // (kLatex), no glyph that may be math. Its words go to out_ as they are collected, by
+    // CollectWords' word, soft hyphen and dehyphenation rules and Inline's escaping. False, with
+    // out_ as it was, when the block needs the full path.
+    template <bool kLatex>
     bool InlinePlain(const Block& block, bool styles);
     void CollectWords(const Block& block);
     void StyleWords(bool styles);
@@ -560,14 +562,17 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
 }
 
 // The characters AppendEscaped may escape, by byte value; text without them it writes as it is.
+// In LaTeX mode a dollar too.
 struct EscapeTable {
     bool may[256] = {};
-    constexpr EscapeTable() {
+    constexpr explicit EscapeTable(bool dollar) {
         constexpr char kChars[] = "\\*`_<]~&";
         for (size_t i = 0; i + 1 < sizeof(kChars); ++i) may[static_cast<unsigned char>(kChars[i])] = true;
+        may[static_cast<unsigned char>('$')] = dollar;
     }
 };
-constexpr EscapeTable kEscape;
+constexpr EscapeTable kEscape(false);
+constexpr EscapeTable kEscapeLatex(true);
 
 bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 
@@ -639,6 +644,7 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
     }
 }
 
+template <bool kLatex>
 bool Writer::InlinePlain(const Block& block, bool styles) {
     uint16_t bail = kGlyphImage;
     if (styles)
@@ -646,7 +652,9 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
                                      (monoIsBody_ ? 0 : kGlyphMonospace));
     const uint32_t blockEnd = block.first + block.count;
     // A glyph in a style written, an inline image, or (with styles) a page with link annotations:
-    // the full path, found before anything is written.
+    // the full path, found before anything is written. In LaTeX mode also a glyph that may be
+    // math: without one the block holds no formula, and the full path writes what this one does
+    // (a dollar escaped as AppendEscaped does it).
     for (uint32_t bl = block.first; bl < blockEnd; ++bl) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
@@ -655,7 +663,15 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         uint16_t faces = 0;
         for (uint32_t k = ref.skip; k < line.count; ++k) faces |= page.glyphs[page.lineGlyphs[line.first + k]].flags;
         if (faces & bail) return false;
+        if constexpr (kLatex) {
+            for (uint32_t k = ref.skip; k < line.count; ++k) {
+                const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+                const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
+                if (MayBeFormula(font, g.flags, page.GlyphText(g))) return false;
+            }
+        }
     }
+    const bool* const may = kLatex ? kEscapeLatex.may : kEscape.may;
     const size_t mark = out_.size();
     // Heading and table cell text is inline: "## 1. Installation" opens no list.
     bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
@@ -702,10 +718,10 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
             }
             if (text.size() == 1) {
                 out_.push_back(text[0]);
-                escapes |= MayEscape(text[0]);
+                escapes |= may[static_cast<unsigned char>(text[0])];
             } else {
                 out_.append(text.data(), text.size());
-                for (const char c : text) escapes |= MayEscape(c);
+                for (const char c : text) escapes |= may[static_cast<unsigned char>(c)];
             }
             wordCount++;
         }
@@ -751,7 +767,7 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
 }
 
 void Writer::Inline(const Block& block, bool styles) {
-    if (math_ != MathMode::Latex && InlinePlain(block, styles)) return;
+    if (math_ == MathMode::Latex ? InlinePlain<true>(block, styles) : InlinePlain<false>(block, styles)) return;
     CollectWords(block);
     StyleWords(styles);
     depth_ = 0;

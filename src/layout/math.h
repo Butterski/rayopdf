@@ -155,5 +155,14 @@ struct InlineGlyph {
 };
 // Marks math runs: `run[i]` = the end (exclusive) of the formula that starts at glyph i, or 0.
 void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_t>& run);
+// Whether FindInlineFormulas takes the glyph (font, flags and text as in InlineGlyph) for strong
+// math, the kind that starts a formula: a run of glyphs none of which it takes so has no formula.
+// ASCII here; the rest in MayBeFormulaOther.
+bool MayBeFormulaOther(uint8_t font, uint16_t flags, std::string_view text);
+inline bool MayBeFormula(uint8_t font, uint16_t flags, std::string_view text) {
+    const unsigned char lead = text.empty() ? 0x80 : static_cast<unsigned char>(text[0]);
+    if (lead < 0x80) return lead != 0 && font != static_cast<uint8_t>(MathFont::None) && !(flags & kGlyphUnmapped);
+    return MayBeFormulaOther(font, flags, text);
+}
 
 } // namespace RayoPdf::Layout

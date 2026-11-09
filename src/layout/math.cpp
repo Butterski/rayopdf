@@ -2,6 +2,7 @@
 #include "layout/math.h"
 
 #include "common/minmax.h"
+#include "common/per_thread.h"
 #include "common/utf8.h"
 #include "layout/lines.h"
 #include "layout/math_tables.h"
@@ -36,7 +37,8 @@ bool Finite(float x) { return x == x && x - x == 0; }
 
 bool IsAsciiLetter(uint32_t c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 
-bool IsGreek(uint32_t c) {
+RAYOPDF_HOT_INLINE bool IsGreek(uint32_t c) {
+    if (c < 0x391 || c > 0x3F5) return false;
     return (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) || (c >= 0x3B1 && c <= 0x3C9) || c == 0x3D1 || c == 0x3D5 ||
            c == 0x3D6 || c == 0x3F0 || c == 0x3F1 || c == 0x3F5 || c == 0x3DD;
 }
@@ -276,21 +278,26 @@ constexpr uint64_t Pack(std::string_view word) {
 }
 
 constexpr size_t kFunctionCount = sizeof(kFunctions) / sizeof(kFunctions[0]);
+// The names' keys with the length in the top byte (every name is shorter than 8), sorted.
 struct FunctionKeys {
     uint64_t key[kFunctionCount] = {};
-    uint8_t size[kFunctionCount] = {};
     constexpr FunctionKeys() {
-        for (size_t i = 0; i < kFunctionCount; ++i) key[i] = Pack(kFunctions[i]), size[i] = static_cast<uint8_t>(kFunctions[i].size());
+        for (size_t i = 0; i < kFunctionCount; ++i) {
+            uint64_t k = Pack(kFunctions[i]) | uint64_t(kFunctions[i].size()) << 56;
+            size_t at = i;
+            for (; at > 0 && key[at - 1] > k; --at) key[at] = key[at - 1];
+            key[at] = k;
+        }
     }
 };
 constexpr FunctionKeys kFunctionKeys;
 
 bool IsFunctionName(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every name has 2 to 6 letters
-    const uint64_t key = Pack(word);
-    for (size_t i = 0; i < kFunctionCount; ++i)
-        if (kFunctionKeys.key[i] == key && kFunctionKeys.size[i] == word.size()) return true;
-    return false;
+    const uint64_t key = Pack(word) | uint64_t(word.size()) << 56;
+    const uint64_t* const end = kFunctionKeys.key + kFunctionCount;
+    const uint64_t* const at = std::lower_bound(kFunctionKeys.key, end, key);
+    return at != end && *at == key;
 }
 
 // Short English words set upright in formulas ("for", "if", "and"): \text, not \mathrm.
@@ -452,6 +459,23 @@ void AppendToken(std::string& out, std::string_view token) {
     out.append(token);
 }
 
+// A row's sort order: its items' position and their index.
+struct SortKey {
+    float u0, v;
+    uint32_t index;
+};
+
+// The builder's storage, kept by each thread from formula to formula (every use clears it first).
+struct BuilderScratch {
+    std::vector<Atom> atoms;
+    std::vector<uint8_t> ruleUsed;
+    std::vector<uint32_t> all, byU, rules, part;  // Run's
+    std::vector<const Item*> full;               // FindRows'
+    std::vector<SortKey> sortKeys;
+    std::vector<Item> sortItems;
+    std::vector<float> baseV, baseW;
+};
+
 class Builder {
 public:
     explicit Builder(const MathInput& in) : in_(in) {}
@@ -479,10 +503,16 @@ private:
     }
 
     const MathInput& in_;
-    std::vector<Atom> atoms_;
-    std::vector<uint8_t> ruleUsed_;
+    BuilderScratch& scratch_ = PerThread<BuilderScratch>();
+    std::vector<Atom>& atoms_ = scratch_.atoms;
+    std::vector<uint8_t>& ruleUsed_ = scratch_.ruleUsed;
     uint64_t budget_ = uint64_t(1) << 24;
     MathStatus status_ = MathStatus::Ok;
+    // Row's scratch, used before it recurses.
+    std::vector<SortKey>& sortKeys_ = scratch_.sortKeys;
+    std::vector<Item>& sortItems_ = scratch_.sortItems;
+    std::vector<float>& baseV_ = scratch_.baseV;
+    std::vector<float>& baseW_ = scratch_.baseW;
 };
 
 bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
@@ -697,7 +727,6 @@ bool Builder::Resolve() {
 
 void Builder::ItemOf(uint32_t index, Item& item) const {
     const Atom& a = atoms_[index];
-    item = Item();
     item.u0 = a.u0, item.u1 = a.u1, item.v = a.v, item.size = a.size, item.bottom = a.bottom, item.top = a.top;
     item.latex = a.latex;
     item.kind = a.kind;
@@ -727,6 +756,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         for (uint32_t a : atoms) em = Fmax(em, atoms_[a].size);
     std::vector<uint8_t> used(atoms.size(), 0);
     std::vector<Item> items;
+    items.reserve(atoms.size() + rules.size());  // a fraction per rule at most, else an item per atom
 
     // Fraction bars (longest first: an outer bar before the bars of its numerator), over- and
     // underlines.
@@ -835,9 +865,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         }
         if (best < 0) {
             used[i] = 1;
-            Item item;
-            ItemOf(atoms[i], item);
-            items.push_back(std::move(item));
+            ItemOf(atoms[i], items.emplace_back());
             continue;
         }
         const MathRule& rule = in_.rules[static_cast<uint32_t>(best)];
@@ -888,7 +916,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         if (used[i] || atoms_[atoms[i]].kind != Kind::Piece) continue;
         const Atom& first = atoms_[atoms[i]];
         int family = first.family;
-        Item item;
+        Item& item = items.emplace_back();
         ItemOf(atoms[i], item);
         used[i] = 1;
         for (size_t k = i + 1; k < atoms.size(); ++k) {
@@ -908,14 +936,11 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
                                                                            : Kind::Close;
         item.tall = true;
         item.v = item.bottom + 0.3f * em;
-        items.push_back(std::move(item));
     }
 
     for (size_t i = 0; i < atoms.size(); ++i) {
         if (used[i]) continue;
-        Item item;
-        ItemOf(atoms[i], item);
-        items.push_back(std::move(item));
+        ItemOf(atoms[i], items.emplace_back());
     }
     return Layout(items, depth, out);
 }
@@ -928,7 +953,8 @@ struct RowBand {
 
 void FindRows(const std::vector<Item>& items, float em, std::vector<RowBand>& rows) {
     rows.clear();
-    std::vector<const Item*> full;
+    std::vector<const Item*>& full = PerThread<BuilderScratch>().full;
+    full.clear();
     for (const Item& it : items) {
         if (it.tall || it.kind == Kind::BigOp || it.kind == Kind::Accent || it.kind == Kind::Piece || it.kind == Kind::Radical)
             continue;
@@ -1146,17 +1172,33 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     if (depth > kMaxFormulaDepth) return Fail(MathStatus::TooLarge);
     if (items.empty()) return true;
     if (!Spend(items.size() * items.size() + 8)) return false;
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+    // Sorted by proxy: the same comparisons on the same order give std::sort's same permutation,
+    // without moving the items' strings at each step.
+    sortKeys_.clear();
+    for (size_t i = 0; i < items.size(); ++i) sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
+    std::sort(sortKeys_.begin(), sortKeys_.end(), [](const SortKey& a, const SortKey& b) {
         return a.u0 != b.u0 ? a.u0 < b.u0 : a.v > b.v;
     });
+    sortItems_.clear();
+    for (const SortKey& k : sortKeys_) sortItems_.push_back(std::move(items[k.index]));
+    items.swap(sortItems_);
     const float em = EmOf(items);
-    // The main baseline: the baseline most ordinary-size ink sits on.
+    // The main baseline: the baseline most ordinary-size ink sits on. The ink that counts is listed
+    // once (in item order, so each sum adds in the same order); a weight depends only on a.v, so
+    // an item on the baseline of the one before it repeats that weight, which never beats it.
+    baseV_.clear(), baseW_.clear();
+    for (const Item& b : items)
+        if (!b.structure && !b.tall && b.size >= 0.85f * em) baseV_.push_back(b.v), baseW_.push_back(b.u1 - b.u0 + 0.01f);
     float mainV = items[0].v, best = -1;
+    bool any = false;
+    float lastV = 0;
     for (const Item& a : items) {
         if (a.structure || a.tall || a.kind == Kind::BigOp || a.kind == Kind::Accent || a.size < 0.85f * em) continue;
+        if (any && a.v == lastV) continue;
+        any = true, lastV = a.v;
         float weight = 0;
-        for (const Item& b : items)
-            if (!b.structure && !b.tall && std::fabs(b.v - a.v) <= 0.1f * em && b.size >= 0.85f * em) weight += b.u1 - b.u0 + 0.01f;
+        for (size_t k = 0; k < baseV_.size(); ++k)
+            if (std::fabs(baseV_[k] - a.v) <= 0.1f * em) weight += baseW_[k];
         if (weight > best) best = weight, mainV = a.v;
     }
     if (best < 0) {
@@ -1169,7 +1211,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     }
     const size_t n = items.size();
     // 0 base, 1 superscript, 2 subscript, 3 consumed (an accent, a limit).
-    std::vector<uint8_t> role(n, 0);
+    // role and wordPart, and the limits and words below, each in one allocation.
+    std::vector<uint8_t> marks(2 * n, 0);
+    uint8_t* const role = marks.data();
     for (size_t i = 0; i < n; ++i) {
         const Item& it = items[i];
         const bool small = it.size < 0.92f * em;
@@ -1234,7 +1278,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         b.accent = acc.latex;
     }
     // Large operators and function names with limits centred above and below them.
-    std::vector<std::string> lower(n), upper(n);
+    std::vector<std::string> texts(3 * n);
+    std::string* const lower = texts.data();
+    std::string* const upper = lower + n;
     for (size_t i = 0; i < n; ++i) {
         const Item& op = items[i];
         const bool word = op.atom >= 0 && atoms_[static_cast<uint32_t>(op.atom)].upright;
@@ -1270,7 +1316,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             const float centre = (u0 + u1) / 2, opCentre = (op.u0 + op.u1) / 2;
             if (std::fabs(centre - opCentre) > 0.25f * Fmax(u1 - u0, op.u1 - op.u0) + 0.2f * em) continue;
             for (size_t k : picked) {
-                part.push_back(items[k]);
+                part.push_back(std::move(items[k]));  // consumed: no later step reads its texts
                 role[k] = 3;
             }
         }
@@ -1279,8 +1325,8 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         if (word && below.empty() && above.empty()) continue;
     }
     // Upright letter runs: function names and text.
-    std::vector<std::string> words(n);
-    std::vector<uint8_t> wordPart(n, 0);
+    std::string* const words = upper + n;
+    uint8_t* const wordPart = role + n;
     for (size_t i = 0; i < n; ++i) {
         if (role[i] != 0 || items[i].atom < 0 || !atoms_[static_cast<uint32_t>(items[i].atom)].upright) continue;
         size_t end = i + 1, prev = i;
@@ -1378,8 +1424,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     const auto scripts = [&](size_t from, size_t to) -> bool {
         sup.clear(), sub.clear(), supText.clear(), subText.clear();
         for (size_t k = from; k < to; ++k) {
-            if (role[k] == 1) sup.push_back(items[k]);
-            else if (role[k] == 2) sub.push_back(items[k]);
+            // The scripts' texts are read only here: moved.
+            if (role[k] == 1) sup.push_back(std::move(items[k]));
+            else if (role[k] == 2) sub.push_back(std::move(items[k]));
         }
         if (!sup.empty()) {
             // Primes alone are written as such.
@@ -1434,18 +1481,22 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             if (gap >= 1.8f * em) AppendToken(out, "\\qquad");
             else if (gap >= 0.8f * em) AppendToken(out, "\\quad");
         }
-        std::string token;
-        if (!words[i].empty()) {
-            token = words[i];
-        } else if (b.tall && (b.kind == Kind::Open || b.kind == Kind::Close || b.kind == Kind::Bar)) {
-            token.assign(SizePrefix((b.top - b.bottom) / em));
-            token += b.kind == Kind::Open ? "l" : b.kind == Kind::Close ? "r" : "";
-            if (b.latex.empty() || IsAsciiLetter(static_cast<unsigned char>(b.latex[0]))) token.push_back(' ');
-            token += b.latex;
-        } else {
-            token = b.latex;
+        std::string_view token = !words[i].empty() ? std::string_view(words[i]) : std::string_view(b.latex);
+        std::string built;
+        if (words[i].empty() && b.tall && (b.kind == Kind::Open || b.kind == Kind::Close || b.kind == Kind::Bar)) {
+            built.assign(SizePrefix((b.top - b.bottom) / em));
+            built += b.kind == Kind::Open ? "l" : b.kind == Kind::Close ? "r" : "";
+            if (b.latex.empty() || IsAsciiLetter(static_cast<unsigned char>(b.latex[0]))) built.push_back(' ');
+            built += b.latex;
+            token = built;
         }
-        if (!b.accent.empty()) token = b.accent + "{" + token + "}";
+        if (!b.accent.empty()) {
+            std::string accented = b.accent + "{";
+            accented.append(token);
+            accented.push_back('}');
+            built = std::move(accented);
+            token = built;
+        }
         AppendToken(out, token);
         lastU1 = b.u1;
         for (size_t k = i + 1; k < next; ++k)
@@ -1480,12 +1531,14 @@ MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
     if (in_.glyphs.size() > kMaxFormulaGlyphs || in_.rules.size() > kMaxFormulaRules) return MathStatus::TooLarge;
     if (!Resolve()) return status_;
     ruleUsed_.assign(in_.rules.size(), 0);
-    std::vector<uint32_t> all;
-    for (uint32_t i = 0; i < atoms_.size(); ++i) all.push_back(i);
+    std::vector<uint32_t>& all = scratch_.all;
+    all.resize(atoms_.size());
+    for (uint32_t i = 0; i < atoms_.size(); ++i) all[i] = i;
     std::string tagText;
     if (display) {
         // An equation number: "(", digits, letters and dots, ")" set apart at the right end.
-        std::vector<uint32_t> byU = all;
+        std::vector<uint32_t>& byU = scratch_.byU;
+        byU.assign(all.begin(), all.end());
         std::sort(byU.begin(), byU.end(), [&](uint32_t a, uint32_t b) { return atoms_[a].u0 < atoms_[b].u0; });
         const size_t m = byU.size();
         if (m >= 4 && atoms_[byU[m - 1]].cp == ')') {
@@ -1512,11 +1565,12 @@ MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
             }
         }
     }
-    std::vector<uint32_t> rules;
-    for (uint32_t r = 0; r < in_.rules.size(); ++r) rules.push_back(r);
+    std::vector<uint32_t>& rules = scratch_.rules;
+    rules.resize(in_.rules.size());
+    for (uint32_t r = 0; r < in_.rules.size(); ++r) rules[r] = r;
     std::string text;
     // An inline formula broken over lines: line by line.
-    std::vector<uint32_t> part;
+    std::vector<uint32_t>& part = scratch_.part;
     bool ok = true;
     for (size_t at = 0; at < all.size() && ok;) {
         size_t end = at + 1;
@@ -1595,8 +1649,10 @@ void AddMathGlyph(const PageData& page, const Glyph& g, MathInput& in) {
 void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, MathInput& in) {
     for (const Ruling& r : page.rulings) {
         if (in.rules.size() > kMaxFormulaRules) return;
+        // Pure tests, the vertical band first: it leaves out most of a page's rulings.
+        if (r.y0 < vb || r.y1 > vt) continue;
         if (r.x1 - r.x0 <= r.y1 - r.y0) continue;  // horizontal bars only
-        if (r.x0 < u0 - 1 || r.x1 > u1 + 1 || r.y0 < vb || r.y1 > vt) continue;
+        if (r.x0 < u0 - 1 || r.x1 > u1 + 1) continue;
         in.rules.push_back(MathRule{r.x0, r.x1, r.y0, r.y1});
     }
     for (const ImageBox& i : page.images) {
@@ -1624,7 +1680,16 @@ void PrepareMathGlyphs(PageData& page) {
         g.textLength = static_cast<uint16_t>(page.text.size() - g.text);
         g.flags = static_cast<uint16_t>(g.flags & ~kGlyphUnmapped);
     }
-    for (Glyph& g : page.glyphs) {
+    // Glyphs that may be accents, listed in this pass (in order); the accent pass below reads
+    // their v after this one moved it. No ASCII character is an accent there (^ and ~ are not
+    // taken).
+    std::vector<uint32_t> maybeAccents;
+    for (size_t gi = 0; gi < page.glyphs.size(); ++gi) {
+        Glyph& g = page.glyphs[gi];
+        if (g.dir == 0 && g.textLength != 0 && !(g.flags & (kGlyphInvisible | kGlyphSpace))) {
+            const std::string_view t = page.GlyphText(g);
+            if (!(t.size() == 1 && static_cast<unsigned char>(t[0]) < 0x80)) maybeAccents.push_back(static_cast<uint32_t>(gi));
+        }
         if (g.dir != 0 || g.font >= page.fontMath.size() || (g.flags & (kGlyphInvisible | kGlyphUnmapped))) continue;
         const MathFont font = static_cast<MathFont>(page.fontMath[g.font] & kMathFontClass);
         if (font != MathFont::Extension && font != MathFont::Symbol) continue;
@@ -1657,19 +1722,18 @@ void PrepareMathGlyphs(PageData& page) {
     // glyph under an accent is the nearest by `d`, the first of equal ones, in any order; otherwise
     // all glyphs are walked in order as they always were.
     struct Reach {
-        float lo;
+        float lo, hi;  // the glyph's reach: u0 - 0.1 size to u1 + 0.1 size
         uint32_t glyph;
     };
     std::vector<Reach> reach;
     std::vector<float> reachHi;
     bool listed = false, finite = true, sorted = false;
     uint32_t accents = 0;
-    for (size_t i = 0; i < n && budget > n; ++i) {
+    for (size_t m = 0; m < maybeAccents.size() && budget > n; ++m) {
+        const size_t i = maybeAccents[m];
         Glyph& a = page.glyphs[i];
-        if (a.dir != 0 || a.textLength == 0 || (a.flags & (kGlyphInvisible | kGlyphSpace)) || !Finite(a.v)) continue;
+        if (!Finite(a.v)) continue;
         const std::string_view text = page.GlyphText(a);
-        // No ASCII character is an accent here (^ and ~ are not taken).
-        if (text.size() == 1 && static_cast<unsigned char>(text[0]) < 0x80) continue;
         uint32_t cp = 0;
         size_t length = 0;
         if (!Utf8::Decode(text, 0, cp, length) || length != text.size() || AccentOf(cp).empty() || cp == '^' || cp == '~')
@@ -1686,7 +1750,7 @@ void PrepareMathGlyphs(PageData& page) {
                 if (lead < 0x80 ? lead == '^' || lead == '~' : Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty())
                     continue;
                 finite = finite && Finite(b.u0) && Finite(b.u1) && Finite(b.v) && Finite(b.size);
-                reach.push_back(Reach{b.u0 - 0.1f * b.size, static_cast<uint32_t>(k)});
+                reach.push_back(Reach{b.u0 - 0.1f * b.size, b.u1 + 0.1f * b.size, static_cast<uint32_t>(k)});
             }
         }
         // Many accents: the list sorted once pays for itself.
@@ -1696,8 +1760,7 @@ void PrepareMathGlyphs(PageData& page) {
             reachHi.resize(reach.size());
             float hi = -INFINITY;
             for (size_t r = 0; r < reach.size(); ++r) {
-                const Glyph& b = page.glyphs[reach[r].glyph];
-                hi = Fmax(hi, b.u1 + 0.1f * b.size);
+                hi = Fmax(hi, reach[r].hi);
                 reachHi[r] = hi;
             }
         }
@@ -1705,20 +1768,20 @@ void PrepareMathGlyphs(PageData& page) {
         float best = INFINITY;
         size_t under = n;
         if (finite) {
-            const auto consider = [&](size_t k) {
-                const Glyph& b = page.glyphs[k];
-                if (k == i || cx < b.u0 - 0.1f * b.size || cx > b.u1 + 0.1f * b.size) return;
+            const auto consider = [&](const Reach& r) {
+                if (cx < r.lo || cx > r.hi || r.glyph == i) return;
+                const Glyph& b = page.glyphs[r.glyph];
                 const float d = a.v - b.v;
                 if (d < -0.05f * b.size || d > 1.0f * b.size) return;
-                if (d < best || (d == best && k < under)) best = d, under = k;
+                if (d < best || (d == best && r.glyph < under)) best = d, under = r.glyph;
             };
             if (!sorted || cx != cx) {
-                for (const Reach& r : reach) consider(r.glyph);
+                for (const Reach& r : reach) consider(r);
             } else {
                 // Glyphs whose reach starts left of cx, back to where none reaches it any more.
                 size_t end = std::upper_bound(reach.begin(), reach.end(), cx, [](float x, const Reach& r) { return x < r.lo; }) -
                              reach.begin();
-                while (end > 0 && !(reachHi[end - 1] < cx)) consider(reach[--end].glyph);
+                while (end > 0 && !(reachHi[end - 1] < cx)) consider(reach[--end]);
             }
         } else {
             for (size_t k = 0; k < n; ++k) {
@@ -1799,19 +1862,24 @@ RAYOPDF_HOT_INLINE bool IsLetterCp(uint32_t cp) {
            !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0x1D400 && cp <= 0x1D7FF) && cp != 0xFFFD;
 }
 
+uint8_t ClassOfOther(uint8_t font, uint16_t flags, std::string_view text, bool alone);
+
 // A glyph's class from its font, text and face; `alone` says it is a word of one letter.
-uint8_t ClassOf(uint8_t font, uint16_t flags, std::string_view text, bool alone) {
+RAYOPDF_HOT_INLINE uint8_t ClassOf(uint8_t font, uint16_t flags, std::string_view text, bool alone) {
     const unsigned char lead = text.empty() ? 0 : static_cast<unsigned char>(text[0]);
-    if (lead < 0x80) {
-        // ASCII, as below: no text mark, math symbol, alphanumeric or Greek letter is ASCII, and
-        // MathCharacter keeps it.
-        if (lead == 0) return kClassText;
-        if (font != static_cast<uint8_t>(MathFont::None) && !(flags & kGlyphUnmapped)) return kClassStrong;
-        if (IsNeutral(lead)) return kClassNeutral;
-        if (alone && (flags & kGlyphItalic) && IsAsciiLetter(lead) && lead != 'a' && lead != 'A' && lead != 'I')
-            return kClassNeutral;
-        return kClassText;
-    }
+    if (lead >= 0x80) return ClassOfOther(font, flags, text, alone);
+    // ASCII, as below: no text mark, math symbol, alphanumeric or Greek letter is ASCII, and
+    // MathCharacter keeps it.
+    if (lead == 0) return kClassText;
+    if (font != static_cast<uint8_t>(MathFont::None) && !(flags & kGlyphUnmapped)) return kClassStrong;
+    if (kNeutralAscii.is[lead]) return kClassNeutral;
+    if (alone && (flags & kGlyphItalic) && IsAsciiLetter(lead) && lead != 'a' && lead != 'A' && lead != 'I')
+        return kClassNeutral;
+    return kClassText;
+}
+
+// ClassOf of a glyph whose text starts with a byte past ASCII.
+uint8_t ClassOfOther(uint8_t font, uint16_t flags, std::string_view text, bool alone) {
     const uint32_t cp = MathCharacter(FirstCp(text), MathFont::None, false);  // ∆ is Δ, µ is μ
     if (cp == 0) return kClassText;
     // Footnote marks are text in any font; bullets and the like only in text fonts.
@@ -1843,12 +1911,18 @@ bool IsFunctionWord(std::string_view word) {
 
 } // namespace
 
+bool MayBeFormulaOther(uint8_t font, uint16_t flags, std::string_view text) {
+    // ClassOf's strong class does not depend on `alone`; FindInlineFormulas only lowers it.
+    return ClassOf(font, flags, text, false) == kClassStrong;
+}
+
 void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_t>& run) {
     const uint32_t n = static_cast<uint32_t>(glyphs.size());
     run.assign(n, 0);
     if (n == 0) return;
     // Words.
     std::vector<uint32_t> wordStart;
+    wordStart.reserve(size_t(n) + 1);
     for (uint32_t i = 0; i < n; ++i)
         if (i == 0 || glyphs[i].wordStart) wordStart.push_back(i);
     wordStart.push_back(n);
@@ -2047,37 +2121,53 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
     f.usable = true;
     f.u0 = line.u0, f.u1 = line.u1, f.size = line.size;
     f.bottom = INFINITY, f.top = -INFINITY;
-    uint32_t wordLetters = 0;
-    bool textWord = true;
-    std::string word;
     std::string all;
-    const auto endWord = [&]() {
-        if (wordLetters >= 2 && textWord && !IsFunctionWord(word)) f.words++;
-        wordLetters = 0, textWord = true;
-        word.clear();
-    };
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) continue;
-        if (k > 0 && (g.flags & kGlyphSpaceBefore)) endWord();
         const std::string_view t = page.GlyphText(g);
-        const uint32_t cp = FirstCp(t);
         const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
         f.glyphs++;
         if (f.glyphs <= 10) AppendText(all, t);  // the equation number test reads it up to 10 glyphs
         f.bottom = Fmin(f.bottom, g.v - 0.25f * g.size);
         f.top = Fmax(f.top, g.v + 0.72f * g.size);
-        const uint8_t c = ClassOf(font, g.flags, t, false);
-        if (c == kClassStrong || cp == '=') f.math++;
-        if (IsLetterCp(cp)) {
-            wordLetters++;
-            if (font != static_cast<uint8_t>(MathFont::None)) textWord = false;
-            if (word.size() < 16) AppendText(word, t);
-        } else if (cp != '-' && cp != 0x2019 && cp != '\'') {
-            endWord();
-        }
+        if (ClassOf(font, g.flags, t, false) == kClassStrong || (!t.empty() && t[0] == '=')) f.math++;
     }
-    endWord();
+    // Words of text: MarkDisplayFormulas reads them only of a line with math or of 3 glyphs or
+    // fewer (else 0 stays).
+    if (f.math > 0 || f.glyphs <= 3) {
+        uint32_t wordLetters = 0;
+        bool textWord = true;
+        // The word's first 8 bytes and its length (counted on to 16 and past by the last glyph, as
+        // a string of it would be): a function word has 2 to 6, all in the buffer.
+        char word[8] = {};
+        size_t wordSize = 0;
+        const auto endWord = [&]() {
+            if (wordLetters >= 2 && textWord && !(wordSize <= 6 && IsFunctionWord(std::string_view(word, wordSize)))) f.words++;
+            wordLetters = 0, textWord = true;
+            wordSize = 0;
+        };
+        for (uint32_t k = 0; k < line.count; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) continue;
+            if (k > 0 && (g.flags & kGlyphSpaceBefore)) endWord();
+            const std::string_view t = page.GlyphText(g);
+            const uint32_t cp = FirstCp(t);
+            const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
+            if (IsLetterCp(cp)) {
+                wordLetters++;
+                if (font != static_cast<uint8_t>(MathFont::None)) textWord = false;
+                if (wordSize < 16)
+                    for (const char ch : t) {
+                        if (wordSize < sizeof(word)) word[wordSize] = ch;
+                        ++wordSize;
+                    }
+            } else if (cp != '-' && cp != 0x2019 && cp != '\'') {
+                endWord();
+            }
+        }
+        endWord();
+    }
     if (f.glyphs == 0) {
         f.usable = false;
         return;
