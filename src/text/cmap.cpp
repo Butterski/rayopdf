@@ -423,6 +423,7 @@ public:
                 entry[i] = UnicodeEntry{low + static_cast<uint32_t>(i), static_cast<uint32_t>(from), static_cast<uint32_t>(at - from)};
             }
             map_.text.resize(at);
+            if (n >= kMinRunCodes) map_.runs.push_back(UnicodeRun{static_cast<uint32_t>(first), static_cast<uint32_t>(n), last});
             return;
         }
         for (uint32_t code = low; code <= high && !Full(); ++code) {
@@ -568,6 +569,7 @@ bool ParseToUnicode(std::string_view data, ToUnicodeMap& out) {
             out.entries[kept++] = out.entries[i];
         }
         out.entries.resize(kept);
+        out.runs.clear();
     }
     if (sink.Full()) out.truncated = true;
     return !out.entries.empty();

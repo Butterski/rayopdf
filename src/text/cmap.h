@@ -49,10 +49,23 @@ struct UnicodeEntry {
     uint32_t length = 0;
 };
 
+// Entries a one-unit bfrange of kMinRunCodes codes or more added: entry `first` + i has the text of
+// UTF-16 unit `unit` + i (modulo 2^16; a surrogate unit as U+FFFD), so the code point of its text is
+// known unread. (Shorter ranges would not pay for the list.)
+constexpr size_t kMinRunCodes = 8;
+struct UnicodeRun {
+    uint32_t first = 0;
+    uint32_t count = 0;
+    uint16_t unit = 0;
+};
+
 struct ToUnicodeMap {
     Codespace codespace;
     std::vector<UnicodeEntry> entries;
     std::string text;
+    // The runs among the entries as ParseToUnicode read them, in order; empty once it has sorted
+    // them (codes out of order or defined twice). LoadToUnicode reads and clears them.
+    std::vector<UnicodeRun> runs;
     bool truncated = false;  // a limit was reached
 
     const UnicodeEntry* Find(uint32_t code) const;

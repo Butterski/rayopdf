@@ -167,6 +167,19 @@ void TestToUnicode() {
                       unitText(0x11) == replacement && unitText(0x12) == replacement &&
                       unitText(0x20) == "\xEF\xBF\xBF" && unitText(0x21) == std::string(1, '\0'),
                   1460);
+    // One-unit ranges of kMinRunCodes codes or more are runs: their entries' texts are the units
+    // counting up (a surrogate as U+FFFD), which LoadToUnicode reads without decoding the texts.
+    ToUnicodeMap runs;
+    ParseToUnicode("beginbfchar <01> <41> endbfchar beginbfrange <10> <12> <0061> <20> <2F> <D7FA> <40> <47> "
+                   "<FFFC> endbfrange",
+                   runs);
+    RAYOPDF_CHECK(kMinRunCodes == 8 && runs.runs.size() == 2 && runs.runs[0].first == 4 && runs.runs[0].count == 16 &&
+                      runs.runs[0].unit == 0xD7FA && runs.runs[1].first == 20 && runs.runs[1].count == 8 &&
+                      runs.runs[1].unit == 0xFFFC && runs.entries[4].code == 0x20 && runs.entries[27].code == 0x47,
+                  1464);
+    ToUnicodeMap redefined;  // codes out of order: sorted, so no runs
+    ParseToUnicode("beginbfrange <10> <1F> <0041> <05> <06> <0061> endbfrange", redefined);
+    RAYOPDF_CHECK(redefined.runs.empty() && redefined.entries.size() == 18 && redefined.entries[0].code == 5, 1465);
 }
 
 void TestEncodingCMap() {
