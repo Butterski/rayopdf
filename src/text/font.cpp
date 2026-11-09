@@ -705,54 +705,54 @@ bool SameText(std::string_view a, std::string_view b) {
 }
 
 // A majority vote over the non-space texts of a map's entries: the text more than half of them
-// share, if any, is the candidate it ends with (votes > 0).
+// share, if any, is the candidate it ends with (votes > 0). The candidate is held as its entry
+// (map.text only grows, so the entry stays valid while repaired texts are appended).
 struct Vote {
     static constexpr uint32_t kPointUnread = kNoCodePoint - 1;
-    std::string_view candidate;
+    const ToUnicodeMap& map;
+    UnicodeEntry candidate;
     uint32_t candidatePoint = kNoCodePoint;  // SingleCodePoint of the candidate, or kPointUnread
     uint32_t votes = 0;
     uint32_t voters = 0;  // the non-space texts added
 
+    explicit Vote(const ToUnicodeMap& m) : map(m) {}
+
+    std::string_view Candidate() const { return map.Text(candidate); }
     // Whether the candidate can be the text of more than half of `entries` entries: each vote
     // against a candidate cancels one of its votes, so at most (voters + votes) / 2 voters gave it.
     bool MayHaveMajority(size_t entries) const { return votes > 0 && voters + static_cast<size_t>(votes) > entries; }
 
-    RAYOPDF_HOT_INLINE void Add(std::string_view text) {
+    RAYOPDF_HOT_INLINE void Add(const UnicodeEntry& entry) {
+        const std::string_view text = map.Text(entry);
         if (text.size() == 1 && text[0] == ' ') return;
         ++voters;
         if (votes == 0) {
-            candidate = text;
+            candidate = entry;
             candidatePoint = kPointUnread;
             votes = 1;
-        } else if (SameText(text, candidate)) {
+        } else if (SameText(text, Candidate())) {
             ++votes;
         } else {
             --votes;
         }
     }
-    // Add of `text`, known to be code point `cp` alone: equal to the candidate when that is the
+    // Add of `entry`, whose text is code point `cp` alone: equal to the candidate when that is the
     // same code point (UTF-8 has one form for it).
-    RAYOPDF_HOT_INLINE void Add(std::string_view text, uint32_t cp) {
+    RAYOPDF_HOT_INLINE void Add(const UnicodeEntry& entry, uint32_t cp) {
         if (cp == ' ') return;
         ++voters;
         if (votes == 0) {
-            candidate = text;
+            candidate = entry;
             candidatePoint = cp;
             votes = 1;
             return;
         }
-        if (candidatePoint == kPointUnread) candidatePoint = SingleCodePoint(candidate);
+        if (candidatePoint == kPointUnread) candidatePoint = SingleCodePoint(Candidate());
         if (cp == candidatePoint) {
             ++votes;
         } else {
             --votes;
         }
-    }
-    // Where the candidate starts in `text`, which it views; Rebase views it again there after the
-    // text has grown.
-    size_t Offset(const std::string& text) const { return votes > 0 ? static_cast<size_t>(candidate.data() - text.data()) : 0; }
-    void Rebase(const std::string& text, size_t offset) {
-        if (votes > 0) candidate = std::string_view(text).substr(offset, candidate.size());
     }
 };
 
@@ -762,12 +762,12 @@ struct Vote {
 // their code points unread; a repaired entry's counts are replaced by those of its new text. The
 // most codes one non-space text has matters only above half the entries (Repair::Untrusted): a
 // majority vote finds that text (any order of the entries does), each entry's final text voting
-// once, and the filtering pass counts it. True when the map is untrusted.
+// once, and a last pass counts it when it may be a majority. True when the map is untrusted.
 bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
     const size_t count = map.entries.size();
     std::vector<uint8_t> flags(count);
     Repair::MapStats stats;
-    Vote vote;  // the entries a repair cannot change now, the others once repaired
+    Vote vote(map);  // the entries a repair cannot change now, the others once repaired
     uint8_t anyFlags = 0, allFlags = kEntryUsable;
     const UnicodeRun* run = map.runs.data();
     const UnicodeRun* const runEnd = run + map.runs.size();
@@ -781,7 +781,7 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
             flags[e] = f;
             anyFlags |= f;
             allFlags &= f;
-            if (!(f & kEntryMayRepair)) vote.Add(map.Text(entry));
+            if (!(f & kEntryMayRepair)) vote.Add(entry);
         }
         if (run == runEnd) break;
         for (uint32_t i = 0; i < run->count; ++i, ++e) {
@@ -791,7 +791,7 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
             flags[e] = f;
             anyFlags |= f;
             allFlags &= f;
-            if (!(f & kEntryMayRepair)) vote.Add(map.Text(map.entries[e]), cp);
+            if (!(f & kEntryMayRepair)) vote.Add(map.entries[e], cp);
         }
         ++run;
     }
@@ -800,7 +800,7 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
         context.thai = stats.thai;
         std::string repaired;
         Repair::MapStats before, after;
-        uint32_t thaiEntries = 0;
+        uint32_t thaiLost = 0, thaiGained = 0;  // repaired entries that were Thai, that are Thai
         bool repairedAny = false, full = false;
         for (size_t i = 0; i < count; ++i) {
             if (!(flags[i] & kEntryMayRepair)) continue;
@@ -812,47 +812,57 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
                                  !full && Repair::RepairText(text, context, repaired);
             if (changes && map.text.size() + repaired.size() > UINT32_MAX) full = true;  // no later entry is repaired
             if (changes && !full) {
-                if (!repairedAny) {
-                    if (stats.thai) {
-                        for (const uint8_t f : flags) thaiEntries += (f & kEntryThai) != 0;
-                    }
-                    repairedAny = true;
-                }
-                thaiEntries -= (CountEntry(text, before) & kEntryThai) != 0;
+                repairedAny = true;
+                thaiLost += (CountEntry(text, before) & kEntryThai) != 0;
                 const uint8_t f = CountEntry(repaired, after);
-                thaiEntries += (f & kEntryThai) != 0;
+                thaiGained += (f & kEntryThai) != 0;
                 flags[i] = f;
                 allFlags &= f;
                 entry.offset = static_cast<uint32_t>(map.text.size());
                 entry.length = static_cast<uint32_t>(repaired.size());
-                const size_t candidateAt = vote.Offset(map.text);
                 map.text += repaired;
-                vote.Rebase(map.text, candidateAt);
             }
-            vote.Add(map.Text(entry));
+            vote.Add(entry);
         }
         if (repairedAny) {
             stats.entries = stats.entries - before.entries + after.entries;
             stats.junk = stats.junk - before.junk + after.junk;
             stats.latinLetters = stats.latinLetters - before.latinLetters + after.latinLetters;
             stats.accented = stats.accented - before.accented + after.accented;
-            stats.thai = thaiEntries > 0;
+            // Thai when a repaired text is, or an entry no repair touched was (flags are those of
+            // every entry's final text).
+            if (thaiGained > 0) {
+                stats.thai = true;
+            } else if (stats.thai && thaiLost > 0) {
+                stats.thai = false;
+                for (const uint8_t f : flags) stats.thai = stats.thai || (f & kEntryThai) != 0;
+            }
         }
     }
     // The candidate's share matters only when it may be a majority (Untrusted needs more than half
-    // of stats.entries, which is count); the entries are compacted only when one is not usable.
-    const bool countShare = vote.MayHaveMajority(count);
-    if (countShare || !(allFlags & kEntryUsable)) {
-        const std::string_view candidate = vote.candidate;
+    // of stats.entries, which is count).
+    if (vote.MayHaveMajority(count)) {
+        const std::string_view candidate = vote.Candidate();
         uint32_t share = 0;
+        for (const UnicodeEntry& entry : map.entries) share += SameText(map.Text(entry), candidate);
+        stats.largestShare = share;
+    }
+    // The usable entries, moved down in blocks, when one is not.
+    if (!(allFlags & kEntryUsable)) {
+        UnicodeEntry* const entries = map.entries.data();
         size_t kept = 0;
-        for (size_t i = 0; i < count; ++i) {
-            const UnicodeEntry entry = map.entries[i];
-            if (countShare && SameText(map.Text(entry), candidate)) ++share;
-            if (flags[i] & kEntryUsable) map.entries[kept++] = entry;
+        for (size_t i = 0; i < count;) {
+            if (!(flags[i] & kEntryUsable)) {
+                ++i;
+                continue;
+            }
+            size_t end = i + 1;
+            while (end < count && (flags[end] & kEntryUsable)) ++end;
+            if (kept != i) std::memmove(entries + kept, entries + i, (end - i) * sizeof(UnicodeEntry));
+            kept += end - i;
+            i = end;
         }
         map.entries.resize(kept);
-        stats.largestShare = share;
     }
     return Repair::Untrusted(stats);
 }

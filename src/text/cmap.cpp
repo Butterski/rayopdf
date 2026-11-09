@@ -154,6 +154,21 @@ inline void AppendUnit(uint32_t u, std::string& out) {
     }
 }
 
+// The units from `u` up to `end` (exclusive) that AppendUnit writes with `width` bytes each:
+// U+0000-007F, U+0080-07FF, U+0800-D7FF, the surrogates (each U+FFFD) and U+E000-FFFF.
+struct UnitPiece {
+    uint32_t end;
+    uint32_t width;
+    bool surrogate;
+};
+inline UnitPiece PieceOf(uint32_t u) {
+    if (u < 0x80) return {0x80, 1, false};
+    if (u < 0x800) return {0x800, 2, false};
+    if (u < 0xD800) return {0xD800, 3, false};
+    if (u < 0xE000) return {0xE000, 3, true};
+    return {0x10000, 3, false};
+}
+
 // The UTF-16 units of a destination string; a single byte is read as one unit (producers write
 // <41> for "A"), an odd last byte is dropped. At most 256 units: longer ones are cut.
 size_t UnitsOf(std::string_view bytes, uint16_t* units, size_t max) {
@@ -394,35 +409,55 @@ public:
         }
         if (count == 1) {
             // One unit counting up, the common range: every code gets an entry of 1-3 bytes
-            // (AppendUnit), written in place, up to the map's limit.
+            // (AppendUnit), written in place, up to the map's limit. The units run in pieces of one
+            // UTF-8 length (UnitPiece): the text's size first, then each piece written by index.
             const size_t first = map_.entries.size();
             const uint64_t room = first < kMaxMappedCodes ? kMaxMappedCodes - first : 0;
             const uint64_t span = static_cast<uint64_t>(high) - low + 1;
             const size_t n = static_cast<size_t>(span < room ? span : room);
             const size_t start = map_.text.size();
+            size_t bytes = 0;
+            for (size_t i = 0; i < n;) {
+                const UnitPiece piece = PieceOf(static_cast<uint16_t>(last + i));
+                const size_t m = std::min<size_t>(n - i, piece.end - static_cast<uint16_t>(last + i));
+                bytes += m * piece.width;
+                i += m;
+            }
             map_.entries.resize(first + n);
-            map_.text.resize(start + 3 * n);
-            UnicodeEntry* entry = map_.entries.data() + first;
+            map_.text.resize(start + bytes);
+            UnicodeEntry* const entry = map_.entries.data() + first;
             char* const base = &map_.text[0];
             size_t at = start;
-            for (size_t i = 0; i < n; ++i) {
-                uint32_t u = static_cast<uint16_t>(last + i);
-                const size_t from = at;
-                if (u < 0x80) {
-                    base[at++] = static_cast<char>(u);
-                } else {
-                    if (u >= 0xD800 && u <= 0xDFFF) u = Utf8::kReplacement;
-                    if (u < 0x800) {
-                        base[at++] = static_cast<char>(0xC0 | (u >> 6));
-                    } else {
-                        base[at++] = static_cast<char>(0xE0 | (u >> 12));
-                        base[at++] = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+            for (size_t i = 0; i < n;) {
+                const uint32_t u = static_cast<uint16_t>(last + i);
+                const UnitPiece piece = PieceOf(u);
+                const size_t m = std::min<size_t>(n - i, piece.end - u);
+                char* const out = base + at;
+                UnicodeEntry* const to = entry + i;
+                const uint32_t code = low + static_cast<uint32_t>(i);
+                const uint32_t offset = static_cast<uint32_t>(at);
+                if (piece.width == 1) {
+                    for (size_t j = 0; j < m; ++j) out[j] = static_cast<char>(u + j);
+                } else if (piece.width == 2) {
+                    for (size_t j = 0; j < m; ++j) {
+                        const uint32_t v = u + static_cast<uint32_t>(j);
+                        out[2 * j] = static_cast<char>(0xC0 | (v >> 6));
+                        out[2 * j + 1] = static_cast<char>(0x80 | (v & 0x3F));
                     }
-                    base[at++] = static_cast<char>(0x80 | (u & 0x3F));
+                } else {
+                    for (size_t j = 0; j < m; ++j) {
+                        const uint32_t v = piece.surrogate ? Utf8::kReplacement : u + static_cast<uint32_t>(j);
+                        out[3 * j] = static_cast<char>(0xE0 | (v >> 12));
+                        out[3 * j + 1] = static_cast<char>(0x80 | ((v >> 6) & 0x3F));
+                        out[3 * j + 2] = static_cast<char>(0x80 | (v & 0x3F));
+                    }
                 }
-                entry[i] = UnicodeEntry{low + static_cast<uint32_t>(i), static_cast<uint32_t>(from), static_cast<uint32_t>(at - from)};
+                for (size_t j = 0; j < m; ++j) {
+                    to[j] = UnicodeEntry{code + static_cast<uint32_t>(j), offset + static_cast<uint32_t>(j * piece.width), piece.width};
+                }
+                at += m * piece.width;
+                i += m;
             }
-            map_.text.resize(at);
             if (n >= kMinRunCodes) map_.runs.push_back(UnicodeRun{static_cast<uint32_t>(first), static_cast<uint32_t>(n), last});
             return;
         }
