@@ -6,7 +6,7 @@
 //
 // Objects are parsed on first use and live in the document's arena as long as it does; every
 // value and string view returned stays valid until the Document goes. A Document is used by one
-// thread at a time (const member functions fill caches).
+// thread at a time (const member functions fill caches), except in shared mode (BeginShared).
 //
 // Hostile input: every loop is bounded (roadmap D8 / algorithms §1.5): value nesting 64,
 // reference chains 32, /Prev chains and the page tree cycle-checked, a page tree at most 64 levels
@@ -118,6 +118,25 @@ public:
     // a newline, decoded. `out` views a buffer of the calling thread, valid until its next call of
     // PageContent. The worst status of its streams.
     StreamStatus PageContent(int index, std::string_view& out) const;
+
+    // Shared mode, for pages read on several threads at once (roadmap D4): between BeginShared and
+    // EndShared, which the thread that owns the document calls while no other thread uses it, every
+    // const member function above may run on several threads at once. Objects already parsed are
+    // read without a lock; first parses, the report and the decode budget are serialised.
+    //
+    // What several threads read can depend on the order they read it in only through an object
+    // needed while it is being parsed (a cycle), the nesting limit of such parses, an object
+    // stream reached while it loads, or a decode budget nearly spent. EndShared reports whether one
+    // of these could have happened: when none could, every object, count and limit is what reading
+    // the same things on one thread in any order gives; when one could, it puts the document back
+    // as BeginShared found it (objects, report, budget), for the caller to read again on one thread.
+    //
+    // BeginShared is false (and changes nothing) while a StreamReader is open.
+    bool BeginShared() const;
+    // True: the work of the shared section stands. False: undone, as described above.
+    bool EndShared() const;
+    // False once the shared section is sure to be undone (workers may stop early).
+    bool SharedIntact() const;
 
 private:
     struct Impl;

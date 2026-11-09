@@ -3,6 +3,7 @@
 
 #include "layout/lines.h"
 #include "layout/markdown_writer.h"
+#include "layout/page_pool.h"
 #include "layout/reading_order.h"
 #include "layout/semantics.h"
 #include "layout/structure.h"
@@ -12,11 +13,18 @@ namespace RayoPdf::Layout {
 
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
-                  const ImageOutput* images, const Structure* structure, MathMode math) {
+                  const ImageOutput* images, const Structure* structure, MathMode math, PagePool* pool) {
     // Page-local stages first: they depend on nothing outside their page (D4: pages in parallel).
-    for (PageData& page : pages) {
-        if (math == MathMode::Latex) PrepareMathGlyphs(page);
-        BuildLines(page);
+    if (pool) {
+        pool->Run(pages.size(), [&](unsigned, size_t p) {
+            if (math == MathMode::Latex) PrepareMathGlyphs(pages[p]);
+            BuildLines(pages[p]);
+        });
+    } else {
+        for (PageData& page : pages) {
+            if (math == MathMode::Latex) PrepareMathGlyphs(page);
+            BuildLines(page);
+        }
     }
     // A structure tree that passes the checks decides blocks and order (D5, layout/structure.h).
     TaggedLayout tagged;

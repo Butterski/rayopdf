@@ -10,15 +10,19 @@
 // dictionaries; the scan runs at most once per document.
 #include "pdf/document.h"
 
+#include "common/compiler.h"
 #include "common/per_thread.h"
 #include "crypt/crypt.h"
 #include "pdf/inflate.h"
 #include "pdf/syntax.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <new>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -171,8 +175,21 @@ struct Slot {
     const PdfValue* value = nullptr;  // once Read: the parsed value, nullptr for null
     uint32_t aux = 0;
     SlotKind kind = SlotKind::None;
-    SlotState state = SlotState::Unread;
+    SlotState state = SlotState::Unread;  // through StateOf and SetState once Open is done
 };
+
+// A slot's state, read without the parse lock in shared mode: Read is stored with release once the
+// slot's value, kind and generation are final, and loaded with acquire (plain moves on x86). The
+// slot stays a trivially copyable struct (std::atomic is not; C++17 has no atomic_ref).
+SlotState StateOf(const Slot& slot) {
+    SlotState state;
+    __atomic_load(&slot.state, &state, __ATOMIC_ACQUIRE);
+    return state;
+}
+
+void SetState(Slot& slot, SlotState state) {
+    __atomic_store(&slot.state, &state, __ATOMIC_RELEASE);
+}
 
 // An `N G obj` the repair scan found, `offset` at N.
 struct ScanHit {
@@ -198,6 +215,13 @@ constexpr size_t kKeptContent = size_t(8) << 20;
 
 using Stage = Filters::Stage;
 
+// StreamData's working buffers: the decrypted data and a filter's output before it swaps into
+// place. The document's own, and each thread's own while it is shared (Impl::Scratch).
+struct StreamScratch {
+    std::string decrypted;
+    std::string filtered;
+};
+
 } // namespace
 
 struct Document::Impl {
@@ -205,6 +229,7 @@ struct Document::Impl {
 
     struct ObjectStream {
         bool ok = false;
+        bool loading = false;  // being read (an object of it needed meanwhile fails)
         size_t first = 0;
         std::string data;
         std::vector<std::pair<uint32_t, size_t>> index;  // object number, offset from /First
@@ -274,12 +299,61 @@ struct Document::Impl {
 
     uint64_t decoded = 0;
     DocumentReport report;
-    int loads = 0;
-    std::string scratch;
-    std::string scratch2;
-    std::string decrypted;
-    // Streams being read that are not counted yet (StreamReader), in the order they were opened.
-    std::vector<StreamReader*> uncounted;
+    int loads = 0;          // nested parses (the parse lock's holder's, while shared)
+    std::string decrypted;  // DecryptStrings (under the parse lock while shared)
+    StreamScratch scratch;  // StreamData's buffers, while not shared (Scratch)
+    // Streams being read that are not counted yet (StreamReader), in the order they were opened,
+    // each with the thread that opened it.
+    struct Hold {
+        StreamReader* reader;
+        std::thread::id thread;
+    };
+    std::vector<Hold> uncounted;
+
+    // ---------------------------------------------------------------- shared mode (BeginShared)
+
+    bool shared = false;
+    std::recursive_mutex parseMutex;  // while shared: first parses (Object), ResolvedPage, streamIds
+    std::mutex statsMutex;            // while shared: report, decoded, uncounted, maxHeld
+    std::atomic<bool> orderSensitive{false};
+    uint64_t maxHeld = 0;  // the largest budget hold (a decode's limit and its thread's holds) seen
+    // What the shared section changed, to undo it: slots as they were before they left Unread,
+    // object streams loaded, pages resolved; the report and the budget as it began.
+    std::vector<std::pair<uint32_t, Slot>> undoSlots;
+    std::vector<uint32_t> undoStreams;
+    std::vector<size_t> undoPages;
+    DocumentReport savedReport;
+    uint64_t savedDecoded = 0;
+
+    // One more of a report counter.
+    void Hit(uint32_t DocumentReport::*counter) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            ++(report.*counter);
+            return;
+        }
+        ++(report.*counter);
+    }
+
+    void MarkRepaired() {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            report.repaired = true;
+            return;
+        }
+        report.repaired = true;
+    }
+
+    // Something whose outcome can depend on the order objects are read in (BeginShared).
+    void OrderSensitive() { orderSensitive.store(true, std::memory_order_relaxed); }
+
+    // Slot `num` is about to leave Unread (under the parse lock).
+    void Leaving(uint32_t num) {
+        if (shared) undoSlots.emplace_back(num, slots[num]);
+    }
+
+    // StreamData's buffers: the document's, or the calling thread's while shared.
+    StreamScratch& Scratch() { return shared ? PerThread<StreamScratch>() : scratch; }
 
     // ---------------------------------------------------------------- values
 
@@ -294,7 +368,7 @@ struct Document::Impl {
         const PdfValue* current = &value;
         for (int hops = 0; current->IsRef(); hops++) {
             if (hops >= kMaxReferenceChain) {
-                report.limitHits++;
+                Hit(&DocumentReport::limitHits);
                 return Null();
             }
             const uint32_t num = current->refNum;
@@ -468,24 +542,35 @@ struct Document::Impl {
 
     ObjectStream* LoadObjectStream(uint32_t container) {
         const auto it = objectStreams.find(container);
-        if (it != objectStreams.end()) return it->second.get();
+        if (it != objectStreams.end()) {
+            if (it->second->loading) OrderSensitive();  // which of its objects fails depends on the order
+            return it->second.get();
+        }
         // The entry goes in first (not ok): a stream reached again while it loads fails.
         ObjectStream* stream = (objectStreams[container] = std::make_unique<ObjectStream>()).get();
+        if (shared) undoStreams.push_back(container);
+        stream->loading = true;
+        FillObjectStream(container, *stream);
+        stream->loading = false;
+        return stream;
+    }
+
+    void FillObjectStream(uint32_t container, ObjectStream& stream) {
         // Object streams are no compressed objects themselves (no nesting).
-        if (container >= slots.size() || slots[container].kind != SlotKind::Offset) return stream;
+        if (container >= slots.size() || slots[container].kind != SlotKind::Offset) return;
         const PdfValue& object = Object(container);
-        if (!object.IsStream()) return stream;
+        if (!object.IsStream()) return;
         const int64_t n = Get(object, "N").Int(-1);
         const int64_t first = Get(object, "First").Int(-1);
-        if (n < 0 || first < 0) return stream;
+        if (n < 0 || first < 0) return;
         std::string data;
         const StreamStatus status = StreamData(object, data, kDefaultStreamLimit);
         if (status != StreamStatus::Ok && status != StreamStatus::Salvaged && status != StreamStatus::TooLarge) {
-            return stream;
+            return;
         }
-        if (static_cast<uint64_t>(first) > data.size()) return stream;
-        stream->first = static_cast<size_t>(first);
-        Cursor c{std::string_view(data).substr(0, stream->first), 0};
+        if (static_cast<uint64_t>(first) > data.size()) return;
+        stream.first = static_cast<size_t>(first);
+        Cursor c{std::string_view(data).substr(0, stream.first), 0};
         for (int64_t k = 0; k < n; k++) {
             uint64_t num = 0;
             uint64_t offset = 0;
@@ -494,11 +579,10 @@ struct Document::Impl {
             Syntax::SkipSpace(c);
             if (!ReadUnsigned(Syntax::ReadToken(c), offset)) break;
             if (num > UINT32_MAX) break;
-            stream->index.emplace_back(static_cast<uint32_t>(num), static_cast<size_t>(offset));
+            stream.index.emplace_back(static_cast<uint32_t>(num), static_cast<size_t>(offset));
         }
-        stream->data = std::move(data);
-        stream->ok = true;
-        return stream;
+        stream.data = std::move(data);
+        stream.ok = true;
     }
 
     bool ParseCompressed(uint32_t num, uint64_t container, uint32_t index, PdfValue& out) {
@@ -513,24 +597,44 @@ struct Document::Impl {
         return true;
     }
 
-    const PdfValue& Object(uint32_t num) {
+    // Object `num`, parsed on first use (ObjectShared while shared).
+    RAYOPDF_NOINLINE const PdfValue& Object(uint32_t num) {
         if (num == 0 || num >= slots.size()) return Null();
+        if (RAYOPDF_UNLIKELY(shared)) return ObjectShared(num);
+        return Load(num);
+    }
+
+    // Object while shared: without a lock once Read; a first parse under the parse lock, so that
+    // only its holder parses and Reading is always a slot on its own stack.
+    RAYOPDF_NOINLINE const PdfValue& ObjectShared(uint32_t num) {
+        const Slot& seen = slots[num];
+        if (StateOf(seen) == SlotState::Read) return seen.value ? *seen.value : Null();
+        std::lock_guard<std::recursive_mutex> lock(parseMutex);
+        return Load(num);
+    }
+
+    RAYOPDF_HOT_INLINE const PdfValue& Load(uint32_t num) {
         {
             Slot& slot = slots[num];
-            if (slot.state == SlotState::Read) return slot.value ? *slot.value : Null();
-            if (slot.state == SlotState::Reading) {
-                report.limitHits++;  // a cycle: an object needed to parse itself
+            const SlotState state = slot.state;
+            if (state == SlotState::Read) return slot.value ? *slot.value : Null();
+            if (state == SlotState::Reading) {
+                Hit(&DocumentReport::limitHits);  // a cycle: an object needed to parse itself
+                OrderSensitive();                 // what each object of the cycle gets depends on where it was entered
                 return Null();
             }
             if (slot.kind == SlotKind::None || slot.kind == SlotKind::Free) {
-                slot.state = SlotState::Read;
+                Leaving(num);
+                SetState(slot, SlotState::Read);
                 return Null();
             }
             if (loads >= kMaxNestedLoads) {
-                report.limitHits++;
+                Hit(&DocumentReport::limitHits);
+                OrderSensitive();  // how deep a parse nests depends on what was parsed before
                 return Null();
             }
-            slot.state = SlotState::Reading;
+            Leaving(num);
+            SetState(slot, SlotState::Reading);
         }
         loads++;
         // Slots are read by index from here: nothing below resizes them, but references are kept
@@ -556,10 +660,10 @@ struct Document::Impl {
                     slot.kind = SlotKind::Offset;
                     slot.pos = scan[num].offset;
                     slot.aux = gotGen;
-                    report.repaired = true;
+                    MarkRepaired();
                 }
             }
-            if (!ok) report.brokenObjects++;
+            if (!ok) Hit(&DocumentReport::brokenObjects);
         }
         loads--;
         const PdfValue* stored = nullptr;
@@ -569,7 +673,7 @@ struct Document::Impl {
         }
         Slot& slot = slots[num];
         slot.value = stored;
-        slot.state = SlotState::Read;
+        SetState(slot, SlotState::Read);
         return stored ? *stored : Null();
     }
 
@@ -627,6 +731,7 @@ struct Document::Impl {
 
     // Decodes `raw` (already decrypted) with `stages` into `out`.
     StreamStatus RunStages(std::string_view raw, const Stage* stages, size_t count, std::string& out, size_t limit) {
+        std::string& scratch2 = Scratch().filtered;
         std::string_view data = raw;
         StreamStatus status = StreamStatus::Ok;
         bool decodedAny = false;
@@ -689,14 +794,14 @@ struct Document::Impl {
         const PdfValue& stream = Resolve(value);
         if (!stream.IsStream()) return StreamStatus::NotStream;
         if (stream.streamOffset > bytes.size() || stream.streamLength > bytes.size() - stream.streamOffset) {
-            report.failedStreams++;
+            Hit(&DocumentReport::failedStreams);
             return StreamStatus::Corrupt;
         }
         // Everything that resolves references first: resolving may load an object stream, which
         // decodes through here and uses the scratch buffers.
         std::string_view cryptName;
         if (!GatherStages(stream, true, stages, count, cryptName)) {
-            report.limitHits++;
+            Hit(&DocumentReport::limitHits);
             return StreamStatus::Unsupported;
         }
         bool decrypt = false;
@@ -704,28 +809,31 @@ struct Document::Impl {
         Crypt::CryptFilter explicitFilter;
         bool useExplicit = false;
         if (encrypted) {
-            const auto it = streamIds.find(stream.streamOffset);
+            bool known = false;
+            if (RAYOPDF_UNLIKELY(shared)) {
+                std::lock_guard<std::recursive_mutex> lock(parseMutex);  // parses add to streamIds
+                const auto it = streamIds.find(stream.streamOffset);
+                known = it != streamIds.end();
+                if (known) id = it->second;
+            } else {
+                const auto it = streamIds.find(stream.streamOffset);
+                known = it != streamIds.end();
+                if (known) id = it->second;
+            }
             const PdfValue& type = Get(stream, "Type");
-            decrypt = it != streamIds.end() && !type.IsName("XRef") &&
-                      !(type.IsName("Metadata") && !security.EncryptMetadata());
-            if (it != streamIds.end()) id = it->second;
+            decrypt = known && !type.IsName("XRef") && !(type.IsName("Metadata") && !security.EncryptMetadata());
             if (decrypt && count > 0 && stages[0].kind == Filters::Kind::Crypt) {
                 if (cryptName.empty() || cryptName == "Identity") {
                     decrypt = false;
                 } else if (CryptFilterFor(cryptName, explicitFilter)) {
                     useExplicit = true;
                 } else {
-                    report.failedStreams++;
+                    Hit(&DocumentReport::failedStreams);
                     return StreamStatus::Unsupported;
                 }
             }
         }
-        CountUncounted(limit);
-        if (decoded >= kDocumentDecodeBudget) {
-            report.limitHits++;
-            return StreamStatus::TooLarge;
-        }
-        limit = static_cast<size_t>(std::min<uint64_t>(limit, kDocumentDecodeBudget - decoded));
+        if (!Budget(limit)) return StreamStatus::TooLarge;
         raw = bytes.substr(stream.streamOffset, stream.streamLength);
         start = StreamStatus::Ok;
         if (decrypt) {
@@ -741,10 +849,80 @@ struct Document::Impl {
 
     // A decoded stream in the budget and the report.
     void Count(StreamStatus status, uint64_t size) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            Counted(status, size);
+            return;
+        }
+        Counted(status, size);
+    }
+
+    void Counted(StreamStatus status, uint64_t size) {
         decoded += size;
         if (status == StreamStatus::Salvaged) report.salvagedStreams++;
         else if (status == StreamStatus::Corrupt) report.failedStreams++;
         else if (status == StreamStatus::TooLarge) report.limitHits++;
+    }
+
+    // A StreamReader opened: held back until it is counted.
+    void HoldBack(StreamReader* reader) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            uncounted.push_back({reader, std::this_thread::get_id()});
+            return;
+        }
+        uncounted.push_back({reader, std::thread::id()});
+    }
+
+    // A StreamReader counted: no longer held back.
+    void Uncount(StreamReader* reader, StreamStatus status, uint64_t size) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            Release(reader);
+            Counted(status, size);
+            return;
+        }
+        Release(reader);
+        Counted(status, size);
+    }
+
+    void Release(StreamReader* reader) {
+        uncounted.erase(std::remove_if(uncounted.begin(), uncounted.end(),
+                                       [reader](const Hold& hold) { return hold.reader == reader; }),
+                        uncounted.end());
+    }
+
+    // The decode budget before a decode of at most `limit` bytes: false (counted) once it is spent,
+    // else true with `limit` cut to what it leaves, after CountUncounted.
+    //
+    // While shared, a thread never counts another thread's streams. A check that could cut, refuse
+    // or count held-back streams (the budget left not above this decode's limit and the holds of
+    // its thread) marks the section order-sensitive; and since a one-thread reading has decoded at
+    // most the shared section's total before any of its checks, with the same limits and holds,
+    // EndShared needs only the largest hold to prove that none of its checks could have.
+    bool Budget(size_t& limit) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::mutex> lock(statsMutex);
+            uint64_t held = std::min<uint64_t>(limit, kDocumentDecodeBudget);
+            const std::thread::id self = std::this_thread::get_id();
+            for (const Hold& hold : uncounted) {
+                if (hold.thread == self) held += hold.reader->limit_;
+            }
+            if (held > maxHeld) maxHeld = held;
+            if (decoded >= kDocumentDecodeBudget || kDocumentDecodeBudget - decoded <= held) OrderSensitive();
+            return BudgetLeft(limit);
+        }
+        CountUncounted(limit);
+        return BudgetLeft(limit);
+    }
+
+    bool BudgetLeft(size_t& limit) {
+        if (decoded >= kDocumentDecodeBudget) {
+            report.limitHits++;
+            return false;
+        }
+        limit = static_cast<size_t>(std::min<uint64_t>(limit, kDocumentDecodeBudget - decoded));
+        return true;
     }
 
     // Before a decode of at most `limit` bytes: when the streams being read but not counted yet
@@ -754,11 +932,12 @@ struct Document::Impl {
     void CountUncounted(size_t limit) {
         if (uncounted.empty()) return;
         uint64_t held = std::min<uint64_t>(limit, kDocumentDecodeBudget);
-        for (const StreamReader* reader : uncounted) held += reader->limit_;
+        for (const Hold& hold : uncounted) held += hold.reader->limit_;
         if (decoded < kDocumentDecodeBudget && kDocumentDecodeBudget - decoded > held) return;
-        std::vector<StreamReader*> readers;
+        std::vector<Hold> readers;
         readers.swap(uncounted);
-        for (StreamReader* reader : readers) {
+        for (const Hold& hold : readers) {
+            StreamReader* reader = hold.reader;
             Filters::Chain chain;
             chain.Start(reader->stages_.data(), reader->stages_.size(), reader->raw_, reader->limit_);
             std::string_view piece;
@@ -773,7 +952,7 @@ struct Document::Impl {
         size_t count = 0;
         std::string_view raw;
         StreamStatus start = StreamStatus::Ok;
-        const StreamStatus prepared = Prepare(value, limit, stages, count, scratch, raw, start);
+        const StreamStatus prepared = Prepare(value, limit, stages, count, Scratch().decrypted, raw, start);
         if (prepared != StreamStatus::Ok) return prepared;
         const StreamStatus status = Worse(start, RunStages(raw, stages, count, out, limit));
         Count(status, out.size());
@@ -790,7 +969,7 @@ struct Document::Impl {
         size_t count = 0;
         std::string_view raw;
         StreamStatus start = StreamStatus::Ok;
-        const StreamStatus prepared = Prepare(value, limit, stages, count, scratch, raw, start);
+        const StreamStatus prepared = Prepare(value, limit, stages, count, Scratch().decrypted, raw, start);
         if (prepared != StreamStatus::Ok) return prepared;
         // The filters RunStages runs (it skips Crypt).
         const Stage* last = nullptr;
@@ -1331,8 +1510,16 @@ struct Document::Impl {
         pages.push_back(page);
     }
 
-    // Page `index` (in range) with its attributes resolved.
+    // Page `index` (in range) with its attributes resolved (under the parse lock while shared).
     const Page& ResolvedPage(size_t index) {
+        if (RAYOPDF_UNLIKELY(shared)) {
+            std::lock_guard<std::recursive_mutex> lock(parseMutex);
+            return ResolvePage(index);
+        }
+        return ResolvePage(index);
+    }
+
+    const Page& ResolvePage(size_t index) {
         if (pages[index].resolved) return pages[index];
         // Resolving parses objects but never adds pages: `pages` stays put.
         const Inherited inherited = pages[index].inherited;
@@ -1358,6 +1545,7 @@ struct Document::Impl {
         page.cropBox = cropBox;
         page.rotate = rotate;
         page.resolved = true;
+        if (shared) undoPages.push_back(index);
         return page;
     }
 
@@ -1574,7 +1762,7 @@ StreamStatus Document::StreamReader::Open(const Document& document, const PdfVal
     limit_ = limit;
     chain_.Start(stages_.data(), stages_.size(), raw_, limit_);
     reading_ = true;
-    impl_->uncounted.push_back(this);
+    impl_->HoldBack(this);
     return StreamStatus::Ok;
 }
 
@@ -1598,9 +1786,7 @@ StreamStatus Document::StreamReader::Finish() {
 
 void Document::StreamReader::Count(StreamStatus status, uint64_t size) {
     counted_ = true;
-    std::vector<StreamReader*>& uncounted = impl_->uncounted;
-    uncounted.erase(std::remove(uncounted.begin(), uncounted.end(), this), uncounted.end());
-    impl_->Count(status, size);
+    impl_->Uncount(this, status, size);
 }
 
 int Document::PageCount() const { return static_cast<int>(impl_->pages.size()); }
@@ -1648,7 +1834,7 @@ StreamStatus Document::PageContent(int index, std::string_view& out) const {
         for (const PdfValue& item : contents.Array()) {
             if (size >= kDefaultStreamLimit) {
                 status = Worse(status, StreamStatus::TooLarge);
-                d.report.limitHits++;
+                d.Hit(&DocumentReport::limitHits);
                 break;
             }
             // A newline before every piece but the first, whatever the piece holds.
@@ -1664,6 +1850,42 @@ StreamStatus Document::PageContent(int index, std::string_view& out) const {
     }
     if (size > 0) out = std::string_view(reinterpret_cast<const char*>(buffer.bytes.Data()), size);
     return status;
+}
+
+bool Document::BeginShared() const {
+    Impl& d = *impl_;
+    if (!d.uncounted.empty()) return false;
+    d.shared = true;
+    d.orderSensitive.store(false, std::memory_order_relaxed);
+    d.maxHeld = 0;
+    d.savedReport = d.report;
+    d.savedDecoded = d.decoded;
+    return true;
+}
+
+bool Document::EndShared() const {
+    Impl& d = *impl_;
+    d.shared = false;
+    PerThread<StreamScratch>() = StreamScratch();  // this thread's buffers go with the section, as the document's would
+    // `decoded` + `maxHeld` below the budget: no check of a one-thread reading could have cut,
+    // refused or counted held-back streams (Impl::Budget).
+    const bool keep = !d.orderSensitive.load(std::memory_order_relaxed) && d.decoded < kDocumentDecodeBudget &&
+                      d.maxHeld < kDocumentDecodeBudget - d.decoded;
+    if (!keep) {
+        for (auto it = d.undoSlots.rbegin(); it != d.undoSlots.rend(); ++it) d.slots[it->first] = it->second;
+        for (const uint32_t container : d.undoStreams) d.objectStreams.erase(container);
+        for (const size_t index : d.undoPages) d.pages[index].resolved = false;
+        d.report = d.savedReport;
+        d.decoded = d.savedDecoded;
+    }
+    d.undoSlots.clear();
+    d.undoStreams.clear();
+    d.undoPages.clear();
+    return keep;
+}
+
+bool Document::SharedIntact() const {
+    return !impl_->orderSensitive.load(std::memory_order_relaxed);
 }
 
 } // namespace RayoPdf

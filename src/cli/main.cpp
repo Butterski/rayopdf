@@ -3,12 +3,12 @@
 //
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
-//                                   [--ocr-addon=PATH] [--report]
+//                                   [--ocr-addon=PATH] [--report] [--workers=N]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --inspect IN.pdf [--password=PW]
-//   rayopdf --bench IN.pdf TMPDIR N [--images=none] [--no-structure] ...   (developer option)
+//   rayopdf --bench IN.pdf TMPDIR N [--images=none] [--no-structure] [--workers=N] ...   (developer option)
 //   rayopdf --version | --help
 //
 // OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
@@ -16,7 +16,9 @@
 // 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
 // 13 unsupported encryption. A batch exits with the code of its last failed document in input
 // order. The batch modes' records and files never depend on the number of workers: documents are
-// converted independently and records are written in input order. Each worker keeps its own OCR
+// converted independently and records are written in input order. --convert (and --bench with
+// --workers) reads the pages of a document of several pages on several threads instead, with the
+// same output (layout/convert.h). Each worker keeps its own OCR
 // add-on process (started when a document first needs it), and the add-on answers the same
 // request the same way, so OCR does not change that.
 
@@ -114,14 +116,16 @@ void PrintUsage(std::FILE* out) {
         "  --ocr-addon=PATH   the OCR add-on to run (default: $RAYOPDF_OCR, then rayopdf-ocr\n"
         "                     beside rayopdf, then on PATH)\n"
         "  --report           print one JSON record of the document (its counters)\n"
+        "  --workers=N        1 to 64; never changes the output. --convert: pages of a document\n"
+        "                     read at once (default: one a CPU, at most 4); --bench: the same\n"
+        "                     (default 1); --batch and --serve: documents converted at once\n"
+        "                     (default: --batch one a CPU, at most 6; --serve 1)\n"
         "\n"
         "Batch options:\n"
         "  --recursive        subfolders too (not hidden ones), mirrored under OUT-FOLDER\n"
         "  --skip-unchanged   keep Markdown files at least as new as their PDF\n"
         "  --report[=FILE]    one JSON record a document, in input order (standard output\n"
         "                     without FILE)\n"
-        "  --workers=N        documents converted at once, 1 to 64 (default: one a CPU, at most\n"
-        "                     6; --serve: 1); never changes the output\n"
         "\n"
         "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
         "(\"output\" left out: the answer carries the Markdown) and answers each with its record,\n"
@@ -983,9 +987,10 @@ int main(int argc, char** argv) {
     if (mode != Mode::Batch && (batch.recursive || batch.skipUnchanged || batch.reportPath != "-")) {
         return Usage("--recursive, --skip-unchanged and --report=FILE apply to --batch");
     }
-    if (mode != Mode::Batch && mode != Mode::Serve && batch.workersGiven) {
-        return Usage("--workers applies to --batch and --serve");
-    }
+    if (mode == Mode::Inspect && batch.workersGiven) return Usage("--workers does not apply to --inspect");
+    // --convert: the pages of a document at once; --bench too when asked (layout/convert.h).
+    if (mode == Mode::Convert) document.convert.pageWorkers = batch.workersGiven ? batch.workers : 0;
+    if (mode == Mode::Bench && batch.workersGiven) document.convert.pageWorkers = batch.workers;
     if ((mode == Mode::Batch || mode == Mode::Serve) && document.imagesGiven && document.images != "none") {
         return Usage("--images=DIR applies to one document: --batch and --serve take --images=none");
     }

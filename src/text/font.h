@@ -11,9 +11,11 @@
 #include "pdf/document.h"
 #include "raster/path.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -139,11 +141,20 @@ private:
 // The fonts of one document, each loaded once: keyed by the object number of the font
 // dictionary (or the address of a direct dictionary). Get never fails: a font that cannot be read
 // becomes a fallback that reads single bytes as WinAnsi with a width of 0.5. A font may read its
-// embedded program on first need inside Next or SpaceWidth (the Document too), so a cache and its
-// fonts belong to one thread at a time, as the Document does.
+// embedded program on first need inside Next or SpaceWidth (the Document too), once, whatever the
+// thread.
+//
+// A cache belongs to one thread at a time, as the Document does, except when it is shared: while
+// caches made with FontCache(FontCache&) live (the Document in shared mode, layout/convert.cpp),
+// the shared cache and each of them may be used by a thread of its own at the same time, and every
+// font is loaded once, by the first thread that needs it, for all of them.
 class FontCache {
 public:
     explicit FontCache(const Document& document);
+    // A cache for one more thread that loads and shares the fonts of `shared`, which outlives it, has
+    // given no font yet (or was cleared), and is not used by another thread while this cache is made
+    // or destroyed.
+    explicit FontCache(FontCache& shared);
     ~FontCache();
     FontCache(const FontCache&) = delete;
     FontCache& operator=(const FontCache&) = delete;
@@ -152,10 +163,29 @@ public:
     const Font& Get(const PdfValue& fontEntry);
     // Fonts loaded so far.
     size_t Count() const;
+    // Forgets every font (no cache shares this one; fonts it gave are gone).
+    void Clear();
 
 private:
+    struct Entry {
+        std::unique_ptr<Font> font;      // once loaded
+        std::atomic<bool> ready{false};  // `font` is set (stored with release)
+        std::mutex loading;              // held while the font loads, while shared
+    };
+
+    // A new font of `dict` (`fontEntry` resolved), for a cache whose fonts are `shared` or not.
+    std::unique_ptr<Font> Load(const PdfValue& dict, bool shared) const;
+    // Get while shared.
+    const Font& GetShared(const PdfValue& fontEntry);
+
     const Document& document_;
-    std::unordered_map<uintptr_t, std::unique_ptr<Font>> fonts_;
+    FontCache* owner_;  // the cache that holds the fonts: this one, or the one shared
+    // The owner's: the fonts, the lock of `fonts_` while shared, and the caches sharing it.
+    std::unordered_map<uintptr_t, Entry> fonts_;
+    std::mutex mutex_;
+    unsigned sharers_ = 0;
+    // While shared: the fonts this cache's thread has had (looked up without the lock).
+    std::unordered_map<uintptr_t, const Font*> seen_;
 };
 
 // The glyph outlines of one font, for glyph-shape recovery (layout/ocr_glyphs.h): the embedded

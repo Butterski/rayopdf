@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Black-box checks of a built rayopdf binary: arguments, exit codes, output files, --inspect,
---report, encrypted input, --batch (records, exit codes, subfolders, skipping, the same files and
-records with 1 and 4 workers) and --serve --json (several requests, malformed ones among them,
-answers in request order with 1 and 4 workers). It builds the PDFs it needs in a temporary
-directory (none are committed) and never times anything.
+--report, encrypted input, --convert with several page workers (the same Markdown and record as
+one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
+workers) and --serve --json (several requests, malformed ones among them, answers in request order
+with 1 and 4 workers). It builds the PDFs it needs in a temporary directory (none are committed)
+and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -284,6 +285,56 @@ def check_serve(c: Checker, work: Path, hello: str, locked: str, picture: str) -
     c.check("serve of an empty input", r.returncode == 0 and len(records(r.stdout)) == 1)
 
 
+def build_pages_pdf(contents: list[bytes]) -> bytes:
+    """A PDF of one page per item of `contents`, every page showing its content in one shared
+    Helvetica."""
+    count = len(contents)
+    font = 3 + 2 * count
+    kids = b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(count))
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % count]
+    for i, content in enumerate(contents):
+        data = zlib.compress(content)
+        objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >>"
+                       b" /Contents %d 0 R >>" % (font, 4 + 2 * i))
+        objects.append(b"<< /Length %d /Filter /FlateDecode >>\nstream\n" % len(data) + data + b"\nendstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offsets = []
+    for i, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    return bytes(out)
+
+
+def check_page_workers(c: Checker, work: Path) -> None:
+    """--convert reads the pages of a document on several threads: the same Markdown and record for
+    every --workers, and by default."""
+    contents = []
+    for page in range(7):
+        lines = b" ".join(b"0 -14 Td (Line %d of page %d) Tj" % (n, page + 1) for n in range(3 + 5 * (page % 3)))
+        contents.append(b"BT /F1 16 Tf 72 740 Td (Page %d heading) Tj ET BT /F1 11 Tf 72 700 Td " % (page + 1) +
+                        lines + b" ET")
+    pages = c.write("pages.pdf", build_pages_pdf(contents))
+    results = {}
+    for workers in ("1", "2", "4", "8", None):
+        out = work / f"pages-{workers or 'default'}.md"
+        r = c.run("--convert", pages, str(out), "--report", *([f"--workers={workers}"] if workers else []))
+        results[workers] = (r.returncode, out.read_bytes() if out.is_file() else b"",
+                            without_timing(records(r.stdout), (str(out), "OUT")))
+    c.check("convert: 1 worker", results["1"][0] == 0 and b"Line 12 of page 6" in results["1"][1] and
+            results["1"][2][0].get("pages") == 7, repr(results["1"][2]))
+    for workers in ("2", "4", "8", None):
+        c.check(f"convert: {workers or 'default'} workers as 1", results[workers] == results["1"],
+                repr(results[workers][2]))
+    r = c.run("--bench", pages, str(work / "pages-bench"), "2", "--workers=4")
+    c.check("bench with workers", r.returncode == 0 and b"pages=7" in r.stdout, repr(r.stdout))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -356,7 +407,9 @@ def main() -> int:
             report = {}
         c.check("report of a failure", r.returncode == 3 and report.get("status") == "error" and
                 report.get("code") == 3 and "missing.pdf" in report.get("error", ""), repr(r.stdout))
-        c.check("workers without a batch", c.run("--convert", hello, out, "--workers=2").returncode == 2)
+        c.check("workers with inspect", c.run("--inspect", hello, "--workers=2").returncode == 2)
+        c.check("convert with 0 workers", c.run("--convert", hello, out, "--workers=0").returncode == 2)
+        check_page_workers(c, work)
         c.check("recursive without a batch", c.run("--convert", hello, out, "--recursive").returncode == 2)
         c.check("report file without a batch", c.run("--convert", hello, out, "--report=x.jsonl").returncode == 2)
         c.check("json without serve", c.run("--convert", hello, out, "--json").returncode == 2)

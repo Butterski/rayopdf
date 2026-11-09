@@ -408,12 +408,21 @@ struct Font::Impl {
     std::string_view SlotText(const Slot& slot) const {
         return std::string_view((slot.state == SlotState::LatePool ? latePool : pool).data() + slot.offset, slot.length);
     }
-    // Reads what a pending font waits for; a Font is used by one thread, so a const reader may
-    // complete it (the Impl itself is never const).
+    // Reads what a pending font waits for (Complete, once, whatever the thread): `pending` holds
+    // until it has run (stored with release, after everything Complete writes), `completing`
+    // serialises it. Only Complete writes the font after FontCache::Get; whatever it writes is read
+    // after CompleteIfPending or a `pending` test.
     void Complete();
+    void CompleteOnce();
     void CompleteIfPending() const {
-        if (RAYOPDF_UNLIKELY(pendingSimple || pendingType0)) const_cast<Impl*>(this)->Complete();
+        if (RAYOPDF_UNLIKELY(pending.load(std::memory_order_acquire))) const_cast<Impl*>(this)->CompleteOnce();
     }
+    std::atomic<bool> pending{false};
+    std::mutex completing;
+    // A simple font pending when a shared cache loaded it: its slots as loaded, which Font::Next
+    // reads instead of `slots` (Complete writes those while other threads read). Its Pending codes
+    // stay Pending here and take NextSlow.
+    std::unique_ptr<Slot[]> frozen;
 };
 
 namespace {
@@ -479,7 +488,11 @@ bool Font::Impl::CidOf(uint32_t code, uint8_t length, uint32_t& cid) const {
 bool Font::Impl::NextSimple(std::string_view bytes, size_t& at, Code& out) const {
     if (at >= bytes.size()) return false;
     const uint8_t c = static_cast<uint8_t>(bytes[at++]);
-    if (RAYOPDF_UNLIKELY(slots[c].state == SlotState::Pending)) const_cast<Impl*>(this)->Complete();
+    // A code is pending as the font was loaded (`frozen`, or `slots` until Complete changes them).
+    if (RAYOPDF_UNLIKELY(pending.load(std::memory_order_acquire)) &&
+        (frozen ? frozen[c] : slots[c]).state == SlotState::Pending) {
+        const_cast<Impl*>(this)->CompleteOnce();
+    }
     const Slot& slot = slots[c];
     out.code = c;
     out.bytes = 1;
@@ -535,7 +548,7 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
         }
     }
     // The program's glyph texts come after the ToUnicode and the collection: read now if pending.
-    if (known && RAYOPDF_UNLIKELY(pendingType0 != nullptr)) const_cast<Impl*>(this)->Complete();
+    if (known && RAYOPDF_UNLIKELY(pending.load(std::memory_order_acquire))) const_cast<Impl*>(this)->CompleteOnce();
     if (known && !glyphText.empty()) {
         const uint32_t glyph = cidToGid.empty() ? cid : (cid < cidToGid.size() ? cidToGid[cid] : 0);
         if (glyph < glyphText.size() && glyphText[glyph].length > 0) {
@@ -594,8 +607,9 @@ double Font::SpaceWidth() const {
     impl_->CompleteIfPending();
     return impl_->spaceWidth;
 }
-// A pending font has a trusted ToUnicode, so it is never unmappable: nothing to complete.
-bool Font::Unmappable() const { return impl_->unmappable; }
+// A pending font has a trusted ToUnicode, so it is never unmappable: nothing to complete (and
+// nothing to read while Complete may write it).
+bool Font::Unmappable() const { return !impl_->pending.load(std::memory_order_acquire) && impl_->unmappable; }
 
 const PdfValue& Font::Dictionary() const {
     static const PdfValue kNull{};
@@ -1875,23 +1889,77 @@ void Font::Impl::Complete() {
     }
 }
 
+void Font::Impl::CompleteOnce() {
+    std::lock_guard<std::mutex> lock(completing);
+    if (!pending.load(std::memory_order_relaxed)) return;  // another thread completed it meanwhile
+    Complete();
+    pending.store(false, std::memory_order_release);
+}
+
 Font::Font(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Font::~Font() = default;
 
-FontCache::FontCache(const Document& document) : document_(document) {}
-FontCache::~FontCache() = default;
+namespace {
+
+// The cache key of a font entry, `dict` being it resolved: referenced fonts by object number (odd
+// keys), direct ones by their entries' address (arena storage is 8-byte aligned: even keys).
+uintptr_t FontKey(const PdfValue& fontEntry, const PdfValue& dict) {
+    if (!dict.IsDict()) return 0;
+    return fontEntry.IsRef() ? (static_cast<uintptr_t>(fontEntry.refNum) << 1 | 1)
+                             : reinterpret_cast<uintptr_t>(dict.data);
+}
+
+} // namespace
+
+FontCache::FontCache(const Document& document) : document_(document), owner_(this) {}
+
+FontCache::FontCache(FontCache& shared) : document_(shared.document_), owner_(&shared) {
+    shared.sharers_++;
+}
+
+FontCache::~FontCache() {
+    if (owner_ != this) owner_->sharers_--;
+}
 
 const Font& FontCache::Get(const PdfValue& fontEntry) {
+    if (owner_->sharers_ != 0) return GetShared(fontEntry);
     const PdfValue& dict = document_.Resolve(fontEntry);
-    uintptr_t key = 0;
-    if (dict.IsDict()) {
-        // Referenced fonts by object number (odd keys), direct ones by their entries' address
-        // (arena storage is 8-byte aligned: even keys).
-        key = fontEntry.IsRef() ? (static_cast<uintptr_t>(fontEntry.refNum) << 1 | 1)
-                                : reinterpret_cast<uintptr_t>(dict.data);
-    }
+    const uintptr_t key = FontKey(fontEntry, dict);
     auto found = fonts_.find(key);
-    if (found != fonts_.end()) return *found->second;
+    if (found != fonts_.end()) return *found->second.font;
+    std::unique_ptr<Font> font = Load(dict, false);
+    const Font& result = *font;
+    Entry& entry = fonts_[key];
+    entry.font = std::move(font);
+    entry.ready.store(true, std::memory_order_relaxed);
+    return result;
+}
+
+const Font& FontCache::GetShared(const PdfValue& fontEntry) {
+    const PdfValue& dict = document_.Resolve(fontEntry);
+    const uintptr_t key = FontKey(fontEntry, dict);
+    const auto seen = seen_.find(key);
+    if (seen != seen_.end()) return *seen->second;
+    FontCache& owner = *owner_;
+    Entry* entry = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(owner.mutex_);
+        entry = &owner.fonts_[key];  // a node of its own: the address stays
+    }
+    if (!entry->ready.load(std::memory_order_acquire)) {
+        // The first thread loads it; the others wait here for it.
+        std::lock_guard<std::mutex> lock(entry->loading);
+        if (!entry->ready.load(std::memory_order_relaxed)) {
+            entry->font = Load(dict, true);
+            entry->ready.store(true, std::memory_order_release);
+        }
+    }
+    const Font& font = *entry->font;
+    seen_.emplace(key, &font);
+    return font;
+}
+
+std::unique_ptr<Font> FontCache::Load(const PdfValue& dict, bool shared) const {
     std::unique_ptr<Font::Impl> impl(new Font::Impl());
     impl->dict = &dict;
     const FontKind kind = dict.IsDict() ? KindOf(document_.Get(dict, "Subtype").Name()) : FontKind::Unknown;
@@ -1912,19 +1980,30 @@ const Font& FontCache::Get(const PdfValue& fontEntry) {
         LoadSimple(document_, dict, kind, *impl);
         break;
     }
+    impl->pending.store(impl->pendingSimple || impl->pendingType0, std::memory_order_relaxed);
     std::unique_ptr<Font> font(new Font(std::move(impl)));
     // A simple font's slots for the inline Next: its pool is final (Complete writes latePool).
-    if (font->impl_->kind != FontKind::Type0) {
-        font->simple_ = font->impl_->slots;
-        font->simplePool_ = font->impl_->pool.data();
+    Font::Impl& loaded = *font->impl_;
+    if (loaded.kind != FontKind::Type0) {
+        const Slot* slots = loaded.slots;
+        if (shared && loaded.pendingSimple) {
+            loaded.frozen.reset(new Slot[256]);
+            std::copy(loaded.slots, loaded.slots + 256, loaded.frozen.get());
+            slots = loaded.frozen.get();
+        }
+        font->simple_ = slots;
+        font->simplePool_ = loaded.pool.data();
     }
-    const Font& result = *font;
-    fonts_.emplace(key, std::move(font));
-    return result;
+    return font;
 }
 
 size_t FontCache::Count() const {
-    return fonts_.size();
+    return owner_->fonts_.size();
+}
+
+void FontCache::Clear() {
+    fonts_.clear();
+    seen_.clear();
 }
 
 // ---- FontGlyphs -------------------------------------------------------------------------------

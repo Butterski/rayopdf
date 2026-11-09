@@ -15,6 +15,10 @@
 
 namespace RayoPdf::Layout {
 
+// ConvertOptions::pageWorkers 0: at most this many threads (the serial stages of a conversion
+// leave little to gain from more).
+constexpr unsigned kDefaultPageWorkers = 4;
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -30,6 +34,11 @@ struct ConvertOptions {
     OcrOptions ocr;
     // Formulas as Unicode (D6, the default) or as LaTeX between $ and $$ (layout/math.h).
     MathMode math = MathMode::Unicode;
+    // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
+    // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
+    // may run on, at most kDefaultPageWorkers. The output is the same for every count; 1 (and any
+    // document of one page) runs everything on the calling thread.
+    unsigned pageWorkers = 1;
 };
 
 // What became of the document's structure tree (tagged PDF, roadmap D5; layout/structure.h).
