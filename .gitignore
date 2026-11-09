@@ -4,3 +4,15 @@ __pycache__/
 *.pyc
 *.pdf
 *.log
+/rayopdf
+*.exe
+*.o
+*.a
+compile_commands.json
+CMakeFiles/
+.vscode/
+.vs/
+.cache/
+*.tmp
+.DS_Store
+Thumbs.db

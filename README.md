@@ -17,11 +17,12 @@ The [roadmap](docs/development/roadmap.md) lists what comes next.
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
                                 [--ocr=auto|off|force] [--ocr-addon=PATH]
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
-                                [--math=unicode|latex]
+                                [--math=unicode|latex] [--workers=N]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
-rayopdf --inspect IN.pdf          # the document's structure as one JSON object
+rayopdf --inspect IN.pdf [--password=PW]   # the document's structure as one JSON object
+rayopdf --version | --help
 ```
 
 `OUT.md` `-` writes to standard output. Images go to `OUT-images/` beside `OUT.md` (PNG, or the
@@ -40,6 +41,9 @@ written `\$` where it could open a formula (`$8,000` stays as it is).
 or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,
 then the counters behind the uncertainty comments (glyphs without Unicode, pages without text,
 repairs, limits reached, `exact`, ...).
+
+`--workers=N` (1 to 64) never changes the output. With `--convert` it is the number of pages of
+the document read at once (by default one a CPU, at most 4).
 
 ### Exact recovery of RayoMD PDFs
 
@@ -96,7 +100,8 @@ line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
 Markdown as `markdown` and no images are written) and `args` (flags of `--convert`:
-`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, `--math`, over those
+`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, `--math`,
+`--ocr`, `--ocr-addon`, over those
 the session started with). A malformed request gets an error record (code 2) and the session goes
 on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
 converted N at a time, and the answers still come in request order.
@@ -134,45 +139,17 @@ linked into `rayopdf`. The release archives `rayopdf-VERSION-linux-x64-static.ta
 VERSION and `third_party/licenses/`; `rayopdf-ocr-VERSION-…` hold the add-on and its models and
 unpack into the same folder. `tools/package.py` makes them byte for byte reproducible.
 
-## Documents
+## Documentation
 
-- [Landscape](docs/research/landscape.md): existing converters, benchmarks, metrics and corpora.
-- [Algorithms](docs/research/algorithms.md): PDF structure, content streams, fonts and Unicode,
-  layout, Markdown semantics and speed engineering for a native converter.
-- [OCR and ML](docs/research/ocr-ml.md): when OCR is unavoidable, usable engines and runtimes, and
-  the decision gate.
-- [Evaluation contract](docs/development/evaluation.md): suites, metrics, competitors, speed and
-  census method.
-- [Baselines](docs/benchmarks/baselines-2026-11-05.md): the first full harness run.
-- [RayoPDF 0.0.1 on the harness](docs/benchmarks/v0-2026-11-05.md): the first converter against
-  the baselines.
-- [RayoPDF 0.0.2 on the harness](docs/benchmarks/v0.0.2-2026-11-06.md): tables, images,
-  footnotes, right-to-left and CJK text.
-- [RayoPDF 0.0.3 on the harness](docs/benchmarks/v0.0.3-2026-11-06.md): odl headings and tables,
-  code listings, the 24-hour fuzz campaign.
-- [RayoPDF 0.0.4 on the harness](docs/benchmarks/v0.0.4-2026-11-06.md): page furniture,
-  reading order, run-in headings, tables; every odl metric at or above the best text-layer tool.
-- [RayoPDF 0.0.5 on the harness](docs/benchmarks/v0.0.5-2026-11-06.md): borderless tables,
-  every Adobe CJK CMap, the full Unicode bidi algorithm.
-- [RayoPDF 0.0.6 on the harness](docs/benchmarks/v0.0.6-2026-11-06.md): table detection; every
-  olmOCR born-digital category except `arxiv_math` at or above the best text-layer tool.
-- [RayoPDF 0.0.7 on the harness](docs/benchmarks/v0.0.7-2026-11-07.md): tagged PDF, batch and
-  serve front ends, Windows build, ToUnicode repair, JPEG decoding, the OCR/ML gate.
-- [OCR/ML decision](docs/development/ocr_ml_decision.md): the M8 measurements and the decision.
-- [RayoPDF 0.0.8 on the harness](docs/benchmarks/v0.0.8-2026-11-07.md): the first performance
-  campaign, output byte-identical to 0.0.7.
-- [Performance](docs/development/performance.md): campaign method, findings, steps, results and
-  rejected attempts.
-- [RayoPDF 0.0.9 on the harness](docs/benchmarks/v0.0.9-2026-11-08.md): the OCR add-on, scan
-  codecs, glyph-shape recovery and exact recovery; scanned documents.
-- [OCR engine](docs/development/ocr-engine.md) and [OCR protocol](docs/development/ocr-protocol.md):
-  the add-on's measurements, build and pipe protocol.
-- [RayoPDF 0.0.10 on the harness](docs/benchmarks/v0.0.10-2026-11-09.md): OCR scripts and
-  rotation, performance rounds 2 and 3, quality round.
-- [Release check, 2026-11-09](docs/benchmarks/release-check-2026-11-09.md): 0.0.10 against the
-  0.1.0 bar (security and footprint met; quality, tables and speed not yet).
-- [RayoPDF 0.0.11 on the harness](docs/benchmarks/v0.0.11-2026-11-09.md): optional LaTeX math.
-- [Roadmap](docs/development/roadmap.md): decisions, milestones and exit gates.
+| Document | Contents |
+|---|---|
+| [Landscape](docs/research/landscape.md), [Algorithms](docs/research/algorithms.md), [OCR and ML](docs/research/ocr-ml.md), [Speed](docs/research/speed.md) | Research notes: converters, benchmarks, PDF internals, OCR engines, speed engineering |
+| [Evaluation contract](docs/development/evaluation.md) | Suites, metrics, competitors, speed and census method |
+| [Roadmap](docs/development/roadmap.md) | Decisions, milestones, exit gates and the 0.1.0 release bar |
+| [Performance](docs/development/performance.md) | Performance campaign method, results and rejected attempts |
+| [OCR engine](docs/development/ocr-engine.md), [OCR protocol](docs/development/ocr-protocol.md) | The OCR add-on: measurements, build and pipe protocol |
+| [OCR/ML decision](docs/development/ocr_ml_decision.md) | The M8 measurements and the decision |
+| [Benchmark records](docs/benchmarks/README.md) | Baselines, the record of each version, the release check |
 
 ## Running the evaluation
 
@@ -191,12 +168,13 @@ python3 tools/eval.py images                      # build the Docker images
 python3 tools/eval.py fetch                       # download the public benchmarks
 python3 tools/eval.py corpus                      # render the synthetic corpus
 python3 tools/eval.py corpus --suite scanned      # image-only PDFs rendered from the corpus
+python3 tools/eval.py corpus --suite multiscript  # image-only pages in 9 scripts, for OCR
 python3 tools/eval.py score --selftest            # check the construct scorer
 python3 tools/eval.py convert --tool T --suite S  # T: pdftotext, markitdown, pymupdf, opendataloader,
                                                   #    liteparse, edgeparse, docling, docling-ocr,
                                                   #    tesseract, cli
                                                   # S: synthetic, odl, olmocr, readoc, scanned,
-                                                  #    olmocr-scans
+                                                  #    olmocr-scans, multiscript
 python3 tools/eval.py score --suite S
 python3 tools/eval.py speed --tool T
 python3 tools/eval.py census

@@ -7,6 +7,12 @@ with the thresholds of the [roadmap](roadmap.md#milestones) M8 row. Every number
 reproduced on this machine (AMD Ryzen 5 PRO 4650GE, Docker, harness of
 [evaluation.md](evaluation.md)) unless it is marked claimed.
 
+**As built (2026-11-09).** The OCR branch was built as a separate add-on process, `rayopdf-ocr`,
+on ncnn, which `rayopdf` starts only when a page needs it and talks to over a pipe; it is never
+linked into `rayopdf`. ONNX Runtime remains a Linux-only measurement build and is not packaged.
+See [ocr-engine.md](ocr-engine.md) and [ocr-protocol.md](ocr-protocol.md). The decision below is
+unchanged as it was written.
+
 ## Decision
 
 1. **OCR: branch (c), linked OCR.** R is 10.7 % of the census pages (15.1 % with the upper bound

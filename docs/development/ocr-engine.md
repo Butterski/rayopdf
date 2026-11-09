@@ -138,7 +138,22 @@ Pinned inputs (`/opt/ocr/versions.json` in the image):
   optimisation level "extended", so no CPU-specific NCHWc layout is baked into the files;
 - Tesseract 5.3.4 with `eng` 4.1.0 (Ubuntu 24.04 packages) for the B4 measurements.
 
-## Measurements (B2, B4), 2026-11-07/08
+## Open items
+
+- **Windows ONNX Runtime.** ONNX Runtime has no MinGW-w64 build; MSYS2 patches about 80 files for
+  1.29. ncnn covers Windows, so the ONNX Runtime variant stays Linux-only.
+- **Reading order of multi-column pages** is left to the core.
+- **Hebrew** (§ Scripts and rotated pages): a permissive model exists, its ncnn conversion does not
+  work yet.
+- **Right-to-left text on turned pages through the core**: the core reorders right-to-left lines
+  only in direction 0 (`src/layout/lines.cpp`), so Arabic and Hebrew pages turned a quarter or
+  upside down come out in visual order.
+
+## History
+
+Dated measurement rounds, oldest first. The sections above describe the engine as it is.
+
+### Measurements (B2, B4), 2026-11-07/08
 
 **Setup.**
 - Machine: AMD Ryzen 5 PRO 4650GE; Docker image `rayopdf-ocr:1`.
@@ -282,7 +297,7 @@ only, not used for any choice):
   its installed languages. As a second engine on doubtful lines it was measured and rejected
   (Phase D, below).
 
-## Second-engine cascade (Phase D), 2026-11-08
+### Second-engine cascade (Phase D), 2026-11-08
 
 **Decision: not kept.** The add-on has no cascade, and the protocol is unchanged. The gate was:
 on the `scanned` development items, NID +0.01 or CER −10 % relative, at no more than +30 % OCR
@@ -423,7 +438,7 @@ choice:
 fraction of the time on these pages. It became the default (next section). The design measured
 here detected with tiny; the default keeps small's detection, because tiny's boxes lose bullets.
 
-## OCR speed (plan B7), 2026-11-08
+### OCR speed (plan B7), 2026-11-08
 
 **Change.** Tiny's recogniser reads first, small re-reads the doubtful lines, and degraded pages
 switch to small alone (§ One page, step 5). The tier, the protocol and the core are unchanged. The
@@ -519,18 +534,7 @@ word F1 at most 0.002 lower and CER at most 1 % higher; `old_scans` not lower.
 
   None of the three was built.
 
-## Open items
-
-- **Windows ONNX Runtime.** ONNX Runtime has no MinGW-w64 build; MSYS2 patches about 80 files for
-  1.29. ncnn covers Windows, so the ONNX Runtime variant stays Linux-only.
-- **Reading order of multi-column pages** is left to the core.
-- **Hebrew** (§ Scripts and rotated pages): a permissive model exists, its ncnn conversion does not
-  work yet.
-- **Right-to-left text on turned pages through the core**: the core reorders right-to-left lines
-  only in direction 0 (`src/layout/lines.cpp`), so Arabic and Hebrew pages turned a quarter or
-  upside down come out in visual order.
-
-## Scripts and rotated pages (round 7), 2026-11-08/09
+### Scripts and rotated pages (round 7), 2026-11-08/09
 
 **Models** (all Apache-2.0, pinned by revision and SHA-256 in docker/ocr_models.py,
 `third_party/licenses/paddleocr-scripts.txt`):

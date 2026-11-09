@@ -414,7 +414,8 @@ python3 tools/eval.py report
 ```
 
 The `cli` timing is fresh-process through Python's `subprocess.run` (see Speed and memory). Save
-a milestone's report as `docs/benchmarks/m<N>-<date>.md`.
+a version's report as `docs/benchmarks/v<version>-<date>.md` and add it to the
+[benchmark index](../benchmarks/README.md).
 
 ## Hygiene
 

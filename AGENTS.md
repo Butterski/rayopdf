@@ -1,8 +1,9 @@
 # RayoPDF Agent Guide
 
 Read this file before changing the project. RayoPDF is a PDF to Markdown converter, the reverse
-of [RayoMD](https://github.com/Butterski/rayomd): the C++17 engine under `src/` (modules crypt,
-pdf, text, layout, cli), its tests under `tests/`, the evaluation harness under `eval/` and
+of [RayoMD](https://github.com/Butterski/rayomd): the C++17 engine under `src/` (modules common,
+crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-ocr` is built from
+`src/ocr/addon`), its tests under `tests/`, the evaluation harness under `eval/` and
 `tools/eval.py`, and the research and roadmap under `docs/`.
 
 ## Rules
@@ -50,3 +51,18 @@ pdf, text, layout, cli), its tests under `tests/`, the evaluation harness under 
     libFuzzer target `tests/fuzz/fuzz_<module>_<name>.cpp` (`tools/fuzz.py` runs them); a fixed
     finding's minimized input goes to `tests/fuzz/regressions/<target>/`. Tests build the PDFs they
     read in memory.
+
+11. Generated tables (`src/text/*_data.cpp`, `src/layout/math_data.cpp`) are written only by
+    `tools/gen_*_tables.py`. After changing a generator, regenerate, and check that every
+    generated file matches with `python3 tools/gen_<name>_tables.py --check`.
+
+12. `README.md` keeps the H2 headings `Status`, `Usage` and `License`: `tools/package.py`
+    (`README_SECTIONS`) copies them into the release archives and stops if one is missing.
+
+13. Each version measured on the harness gets one record `docs/benchmarks/v<version>-<date>.md`;
+    baselines are `baselines-<suite>-<date>.md` or `baselines-<date>.md`, release checks
+    `release-check-<date>.md`. Add every new record to `docs/benchmarks/README.md` (current
+    records and history) in the same commit.
+
+14. To bump the version, change `VERSION` (CMake and `tools/package.py` read it) and the version
+    in the README's Status section in the same commit.

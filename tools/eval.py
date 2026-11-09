@@ -9,7 +9,7 @@ Usage:
   python3 tools/eval.py all [--resume]
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
   python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
-  python3 tools/eval.py corpus [--suite synthetic|scanned] [--producers a,b] [--only ids] [--jobs 6]
+  python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
   python3 tools/eval.py score --suite S [--tools a,b]
@@ -19,8 +19,9 @@ Usage:
 
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
 pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, cli. Suites:
-synthetic, odl, olmocr, readoc, scanned, olmocr-scans. The scanned suite is built from the
-synthetic corpus by `corpus --suite scanned`; olmocr-scans comes with `fetch --only olmocr`.
+synthetic, odl, olmocr, readoc, scanned, olmocr-scans, multiscript. The scanned suite is built
+from the synthetic corpus by `corpus --suite scanned`; olmocr-scans comes with `fetch --only
+olmocr`; multiscript (image-only pages in 9 scripts) is rendered by `corpus --suite multiscript`.
 The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
 """
