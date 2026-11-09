@@ -144,9 +144,11 @@ void RunJobs(size_t count, unsigned workers, void (*run)(void*, unsigned, size_t
     const auto work = [&](unsigned worker) {
         for (size_t index; (index = next.fetch_add(1, std::memory_order_relaxed)) < count;) run(context, worker, index);
     };
+    // The calling thread is worker 0: one thread fewer to start, and its heap is the warm one.
     std::vector<std::thread> threads;
-    threads.reserve(workers);
-    for (unsigned id = 0; id < workers; ++id) threads.emplace_back(work, id);
+    threads.reserve(workers - 1);
+    for (unsigned id = 1; id < workers; ++id) threads.emplace_back(work, id);
+    work(0);
     for (std::thread& thread : threads) thread.join();
 }
 

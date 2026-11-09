@@ -21,6 +21,11 @@ enum class ReadStatus : uint8_t {
     Failed,      // the open file could not be mapped or read
 };
 
+// Files up to this size are read into a caller's buffer rather than mapped, when the caller keeps
+// one (InputFile::Open): below it the mapping's fixed costs (mmap, munmap, page faults) exceed
+// the copy's; above it a mapping touches only the pages the conversion reads.
+constexpr uint64_t kBufferedReadBytes = uint64_t(256) << 10;
+
 // A read-only view of a whole regular file: memory-mapped, or read into memory where mapping is
 // not possible. The bytes stay valid and unchanged while the object lives (a file truncated by
 // another process meanwhile can fault a mapped read; RayoPDF reads its inputs once, start to end).
@@ -31,8 +36,12 @@ public:
     InputFile(const InputFile&) = delete;
     InputFile& operator=(const InputFile&) = delete;
 
-    // Opens `path` (UTF-8). A FIFO or device is refused before anything can wait on it.
-    ReadStatus Open(const std::string& path, uint64_t maximumBytes);
+    // Opens `path` (UTF-8). A FIFO or device is refused before anything can wait on it. With
+    // `buffer`, a file of at most kBufferedReadBytes is read into it instead: a caller that keeps
+    // the buffer from file to file (a batch worker) makes and removes no mapping for each one, and
+    // touches the buffer's memory once. The buffer only grows; Bytes() views its start, so it must
+    // stay unchanged while they are used.
+    ReadStatus Open(const std::string& path, uint64_t maximumBytes, std::string* buffer = nullptr);
     std::string_view Bytes() const { return std::string_view(data_, size_); }
     // Releases the file (unmaps it) early; Bytes() is empty afterwards. Windows deletes no file
     // while it is mapped.

@@ -316,9 +316,10 @@ void ChooseImageTarget(const std::string& output, const DocumentOptions& documen
     options.imageLinkPrefix = Relative(from, File::AbsolutePath(directory));
 }
 
-// Reads the input; an exit code other than kExitOk, with `error`, when it cannot.
-int ReadInput(const std::string& path, File::InputFile& file, std::string& error) {
-    switch (file.Open(path, kMaxInputBytes)) {
+// Reads the input (into `buffer` when it is small enough and the caller keeps one, see
+// File::InputFile::Open); an exit code other than kExitOk, with `error`, when it cannot.
+int ReadInput(const std::string& path, File::InputFile& file, std::string& error, std::string* buffer = nullptr) {
+    switch (file.Open(path, kMaxInputBytes, buffer)) {
         case File::ReadStatus::Ok: return kExitOk;
         case File::ReadStatus::NotFound: error = "cannot open " + path; break;
         case File::ReadStatus::NotRegular: error = path + " is not a regular file"; break;
@@ -471,13 +472,14 @@ void SetOneShotAllocator() {
 
 // Converts `input` into `markdown` and writes it to `output` ("-": standard output; "": not
 // written, the caller takes `markdown`). `record` gets the outcome: code, error, pages, bytes and,
-// when `counters`, the counters (ms is the caller's).
+// when `counters`, the counters (ms is the caller's). `inputBuffer`: a buffer the caller keeps from
+// document to document for small inputs (the batch modes' workers), or null.
 void ConvertDocument(const std::string& input, const std::string& output, std::string_view password,
                      const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
-                     bool counters) {
+                     bool counters, std::string* inputBuffer = nullptr) {
     File::InputFile file;
     std::unique_ptr<Document> document;
-    int code = ReadInput(input, file, record.error);
+    int code = ReadInput(input, file, record.error, inputBuffer);
     if (code == kExitOk) code = OpenDocument(input, file.Bytes(), password, document, record.error);
     if (code != kExitOk) {
         record.status = "error";
@@ -628,7 +630,7 @@ bool CollectPdfs(const std::string& folder, bool recursive, std::vector<std::str
 }
 
 void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOptions& batch, std::string& markdown,
-                   Layout::OcrSession& ocr) {
+                   std::string& inputBuffer, Layout::OcrSession& ocr) {
     const Clock::time_point start = Clock::now();
     Batch::Record& record = job.record;
     record.input = job.input;
@@ -646,7 +648,7 @@ void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOp
     Layout::ConvertOptions options = document.convert;
     ChooseImageTarget(job.output, document, options);
     options.ocr.session = &ocr;
-    ConvertDocument(job.input, job.output, document.password, options, markdown, record, true);
+    ConvertDocument(job.input, job.output, document.password, options, markdown, record, batch.report, &inputBuffer);
     record.milliseconds = MillisecondsSince(start);
 }
 
@@ -702,12 +704,14 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
         return kExitUnwritable;
     }
     const unsigned workers = Batch::WorkerCount(batch.workers, jobs.size());
-    // A Markdown buffer and an OCR add-on session per worker, reused from document to document.
+    // A Markdown buffer, an input buffer and an OCR add-on session per worker, reused from
+    // document to document.
     std::vector<std::string> buffers(workers);
+    std::vector<std::string> inputBuffers(workers);
     std::vector<std::unique_ptr<Layout::OcrSession>> sessions(workers);
     for (std::unique_ptr<Layout::OcrSession>& s : sessions) s.reset(new Layout::OcrSession(document.convert.ocr));
     Batch::RunJobs(jobs.size(), workers, [&](unsigned worker, size_t index) {
-        BatchDocument(jobs[index], document, batch, buffers[worker], *sessions[worker]);
+        BatchDocument(jobs[index], document, batch, buffers[worker], inputBuffers[worker], *sessions[worker]);
         if (report.IsOpen()) {
             std::string line;
             Batch::AppendRecord(line, jobs[index].record);

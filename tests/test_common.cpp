@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/common: the --serve --json request reader, the line reader, the batch record
-// and the worker threads (codes 950-999).
+// and the worker threads (codes 950-999), and the batch modes' file paths (codes 1680-1699).
 #include "check.h"
 #include "common/batch.h"
 #include "common/file.h"
@@ -10,7 +10,12 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace {
 
@@ -155,6 +160,13 @@ void TestWorkers() {
         RAYOPDF_CHECK(once, 989);
         RAYOPDF_CHECK(!badWorker, 990);
     }
+    // The calling thread is worker 0, and the only one it is.
+    const std::thread::id caller = std::this_thread::get_id();
+    std::atomic<bool> callerIsZero{true};
+    Batch::RunJobs(kJobs, 4, [&](unsigned worker, size_t) {
+        if ((std::this_thread::get_id() == caller) != (worker == 0)) callerIsZero = false;
+    });
+    RAYOPDF_CHECK(callerIsZero, 1680);
 }
 
 void TestPaths() {
@@ -193,6 +205,54 @@ void TestFiles() {
                   999);
 }
 
+// A batch worker's input buffer: small files read into it, from its start, the buffer kept from
+// file to file; larger files mapped as before. Temporary files take the mode a new file gets.
+void TestBufferedInput() {
+    std::string folder;
+    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-common-", folder), 1681);
+    const std::string small = folder + "/small.pdf";
+    const std::string smaller = folder + "/smaller.pdf";
+    const std::string large = folder + "/large.pdf";
+    const std::string big(static_cast<size_t>(File::kBufferedReadBytes) + 1, 'x');
+    RAYOPDF_CHECK(File::WriteAll(small, "%PDF-1.7 small") && File::WriteAll(smaller, "%PDF-1") &&
+                      File::WriteAll(large, big),
+                  1682);
+    std::string buffer;
+    File::InputFile input;
+    RAYOPDF_CHECK(input.Open(small, 1024, &buffer) == File::ReadStatus::Ok && input.Bytes() == "%PDF-1.7 small" &&
+                      input.Bytes().data() == buffer.data(),
+                  1683);
+    input.Close();
+    RAYOPDF_CHECK(input.Open(smaller, 1024, &buffer) == File::ReadStatus::Ok && input.Bytes() == "%PDF-1" &&
+                      input.Bytes().data() == buffer.data() && buffer.size() == 14,
+                  1684);
+    input.Close();
+    RAYOPDF_CHECK(input.Open(large, uint64_t(1) << 30, &buffer) == File::ReadStatus::Ok && input.Bytes() == big &&
+                      buffer.size() == 14,
+                  1685);
+    input.Close();
+    RAYOPDF_CHECK(input.Open(folder, 1024, &buffer) == File::ReadStatus::NotRegular &&
+                      input.Open(folder + "/missing", 1024, &buffer) == File::ReadStatus::NotFound &&
+                      input.Open(small, 4, &buffer) == File::ReadStatus::TooLarge,
+                  1686);
+#ifndef _WIN32
+    const mode_t mask = umask(0);
+    umask(mask);
+    File::StagedFile staged;
+    RAYOPDF_CHECK(staged.Open(folder + "/staged.png") && staged.Write("png") && staged.Commit(), 1687);
+    struct stat status;
+    RAYOPDF_CHECK(stat(small.c_str(), &status) == 0 && (status.st_mode & 0777) == (0666 & ~mask), 1688);
+    RAYOPDF_CHECK(stat((folder + "/staged.png").c_str(), &status) == 0 && (status.st_mode & 0777) == (0666 & ~mask),
+                  1689);
+    RAYOPDF_CHECK(File::RemoveFile(folder + "/staged.png"), 1690);
+#endif
+    std::vector<File::DirectoryEntry> entries;
+    RAYOPDF_CHECK(File::ListDirectory(folder, entries) && entries.size() == 3, 1691);  // no temporary file left
+    RAYOPDF_CHECK(File::RemoveFile(small) && File::RemoveFile(smaller) && File::RemoveFile(large) &&
+                      File::RemoveEmptyDirectory(folder),
+                  1692);
+}
+
 } // namespace
 
 int main() {
@@ -201,6 +261,7 @@ int main() {
     TestRecords();
     TestWorkers();
     TestPaths();
+    TestBufferedInput();
     TestFiles();
     std::puts("test_common: all checks passed");
     return 0;

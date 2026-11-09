@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -91,7 +92,7 @@ void InputFile::Close() {
     owned_.clear();
 }
 
-ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes) {
+ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes, std::string* buffer) {
     Close();
     std::wstring wide;
     if (path.empty() || !Widen(path, wide)) return ReadStatus::NotFound;
@@ -113,6 +114,21 @@ ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes) {
     if (size == 0) {
         CloseHandle(file);
         data_ = owned_.data();
+        return ReadStatus::Ok;
+    }
+    if (buffer != nullptr && size <= kBufferedReadBytes) {
+        if (buffer->size() < size) buffer->resize(static_cast<size_t>(size));
+        char* const bytes = buffer->data();
+        size_t done = 0;
+        while (done < size) {
+            DWORD got = 0;
+            if (!ReadFile(file, bytes + done, static_cast<DWORD>(size - done), &got, nullptr) || got == 0) break;
+            done += got;
+        }
+        CloseHandle(file);
+        if (done != size) return ReadStatus::Failed;
+        data_ = bytes;
+        size_ = done;
         return ReadStatus::Ok;
     }
     const HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
@@ -422,15 +438,34 @@ bool WriteFd(int fd, std::string_view content) {
     return true;
 }
 
-// The process's umask, read once: umask(2) can only be read by setting it, which is not safe while
-// other threads create files.
-mode_t Umask() {
-    static const mode_t mask = [] {
-        const mode_t value = umask(0);
-        umask(value);
-        return value;
-    }();
-    return mask;
+// Numbers the temporary files of this process, so threads writing beside each other never pick
+// the same name.
+std::atomic<uint32_t> gTemporaryCount{0};
+
+// Creates `path`.tmp-XXXXXX (six letters or digits) beside `path`, as mkostemp does, but with the
+// mode a new file gets (0666 under the umask), so that it needs no chmod before it is renamed over
+// `path`. The letters mix the time, the process and a count instead of drawing on the kernel's
+// random source; O_EXCL never opens a file someone else made, and a name taken moves on. The
+// open descriptor, or -1.
+int CreateTemporary(const std::string& path, std::string& temp) {
+    static const char kLetters[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    static const uint64_t process = static_cast<uint64_t>(getpid());
+    temp = path + ".tmp-XXXXXX";
+    char* const letters = temp.data() + temp.size() - 6;
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        timespec now{};
+        clock_gettime(CLOCK_REALTIME, &now);
+        uint64_t value = static_cast<uint64_t>(now.tv_sec) * 1000000000u + static_cast<uint64_t>(now.tv_nsec);
+        value ^= (process << 40) ^ (uint64_t(gTemporaryCount.fetch_add(1, std::memory_order_relaxed)) << 20);
+        // splitmix64's finalizer: every input bit moves every letter.
+        value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9u;
+        value = (value ^ (value >> 27)) * 0x94D049BB133111EBu;
+        value ^= value >> 31;
+        for (int i = 0; i < 6; ++i, value /= 62) letters[i] = kLetters[value % 62];
+        const int fd = open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOCTTY, 0666);
+        if (fd >= 0 || errno != EEXIST) return fd;
+    }
+    return -1;
 }
 
 FileType TypeOf(mode_t mode) {
@@ -455,7 +490,7 @@ void InputFile::Close() {
     owned_.clear();
 }
 
-ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes) {
+ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes, std::string* buffer) {
     Close();
     // Non-blocking, so a FIFO cannot stall the open; fstat then decides before any read.
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
@@ -477,6 +512,23 @@ ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes) {
     if (size == 0) {
         close(fd);
         data_ = owned_.data();
+        return ReadStatus::Ok;
+    }
+    if (buffer != nullptr && size <= kBufferedReadBytes) {
+        // A regular file: O_NONBLOCK does not apply to its reads.
+        if (buffer->size() < size) buffer->resize(static_cast<size_t>(size));
+        char* const bytes = buffer->data();
+        size_t done = 0;
+        while (done < size) {
+            const ssize_t got = read(fd, bytes + done, static_cast<size_t>(size) - done);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) break;
+            done += static_cast<size_t>(got);
+        }
+        close(fd);
+        if (done != size) return ReadStatus::Failed;
+        data_ = bytes;
+        size_ = done;
         return ReadStatus::Ok;
     }
     void* map = mmap(nullptr, static_cast<size_t>(size), PROT_READ, MAP_PRIVATE, fd, 0);
@@ -510,12 +562,10 @@ ReadStatus InputFile::Open(const std::string& path, uint64_t maximumBytes) {
 
 bool WriteAll(const std::string& path, std::string_view content) {
     if (path == "-") return WriteFd(STDOUT_FILENO, content);
-    std::string temp = path + ".tmp-XXXXXX";
-    const int fd = mkostemp(temp.data(), O_CLOEXEC);
+    std::string temp;
+    const int fd = CreateTemporary(path, temp);
     if (fd < 0) return false;
     bool ok = WriteFd(fd, content);
-    // mkostemp creates 0600; give the result the usual permissions under the umask.
-    ok = fchmod(fd, 0666 & ~Umask()) == 0 && ok;
     ok = close(fd) == 0 && ok;
     if (ok && rename(temp.c_str(), path.c_str()) == 0) return true;
     unlink(temp.c_str());
@@ -534,8 +584,8 @@ void StagedFile::Discard() {
 bool StagedFile::Open(const std::string& path) {
     Discard();
     if (path.empty() || path == "-") return false;
-    std::string temp = path + ".tmp-XXXXXX";
-    const int fd = mkostemp(temp.data(), O_CLOEXEC);
+    std::string temp;
+    const int fd = CreateTemporary(path, temp);
     if (fd < 0) return false;
     handle_ = fd;
     path_ = path;
@@ -564,9 +614,7 @@ bool StagedFile::Commit() {
     if (handle_ == -1) return false;
     const int fd = static_cast<int>(handle_);
     handle_ = -1;
-    // mkostemp creates 0600; give the result the usual permissions under the umask (as WriteAll).
-    bool ok = fchmod(fd, 0666 & ~Umask()) == 0;
-    ok = close(fd) == 0 && ok;
+    const bool ok = close(fd) == 0;
     if (ok && rename(temp_.c_str(), path_.c_str()) == 0) return true;
     unlink(temp_.c_str());
     return false;

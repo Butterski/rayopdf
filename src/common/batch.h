@@ -58,7 +58,7 @@ unsigned WorkerCount(unsigned workers, size_t jobs);
 
 // `run(context, worker, index)` for every index below `count` on `workers` threads (see
 // WorkerCount), each index once, taken in increasing order; `worker` (below the worker count) names
-// the thread, for buffers of its own. One worker runs them on the calling thread.
+// the thread, for buffers of its own. The calling thread is worker 0; workers - 1 more are started.
 void RunJobs(size_t count, unsigned workers, void (*run)(void*, unsigned, size_t), void* context);
 
 template <class Run>
