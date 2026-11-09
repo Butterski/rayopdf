@@ -102,9 +102,10 @@ struct GState {
     bool transparent = false;  // fill alpha 0 (/ca 0)
 };
 
+// Execute's operators first, then those RunStream runs itself: each switch's jump table starts at 0.
 enum class Op : uint8_t {
-    Unknown, q, Q, cm, BT, ET, Tc, Tw, Tz, TL, Tf, Tr, Ts, Td, TD, Tm, TStar, Tj, TJ, Quote, DoubleQuote,
-    Do, BI, re, m, l, c, v, y, h, S, s, f, F, fStar, B, BStar, b, bStar, n, W, WStar, gs, w, BDC, BMC, EMC,
+    Unknown, BT, ET, Tc, Tw, Tz, TL, Tf, Tr, Ts, Td, TD, Tm, TStar, Tj, TJ, Quote, DoubleQuote, Do, BI, w, gs, BDC,
+    BMC, EMC, q, Q, cm, re, m, l, c, v, y, h, S, s, f, F, fStar, B, BStar, b, bStar, n, W, WStar,
 };
 
 // The one-byte operators by their byte, and the two-byte ones starting with 'T' by their second.
@@ -347,7 +348,8 @@ public:
 
 private:
     void RunStream(std::string_view content, const PdfValue& resources, int depth);
-    bool Execute(Op op, const ContentLexer& lexer, const PdfValue& resources, int depth);
+    // Out of line: RunStream's loop around it keeps its registers.
+    RAYOPDF_NOINLINE bool Execute(Op op, const ContentLexer& lexer, const PdfValue& resources, int depth);
     bool ShowString(std::string_view bytes);
     bool ShowArray(const PdfValue& array);
     bool ShowText(const PdfValue* items, size_t count, std::string_view single);
@@ -369,6 +371,7 @@ private:
     template <int kCount>
     RAYOPDF_HOT_INLINE void PathPoints(const double* xy, bool curve);
     void AddPiece(double x0, double y0, double x1, double y1, bool rect);
+    RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources);
     void ReadLinks(int index);
     void NextLine(double tx, double ty) {
         Matrix t;
@@ -483,7 +486,8 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
             budgetHit_ = true;
             return false;
         }
-        // The path operators, most of a drawing's, here; the others by Execute.
+        // The path, painting and graphics-state operators, most of a drawing's, here; the others
+        // by Execute.
         const Op code = OpOf(op);
         const double* n;
         switch (code) {
@@ -525,12 +529,66 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
             curX_ = startX_;
             curY_ = startY_;
             return true;
+        case Op::re: {
+            if (!(n = lexer.Numbers(4))) break;
+            const bool wasEmpty = pathEmpty_;
+            const double corners[8] = {n[0], n[1], n[0] + n[2], n[1] + n[3], n[0] + n[2], n[1], n[0], n[1] + n[3]};
+            PathPoints<4>(corners, false);
+            // Four segments of one subpath; an axis-aligned rectangle when the CTM keeps axes.
+            pathSegments_ = static_cast<uint16_t>(pathSegments_ + 4 < 60000 ? pathSegments_ + 4 : 60000);
+            pathSubpaths_++;
+            const bool axisAligned = (std::fabs(gs_.ctm.b) < 1e-9 && std::fabs(gs_.ctm.c) < 1e-9) ||
+                                     (std::fabs(gs_.ctm.a) < 1e-9 && std::fabs(gs_.ctm.d) < 1e-9);
+            pathIsRect_ = wasEmpty && axisAligned;
+            if (axisAligned) AddPiece(n[0], n[1], n[0] + n[2], n[1] + n[3], true);
+            curX_ = startX_ = n[0];
+            curY_ = startY_ = n[1];
+            return true;
+        }
+        case Op::q:
+            if (stack_.size() >= static_cast<size_t>(kMaxStateDepth)) break;
+            stack_.push_back(gs_);
+            return true;
+        case Op::Q:
+            if (stack_.empty()) return true;
+            gs_ = stack_.back();
+            stack_.pop_back();
+            return true;
+        case Op::cm: {
+            if (!(n = lexer.Numbers(6))) break;
+            const Matrix m = Multiply(Matrix{n[0], n[1], n[2], n[3], n[4], n[5]}, gs_.ctm);
+            if (!Finite(m)) break;
+            gs_.ctm = m;
+            return true;
+        }
+        case Op::S:
+        case Op::s:
+            Paint(false, true);
+            return true;
+        case Op::f:
+        case Op::F:
+        case Op::fStar:
+            Paint(true, false);
+            return true;
+        case Op::B:
+        case Op::BStar:
+        case Op::b:
+        case Op::bStar:
+            Paint(true, true);
+            return true;
+        case Op::n:
+            Paint(false, false);
+            return true;
+        case Op::W:
+        case Op::WStar:
+            pendingClip_ = 1;
+            return true;
         default:
             if (code == Op::BI) opSource_ = std::string_view(content.data() + start, next - start);
             if (!Execute(code, lexer, resources, depth)) error = true;
             return !budgetHit_;
         }
-        error = true;  // a path operator without its operands, or with no current point
+        error = true;  // an operator without its operands, with no current point, or failing
         return true;
     });
     // A stream restores the state stack it started with (forms run inside q/Q, §8.10.1).
@@ -552,22 +610,6 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
     const PdfSpan<PdfValue> operands = lexer.Operands();
     const double* n = nullptr;
     switch (op) {
-    case Op::q:
-        if (stack_.size() >= static_cast<size_t>(kMaxStateDepth)) return false;
-        stack_.push_back(gs_);
-        return true;
-    case Op::Q:
-        if (stack_.empty()) return true;
-        gs_ = stack_.back();
-        stack_.pop_back();
-        return true;
-    case Op::cm: {
-        if (!Numbers(lexer, 6, n)) return false;
-        const Matrix m = Multiply(Matrix{n[0], n[1], n[2], n[3], n[4], n[5]}, gs_.ctm);
-        if (!Finite(m)) return false;
-        gs_.ctm = m;
-        return true;
-    }
     case Op::BT:
         textMatrix_ = lineMatrix_ = Matrix();
         return true;
@@ -645,65 +687,8 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
         if (operands.empty() || !operands.back().IsName()) return false;
         DoXObject(resources, operands.back().Name(), depth);
         return true;
-    case Op::BI: {
-        // The inline image's source, BI to EI, is kept: Layout re-reads it when it extracts the
-        // image (the lexer's dictionary does not outlive the next operator).
-        const Box box = Intersect(UnitSquare(gs_.ctm), pageBox_);
-        if (box.Empty() || page_.images.size() >= kMaxShapesPerPage || operands.empty() ||
-            page_.inlineImages.size() + opSource_.size() > kMaxInlineImageBytes)
-            return true;
-        ImageBox image;
-        image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
-        image.matrix[0] = float(gs_.ctm.a), image.matrix[1] = float(gs_.ctm.b), image.matrix[2] = float(gs_.ctm.c);
-        image.matrix[3] = float(gs_.ctm.d), image.matrix[4] = float(gs_.ctm.e), image.matrix[5] = float(gs_.ctm.f);
-        const PdfValue& dictionary = operands.back();
-        const PdfValue* w = dictionary.Find("W");
-        const PdfValue* h = dictionary.Find("H");
-        if (!w) w = dictionary.Find("Width");
-        if (!h) h = dictionary.Find("Height");
-        image.width = w ? Dimension(w->Int()) : 0;
-        image.height = h ? Dimension(h->Int()) : 0;
-        image.resources = resources;
-        image.mcid = mcid_;
-        image.mcStream = mcStream_;
-        image.inlineData = static_cast<uint32_t>(page_.inlineImages.size());
-        image.inlineLength = static_cast<uint32_t>(opSource_.size());
-        uint64_t hash = 1469598103934665603ull;
-        for (unsigned char c : opSource_) hash = (hash ^ c) * 1099511628211ull;
-        image.identity = hash | 1;
-        page_.inlineImages.append(opSource_);
-        page_.images.push_back(image);
-        return true;
-    }
-    case Op::re: {
-        if (!Numbers(lexer, 4, n)) return false;
-        const bool wasEmpty = pathEmpty_;
-        const double corners[8] = {n[0], n[1], n[0] + n[2], n[1] + n[3], n[0] + n[2], n[1], n[0], n[1] + n[3]};
-        PathPoints<4>(corners, false);
-        // Four segments of one subpath; an axis-aligned rectangle when the CTM keeps axes.
-        pathSegments_ = static_cast<uint16_t>(pathSegments_ + 4 < 60000 ? pathSegments_ + 4 : 60000);
-        pathSubpaths_++;
-        const bool axisAligned = (std::fabs(gs_.ctm.b) < 1e-9 && std::fabs(gs_.ctm.c) < 1e-9) ||
-                                 (std::fabs(gs_.ctm.a) < 1e-9 && std::fabs(gs_.ctm.d) < 1e-9);
-        pathIsRect_ = wasEmpty && axisAligned;
-        if (axisAligned) AddPiece(n[0], n[1], n[0] + n[2], n[1] + n[3], true);
-        curX_ = startX_ = n[0];
-        curY_ = startY_ = n[1];
-        return true;
-    }
-    case Op::S: Paint(false, true); return true;
-    case Op::s: Paint(false, true); return true;
-    case Op::f:
-    case Op::F:
-    case Op::fStar: Paint(true, false); return true;
-    case Op::B:
-    case Op::BStar:
-    case Op::b:
-    case Op::bStar: Paint(true, true); return true;
-    case Op::n: Paint(false, false); return true;
-    case Op::W:
-    case Op::WStar:
-        pendingClip_ = 1;
+    case Op::BI:
+        if (!operands.empty()) InlineImage(operands.back(), resources);
         return true;
     case Op::w:
         if (!Numbers(lexer, 1, n)) return false;
@@ -726,9 +711,39 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
     case Op::EMC:
         EndMarked();
         return true;
-    default:  // Op::Unknown and the path operators RunStream runs
+    default:  // Op::Unknown and the operators RunStream runs itself
         return true;
     }
+}
+
+// The inline image BI just read (its dictionary; opSource_ is its source, BI to EI) as an image of
+// the page. The source is kept: Layout re-reads it when it extracts the image (the lexer's
+// dictionary does not outlive the next operator). Out of line: Execute keeps no image record.
+void Interpreter::InlineImage(const PdfValue& dictionary, const PdfValue& resources) {
+    const Box box = Intersect(UnitSquare(gs_.ctm), pageBox_);
+    if (box.Empty() || page_.images.size() >= kMaxShapesPerPage ||
+        page_.inlineImages.size() + opSource_.size() > kMaxInlineImageBytes)
+        return;
+    ImageBox image;
+    image.x0 = float(box.x0), image.y0 = float(box.y0), image.x1 = float(box.x1), image.y1 = float(box.y1);
+    image.matrix[0] = float(gs_.ctm.a), image.matrix[1] = float(gs_.ctm.b), image.matrix[2] = float(gs_.ctm.c);
+    image.matrix[3] = float(gs_.ctm.d), image.matrix[4] = float(gs_.ctm.e), image.matrix[5] = float(gs_.ctm.f);
+    const PdfValue* w = dictionary.Find("W");
+    const PdfValue* h = dictionary.Find("H");
+    if (!w) w = dictionary.Find("Width");
+    if (!h) h = dictionary.Find("Height");
+    image.width = w ? Dimension(w->Int()) : 0;
+    image.height = h ? Dimension(h->Int()) : 0;
+    image.resources = resources;
+    image.mcid = mcid_;
+    image.mcStream = mcStream_;
+    image.inlineData = static_cast<uint32_t>(page_.inlineImages.size());
+    image.inlineLength = static_cast<uint32_t>(opSource_.size());
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : opSource_) hash = (hash ^ c) * 1099511628211ull;
+    image.identity = hash | 1;
+    page_.inlineImages.append(opSource_);
+    page_.images.push_back(image);
 }
 
 void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect) {
