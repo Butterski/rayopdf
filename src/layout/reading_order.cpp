@@ -124,6 +124,21 @@ struct Rule {
 // The largest region ordered by Breuel's partial order, whose cost grows with the cube of its
 // lines: larger regions are cut row by row instead.
 constexpr size_t kTopologicalMax = 200;
+constexpr size_t kOverWords = (kTopologicalMax + 63) / 64;
+// Topological's ranges of lines between a pair up to this long are scanned line by line; longer
+// ones through the lines' overlap bitsets.
+constexpr size_t kShortRange = 32;
+
+// The index of the lowest set bit of m (m != 0).
+int LowestBit(uint64_t m) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctzll(m);
+#else
+    int n = 0;
+    for (; !(m & 1); m >>= 1) n++;
+    return n;
+#endif
+}
 
 // Cut's vectors for one depth of its recursion, kept by each thread between pages so that a cut
 // allocates none of them anew: a Cut frame uses its depth's only, the cuts it recurses into
@@ -435,6 +450,22 @@ struct Orderer {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
             return L(a).u0 < L(b).u0;
         });
+        // over[a * kOverWords + c / 64] bit c % 64: line v[c] overlaps line v[a] horizontally, built
+        // for a line when a pair with a long range between them first needs it. A line c between a
+        // and b comes between them when it overlaps both and lies between their baselines: in a short
+        // range each line is tested, in a long one the lines set in the bits of both.
+        std::vector<uint64_t> over;  // allocated with the first row built
+        std::vector<uint8_t> built;
+        const auto overlaps = [&](size_t a) {
+            if (built.empty()) built.assign(n, 0), over.assign(n * kOverWords, 0);
+            if (built[a]) return;
+            built[a] = 1;
+            const Line& la = L(v[a]);
+            for (size_t c = 0; c < n; ++c) {
+                const Line& lc = L(v[c]);
+                if (lc.u0 < la.u1 && lc.u1 > la.u0) over[a * kOverWords + c / 64] |= uint64_t(1) << (c % 64);
+            }
+        };
         std::vector<uint8_t> edge(n * n, 0);
         std::vector<uint32_t> indegree(n, 0);
         for (size_t a = 0; a < n; ++a) {
@@ -448,10 +479,24 @@ struct Orderer {
                     before = true;
                     const float high = Fmax(la.baseline, lb.baseline) - tolerance;
                     const float low = Fmin(la.baseline, lb.baseline) + tolerance;
-                    for (size_t c = std::min(a, b) + 1; c < std::max(a, b) && before; ++c) {
-                        const Line& lc = L(v[c]);
-                        if (lc.baseline >= high || lc.baseline <= low) continue;
-                        before = !(lc.u0 < la.u1 && lc.u1 > la.u0 && lc.u0 < lb.u1 && lc.u1 > lb.u0);
+                    const size_t from = std::min(a, b) + 1, to = std::max(a, b);
+                    if (to - from <= kShortRange) {
+                        for (size_t c = from; c < to && before; ++c) {
+                            const Line& lc = L(v[c]);
+                            if (lc.baseline >= high || lc.baseline <= low) continue;
+                            before = !(lc.u0 < la.u1 && lc.u1 > la.u0 && lc.u0 < lb.u1 && lc.u1 > lb.u0);
+                        }
+                    } else {
+                        overlaps(a), overlaps(b);
+                        for (size_t w = from / 64; w * 64 < to && before; ++w) {
+                            uint64_t m = over[a * kOverWords + w] & over[b * kOverWords + w];
+                            if (w == from / 64) m &= ~uint64_t(0) << (from % 64);
+                            if ((w + 1) * 64 > to) m &= (uint64_t(1) << (to % 64)) - 1;
+                            for (; m && before; m &= m - 1) {
+                                const Line& lc = L(v[w * 64 + static_cast<size_t>(LowestBit(m))]);
+                                before = lc.baseline >= high || lc.baseline <= low;
+                            }
+                        }
                     }
                 }
                 if (before) {
