@@ -20,7 +20,8 @@ configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference 
 tesseract) unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr on
 ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the same on ONNX
 Runtime), ocr-windows (MinGW-w64 rayopdf-ocr.exe on ncnn, tests under Wine). --dir defaults to
-the config's name. Builds run with --network none.
+the config's name. Builds run with --network none; RAYOPDF_DOCKER_CPUS (a cpuset such as
+0-2,4-8) keeps the container off the CPUs a timing run uses.
 """
 
 from __future__ import annotations
@@ -73,6 +74,9 @@ def docker(argv: list[str], mounts: list[str] | None = None, workdir: str = "/sr
     cmd = ["docker", "run", "--rm", "--init", "-u", f"{os.getuid()}:{os.getgid()}",
            "-e", "HOME=/tmp", "-e", "LANG=C.UTF-8", "-e", "WINEDEBUG=-all", "--network", "none",
            "-v", f"{REPO}:/src", "-w", workdir]
+    cpus = os.environ.get("RAYOPDF_DOCKER_CPUS")
+    if cpus:
+        cmd += ["--cpuset-cpus", cpus]
     if tsan:
         # ThreadSanitizer re-executes itself without address randomization (personality(2)), which
         # Docker's default seccomp profile refuses on kernels with high mmap entropy.
