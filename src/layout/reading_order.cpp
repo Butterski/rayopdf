@@ -140,6 +140,16 @@ int LowestBit(uint64_t m) {
 #endif
 }
 
+// std::sort of [first, last) by `less`, skipped when each element is less than the next: such a
+// sequence has one order only, which std::sort leaves as it is (a NaN or a tie breaks the chain,
+// and the sort runs).
+template <class Less>
+void SortUnlessOrdered(std::vector<uint32_t>::iterator first, std::vector<uint32_t>::iterator last, Less less) {
+    bool ordered = true;
+    for (auto it = first; ordered && last - it >= 2; ++it) ordered = less(*it, *(it + 1));
+    if (!ordered) std::sort(first, last, less);
+}
+
 // Cut's vectors for one depth of its recursion, kept by each thread between pages so that a cut
 // allocates none of them anew: a Cut frame uses its depth's only, the cuts it recurses into
 // deeper ones.
@@ -182,7 +192,7 @@ struct Orderer {
             vb = Fmin(vb, L(i).vb), vt = Fmax(vt, L(i).vt);
         }
         const float width = u1 - u0;
-        std::sort(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
+        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).vt != L(b).vt) return L(a).vt > L(b).vt;
             return L(a).u0 < L(b).u0;
         });
@@ -214,7 +224,7 @@ struct Orderer {
 
     // Rows top to bottom (baselines within 0.4 em), each left to right.
     void Fallback(std::vector<uint32_t>& items) {
-        std::sort(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
+        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
             return L(a).u0 < L(b).u0;
         });
@@ -223,8 +233,8 @@ struct Orderer {
             const Line& head = L(items[at]);
             size_t end = at + 1;
             while (end < items.size() && head.baseline - L(items[end]).baseline <= 0.4f * head.size) ++end;
-            std::sort(items.begin() + static_cast<std::ptrdiff_t>(at), items.begin() + static_cast<std::ptrdiff_t>(end),
-                      [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
+            SortUnlessOrdered(items.begin() + static_cast<std::ptrdiff_t>(at), items.begin() + static_cast<std::ptrdiff_t>(end),
+                              [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
             at = end;
         }
         out.insert(out.end(), items.begin(), items.end());
@@ -233,7 +243,7 @@ struct Orderer {
     // Groups of `items` split at vertical whitespace gaps of at least `minGap` (x projection).
     void SplitX(std::vector<uint32_t>& items, float minGap, std::vector<size_t>& cuts) {
         cuts.clear();
-        std::sort(items.begin(), items.end(), [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
+        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
         float right = L(items[0]).u1;
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 - right >= minGap) cuts.push_back(k);
@@ -246,8 +256,8 @@ struct Orderer {
     void SplitXSoft(std::vector<uint32_t>& items, float size, std::vector<size_t>& cuts) {
         cuts.clear();
         const auto shrink = [&](uint32_t i) { return Fmin(0.7f * size, 0.25f * (L(i).u1 - L(i).u0)); };
-        std::sort(items.begin(), items.end(),
-                  [&](uint32_t a, uint32_t b) { return L(a).u0 + shrink(a) < L(b).u0 + shrink(b); });
+        SortUnlessOrdered(items.begin(), items.end(),
+                          [&](uint32_t a, uint32_t b) { return L(a).u0 + shrink(a) < L(b).u0 + shrink(b); });
         float right = L(items[0]).u1 - shrink(items[0]);
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 + shrink(items[k]) - right >= 1.0f) cuts.push_back(k);
@@ -261,7 +271,7 @@ struct Orderer {
     // separates.
     void SplitY(std::vector<uint32_t>& items, std::vector<size_t>& cuts) {
         cuts.clear();
-        std::sort(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
+        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).vt != L(b).vt) return L(a).vt > L(b).vt;
             return L(a).u0 < L(b).u0;
         });
@@ -446,10 +456,19 @@ struct Orderer {
             }
         if (!side) return false;
         std::vector<uint32_t> v(items);
-        std::sort(v.begin(), v.end(), [&](uint32_t a, uint32_t b) {
+        SortUnlessOrdered(v.begin(), v.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
             return L(a).u0 < L(b).u0;
         });
+        // The lines' boxes in v's order, read by every pair below.
+        struct Box {
+            float u0, u1, baseline, size;
+        };
+        std::vector<Box> box(n);
+        for (size_t k = 0; k < n; ++k) {
+            const Line& l = L(v[k]);
+            box[k] = Box{l.u0, l.u1, l.baseline, l.size};
+        }
         // over[a * kOverWords + c / 64] bit c % 64: line v[c] overlaps line v[a] horizontally, built
         // for a line when a pair with a long range between them first needs it. A line c between a
         // and b comes between them when it overlaps both and lies between their baselines: in a short
@@ -460,19 +479,17 @@ struct Orderer {
             if (built.empty()) built.assign(n, 0), over.assign(n * kOverWords, 0);
             if (built[a]) return;
             built[a] = 1;
-            const Line& la = L(v[a]);
-            for (size_t c = 0; c < n; ++c) {
-                const Line& lc = L(v[c]);
-                if (lc.u0 < la.u1 && lc.u1 > la.u0) over[a * kOverWords + c / 64] |= uint64_t(1) << (c % 64);
-            }
+            const Box& la = box[a];
+            for (size_t c = 0; c < n; ++c)
+                if (box[c].u0 < la.u1 && box[c].u1 > la.u0) over[a * kOverWords + c / 64] |= uint64_t(1) << (c % 64);
         };
         std::vector<uint8_t> edge(n * n, 0);
         std::vector<uint32_t> indegree(n, 0);
         for (size_t a = 0; a < n; ++a) {
-            const Line& la = L(v[a]);
+            const Box la = box[a];
             for (size_t b = 0; b < n; ++b) {
                 if (a == b) continue;
-                const Line& lb = L(v[b]);
+                const Box& lb = box[b];
                 const float tolerance = 0.3f * Fmin(la.size, lb.size);
                 bool before = la.u0 < lb.u1 && lb.u0 < la.u1 && la.baseline > lb.baseline + tolerance;
                 if (!before && la.u1 <= lb.u0) {
@@ -482,7 +499,7 @@ struct Orderer {
                     const size_t from = std::min(a, b) + 1, to = std::max(a, b);
                     if (to - from <= kShortRange) {
                         for (size_t c = from; c < to && before; ++c) {
-                            const Line& lc = L(v[c]);
+                            const Box& lc = box[c];
                             if (lc.baseline >= high || lc.baseline <= low) continue;
                             before = !(lc.u0 < la.u1 && lc.u1 > la.u0 && lc.u0 < lb.u1 && lc.u1 > lb.u0);
                         }
@@ -493,8 +510,8 @@ struct Orderer {
                             if (w == from / 64) m &= ~uint64_t(0) << (from % 64);
                             if ((w + 1) * 64 > to) m &= (uint64_t(1) << (to % 64)) - 1;
                             for (; m && before; m &= m - 1) {
-                                const Line& lc = L(v[w * 64 + static_cast<size_t>(LowestBit(m))]);
-                                before = lc.baseline >= high || lc.baseline <= low;
+                                const float c = box[w * 64 + static_cast<size_t>(LowestBit(m))].baseline;
+                                before = c >= high || c <= low;
                             }
                         }
                     }
@@ -655,7 +672,7 @@ struct Orderer {
             Cut(items, 0);
             return;
         }
-        std::sort(separators.begin(), separators.end(), [&](uint32_t a, uint32_t b) {
+        SortUnlessOrdered(separators.begin(), separators.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
             return L(a).u0 < L(b).u0;
         });
