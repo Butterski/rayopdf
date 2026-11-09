@@ -72,12 +72,11 @@ bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
     return false;
 }
 
-// IsJunk, inline for Count (every code point of every ToUnicode entry).
-inline bool JunkCodePoint(uint32_t cp) {
-    if (cp == 0xFFFD) return true;
-    if (cp < 0x20) return cp != '\t' && cp != '\n' && cp != '\f';
-    if (cp >= 0x80 && cp <= 0x9F) return true;
-    return (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
+// Lookup(kAdobePua, cp), a range test first (the table is sorted; most code points are outside).
+uint32_t AdobePiece(uint32_t cp) {
+    constexpr size_t kCount = sizeof kAdobePua / sizeof kAdobePua[0];
+    if (cp < kAdobePua[0].from || cp > kAdobePua[kCount - 1].from) return 0;
+    return Lookup(kAdobePua, cp);
 }
 
 } // namespace
@@ -101,14 +100,14 @@ uint32_t SymbolCodePoint(uint32_t cp, const Context& context) {
             const uint16_t name = Tables::kEncodings[static_cast<int>(Tables::Encoding::Symbol)][code];
             uint32_t points[4];
             if (name != Tables::kNoName && Tables::AglCodePoints(name, points) == 1) {
-                const uint32_t piece = Lookup(kAdobePua, points[0]);
+                const uint32_t piece = AdobePiece(points[0]);
                 return piece ? piece : points[0];
             }
         }
         return 0;
     }
     if (cp >= 0xF700 && cp <= 0xF71A && context.thai) return kThai[cp - 0xF700];
-    return Lookup(kAdobePua, cp);
+    return AdobePiece(cp);
 }
 
 bool RepairText(std::string_view text, const Context& context, std::string& out) {

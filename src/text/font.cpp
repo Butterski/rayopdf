@@ -640,59 +640,138 @@ uint32_t PoolOnce(Font::Impl& font, std::string_view texts, uint32_t& at) {
     return at;
 }
 
-// Only the usable entries of a parsed ToUnicode map stay (algorithms §3.6).
-void FilterToUnicode(ToUnicodeMap& map) {
-    size_t kept = 0;
-    for (const UnicodeEntry& entry : map.entries) {
-        if (UsableText(map.Text(entry))) map.entries[kept++] = entry;
-    }
-    map.entries.resize(kept);
+// What LoadToUnicode keeps of an entry between its passes.
+enum : uint8_t { kEntryMayRepair = 1, kEntryUsable = 2, kEntryThai = 4 };
+
+// CountEntry for any text: Repair::Count, MayRepair and UsableText.
+RAYOPDF_NOINLINE uint8_t CountText(std::string_view text, Repair::MapStats& stats) {
+    Repair::MapStats one;
+    Repair::Count(text, one);
+    stats.entries += one.entries;
+    stats.junk += one.junk;
+    stats.latinLetters += one.latinLetters;
+    stats.accented += one.accented;
+    stats.thai = stats.thai || one.thai;
+    return static_cast<uint8_t>((MayRepair(text) ? kEntryMayRepair : 0) | (UsableText(text) ? kEntryUsable : 0) |
+                                (one.thai ? kEntryThai : 0));
 }
 
-// Repairs every entry's text (Repair::RepairText; Thai forms when the map has Thai) and gathers
-// the statistics that judge the map, before unusable entries are dropped.
-void RepairToUnicode(ToUnicodeMap& map, Repair::Context context, Repair::MapStats& stats) {
-    Repair::MapStats first;
-    for (const UnicodeEntry& entry : map.entries) Repair::Count(map.Text(entry), first);
-    context.thai = first.thai;
-    std::string repaired;
-    bool repairedAny = false;
-    for (UnicodeEntry& entry : map.entries) {
-        if (!MayRepair(map.Text(entry)) || !Repair::RepairText(map.Text(entry), context, repaired)) continue;
-        if (map.text.size() + repaired.size() > UINT32_MAX) break;
-        entry.offset = static_cast<uint32_t>(map.text.size());
-        entry.length = static_cast<uint32_t>(repaired.size());
-        map.text += repaired;
-        repairedAny = true;
+// Adds `text` to `stats` (Repair::Count) and gives MayRepair and UsableText of it as flags, with
+// kEntryThai when Count finds Thai in it. A text of one well-formed UTF-8 sequence of 1-3 bytes
+// (nearly every entry) is read here, its code point as Utf8::Decode reads it: RepairText changes it
+// only when it is U+0009-U+000D or private use U+E000-U+F8FF.
+RAYOPDF_HOT_INLINE uint8_t CountEntry(std::string_view text, Repair::MapStats& stats) {
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(text.data());
+    uint32_t cp = kNoCodePoint;
+    if (text.size() == 1) {
+        if (p[0] < 0x80) cp = p[0];
+    } else if (text.size() == 2) {
+        if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+            cp = static_cast<uint32_t>(p[0] & 0x1F) << 6 | (p[1] & 0x3F);
+            if (cp < 0x80) cp = kNoCodePoint;
+        }
+    } else if (text.size() == 3) {
+        if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            cp = static_cast<uint32_t>(p[0] & 0x0F) << 12 | static_cast<uint32_t>(p[1] & 0x3F) << 6 | (p[2] & 0x3F);
+            if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) cp = kNoCodePoint;
+        }
     }
-    // The texts as counted first when none was repaired (Count only adds up).
-    if (!repairedAny) {
-        stats.entries += first.entries;
-        stats.junk += first.junk;
-        stats.latinLetters += first.latinLetters;
-        stats.accented += first.accented;
-        stats.thai = stats.thai || first.thai;
+    if (cp == kNoCodePoint) return CountText(text, stats);
+    Repair::CountCodePoint(cp, stats);
+    uint8_t flags = (cp >= 0x09 && cp <= 0x0D) || (cp >= 0xE000 && cp <= 0xF8FF) ? kEntryMayRepair : 0;
+    if (cp >= 0x20 && cp != 0x7F && cp != Utf8::kReplacement) flags |= kEntryUsable;
+    if (cp >= 0x0E01 && cp <= 0x0E5B) flags |= kEntryThai;
+    return flags;
+}
+
+// Whether two texts are equal, last byte first (the texts of codes in a range differ there).
+bool SameText(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = a.size(); i > 0; --i) {
+        if (a[i - 1] != b[i - 1]) return false;
     }
-    // The most codes one text has (a map of many codes onto one character): equal texts counted
-    // in an open-addressing table, so a CID font's map of tens of thousands of codes costs one
-    // pass instead of a sort.
-    size_t capacity = 16;
-    while (capacity < map.entries.size() * 2) capacity <<= 1;
-    const size_t mask = capacity - 1;
-    constexpr size_t kFree = SIZE_MAX;
-    std::vector<size_t> owners(capacity, kFree);  // the first entry with the slot's text
-    std::vector<uint32_t> counts(map.entries.size(), 0);
-    for (size_t e = 0; e < map.entries.size(); ++e) {
+    return true;
+}
+
+// A majority vote over non-space texts: the text more than half of them share, if any, is the
+// candidate it ends with (votes > 0).
+struct Vote {
+    std::string_view candidate;
+    uint32_t votes = 0;
+
+    void Add(std::string_view text) {
+        if (text.size() == 1 && text[0] == ' ') return;
+        if (votes == 0) {
+            candidate = text;
+            votes = 1;
+        } else if (SameText(text, candidate)) {
+            ++votes;
+        } else {
+            --votes;
+        }
+    }
+};
+
+// Repairs every entry's text (Repair::RepairText; Thai forms when the map has Thai), judges the map
+// by the statistics of the repaired texts of all its entries, then keeps only the usable entries
+// (algorithms §3.6). One pass counts every text and tests it; a repaired entry's counts are
+// replaced by those of its new text. The most codes one non-space text has matters only above half
+// the entries (Repair::Untrusted): a majority vote finds that text (again after a repair), the
+// filtering pass counts it. True when the map is untrusted.
+bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
+    const size_t count = map.entries.size();
+    std::vector<uint8_t> flags(count);
+    Repair::MapStats stats;
+    Vote vote;
+    uint32_t thaiEntries = 0;
+    bool mayRepair = false;
+    for (size_t e = 0; e < count; ++e) {
         const std::string_view text = map.Text(map.entries[e]);
-        if (repairedAny) Repair::Count(text, stats);
-        if (text == " ") continue;
-        uint64_t hash = 14695981039346656037ull;
-        for (unsigned char c : text) hash = (hash ^ c) * 1099511628211ull;
-        size_t slot = static_cast<size_t>(hash) & mask;
-        while (owners[slot] != kFree && map.Text(map.entries[owners[slot]]) != text) slot = (slot + 1) & mask;
-        if (owners[slot] == kFree) owners[slot] = e;
-        stats.largestShare = std::max(stats.largestShare, ++counts[owners[slot]]);
+        const uint8_t f = CountEntry(text, stats);
+        flags[e] = f;
+        thaiEntries += (f & kEntryThai) != 0;
+        mayRepair = mayRepair || (f & kEntryMayRepair) != 0;
+        vote.Add(text);
     }
+    if (mayRepair) {
+        context.thai = stats.thai;
+        std::string repaired;
+        Repair::MapStats before, after;
+        bool repairedAny = false;
+        for (size_t e = 0; e < count; ++e) {
+            if (!(flags[e] & kEntryMayRepair)) continue;
+            UnicodeEntry& entry = map.entries[e];
+            if (!Repair::RepairText(map.Text(entry), context, repaired)) continue;
+            if (map.text.size() + repaired.size() > UINT32_MAX) break;
+            thaiEntries -= (CountEntry(map.Text(entry), before) & kEntryThai) != 0;
+            const uint8_t f = CountEntry(repaired, after);
+            thaiEntries += (f & kEntryThai) != 0;
+            flags[e] = f;
+            entry.offset = static_cast<uint32_t>(map.text.size());
+            entry.length = static_cast<uint32_t>(repaired.size());
+            map.text += repaired;
+            repairedAny = true;
+        }
+        stats.entries = stats.entries - before.entries + after.entries;
+        stats.junk = stats.junk - before.junk + after.junk;
+        stats.latinLetters = stats.latinLetters - before.latinLetters + after.latinLetters;
+        stats.accented = stats.accented - before.accented + after.accented;
+        stats.thai = thaiEntries > 0;
+        if (repairedAny) {
+            vote = Vote();
+            for (const UnicodeEntry& entry : map.entries) vote.Add(map.Text(entry));
+        }
+    }
+    uint32_t share = 0;
+    size_t kept = 0;
+    for (size_t e = 0; e < count; ++e) {
+        const UnicodeEntry entry = map.entries[e];
+        if (vote.votes > 0 && SameText(map.Text(entry), vote.candidate)) ++share;
+        if (flags[e] & kEntryUsable) map.entries[kept++] = entry;
+    }
+    map.entries.resize(kept);
+    stats.largestShare = share;
+    return Repair::Untrusted(stats);
 }
 
 // Reads, repairs and judges a font's ToUnicode. `dropped` (when not null) receives the number of
@@ -706,11 +785,8 @@ bool LoadToUnicode(const Document& doc, const PdfValue& dict, const Repair::Cont
     const StreamStatus status = doc.StreamData(stream, data, kCMapStreamLimit);
     if (status == StreamStatus::Corrupt || status == StreamStatus::NotStream) return false;
     ParseToUnicode(data, out);
-    Repair::MapStats stats;
-    RepairToUnicode(out, context, stats);
-    untrusted = Repair::Untrusted(stats);
     const size_t parsed = out.entries.size();
-    FilterToUnicode(out);
+    untrusted = RepairToUnicode(out, context);
     if (dropped) *dropped = parsed - out.entries.size();
     return !out.entries.empty();
 }

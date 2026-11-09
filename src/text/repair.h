@@ -42,12 +42,32 @@ struct MapStats {
     uint32_t junk = 0;          // entries whose text is or holds junk after repair
     uint32_t latinLetters = 0;  // over all entries' text
     uint32_t accented = 0;      // Latin letters from U+00C0 up
-    uint32_t largestShare = 0;  // entries sharing the most common non-space text
+    uint32_t largestShare = 0;  // entries sharing the most common non-space text (LoadToUnicode
+                                // may give a smaller count when no text has more than half)
     bool thai = false;          // some entry is Thai
 };
 
 // Adds one entry's text to `stats` (texts sharing are counted by the caller into largestShare).
 void Count(std::string_view text, MapStats& stats);
+
+// IsJunk, inline for the counts of every ToUnicode entry.
+inline bool JunkCodePoint(uint32_t cp) {
+    if (cp == 0xFFFD) return true;
+    if (cp < 0x20) return cp != '\t' && cp != '\n' && cp != '\f';
+    if (cp >= 0x80 && cp <= 0x9F) return true;
+    return (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
+}
+
+// Count of a text that is one UTF-8 sequence decoding to `cp` (U+FFFD for one malformed byte).
+inline void CountCodePoint(uint32_t cp, MapStats& stats) {
+    ++stats.entries;
+    if (JunkCodePoint(cp)) ++stats.junk;
+    if ((cp < 0x80 && ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z')) || (cp >= 0xC0 && cp <= 0x24F && cp != 0xD7 && cp != 0xF7)) {
+        ++stats.latinLetters;
+        if (cp >= 0xC0) ++stats.accented;
+    }
+    if (cp >= 0x0E01 && cp <= 0x0E5B) stats.thai = true;
+}
 
 // Whether a ToUnicode map with these statistics is untrustworthy: most of its entries junk, a
 // majority of codes onto one character, or Latin text that is 70 % accented letters (legacy font
