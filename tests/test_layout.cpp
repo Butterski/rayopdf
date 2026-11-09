@@ -7,13 +7,16 @@
 #include "common/file.h"
 #include "common/utf8.h"
 #include "layout/convert.h"
+#include "layout/glyph_box.h"
 #include "layout/lines.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1227,6 +1230,78 @@ void TestShadingMathAndGutters() {
     RAYOPDF_CHECK(split && !joined, 743);
 }
 
+// The bits of a glyph's eight box floats.
+bool SameBoxBits(const Glyph& a, const Glyph& b) {
+    const float fa[8] = {a.x0, a.y0, a.x1, a.y1, a.u0, a.u1, a.vb, a.vt};
+    const float fb[8] = {b.x0, b.y0, b.x1, b.y1, b.u0, b.u1, b.vb, b.vt};
+    return std::memcmp(fa, fb, sizeof fa) == 0;
+}
+
+// layout/glyph_box.h: the SSE2 box has the scalar reference's bits on random terms and on the
+// edges (±0, equal corners, sums overflowing to infinity, every direction, centres on the clip's
+// edges, an empty clip), and the reference gives the box of a plain upright glyph.
+void TestGlyphBox() {
+    uint64_t state = 1;
+    const auto next = [&state]() {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(state >> 33);
+    };
+    // A finite value: random magnitudes and signs, with zeros of both signs, small integers (equal
+    // corners and centres on the clip) and huge values (overflow) mixed in.
+    const auto value = [&]() -> double {
+        switch (next() % 8) {
+        case 0: return (next() & 1) ? 0.0 : -0.0;
+        case 1: return static_cast<double>(static_cast<int>(next() % 9) - 4);
+        case 2: return ((next() & 1) ? 1 : -1) * 1e308 * (1 + (next() % 7) / 8.0);
+        case 3: return (static_cast<double>(next()) - 2147483648.0) / 65536.0 * 1e-300;
+        default: return (static_cast<double>(next()) - 2147483648.0) / 4194304.0;
+        }
+    };
+    size_t infinite = 0, clipped = 0, inside = 0;
+    for (int i = 0; i < 200000; ++i) {
+        const double xa0 = value(), xb0 = value(), yc0 = value(), yd0 = value(), yc1 = value(), yd1 = value();
+        BoxTerms t;
+        t.r[0] = value(), t.r[1] = value();
+        t.s0[0] = xa0 + yc0, t.s0[1] = xb0 + yd0;
+        t.s1[0] = xa0 + yc1, t.s1[1] = xb0 + yd1;
+        t.y0[0] = yc0, t.y0[1] = yd0;
+        t.y1[0] = yc1, t.y1[1] = yd1;
+        t.clipLo[0] = value(), t.clipLo[1] = value();
+        t.clipHi[0] = (next() & 3) ? t.clipLo[0] + std::fabs(value()) : value();
+        t.clipHi[1] = (next() & 3) ? t.clipLo[1] + std::fabs(value()) : value();
+        t.clipEmpty = next() % 16 == 0;
+        const double width = value(), e = value(), f = value();
+        const uint8_t dir = static_cast<uint8_t>(next() % 4);
+        Glyph scalar, simd;
+        const bool clipScalar = BoxScalar(t, width, e, f, dir, scalar);
+#if defined(RAYOPDF_GLYPH_BOX_SSE2)
+        const bool clipSimd = BoxSse2(t, width, e, f, dir, simd);
+#else
+        const bool clipSimd = BoxScalar(t, width, e, f, dir, simd);
+#endif
+        RAYOPDF_CHECK(SameBoxBits(scalar, simd), 744);
+        RAYOPDF_CHECK(clipScalar == clipSimd, 745);
+        infinite += std::isinf(scalar.x0) || std::isinf(scalar.y1);
+        (clipScalar ? clipped : inside)++;
+    }
+    RAYOPDF_CHECK(infinite > 0 && clipped > 0 && inside > 0, 746);
+    // An upright glyph 0.5 wide at size 10 from (100, 200), descent -0.25, ascent 0.75: Trm is
+    // [10 0 0 10 100 200], so the box is 100..105 by 197.5..207.5; a clip around it keeps it.
+    BoxTerms t{};
+    t.r[0] = 10, t.r[1] = 0;
+    t.s0[0] = 0, t.s0[1] = -2.5;
+    t.s1[0] = 0, t.s1[1] = 7.5;
+    t.y0[0] = 0, t.y0[1] = -2.5;
+    t.y1[0] = 0, t.y1[1] = 7.5;
+    t.clipLo[0] = -1, t.clipLo[1] = -1, t.clipHi[0] = 613, t.clipHi[1] = 793;
+    t.clipEmpty = false;
+    Glyph g;
+    const bool cut = HorizontalBox(t, 0.5, 100, 200, 0, g);
+    RAYOPDF_CHECK(!cut && g.x0 == 100 && g.x1 == 105 && g.y0 == 197.5f && g.y1 == 207.5f && g.u0 == 100 &&
+                      g.u1 == 105 && g.vb == 197.5f && g.vt == 207.5f,
+                  747);
+}
+
 } // namespace
 
 int main() {
@@ -1283,6 +1358,7 @@ int main() {
     TestTitleBlockAndRtlStop();
     TestMarkers();
     TestMonospaceDocument();
+    TestGlyphBox();
     std::puts("test_layout: all checks passed");
     return 0;
 }

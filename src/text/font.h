@@ -94,6 +94,10 @@ public:
         }
         return NextSlow(bytes, at, out);
     }
+    // A simple font's 256 slots and the pool their Pool texts are in (what Next reads inline);
+    // null for Type0 fonts. A slot that is not Pool must go through Next.
+    const FontSlot* SimpleSlots() const { return simple_; }
+    const char* SimplePool() const { return simplePool_; }
 
     FontKind Kind() const;
     // /BaseFont without a subset tag ("ABCDEF+"); "" for Type 3 fonts without a name.

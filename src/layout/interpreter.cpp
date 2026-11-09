@@ -3,6 +3,7 @@
 
 #include "common/minmax.h"
 #include "common/utf8.h"
+#include "layout/glyph_box.h"
 #include "layout/math.h"
 #include "pdf/content_lexer.h"
 
@@ -205,6 +206,77 @@ struct GlyphRun {
     // The clip widened by one unit, and whether it is empty.
     double clipX0 = 0, clipY0 = 0, clipX1 = 0, clipY1 = 0;
     bool clipEmpty = false;
+    // All eight terms above are finite: with a finite glyph edge and a finite origin no corner
+    // sum meets two opposite infinities, so no corner is NaN (PlaceGlyphs skips its NaN test).
+    bool termsFinite = false;
+};
+
+// The glyph flags a code's Unicode source implies, by Text::UnicodeSource.
+constexpr uint16_t kSourceFlags[] = {0, 0, 0, 0, kGlyphGuessed, kGlyphUnmapped};
+static_assert(static_cast<int>(Text::UnicodeSource::Guess) == 4 && static_cast<int>(Text::UnicodeSource::None) == 5,
+              "kSourceFlags follows Text::UnicodeSource");
+
+// What placing a text operator's glyphs needs (Interpreter::ShowText), in one local: the
+// graphics state's text parameters, Tm × CTM's linear part and what the glyph loop reads of the
+// run made for it. Only `ready` is initialised: Read sets the rest.
+struct Placement {
+    bool ready = false;
+    const GlyphRun* run;          // the rest of the run (run_, unchanged while ready)
+    double ta, tb, tc, td;        // the text matrix's linear part it was read for
+    double tma, tmb, tmc, tmd;    // Tm × CTM's linear part
+    double ctmA, ctmB, ctmC, ctmD, ctmE, ctmF;
+    const Text::Font* font;
+    const Text::FontSlot* slots;  // a simple font's slots (Font::SimpleSlots)
+    const char* pool;
+    double tfs, th, charSpace, wordSpace;
+    double riseC, riseD;          // Trise × (Tm × CTM)'s c and d: Trm's translation less Tm × CTM's
+    bool vertical, usable;
+    bool boxTerms;                // HorizontalBox applies: horizontal, all run terms finite
+    uint16_t runFlags;
+    BoxTerms box;
+    // What every glyph record of the string starts from: size, direction, page-local font and
+    // marked content.
+    Glyph proto;
+    uint8_t fontMath;
+    std::vector<GlyphUse>* uses;
+
+    void Read(const GState& gs, const Matrix& textMatrix, const Matrix& tm, const GlyphRun& r) {
+        ready = true;
+        run = &r;
+        ta = textMatrix.a, tb = textMatrix.b, tc = textMatrix.c, td = textMatrix.d;
+        tma = tm.a, tmb = tm.b, tmc = tm.c, tmd = tm.d;
+        ctmA = gs.ctm.a, ctmB = gs.ctm.b, ctmC = gs.ctm.c, ctmD = gs.ctm.d, ctmE = gs.ctm.e, ctmF = gs.ctm.f;
+        font = gs.font;
+        slots = gs.font->SimpleSlots();
+        pool = gs.font->SimplePool();
+        tfs = gs.fontSize, th = gs.hScale, charSpace = gs.charSpace, wordSpace = gs.wordSpace;
+        riseC = gs.rise * tm.c, riseD = gs.rise * tm.d;
+        vertical = r.vertical, usable = r.usable;
+        boxTerms = !r.vertical && r.termsFinite;
+        runFlags = r.flags;
+        box.r[0] = r.a, box.r[1] = r.b;
+        box.s0[0] = r.xa[0] + r.yc[0], box.s0[1] = r.xb[0] + r.yd[0];
+        box.s1[0] = r.xa[0] + r.yc[1], box.s1[1] = r.xb[0] + r.yd[1];
+        box.y0[0] = r.yc[0], box.y0[1] = r.yd[0];
+        box.y1[0] = r.yc[1], box.y1[1] = r.yd[1];
+        box.clipLo[0] = r.clipX0, box.clipLo[1] = r.clipY0;
+        box.clipHi[0] = r.clipX1, box.clipHi[1] = r.clipY1;
+        box.clipEmpty = r.clipEmpty;
+        proto = Glyph();
+        proto.size = r.size;
+        proto.dir = r.dir;
+        proto.font = gs.fontId;
+        fontMath = gs.fontMath;
+    }
+};
+
+// Where glyph placement is along the strings of a text operator: the text matrix's translation
+// and Tm × CTM's (which advances alike), the glyph counts for PageStats and the records written.
+struct GlyphCursor {
+    double te, tf;
+    double tme, tmf;
+    uint64_t shown = 0, unmapped = 0, guessed = 0;
+    size_t placed = 0;
 };
 
 // The same value bit for bit (a -0 is no 0).
@@ -213,6 +285,53 @@ inline bool SameBits(double x, double y) {
     std::memcpy(&u, &x, sizeof u);
     std::memcpy(&v, &y, sizeof v);
     return u == v;
+}
+
+// A glyph's box outside HorizontalBox's case (a vertical run, a term or the width not finite): the
+// corners [x y] × Trm with the glyph's own edge, its width (the right edge) or its vertical advance
+// (the bottom edge); their extremes by Fmin and Fmax where a corner is NaN. Returns whether the box
+// is clipped away.
+RAYOPDF_NOINLINE bool GeneralGlyphBox(const Placement& p, double width, double verticalAdvance, double e, double f,
+                                      Glyph& g) {
+    const GlyphRun& run = *p.run;
+    double xa1 = run.xa[1], xb1 = run.xb[1], yc0 = run.yc[0], yd0 = run.yd[0];
+    bool finite = run.termsFinite;
+    if (p.vertical) {
+        const double y0 = verticalAdvance < 0 ? verticalAdvance : -1;
+        yc0 = y0 * run.c, yd0 = y0 * run.d;
+        finite = finite && std::isfinite(y0);
+    } else {
+        xa1 = width * run.a, xb1 = width * run.b;
+        finite = finite && std::isfinite(width);
+    }
+    const double xa0 = run.xa[0], xb0 = run.xb[0], yc1 = run.yc[1], yd1 = run.yd[1];
+    const double dx[4] = {xa0 + yc0 + e, xa1 + yc0 + e, xa0 + yc1 + e, xa1 + yc1 + e};
+    const double dy[4] = {xb0 + yd0 + f, xb1 + yd0 + f, xb0 + yd1 + f, xb1 + yd1 + f};
+    double bx0, bx1, by0, by1;
+    // Without NaN, Fmin and Fmax are plain comparisons.
+    if (finite || (dx[0] == dx[0] && dx[1] == dx[1] && dx[2] == dx[2] && dx[3] == dx[3] && dy[0] == dy[0] &&
+                   dy[1] == dy[1] && dy[2] == dy[2] && dy[3] == dy[3])) {
+        BoxExtremes(dx[0], dx[1], dx[2], dx[3], bx0, bx1);
+        BoxExtremes(dy[0], dy[1], dy[2], dy[3], by0, by1);
+        WriteBox(bx0, by0, bx1, by1, p.proto.dir, g);
+    } else {
+        double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
+        bx0 = bx1 = dx[0], by0 = by1 = dy[0];
+        for (int i = 0; i < 4; ++i) {
+            bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
+            by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
+            double u, v;
+            ToFrame(p.proto.dir, dx[i], dy[i], u, v);
+            if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
+            fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
+            fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
+        }
+        g.x0 = float(bx0), g.y0 = float(by0), g.x1 = float(bx1), g.y1 = float(by1);
+        g.u0 = float(fu0), g.u1 = float(fu1), g.vb = float(fv0), g.vt = float(fv1);
+    }
+    // Clipped away: the glyph's centre is outside the clip (which lies within the page).
+    const double mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2;
+    return mx < run.clipX0 || mx > run.clipX1 || my < run.clipY0 || my > run.clipY1 || run.clipEmpty;
 }
 
 class Interpreter {
@@ -227,8 +346,14 @@ private:
     bool Execute(Op op, const ContentLexer& lexer, const PdfValue& resources, int depth);
     bool ShowString(std::string_view bytes);
     bool ShowArray(const PdfValue& array);
+    bool ShowText(const PdfValue* items, size_t count, std::string_view single);
+    bool ShowItems(const PdfValue* items, size_t count, std::string_view single, size_t& placed);
+    // kFast: ShowText's common case, where the tests PlaceGlyphs drops cannot change anything.
+    template <bool kFast>
+    bool PlaceGlyphs(std::string_view bytes, const Placement& p, GlyphCursor& cur);
+    void EndCursor(const GlyphCursor& cur);
+    bool PlaceGlyphsGeneral(std::string_view bytes, const Placement& p, double tme, double tmf);
     const GlyphRun& RunFor(const Text::Font& font, const Matrix& tm);
-    void EmitGlyph(const Text::Code& code, double e, double f, const GlyphRun& run);
     bool SetFont(const PdfValue& resources, std::string_view name, double size);
     void SetFontEntry(const PdfValue& entry, double size);
     void ApplyExtGState(const PdfValue& resources, std::string_view name);
@@ -920,40 +1045,17 @@ void Interpreter::EndMarked() {
     if (mc.actualLength == 0) c.flags |= kGlyphDropped;
 }
 
-bool Interpreter::ShowArray(const PdfValue& array) {
-    for (const PdfValue& item : array.Array()) {
-        if (budgetHit_) return true;
-        if (item.IsString()) {
-            if (!ShowString(item.String())) return false;
-        } else if (item.IsNumber()) {
-            const double adjust = item.Number();
-            if (!std::isfinite(adjust)) continue;
-            const double shift = -adjust / 1000 * gs_.fontSize;
-            Matrix t;
-            if (gs_.font && gs_.font->Vertical())
-                t.f = shift;
-            else
-                t.e = shift * gs_.hScale;
-            textMatrix_ = Multiply(t, textMatrix_);
-        }
-    }
-    return true;
+bool Interpreter::ShowString(std::string_view bytes) {
+    return ShowText(nullptr, 0, bytes);
 }
 
-// Appends the UTF-8 text of one code to the page text, normalized: presentation-form ligatures
-// expanded (algorithms §4.4). Returns the flags the text implies.
-uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
-    // One ASCII character, most glyphs: what the loop below does with it.
-    if (unicode.size() == 1 && static_cast<unsigned char>(unicode[0]) < 0x80) {
-        const char c = unicode[0];
-        if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) {
-            out.push_back(' ');
-            return kGlyphSpace;
-        }
-        if (c < 0x20 || c == 0x7F) return kGlyphSpace;
-        out.push_back(c);
-        return 0;
-    }
+bool Interpreter::ShowArray(const PdfValue& array) {
+    const PdfSpan<PdfValue> items = array.Array();
+    return ShowText(items.begin(), items.size(), std::string_view());
+}
+
+// AppendGlyphText past its one-ASCII-character case.
+RAYOPDF_NOINLINE uint16_t AppendGlyphTextGeneral(std::string_view unicode, std::string& out) {
     uint16_t flags = 0;
     size_t at = 0;
     uint32_t cp = 0;
@@ -984,6 +1086,23 @@ uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
     }
     if (any && allSpace) flags |= kGlyphSpace;
     return flags;
+}
+
+// Appends the UTF-8 text of one code to the page text, normalized: presentation-form ligatures
+// expanded (algorithms §4.4). Returns the flags the text implies. One ASCII character, most
+// glyphs, inline: what AppendGlyphTextGeneral's loop does with it.
+RAYOPDF_HOT_INLINE uint16_t AppendGlyphText(std::string_view unicode, std::string& out) {
+    if (unicode.size() == 1 && static_cast<unsigned char>(unicode[0]) < 0x80) {
+        const char c = unicode[0];
+        if (c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D) {
+            out.push_back(' ');
+            return kGlyphSpace;
+        }
+        if (c < 0x20 || c == 0x7F) return kGlyphSpace;
+        out.push_back(c);
+        return 0;
+    }
+    return AppendGlyphTextGeneral(unicode, out);
 }
 
 const GlyphRun& Interpreter::RunFor(const Text::Font& font, const Matrix& tm) {
@@ -1046,149 +1165,312 @@ const GlyphRun& Interpreter::RunFor(const Text::Font& font, const Matrix& tm) {
     const Box& clip = gs_.clip;
     run.clipX0 = clip.x0 - 1, run.clipY0 = clip.y0 - 1, run.clipX1 = clip.x1 + 1, run.clipY1 = clip.y1 + 1;
     run.clipEmpty = clip.Empty();
+    bool finite = true;
+    for (int i = 0; i < 2; ++i)
+        finite = finite && std::isfinite(run.xa[i]) && std::isfinite(run.xb[i]) && std::isfinite(run.yc[i]) &&
+                 std::isfinite(run.yd[i]);
+    run.termsFinite = finite;
     return run;
 }
 
-bool Interpreter::ShowString(std::string_view bytes) {
-    const Text::Font* font = gs_.font;
-    if (!font) return false;
-    const double tfs = gs_.fontSize;
-    const double th = gs_.hScale;
-    Matrix tm = Multiply(textMatrix_, gs_.ctm);
-    // What every glyph of the string shares, worked out once (or kept from the string before).
-    const GlyphRun& run = RunFor(*font, tm);
-    const bool vertical = run.vertical;
-    size_t at = 0;
-    Text::Code code;
-    while (at < bytes.size() && font->Next(bytes, at, code)) {
-        // Trm's translation; its linear part is the run's.
-        const double e = gs_.rise * tm.c + tm.e;
-        const double f = gs_.rise * tm.d + tm.f;
-        double advance;
-        if (vertical) {
-            advance = code.verticalAdvance * tfs + gs_.charSpace + (code.wordSpace ? gs_.wordSpace : 0);
-        } else {
-            advance = (code.width * tfs + gs_.charSpace + (code.wordSpace ? gs_.wordSpace : 0)) * th;
+// Shows the string `single` (Tj, ', "; `items` null) or the strings and position adjustments of a
+// TJ array (`items`, `count`). Glyph placement:
+// - What placing glyphs needs from the graphics state and the run is read once into a local
+//   (Placement), for a TJ array once for all its strings while the text matrix's linear part keeps
+//   its bits: an adjustment moves only the translation, so Trm's linear part and the run stay, and
+//   Trm's translation is Multiply's own expression. Locals, not members: a glyph's text is stored
+//   as chars, which may alias any member, so a member read in the glyph loop would be loaded again
+//   after every glyph.
+// - A simple font's code is read from its slot inline (as Font::Next does); anything else goes
+//   through Next.
+// - Each code's record is written in place in the page's glyph vector: for the common case
+//   (PlaceGlyphs<true>) the vector is grown once per operator by a record per byte of its strings,
+//   and cut back to the records written when the operator ends (ShowText) or before the general
+//   case appends its own.
+bool Interpreter::ShowText(const PdfValue* items, size_t count, std::string_view single) {
+    size_t placed = page_.glyphs.size();
+    const bool shown = ShowItems(items, count, single, placed);
+    page_.glyphs.resize(placed);
+    return shown;
+}
+
+// ShowText's strings and adjustments; `placed` counts the records written, which the vector may
+// exceed.
+RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t count, std::string_view single,
+                                               size_t& placed) {
+    std::vector<Glyph>& glyphs = page_.glyphs;
+    Placement p;
+    int vertical = -1;  // the font's writing mode, read at the first adjustment
+    const size_t strings = items != nullptr ? count : 1;
+    // The bytes of this and the later strings: the records the vector is grown by.
+    size_t remaining = single.size();
+    for (size_t k = 0; items != nullptr && k < count; ++k)
+        if (items[k].IsString()) remaining += items[k].String().size();
+    for (size_t k = 0; k < strings; ++k) {
+        std::string_view bytes = single;
+        if (items != nullptr) {
+            const PdfValue& item = items[k];
+            if (budgetHit_) return true;
+            if (item.IsNumber()) {
+                const double adjust = item.Number();
+                if (!std::isfinite(adjust)) continue;
+                const double shift = -adjust / 1000 * gs_.fontSize;
+                if (vertical < 0) vertical = gs_.font && gs_.font->Vertical() ? 1 : 0;
+                // Multiply(t, textMatrix_) for t = [1 0 0 1 tx ty], term by term: the same
+                // products and sums (1·x is x), inline.
+                const double tx = vertical ? 0 : shift * gs_.hScale, ty = vertical ? shift : 0;
+                const Matrix m = textMatrix_;
+                textMatrix_.a = m.a + 0.0 * m.c;
+                textMatrix_.b = m.b + 0.0 * m.d;
+                textMatrix_.c = 0.0 * m.a + m.c;
+                textMatrix_.d = 0.0 * m.b + m.d;
+                textMatrix_.e = tx * m.a + ty * m.c + m.e;
+                textMatrix_.f = tx * m.b + ty * m.d + m.f;
+                continue;
+            }
+            if (!item.IsString()) continue;
+            bytes = item.String();
         }
-        EmitGlyph(code, e, f, run);
-        if (budgetHit_) return true;
-        if (!std::isfinite(advance)) advance = 0;
-        if (vertical) {
-            tm.e += advance * tm.c;
-            tm.f += advance * tm.d;
-            textMatrix_.e += advance * textMatrix_.c;
-            textMatrix_.f += advance * textMatrix_.d;
+        remaining -= bytes.size();
+        const Text::Font* font = gs_.font;
+        if (!font) return false;
+        // Tm × CTM: its linear part and the run kept from the string before when the text
+        // matrix's linear part has the same bits (the graphics state does not change inside TJ).
+        double tme, tmf;
+        if (p.ready && SameBits(textMatrix_.a, p.ta) && SameBits(textMatrix_.b, p.tb) &&
+            SameBits(textMatrix_.c, p.tc) && SameBits(textMatrix_.d, p.td)) {
+            tme = textMatrix_.e * p.ctmA + textMatrix_.f * p.ctmC + p.ctmE;
+            tmf = textMatrix_.e * p.ctmB + textMatrix_.f * p.ctmD + p.ctmF;
         } else {
-            tm.e += advance * tm.a;
-            tm.f += advance * tm.b;
-            textMatrix_.e += advance * textMatrix_.a;
-            textMatrix_.f += advance * textMatrix_.b;
+            const Matrix tm = Multiply(textMatrix_, gs_.ctm);
+            tme = tm.e, tmf = tm.f;
+            p.Read(gs_, textMatrix_, tm, RunFor(*font, tm));
+            p.proto.mcid = mcid_;
+            p.proto.mcStream = mcStream_;
+            p.uses = stats_.uses;
+        }
+        // The common case: a horizontal run with finite terms and size, no math font, no glyph
+        // uses kept, and room for a record per byte, so the glyph budget cannot run out.
+        if (p.boxTerms && p.usable && p.fontMath == 0 && p.uses == nullptr &&
+            placed + bytes.size() <= kMaxGlyphsPerPage) {
+            if (glyphs.size() < placed + bytes.size()) {
+                const size_t want = placed + bytes.size() + remaining;
+                glyphs.resize(want < kMaxGlyphsPerPage ? want : kMaxGlyphsPerPage);
+            }
+            // The string, then the array's next strings while the case holds, in one cursor:
+            // an adjustment that leaves the text matrix's linear part with its bits moves only
+            // the cursor's translation (the outer loop's expressions), and the next string's Trm
+            // translation is the one the outer loop would compute.
+            GlyphCursor cur{textMatrix_.e, textMatrix_.f, tme, tmf};
+            cur.placed = placed;
+            bool open = true;
+            for (;;) {
+                if (!PlaceGlyphs<true>(bytes, p, cur)) {
+                    open = false;
+                    break;
+                }
+                if (items == nullptr) break;
+                size_t next = k + 1;
+                bool adjusted = false;  // the linear part lost its bits: the outer loop goes on
+                for (; next < count; ++next) {
+                    const PdfValue& item = items[next];
+                    if (item.IsString()) break;
+                    if (!item.IsNumber()) continue;
+                    const double adjust = item.Number();
+                    if (!std::isfinite(adjust)) continue;
+                    const double tx = -adjust / 1000 * p.tfs * p.th, ty = 0;
+                    const double a = p.ta + 0.0 * p.tc, b = p.tb + 0.0 * p.td;
+                    const double c = 0.0 * p.ta + p.tc, d = 0.0 * p.tb + p.td;
+                    const double e = tx * p.ta + ty * p.tc + cur.te, f = tx * p.tb + ty * p.td + cur.tf;
+                    cur.te = e, cur.tf = f;
+                    if (!SameBits(a, p.ta) || !SameBits(b, p.tb) || !SameBits(c, p.tc) || !SameBits(d, p.td)) {
+                        textMatrix_.a = a, textMatrix_.b = b, textMatrix_.c = c, textMatrix_.d = d;
+                        adjusted = true;
+                        break;
+                    }
+                }
+                k = next;
+                if (adjusted || next >= count) break;
+                bytes = items[next].String();
+                if (budgetHit_ || cur.placed + bytes.size() > kMaxGlyphsPerPage ||
+                    glyphs.size() < cur.placed + bytes.size()) {
+                    k = next - 1;  // the outer loop takes this string
+                    break;
+                }
+                remaining -= bytes.size();
+                cur.tme = cur.te * p.ctmA + cur.tf * p.ctmC + p.ctmE;
+                cur.tmf = cur.te * p.ctmB + cur.tf * p.ctmD + p.ctmF;
+            }
+            placed = cur.placed;
+            EndCursor(cur);
+            if (!open) return true;
+        } else {
+            glyphs.resize(placed);
+            const bool open = PlaceGlyphsGeneral(bytes, p, tme, tmf);
+            placed = glyphs.size();
+            if (!open) return true;
         }
     }
     return true;
 }
 
-void Interpreter::EmitGlyph(const Text::Code& code, double e, double f, const GlyphRun& run) {
-    stats_.glyphs++;
-    if (code.source == Text::UnicodeSource::None) stats_.unmapped++;
-    if (code.source == Text::UnicodeSource::Guess) stats_.guessed++;
-    if (page_.glyphs.size() >= kMaxGlyphsPerPage || page_.text.size() >= (size_t(1) << 30)) {
-        budgetHit_ = true;
-        return;
-    }
-    if (!run.usable || !std::isfinite(e) || !std::isfinite(f)) return;
-
-    Glyph g;
-    g.dir = run.dir;
-    // The corners [x y] × Trm: the run's terms with the glyph's own edge, its width (the right
-    // edge) or its vertical advance (the bottom edge).
-    double xa0 = run.xa[0], xa1 = run.xa[1], xb0 = run.xb[0], xb1 = run.xb[1];
-    double yc0 = run.yc[0], yc1 = run.yc[1], yd0 = run.yd[0], yd1 = run.yd[1];
-    if (run.vertical) {
-        const double y0 = code.verticalAdvance < 0 ? code.verticalAdvance : -1;
-        yc0 = y0 * run.c, yd0 = y0 * run.d;
-    } else {
-        const double x1 = code.width;
-        xa1 = x1 * run.a, xb1 = x1 * run.b;
-    }
-    const double dx[4] = {xa0 + yc0 + e, xa1 + yc0 + e, xa0 + yc1 + e, xa1 + yc1 + e};
-    const double dy[4] = {xb0 + yd0 + f, xb1 + yd0 + f, xb0 + yd1 + f, xb1 + yd1 + f};
-    double bx0 = dx[0], bx1 = dx[0], by0 = dy[0], by1 = dy[0];
-    double fu0 = 0, fu1 = 0, fv0 = 0, fv1 = 0;
-    const bool ordered = dx[0] == dx[0] && dx[1] == dx[1] && dx[2] == dx[2] && dx[3] == dx[3] && dy[0] == dy[0] &&
-                         dy[1] == dy[1] && dy[2] == dy[2] && dy[3] == dy[3];
-    if (RAYOPDF_LIKELY(ordered)) {
-        // No NaN: Fmin/Fmax are plain comparisons, each keeping the later of equal values. The
-        // frame's coordinates are the device ones permuted and negated (ToFrame), so their extremes
-        // are the device extremes, negated where the axis is: the same corner, the same value.
-        bx0 = bx0 < dx[1] ? bx0 : dx[1], bx1 = bx1 > dx[1] ? bx1 : dx[1];
-        by0 = by0 < dy[1] ? by0 : dy[1], by1 = by1 > dy[1] ? by1 : dy[1];
-        bx0 = bx0 < dx[2] ? bx0 : dx[2], bx1 = bx1 > dx[2] ? bx1 : dx[2];
-        by0 = by0 < dy[2] ? by0 : dy[2], by1 = by1 > dy[2] ? by1 : dy[2];
-        bx0 = bx0 < dx[3] ? bx0 : dx[3], bx1 = bx1 > dx[3] ? bx1 : dx[3];
-        by0 = by0 < dy[3] ? by0 : dy[3], by1 = by1 > dy[3] ? by1 : dy[3];
-        switch (g.dir) {
-        case 1: fu0 = by0, fu1 = by1, fv0 = -bx1, fv1 = -bx0; break;
-        case 2: fu0 = -bx1, fu1 = -bx0, fv0 = -by1, fv1 = -by0; break;
-        case 3: fu0 = -by1, fu1 = -by0, fv0 = bx0, fv1 = bx1; break;
-        default: fu0 = bx0, fu1 = bx1, fv0 = by0, fv1 = by1; break;
+// The glyphs of one string, from the cursor's translations on. False when the glyph budget ran out.
+// With kFast (ShowText's common case) the run is horizontal with finite terms and usable, no math
+// font or glyph uses apply, and the glyph vector holds a record past `cur.placed` for every byte of
+// the string: each is written there and counted. Otherwise records are appended.
+template <bool kFast>
+RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const Placement& p, GlyphCursor& cur) {
+    const bool vertical = kFast ? false : p.vertical;
+    const Text::Font* font = p.font;
+    // The text matrix moves by each advance; its linear part stays.
+    double &te = cur.te, &tf = cur.tf, &tme = cur.tme, &tmf = cur.tmf;
+    uint64_t &shown = cur.shown, &unmapped = cur.unmapped, &guessed = cur.guessed;
+    size_t& placed = cur.placed;
+    std::vector<Glyph>& glyphs = page_.glyphs;
+    std::string& text = page_.text;
+    Glyph* const records = glyphs.data();
+    bool open = true;
+    size_t at = 0;
+    while (at < bytes.size()) {
+        // The next code: a simple font's slot read inline, as Font::Next does; anything else
+        // through Next.
+        uint32_t codeValue;
+        uint8_t codeBytes;
+        double width, verticalAdvance;
+        bool wordSpaceCode;
+        Text::UnicodeSource source;
+        std::string_view unicode;
+        const uint8_t c = static_cast<uint8_t>(bytes[at]);
+        if (p.slots != nullptr && p.slots[c].state == Text::FontSlotState::Pool) {
+            const Text::FontSlot& slot = p.slots[c];
+            ++at;
+            codeValue = c;
+            codeBytes = 1;
+            width = slot.width;
+            verticalAdvance = 0;
+            wordSpaceCode = c == 32;
+            source = slot.source;
+            unicode = std::string_view(p.pool + slot.offset, slot.length);
+        } else {
+            Text::Code code;
+            if (!font->Next(bytes, at, code)) break;
+            codeValue = code.code;
+            codeBytes = code.bytes;
+            width = code.width;
+            verticalAdvance = code.verticalAdvance;
+            wordSpaceCode = code.wordSpace;
+            source = code.source;
+            unicode = code.unicode;
         }
-    } else {
-        for (int i = 0; i < 4; ++i) {
-            bx0 = Fmin(bx0, dx[i]), bx1 = Fmax(bx1, dx[i]);
-            by0 = Fmin(by0, dy[i]), by1 = Fmax(by1, dy[i]);
-            double u, v;
-            ToFrame(g.dir, dx[i], dy[i], u, v);
-            if (i == 0) fu0 = fu1 = u, fv0 = fv1 = v;
-            fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
-            fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
+        // Trm's translation; its linear part is the run's.
+        const double e = p.riseC + tme;
+        const double f = p.riseD + tmf;
+        double advance;
+        if (vertical) {
+            advance = verticalAdvance * p.tfs + p.charSpace + (wordSpaceCode ? p.wordSpace : 0);
+        } else {
+            advance = (width * p.tfs + p.charSpace + (wordSpaceCode ? p.wordSpace : 0)) * p.th;
+        }
+        shown++;
+        if (source == Text::UnicodeSource::None) unmapped++;
+        if (source == Text::UnicodeSource::Guess) guessed++;
+        if ((!kFast && glyphs.size() >= kMaxGlyphsPerPage) || text.size() >= (size_t(1) << 30)) {
+            // The budget ends the page; this code does not move the text matrix.
+            budgetHit_ = true;
+            open = false;
+            break;
+        }
+        if ((kFast || p.usable) && std::isfinite(e) && std::isfinite(f)) {
+            // The text first: the box below then keeps no value across a call.
+            const uint32_t textAt = static_cast<uint32_t>(text.size());
+            uint16_t flags;
+            size_t length;
+            if (unicode.size() == 1 && static_cast<unsigned char>(unicode[0]) - 0x21u < 0x5Eu) {
+                // A printable ASCII character other than the space: AppendGlyphText's first case.
+                text.push_back(unicode[0]);
+                flags = 0, length = 1;
+            } else {
+                flags = AppendGlyphText(unicode, text);
+                length = text.size() - textAt;
+            }
+            flags |= p.runFlags | kSourceFlags[static_cast<uint8_t>(source)];
+            if (length == 0 && source != Text::UnicodeSource::None) flags |= kGlyphDropped;  // control characters
+            if (!kFast && RAYOPDF_UNLIKELY(p.fontMath != 0)) {
+                // Math fonts (layout/math.h): glyphs left without text keep their code for
+                // --math=latex, and math italic fonts read through glyph names are marked (TeX's
+                // \phi is AGL's "phi1").
+                if (source == Text::UnicodeSource::None && codeBytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage)
+                    page_.mathCodes.push_back(MathCode{static_cast<uint32_t>(glyphs.size()), static_cast<uint8_t>(codeValue)});
+                if (p.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
+                    (source == Text::UnicodeSource::Encoding || source == Text::UnicodeSource::FontProgram) &&
+                    p.proto.font < page_.fontMath.size())
+                    page_.fontMath[p.proto.font] |= kMathFontNamed;
+            }
+
+            // The record: in kFast a default one the vector was grown by, given every field (the
+            // prototype's, then the box's and the glyph's own); else appended as the prototype.
+            // Its box: the corners [x y] × Trm, the run's terms with the glyph's own edge, its
+            // width (the right edge) or its vertical advance (the bottom edge).
+            Glyph& g = kFast ? records[placed++] : glyphs.emplace_back(p.proto);
+            if (kFast) {
+                g.size = p.proto.size;
+                g.dir = p.proto.dir;
+                g.mcStream = p.proto.mcStream;
+                g.font = p.proto.font;
+                g.mcid = p.proto.mcid;
+            }
+            const bool clipped = (kFast || p.boxTerms) && std::isfinite(width)
+                                     ? HorizontalBox(p.box, width, e, f, p.proto.dir, g)  // no NaN corner (termsFinite)
+                                     : GeneralGlyphBox(p, width, verticalAdvance, e, f, g);
+            double ou, ov = f;
+            if (RAYOPDF_UNLIKELY(p.proto.dir != 0)) ToFrame(p.proto.dir, e, f, ou, ov);
+            g.v = float(ov);
+            g.text = textAt;
+            g.textLength = static_cast<uint16_t>(length < 65535 ? length : 65535);
+            g.flags = clipped ? static_cast<uint16_t>(flags | kGlyphClipped) : flags;
+            if (!kFast && RAYOPDF_UNLIKELY(p.uses != nullptr)) {
+                GlyphUse use;
+                use.glyph = static_cast<uint32_t>(glyphs.size() - 1);
+                use.text = textAt;
+                use.font = font;
+                use.code = codeValue;
+                use.bytes = codeBytes;
+                const double m[6] = {p.run->a, p.run->b, p.run->c, p.run->d, e, f};
+                for (int i = 0; i < 6; ++i) use.matrix[i] = static_cast<float>(m[i]);
+                p.uses->push_back(use);
+            }
+        }
+        if (!std::isfinite(advance)) advance = 0;
+        if (vertical) {
+            tme += advance * p.tmc;
+            tmf += advance * p.tmd;
+            te += advance * p.tc;
+            tf += advance * p.td;
+        } else {
+            tme += advance * p.tma;
+            tmf += advance * p.tmb;
+            te += advance * p.ta;
+            tf += advance * p.tb;
         }
     }
-    double ou, ov;
-    ToFrame(g.dir, e, f, ou, ov);
-    g.x0 = float(bx0), g.y0 = float(by0), g.x1 = float(bx1), g.y1 = float(by1);
-    g.u0 = float(fu0), g.u1 = float(fu1), g.vb = float(fv0), g.vt = float(fv1), g.v = float(ov);
-    g.size = run.size;
-    g.font = gs_.fontId;
-    g.mcid = mcid_;
-    g.mcStream = mcStream_;
+    return open;
+}
 
-    uint16_t flags = run.flags;
-    // Clipped away: the glyph's centre is outside the clip (which lies within the page).
-    const double mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2;
-    if (mx < run.clipX0 || mx > run.clipX1 || my < run.clipY0 || my > run.clipY1 || run.clipEmpty)
-        flags |= kGlyphClipped;
-    if (code.source == Text::UnicodeSource::None) flags |= kGlyphUnmapped;
-    if (code.source == Text::UnicodeSource::Guess) flags |= kGlyphGuessed;
-    if (RAYOPDF_UNLIKELY(gs_.fontMath != 0)) {
-        // Math fonts (layout/math.h): glyphs left without text keep their code for --math=latex,
-        // and math italic fonts read through glyph names are marked (TeX's \phi is AGL's "phi1").
-        if (code.source == Text::UnicodeSource::None && code.bytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage)
-            page_.mathCodes.push_back(MathCode{static_cast<uint32_t>(page_.glyphs.size()), static_cast<uint8_t>(code.code)});
-        if (gs_.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
-            (code.source == Text::UnicodeSource::Encoding || code.source == Text::UnicodeSource::FontProgram) &&
-            gs_.fontId < page_.fontMath.size())
-            page_.fontMath[gs_.fontId] |= kMathFontNamed;
-    }
+// Ends a run of strings placed from `cur`: the text matrix's translation and the counts.
+RAYOPDF_HOT_INLINE void Interpreter::EndCursor(const GlyphCursor& cur) {
+    textMatrix_.e = cur.te;
+    textMatrix_.f = cur.tf;
+    stats_.glyphs += cur.shown;
+    stats_.unmapped += cur.unmapped;
+    stats_.guessed += cur.guessed;
+}
 
-    g.text = static_cast<uint32_t>(page_.text.size());
-    flags |= AppendGlyphText(code.unicode, page_.text);
-    const size_t length = page_.text.size() - g.text;
-    g.textLength = static_cast<uint16_t>(length < 65535 ? length : 65535);
-    if (length == 0 && !(flags & kGlyphUnmapped)) flags |= kGlyphDropped;  // control characters
-    g.flags = flags;
-    page_.glyphs.push_back(g);
-    if (RAYOPDF_UNLIKELY(stats_.uses != nullptr)) {
-        GlyphUse use;
-        use.glyph = static_cast<uint32_t>(page_.glyphs.size() - 1);
-        use.text = g.text;
-        use.font = gs_.font;
-        use.code = code.code;
-        use.bytes = code.bytes;
-        const double m[6] = {run.a, run.b, run.c, run.d, e, f};
-        for (int i = 0; i < 6; ++i) use.matrix[i] = static_cast<float>(m[i]);
-        stats_.uses->push_back(use);
-    }
+// PlaceGlyphs outside its common case, out of line: ShowText's glyph loop keeps one inline copy.
+RAYOPDF_NOINLINE bool Interpreter::PlaceGlyphsGeneral(std::string_view bytes, const Placement& p, double tme, double tmf) {
+    GlyphCursor cur{textMatrix_.e, textMatrix_.f, tme, tmf};
+    const bool open = PlaceGlyphs<false>(bytes, p, cur);
+    EndCursor(cur);
+    return open;
 }
 
 void Interpreter::ReadLinks(int index) {
