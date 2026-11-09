@@ -47,7 +47,8 @@ struct Word {
 
 bool IsAsciiAlnum(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 
-uint32_t FirstOf(std::string_view t) {
+RAYOPDF_HOT_INLINE uint32_t FirstOf(std::string_view t) {
+    if (!t.empty() && static_cast<unsigned char>(t[0]) < 0x80) return static_cast<unsigned char>(t[0]);
     uint32_t cp = 0;
     size_t length = 0;
     return Utf8::Decode(t, 0, cp, length) ? cp : 0;
@@ -89,6 +90,11 @@ public:
     bool Display(const Block& block);
 
 private:
+    // Inline's path for a block that needs none of its passes: no glyph in a style it writes, no
+    // script, no inline image, no link annotation on its pages (with styles) and Unicode math. Its
+    // words go to out_ as they are collected, by CollectWords' word, soft hyphen and dehyphenation
+    // rules and Inline's escaping. False, with out_ as it was, when the block needs the full path.
+    bool InlinePlain(const Block& block, bool styles);
     void CollectWords(const Block& block);
     void StyleWords(bool styles);
     // Opens and closes delimiters so that exactly the styles `target` are open, nested properly;
@@ -135,9 +141,10 @@ private:
     std::vector<Word> words_;
     std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
     std::vector<uint8_t> kinds_;     // per Word: upright, italic phrase, math or operator (StyleWords)
-    std::vector<uint32_t> wordOf_;   // per GlyphRef: its word
-    std::vector<uint32_t> runEnd_;   // per style and GlyphRef: where the style's run from it ends
-    std::vector<int32_t> before_, after_;  // per GlyphRef: the nearest letter glyph before / after it
+    std::vector<uint32_t> wordOf_;   // per GlyphRef: its word (CollectWords)
+    size_t runFrom_[kStyleCount] = {}, runTo_[kStyleCount] = {};  // per style: the last run SetStyle walked
+    std::vector<int32_t> before_;    // per GlyphRef: the nearest letter glyph before it, and firm letter
+    uint8_t set_ = 0;                // the styles some glyph of the block is set in (CollectWords)
     uint8_t stack_[kStyleCount] = {};  // open styles, outermost first
     int depth_ = 0;
     std::string plain_;
@@ -150,29 +157,50 @@ private:
 };
 
 void Writer::CollectWords(const Block& block) {
-    refs_.clear();
     words_.clear();
+    // refs_ (and wordOf_) are sized once for every glyph of the block's lines and cut to the
+    // glyphs kept.
+    size_t bound = 0;
+    for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+        const BlockLine& ref = lines_[bl];
+        const Line& line = pages_[ref.page].lines[ref.line];
+        if (ref.skip < line.count) bound += line.count - ref.skip;
+    }
+    refs_.resize(bound);
+    if (wordOf_.size() < bound) wordOf_.resize(bound);
+    GlyphRef* const refs = refs_.data();
+    uint32_t* const wordOf = wordOf_.data();
+    uint32_t n = 0;
+    uint32_t word = 0;  // the word being collected: words_.size() - 1 once there is one
+    // Words' counts follow from where the next one starts (only the last word's last glyph is ever
+    // taken out again); the styles some glyph is set in (StyleWords) from the faces of the glyphs
+    // that are no image. A hyphen taken out again may add to them, which only makes StyleWords
+    // look for styles no glyph has.
+    uint16_t faces = 0;
+    bool code = false;
     bool joinNext = false;  // the previous line ended in a hyphen that joins its word to this line
     for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
-        const uint32_t lineFirst = static_cast<uint32_t>(refs_.size());
+        const uint32_t lineFirst = n;
         for (uint32_t k = ref.skip; k < line.count; ++k) {
             const uint32_t gi = page.lineGlyphs[line.first + k];
             const Glyph& g = page.glyphs[gi];
             const std::string_view text = page.GlyphText(g);
             // Soft hyphens are invisible except at a line break.
-            if (text == "\xC2\xAD" && k + 1 < line.count) continue;
-            bool newWord = words_.empty() || (g.flags & kGlyphSpaceBefore) || k == ref.skip;
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) continue;
+            const uint16_t f = g.flags;
+            bool newWord = n == 0 || (f & kGlyphSpaceBefore) || k == ref.skip;
             if (k == ref.skip && joinNext) newWord = false;
             if (newWord) {
                 Word w;
-                w.first = static_cast<uint32_t>(refs_.size());
-                w.spaceBefore = !words_.empty();
+                w.first = n;
+                w.spaceBefore = n != 0;
                 // CJK text has no word spaces: a line break between two CJK characters joins them.
-                if (w.spaceBefore && k == ref.skip && IsCjk(FirstOf(text)) && IsCjk(LastOf(Text(refs_.back()))))
+                if (w.spaceBefore && k == ref.skip && IsCjk(FirstOf(text)) && IsCjk(LastOf(Text(refs[n - 1]))))
                     w.spaceBefore = false;
+                word = static_cast<uint32_t>(words_.size());
                 words_.push_back(w);
             }
             uint8_t script = kScriptNone;
@@ -180,19 +208,27 @@ void Writer::CollectWords(const Block& block) {
                 script = kScriptSup;
             else if (IsSubscript(g, line))
                 script = kScriptSub;
-            refs_.push_back(GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), g.flags, script,
-                                     static_cast<uint8_t>(refs_.size() == lineFirst)});
-            words_.back().count++;
+            refs[n] = GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), f, script,
+                               static_cast<uint8_t>(n == lineFirst)};
+            wordOf[n] = word;
+            ++n;
+            if (!(f & kGlyphImage)) {
+                faces |= f;
+                if ((f & kGlyphMonospace) && !monoIsBody_ && !code) {
+                    const uint32_t cp = FirstOf(text);
+                    code = !(cp >= 0x1D400 && cp <= 0x1D7FF);
+                }
+            }
         }
         joinNext = false;
         // Dehyphenation (algorithms §4.4): a hyphen ending a line, after a letter, before a line
         // that starts in lowercase, joins the halves of the word.
-        if (bl + 1 >= block.first + block.count || words_.empty()) continue;
-        Word& w = words_.back();
-        if (w.count < 2) continue;
-        const std::string_view last = Text(refs_[w.first + w.count - 1]);
+        if (bl + 1 >= block.first + block.count || n == 0) continue;
+        const uint32_t wordFirst = words_.back().first;
+        if (n - wordFirst < 2) continue;
+        const std::string_view last = Text(refs[n - 1]);
         if (last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
-        const std::string_view before = Text(refs_[w.first + w.count - 2]);
+        const std::string_view before = Text(refs[n - 2]);
         const unsigned char b0 = before.empty() ? 0 : static_cast<unsigned char>(before[0]);
         const bool letterBefore = (b0 >= 'a' && b0 <= 'z') || (b0 >= 'A' && b0 <= 'Z') || b0 >= 0xC3;
         const BlockLine& nextRef = lines_[bl + 1];
@@ -204,21 +240,30 @@ void Writer::CollectWords(const Block& block) {
         const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
         if (!letterBefore || !lowerNext) {
             // A soft hyphen that does not join still leaves no character.
-            if (last == "\xC2\xAD") {
-                w.count--;
-                refs_.pop_back();
-            }
+            if (last == "\xC2\xAD") --n;
             continue;
         }
-        w.count--;
-        refs_.pop_back();
+        --n;
         joinNext = true;
     }
+    refs_.resize(n);
+    for (size_t i = 0; i < words_.size(); ++i)
+        words_[i].count = (i + 1 < words_.size() ? words_[i + 1].first : n) - words_[i].first;
+    uint8_t set = code ? kStyleCode : 0;
+    if ((faces & kGlyphBold) && !boldIsBody_) set |= kStyleBold;
+    if ((faces & kGlyphItalic) && !italicIsBody_) set |= kStyleItalic;
+    if (faces & kGlyphStrike) set |= kStyleStrike;
+    set_ = set;
     // Empty words (a lone soft hyphen) leave.
     size_t kept = 0;
-    for (size_t i = 0; i < words_.size(); ++i)
-        if (words_[i].count > 0) words_[kept++] = words_[i];
-    words_.resize(kept);
+    while (kept < words_.size() && words_[kept].count > 0) ++kept;
+    if (kept < words_.size()) {
+        for (size_t i = kept; i < words_.size(); ++i)
+            if (words_[i].count > 0) words_[kept++] = words_[i];
+        words_.resize(kept);
+        for (uint32_t i = 0; i < kept; ++i)
+            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) wordOf[k] = i;
+    }
     if (!words_.empty()) words_[0].spaceBefore = false;
 }
 
@@ -313,24 +358,10 @@ void Writer::StyleWords(bool styles) {
     if (!styles || n == 0) return;
     constexpr uint8_t kLetter = 0x80;  // a letter or digit, while the styles are worked out
     constexpr uint8_t kStyles = kStyleBold | kStyleItalic | kStyleCode | kStyleStrike;
-    // A glyph is written in a style only when some glyph of the block is set in it: a block set in
-    // none (most body text) has every glyph's styles 0 and needs none of the passes below.
-    uint8_t set = 0;
-    for (uint32_t k = 0; k < n; ++k) {
-        const uint16_t f = refs_[k].flags;
-        if (f & kGlyphImage) continue;
-        if ((f & kGlyphMonospace) && !monoIsBody_) {
-            const uint32_t cp = FirstOf(Text(refs_[k]));
-            if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) set |= kStyleCode;
-        }
-        if ((f & kGlyphBold) && !boldIsBody_) set |= kStyleBold;
-        if ((f & kGlyphItalic) && !italicIsBody_) set |= kStyleItalic;
-        if (f & kGlyphStrike) set |= kStyleStrike;
-    }
+    // A glyph is written in a style only when some glyph of the block is set in it (set_): a block
+    // set in none (most body text) has every glyph's styles 0 and needs none of the passes below.
+    const uint8_t set = set_;
     if (set == 0) return;
-    wordOf_.resize(n);
-    for (uint32_t i = 0; i < words_.size(); ++i)
-        for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) wordOf_[k] = i;
     for (uint32_t k = 0; k < n; ++k) {
         const uint16_t f = refs_[k].flags;
         if (f & kGlyphImage) continue;
@@ -433,9 +464,8 @@ void Writer::StyleWords(bool styles) {
                 styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleBold);
         }
     }
-    // The nearest letters around each glyph: any letter, and letters outside code ("firm" ones).
-    before_.resize(2 * size_t(n));
-    after_.resize(2 * size_t(n));
+    // The nearest letters before each glyph: any letter, and letters outside code ("firm" ones).
+    if (before_.size() < 2 * size_t(n)) before_.resize(2 * size_t(n));
     {
         int32_t any = -1, firm = -1;
         for (uint32_t k = 0; k < n; ++k) {
@@ -443,56 +473,45 @@ void Writer::StyleWords(bool styles) {
             if (styles_[k] & kLetter) any = static_cast<int32_t>(k);
             if ((styles_[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
         }
-        any = firm = -1;
-        for (uint32_t k = n; k-- > 0;) {
-            after_[k] = any, after_[n + k] = firm;
-            if (styles_[k] & kLetter) any = static_cast<int32_t>(k);
-            if ((styles_[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
-        }
     }
+    // Backwards, with the nearest letters after each glyph: the styles each glyph is written in. A
+    // glyph's styles are worked out from letters' code bits, which no glyph's result changes, and
+    // from firm letters' styles, which keep theirs: the order the glyphs are taken in makes no
+    // difference.
     const auto at = [&](int32_t k) { return k >= 0 ? static_cast<uint8_t>(styles_[static_cast<uint32_t>(k)]) : uint8_t(0); };
-    for (uint32_t k = 0; k < n; ++k) {
+    int32_t anyAfter = -1, firmAfter = -1;
+    for (uint32_t k = n; k-- > 0;) {
         const uint8_t s = styles_[k];
-        if ((s & (kLetter | kStyleCode)) == kLetter) continue;  // firm letters keep their own
-        uint8_t result = 0;
-        bool code = (s & kStyleCode) != 0;
-        if (code && !(s & kLetter)) {
-            // A monospace mark is code beside code: in a code word or between code words.
-            const int32_t b = before_[k], a = after_[k];
-            const bool word = (b >= 0 && wordOf_[uint32_t(b)] == wordOf_[k] && (at(b) & kStyleCode)) ||
-                              (a >= 0 && wordOf_[uint32_t(a)] == wordOf_[k] && (at(a) & kStyleCode));
-            code = word || (at(b) & at(a) & kStyleCode) != 0;
+        uint8_t written = s;  // firm letters keep their own
+        if ((s & (kLetter | kStyleCode)) != kLetter) {
+            uint8_t result = 0;
+            bool code = (s & kStyleCode) != 0;
+            if (code && !(s & kLetter)) {
+                // A monospace mark is code beside code: in a code word or between code words.
+                const int32_t b = before_[k], a = anyAfter;
+                const bool word = (b >= 0 && wordOf_[uint32_t(b)] == wordOf_[k] && (at(b) & kStyleCode)) ||
+                                  (a >= 0 && wordOf_[uint32_t(a)] == wordOf_[k] && (at(a) & kStyleCode));
+                code = word || (at(b) & at(a) & kStyleCode) != 0;
+            }
+            if (code) result |= kStyleCode;
+            const int32_t fb = before_[n + k], fa = firmAfter;
+            const uint8_t enclosed = at(fb) & at(fa) & (kStyleBold | kStyleItalic | kStyleStrike);
+            if (code) {
+                result |= enclosed | (s & (kStyleBold | kStyleItalic | kStyleStrike));
+            } else {
+                // Inside a word ("Alice’s") a mark between two letters of a style takes it whatever
+                // its own face; elsewhere it keeps a style it is set in next to letters that have it.
+                const bool sameB = fb >= 0 && wordOf_[uint32_t(fb)] == wordOf_[k];
+                const bool sameA = fa >= 0 && wordOf_[uint32_t(fa)] == wordOf_[k];
+                const uint8_t attached = static_cast<uint8_t>((sameB ? at(fb) : 0) | (sameA ? at(fa) : 0));
+                result |= ((sameB && sameA ? enclosed : 0) | (s & (enclosed | attached))) &
+                          (kStyleBold | kStyleItalic | kStyleStrike);
+            }
+            written = result;
         }
-        if (code) result |= kStyleCode;
-        const int32_t fb = before_[n + k], fa = after_[n + k];
-        const uint8_t enclosed = at(fb) & at(fa) & (kStyleBold | kStyleItalic | kStyleStrike);
-        if (code) {
-            result |= enclosed | (s & (kStyleBold | kStyleItalic | kStyleStrike));
-        } else {
-            // Inside a word ("Alice’s") a mark between two letters of a style takes it whatever
-            // its own face; elsewhere it keeps a style it is set in next to letters that have it.
-            const bool sameB = fb >= 0 && wordOf_[uint32_t(fb)] == wordOf_[k];
-            const bool sameA = fa >= 0 && wordOf_[uint32_t(fa)] == wordOf_[k];
-            const uint8_t attached = static_cast<uint8_t>((sameB ? at(fb) : 0) | (sameA ? at(fa) : 0));
-            result |= ((sameB && sameA ? enclosed : 0) | (s & (enclosed | attached))) &
-                      (kStyleBold | kStyleItalic | kStyleStrike);
-        }
-        styles_[k] = static_cast<uint8_t>(result | (s & kLetter));
-    }
-    uint8_t written = 0;
-    for (uint32_t k = 0; k < n; ++k) {
-        styles_[k] &= kStyles;
-        written |= styles_[k];
-    }
-    // Where each style's run from each glyph ends: styles that run longer open first. SetStyle
-    // reads it only for styles some glyph is written in.
-    runEnd_.resize(kStyleCount * size_t(n));
-    for (int s = 0; s < kStyleCount; ++s) {
-        uint32_t* end = runEnd_.data() + size_t(s) * n;
-        const uint8_t bit = static_cast<uint8_t>(1u << s);
-        if (!(written & bit)) continue;
-        for (uint32_t k = n; k-- > 0;)
-            end[k] = !(styles_[k] & bit) ? k : k + 1 < n && (styles_[k + 1] & bit) ? end[k + 1] : k + 1;
+        styles_[k] = static_cast<uint8_t>(written & kStyles);
+        if (s & kLetter) anyAfter = static_cast<int32_t>(k);
+        if ((s & (kLetter | kStyleCode)) == kLetter) firmAfter = static_cast<int32_t>(k);
     }
 }
 
@@ -512,12 +531,27 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
     uint8_t missing = static_cast<uint8_t>(target & ~kept);
     const size_t n = refs_.size();
     while (missing != 0 && depth_ < kStyleCount) {
-        int best = 2;  // code last
-        uint32_t bestEnd = 0;
-        for (int s = 0; s < kStyleCount; ++s) {
-            if (s == 2 || !(missing & (1u << s))) continue;
-            const uint32_t end = runEnd_[size_t(s) * n + at];
-            if (best == 2 || end > bestEnd) best = s, bestEnd = end;
+        // Code opens last; of the others the one whose run from `at` goes on longest opens first
+        // (outside), the first of equal ones.
+        int best = 2;
+        const uint8_t others = static_cast<uint8_t>(missing & ~kStyleCode);
+        if ((others & (others - 1)) == 0) {
+            if (others != 0) best = others == kStyleBold ? 0 : others == kStyleItalic ? 1 : 3;
+        } else {
+            size_t bestEnd = 0;
+            for (int s = 0; s < kStyleCount; ++s) {
+                if (s == 2 || !(missing & (1u << s))) continue;
+                // Where the style's run from `at` ends; `at` never goes back within a block, so
+                // each run is walked once.
+                size_t end = at;
+                if (at >= runFrom_[s] && at < runTo_[s]) {
+                    end = runTo_[s];
+                } else {
+                    while (end < n && (styles_[end] & (1u << s))) ++end;
+                    runFrom_[s] = at, runTo_[s] = end;
+                }
+                if (best == 2 || end > bestEnd) best = s, bestEnd = end;
+            }
         }
         out_.append(kDelimiters[best]);
         stack_[depth_++] = static_cast<uint8_t>(1u << best);
@@ -605,10 +639,123 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
     }
 }
 
+bool Writer::InlinePlain(const Block& block, bool styles) {
+    uint16_t bail = kGlyphImage;
+    if (styles)
+        bail = static_cast<uint16_t>(bail | kGlyphStrike | (boldIsBody_ ? 0 : kGlyphBold) | (italicIsBody_ ? 0 : kGlyphItalic) |
+                                     (monoIsBody_ ? 0 : kGlyphMonospace));
+    const uint32_t blockEnd = block.first + block.count;
+    // A glyph in a style written, an inline image, or (with styles) a page with link annotations:
+    // the full path, found before anything is written.
+    for (uint32_t bl = block.first; bl < blockEnd; ++bl) {
+        const BlockLine& ref = lines_[bl];
+        const PageData& page = pages_[ref.page];
+        if (styles && !page.links.empty()) return false;
+        const Line& line = page.lines[ref.line];
+        uint16_t faces = 0;
+        for (uint32_t k = ref.skip; k < line.count; ++k) faces |= page.glyphs[page.lineGlyphs[line.first + k]].flags;
+        if (faces & bail) return false;
+    }
+    const size_t mark = out_.size();
+    // Heading and table cell text is inline: "## 1. Installation" opens no list.
+    bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
+    // The word being written: its text from out_[wordAt], its glyph count and whether it holds a
+    // byte AppendEscaped may escape; `last` is the text of the last glyph written (worked out at the
+    // end of each line: a line's last glyph is always written).
+    bool any = false;
+    size_t wordAt = 0;
+    uint32_t wordCount = 0;
+    bool escapes = false;
+    std::string_view last;
+    const auto finishWord = [&]() {
+        if (wordCount != 0 && (blockStart || escapes)) {
+            other_.assign(out_, wordAt, std::string::npos);
+            out_.resize(wordAt);
+            AppendEscaped(other_, blockStart);
+        }
+        blockStart = false;
+    };
+    const auto abandon = [&]() {
+        out_.resize(mark);
+        return false;
+    };
+    bool joinNext = false;
+    for (uint32_t bl = block.first; bl < blockEnd; ++bl) {
+        const BlockLine& ref = lines_[bl];
+        const PageData& page = pages_[ref.page];
+        const Line& line = page.lines[ref.line];
+        for (uint32_t k = ref.skip; k < line.count; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            const std::string_view text = page.GlyphText(g);
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) continue;
+            if (IsSuperscript(g, line) || IsSubscript(g, line)) return abandon();
+            const bool lineStart = k == ref.skip;
+            if (lineStart ? !joinNext : (!any || (g.flags & kGlyphSpaceBefore))) {
+                bool spaceBefore = any;
+                if (spaceBefore && lineStart && IsCjk(FirstOf(text)) && IsCjk(LastOf(last))) spaceBefore = false;
+                if (any) finishWord();
+                if (spaceBefore) out_.push_back(' ');
+                any = true;
+                wordAt = out_.size();
+                wordCount = 0;
+                escapes = false;
+            }
+            if (text.size() == 1) {
+                out_.push_back(text[0]);
+                escapes |= MayEscape(text[0]);
+            } else {
+                out_.append(text.data(), text.size());
+                for (const char c : text) escapes |= MayEscape(c);
+            }
+            wordCount++;
+        }
+        joinNext = false;
+        const std::string_view previous = last;  // the glyph written before this line's
+        const bool wrote = ref.skip < line.count;
+        if (wrote) last = page.GlyphText(page.glyphs[page.lineGlyphs[line.first + line.count - 1]]);
+        // Dehyphenation, as CollectWords does it.
+        if (bl + 1 >= blockEnd || !any || wordCount < 2) continue;
+        if (last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
+        if (!wrote) return abandon();
+        // The glyph written before the hyphen: in this line past the soft hyphens left out, or the
+        // one before the line (the word has both, so both are its glyphs).
+        std::string_view beforeLast = previous;
+        for (uint32_t j = line.count - 1; j-- > ref.skip;) {
+            const std::string_view t = page.GlyphText(page.glyphs[page.lineGlyphs[line.first + j]]);
+            if (t != "\xC2\xAD") {
+                beforeLast = t;
+                break;
+            }
+        }
+        const unsigned char b0 = beforeLast.empty() ? 0 : static_cast<unsigned char>(beforeLast[0]);
+        const bool letterBefore = (b0 >= 'a' && b0 <= 'z') || (b0 >= 'A' && b0 <= 'Z') || b0 >= 0xC3;
+        const BlockLine& nextRef = lines_[bl + 1];
+        const PageData& nextPage = pages_[nextRef.page];
+        const Line& nextLine = nextPage.lines[nextRef.line];
+        if (nextRef.skip >= nextLine.count) continue;
+        const std::string_view next = nextPage.GlyphText(nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]]);
+        const unsigned char n0 = next.empty() ? 0 : static_cast<unsigned char>(next[0]);
+        const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
+        const bool join = letterBefore && lowerNext;
+        if (!join && last != "\xC2\xAD") continue;
+        // The hyphen leaves (a soft hyphen that does not join leaves no character either).
+        out_.resize(out_.size() - last.size());
+        wordCount--;
+        last = beforeLast;
+        joinNext = join;
+    }
+    if (any) finishWord();
+    // No trailing spaces.
+    while (!out_.empty() && out_.back() == ' ') out_.pop_back();
+    return true;
+}
+
 void Writer::Inline(const Block& block, bool styles) {
+    if (math_ != MathMode::Latex && InlinePlain(block, styles)) return;
     CollectWords(block);
     StyleWords(styles);
     depth_ = 0;
+    for (int s = 0; s < kStyleCount; ++s) runFrom_[s] = runTo_[s] = 0;
     // LaTeX mode: formulas found among the glyphs are written as $…$ in their place.
     const bool latex = math_ == MathMode::Latex;
     if (latex) FindFormulas();
