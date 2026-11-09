@@ -1384,6 +1384,27 @@ void TestSyntaxReaders() {
     RAYOPDF_CHECK(Syntax::ReadName(named, views, out) && out == "F1" && out.data() == name.data() + 1, 258);
     Cursor hashed{"/A#42 ", 0};
     RAYOPDF_CHECK(Syntax::ReadName(hashed, views, out) && out == "AB" && hashed.pos == 5, 258);
+    // Every escape form, nested parentheses, line ends, and a long escaped string (its buffer
+    // grown on the way); names at the end of the data and with a late escape.
+    Cursor escapes{"(\\n\\r\\t\\b\\f\\q\\\\\\1x\\12y\\1234\\\r\nz\\\nw(a(b)c)\rv\r\nu)", 0};
+    RAYOPDF_CHECK(Syntax::ReadLiteralString(escapes, copies, out) &&
+                      out == std::string_view("\n\r\t\b\fq\\\001x\012y\1234zw(a(b)c)\nv\nu") && escapes.AtEnd(),
+                  268);
+    std::string longText = "(";
+    std::string longExpected;
+    for (int i = 0; i < 300; i++) {
+        longText += "ab\\(cd\\101 ";
+        longExpected += "ab(cdA ";
+    }
+    longText += ")";
+    Cursor longCursor{longText, 0};
+    RAYOPDF_CHECK(Syntax::ReadLiteralString(longCursor, copies, out) && out == longExpected && longCursor.AtEnd(), 268);
+    Cursor backslashEnd{"(ab\\", 0};
+    RAYOPDF_CHECK(!Syntax::ReadLiteralString(backslashEnd, copies, out), 268);
+    Cursor nameAtEnd{"/Abcdefghij", 0};
+    RAYOPDF_CHECK(Syntax::ReadName(nameAtEnd, views, out) && out == "Abcdefghij" && nameAtEnd.AtEnd(), 268);
+    Cursor lateHash{"/Abcdefgh#41/X", 0};
+    RAYOPDF_CHECK(Syntax::ReadName(lateHash, copies, out) && out == "AbcdefghA" && lateHash.pos == 12, 268);
 
     PdfValue value;
     Cursor reference{"12 0 R", 0};
@@ -1422,8 +1443,8 @@ void TestSyntaxReaders() {
                           at.pos == r.end && (!r.ref || (value.refNum == 7 && value.refGen == r.gen)),
                       260);
     }
-    // File-mode arrays: a number's reference test reads the next item, which is then not read
-    // again; every item as ParseValue gives it alone.
+    // File-mode arrays: "num gen R" wherever a test at each number finds it; every other item as
+    // ParseValue gives it alone.
     Cursor items{"[1 2 3 4 0 R 5 6 R 70000 8 0 R 9 %c\n 0 R 10 0.5 11 00012 R 1 65536 2 R 123456 0 R -3 7 0 Rx]", 0};
     const struct {
         PdfValue::Type type;
@@ -1452,6 +1473,27 @@ void TestSyntaxReaders() {
                                                                   : item.real == 0.5);
         RAYOPDF_CHECK(same, 280);
     }
+    // References of long digit tokens (19 digits read as a number, more by the general path),
+    // and nested values between numbers; numbers that are no reference's fail at the R.
+    Cursor nested{"[0000000000000000013 0 R 00000000000000000000014 0 R 15 000005 /N [16 0 R] <</K 17 0 R>> "
+                  "4294967296 1 2 R]",
+                  0};
+    RAYOPDF_CHECK(Syntax::ParseValue(nested, Syntax::Mode::File, 0, copies, value) && value.IsArray() &&
+                      value.Array().size() == 9 && nested.AtEnd(),
+                  267);
+    const PdfSpan<PdfValue> n = value.Array();
+    RAYOPDF_CHECK(n[0].IsRef() && n[0].refNum == 13 && n[1].IsRef() && n[1].refNum == 14 && n[2].integer == 15 &&
+                      n[3].type == PdfValue::Type::Int && n[3].integer == 5 && n[4].IsName("N") &&
+                      n[5].Array().size() == 1 && n[5].Array()[0].refNum == 16 && n[6].Find("K") &&
+                      n[6].Find("K")->refNum == 17 && n[7].integer == 4294967296 && n[8].IsRef() &&
+                      n[8].refNum == 1 && n[8].refGen == 2,
+                  267);
+    for (std::string_view text : {"[4294967296 0 R]", "[1 000005 R]", "[-1 0 R]", "[1 0 R5]", "[1.0 0 R]"}) {
+        Cursor fails{text, 0};
+        RAYOPDF_CHECK(!Syntax::ParseValue(fails, Syntax::Mode::File, 0, copies, value), 267);
+    }
+    Cursor contentRef{"[1 0 R]", 0};
+    RAYOPDF_CHECK(!Syntax::ParseValue(contentRef, Syntax::Mode::Content, 0, copies, value), 267);
 }
 
 } // namespace

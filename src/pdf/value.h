@@ -110,8 +110,19 @@ public:
     PdfArena& operator=(const PdfArena&) = delete;
 
     // `bytes` of storage that stays put until Reset or the arena goes; nullptr when it cannot be
-    // had.
-    void* Allocate(size_t bytes);
+    // had. Inline while the newest chunk has room (8-byte multiples).
+    void* Allocate(size_t bytes) {
+        const size_t room = static_cast<size_t>(end_ - at_);
+        if (bytes <= room) {
+            const size_t rounded = (bytes + 7) & ~size_t(7);
+            if (rounded <= room) {
+                void* const block = at_;
+                at_ += rounded;
+                return block;
+            }
+        }
+        return AllocateNew(bytes);
+    }
     // Forgets every block; the newest chunk is kept for what comes next. Nothing to do when no block
     // was handed out since the last Reset (the lexer's arena, most operators).
     void Reset() {
@@ -121,6 +132,7 @@ public:
     size_t Capacity() const { return capacity_; }
 
 private:
+    void* AllocateNew(size_t bytes);
     void Rewind();
 
     struct Chunk {

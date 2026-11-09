@@ -63,6 +63,47 @@ bool ReadUnsigned(std::string_view token, uint64_t& out) {
     return true;
 }
 
+// Syntax::SkipSpace, its white space here.
+inline void SkipSpaceInline(Cursor& c) {
+    const char* const data = c.data.data();
+    const size_t size = c.data.size();
+    size_t pos = c.pos;
+    while (pos < size && Syntax::IsWhite(static_cast<unsigned char>(data[pos]))) pos++;
+    c.pos = pos;
+    if (pos < size && data[pos] == '%') Syntax::SkipSpace(c);
+}
+
+// SkipSpace, then ReadUnsigned of ReadToken: a token of up to 18 digits read here, any other by
+// them.
+inline bool NextUnsigned(Cursor& c, uint64_t& out) {
+    SkipSpaceInline(c);
+    const char* const data = c.data.data();
+    const size_t size = c.data.size();
+    const size_t start = c.pos;
+    size_t pos = start;
+    uint64_t value = 0;
+    for (unsigned d; pos < size && (d = static_cast<unsigned>(static_cast<unsigned char>(data[pos])) - '0') < 10; pos++) {
+        value = value * 10 + d;
+    }
+    if (pos > start && pos - start <= 18 && (pos >= size || !Syntax::IsRegular(static_cast<unsigned char>(data[pos])))) {
+        c.pos = pos;
+        out = value;
+        return true;
+    }
+    return ReadUnsigned(Syntax::ReadToken(c), out);
+}
+
+// SkipSpace, then whether ReadToken reads `word`; the cursor is past the token when it does.
+inline bool NextKeyword(Cursor& c, std::string_view word) {
+    SkipSpaceInline(c);
+    const size_t pos = c.pos;
+    const size_t end = pos + word.size();
+    if (end > c.data.size() || c.data.compare(pos, word.size(), word) != 0) return false;
+    if (end < c.data.size() && Syntax::IsRegular(static_cast<unsigned char>(c.data[end]))) return false;
+    c.pos = end;
+    return true;
+}
+
 // A cross-reference entry in its fixed form at data[at]: 10 digits, a space, 5 digits, a space,
 // 'n' or 'f' ending the token. False (nothing read) for any other form, which the token reader
 // then takes.
@@ -344,21 +385,18 @@ struct Document::Impl {
                        uint32_t& num, uint32_t& gen) {
         if (offset >= bytes.size()) return false;
         Cursor c{bytes, static_cast<size_t>(offset)};
-        Syntax::SkipSpace(c);
         uint64_t n = 0;
         uint64_t g = 0;
-        if (!ReadUnsigned(Syntax::ReadToken(c), n) || n > UINT32_MAX) return false;
+        if (!NextUnsigned(c, n) || n > UINT32_MAX) return false;
         if (expectNum >= 0 && n != static_cast<uint64_t>(expectNum)) return false;
-        Syntax::SkipSpace(c);
-        if (!ReadUnsigned(Syntax::ReadToken(c), g) || g > 65535) return false;
-        Syntax::SkipSpace(c);
-        if (Syntax::ReadToken(c) != "obj") return false;
+        if (!NextUnsigned(c, g) || g > 65535) return false;
+        if (!NextKeyword(c, "obj")) return false;
         num = static_cast<uint32_t>(n);
         gen = static_cast<uint32_t>(g);
-        Syntax::SkipSpace(c);
+        SkipSpaceInline(c);
         if (c.Peek() == 'e') {
             Cursor probe = c;
-            if (Syntax::ReadToken(probe) == "endobj") {
+            if (NextKeyword(probe, "endobj")) {
                 out = PdfValue();
                 return true;
             }
@@ -366,8 +404,7 @@ struct Document::Impl {
         if (!Syntax::ParseValue(c, Syntax::Mode::File, 0, builder, out)) return false;
         if (out.type == PdfValue::Type::Dict) {
             Cursor s = c;
-            Syntax::SkipSpace(s);
-            if (Syntax::ReadToken(s) == "stream") {
+            if (NextKeyword(s, "stream")) {
                 // The data begins after the end of line of "stream": CR LF or LF (a lone CR, and
                 // spaces before the end of line, tolerated).
                 Cursor eol = s;
