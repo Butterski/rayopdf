@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -115,7 +116,18 @@ int64_t FloorOf(float v) {
     return t - (v < static_cast<float>(t) ? 1 : 0);
 }
 
-bool Near(const Glyph& g) { return std::fabs(g.x0) < kFloatReach && std::fabs(g.y0) < kFloatReach; }
+// |x0| < kFloatReach and |y0| < kFloatReach (false for NaN), both at once on their bits: a float's
+// magnitude bits order as its magnitude, NaN's above infinity's, and 2048 is 0x45000000; adding
+// 0x80000000 - 0x45000000 to each 31-bit magnitude sets its bit 31 exactly when it is 2048 or more,
+// without a carry into the other half.
+static_assert(kFloatReach == 2048.0f, "Near's constant is 2048's bits");
+static_assert(offsetof(Glyph, y0) == offsetof(Glyph, x0) + 4, "Glyph's x0 and y0 are adjacent");
+RAYOPDF_HOT_INLINE bool Near(const Glyph& g) {
+    uint64_t xy;
+    std::memcpy(&xy, &g.x0, sizeof xy);
+    constexpr uint64_t kMagnitude = 0x7FFFFFFF7FFFFFFFull, kBias = 0x3B0000003B000000ull, kHigh = 0x8000000080000000ull;
+    return (((xy & kMagnitude) + kBias) & kHigh) == 0;
+}
 
 // A near glyph's column and row.
 RAYOPDF_HOT_INLINE void NearCells(const Glyph& g, uint32_t& column, uint32_t& row) {
@@ -229,7 +241,7 @@ struct Folder {
 // The probe's table, sized as for all the page's placed glyphs (those after glyph i counted
 // ahead), filled with the glyphs kept before i in their order.
 void Folder::MakeTable(uint32_t i) {
-    const std::vector<Glyph>& glyphs = page.glyphs;
+    const GlyphVector& glyphs = page.glyphs;
     size_t count = placed;
     for (size_t j = size_t(i) + 1; j < glyphs.size(); ++j) count += Placed(glyphs[j], keepInvisible) ? 1 : 0;
     size_t capacity = 16;
@@ -250,7 +262,7 @@ void Folder::MakeTable(uint32_t i) {
 
 // The rule for glyph i (placed, no space), kept or dropped.
 void Folder::Place(uint32_t i) {
-    std::vector<Glyph>& glyphs = page.glyphs;
+    GlyphVector& glyphs = page.glyphs;
     Glyph& g = glyphs[i];
     const std::string_view text = page.GlyphText(g);
     const uint64_t key = KeyOf(text.data(), static_cast<uint32_t>(text.size()), g.dir);
@@ -365,10 +377,10 @@ void Folder::Place(uint32_t i) {
 // 2^-9 and 2^-11 by which the windows widen. Larger coordinates take exact cells in double, and
 // windows widened by 1/1024. Rounding is monotonic, so a glyph's own cell lies within its window.
 //
-// Finiteness: the sum of the six values of each placed glyph, summed over the page, is finite when
-// all are (an overflow only sends a page with finite values the checked way).
+// Finiteness: each of the six values summed over the page's placed glyphs, and the six sums
+// added, is finite when all are (an overflow only sends a page with finite values the checked way).
 bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisible) {
-    std::vector<Glyph>& glyphVector = page.glyphs;
+    GlyphVector& glyphVector = page.glyphs;
     const size_t n = glyphVector.size();
     if (vis.size() < n) vis.resize(n);
     Folder f(page);
@@ -421,7 +433,8 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     bool windowSmall = false;  // tolerance <= 3.5
     bool probing = false;  // the probe's table exists
     uint32_t kept = 0, entryCount = 0, placed = 0;
-    float sum = 0;
+    // The finiteness sums: one per field, each added from memory without a load of its own.
+    float sumU0 = 0, sumU1 = 0, sumVb = 0, sumVt = 0, sumV = 0, sumSize = 0;
     for (uint32_t i = 0; i < n; ++i) {
         Glyph& g = glyphs[i];
         if (RAYOPDF_UNLIKELY((g.flags & (kGlyphDropped | kGlyphClipped | kGlyphInvisible)) != 0 || g.size < 1.0f ||
@@ -445,7 +458,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 g.flags = static_cast<uint16_t>(flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
         }
         placed++;
-        sum += ((g.u0 + g.u1) + (g.vb + g.vt)) + (g.v + g.size);
+        sumU0 += g.u0, sumU1 += g.u1, sumVb += g.vb, sumVt += g.vt, sumV += g.v, sumSize += g.size;
         if (g.flags & kGlyphSpace) {
             order[kept++] = i;
             continue;
@@ -495,17 +508,21 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     fold.base = base + kept;
     if (scratch)
         for (uint32_t e = 0; e < entryCount; ++e) bits[entries[e].word] = 0;
+    const float sum = ((sumU0 + sumU1) + (sumVb + sumVt)) + (sumV + sumSize);
     return sum - sum == 0;
 }
 
+// The opening quotes among OpeningMark's: “ ‘ „ «.
+bool OpeningQuote(std::string_view t) {
+    return t == "\xE2\x80\x9C" || t == "\xE2\x80\x98" || t == "\xE2\x80\x9E" || t == "\xC2\xAB";
+}
+
 // An opening quote or bracket: ( [ “ ‘ „ «.
-bool OpeningMark(const PageData& page, const Glyph& g) {
+RAYOPDF_HOT_INLINE bool OpeningMark(const PageData& page, const Glyph& g) {
     if (g.textLength == 0) return false;
     const unsigned char c = static_cast<unsigned char>(page.text[g.text]);
     if (c == '(' || c == '[') return g.textLength == 1;
-    if (c != 0xE2 && c != 0xC2) return false;
-    const std::string_view t = page.GlyphText(g);
-    return t == "\xE2\x80\x9C" || t == "\xE2\x80\x98" || t == "\xE2\x80\x9E" || t == "\xC2\xAB";
+    return (c == 0xE2 || c == 0xC2) && OpeningQuote(page.GlyphText(g));
 }
 
 bool StartsWithCombiningMark(std::string_view text) {
@@ -518,6 +535,25 @@ bool StartsWithCombiningMark(std::string_view text) {
 // Lead bytes that can start a character from U+0590 up that may be right-to-left: D6-DF
 // (U+0590-U+07FF), E0 (U+0800-U+0FFF), EF (presentation forms) and F0 (supplementary).
 bool RightToLeftLead(unsigned char b) { return (b >= 0xD6 && b <= 0xDF) || b == 0xE0 || b == 0xEF || b == 0xF0; }
+
+// Whether `text` has a RightToLeftLead byte. Eight bytes at a time first: a word none of whose
+// bytes is 0xD6 or above has none (a byte's low seven bits plus 0x2A reach its bit 7, without a
+// carry into the next byte, exactly when they are 0x56 or above).
+bool HasRightToLeftLead(std::string_view text) {
+    const unsigned char* const p = reinterpret_cast<const unsigned char*>(text.data());
+    const size_t n = text.size();
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        std::memcpy(&w, p + i, sizeof w);
+        if ((((w & 0x7F7F7F7F7F7F7F7Full) + 0x2A2A2A2A2A2A2A2Aull) & w & 0x8080808080808080ull) == 0) continue;
+        for (size_t k = i; k < i + 8; ++k)
+            if (RightToLeftLead(p[k])) return true;
+    }
+    for (; i < n; ++i)
+        if (RightToLeftLead(p[i])) return true;
+    return false;
+}
 
 // Whether the line holds a strong right-to-left character (bidi class R or AL), which only a
 // RightToLeftLead byte can start.
@@ -1010,7 +1046,7 @@ void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
 void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
-    std::vector<Glyph>& glyphs = page.glyphs;
+    GlyphVector& glyphs = page.glyphs;
     PlaceScratch& place = PerThread<PlaceScratch>();
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
@@ -1021,8 +1057,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     // glyphs' fields might alias.
     Fragment f;
     bool open = false;
-    for (uint32_t k = 0; k < vis.size(); ++k) {
-        const Glyph& g = glyphs[vis[k]];
+    // In locals: the vector's own fields are reloaded after each store the loop makes.
+    const uint32_t* const order = vis.data();
+    const uint32_t visCount = static_cast<uint32_t>(vis.size());
+    const Glyph* const records = glyphs.data();
+    for (uint32_t k = 0; k < visCount; ++k) {
+        const Glyph& g = records[order[k]];
         const bool space = (g.flags & kGlyphSpace) != 0;
         if (open) {
             const float em = M::Max(f.size, g.size);
@@ -1458,7 +1498,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
 void BuildLines(PageData& page) {
     page.lines.clear();
     page.lineGlyphs.clear();
-    std::vector<Glyph>& glyphs = page.glyphs;
+    GlyphVector& glyphs = page.glyphs;
 
     // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave (CollectAndFold),
     // except that invisible text is the page's text when nothing visible is (an OCR layer). The
@@ -1492,8 +1532,7 @@ void BuildLines(PageData& page) {
     // with right-to-left text are left-to-right paragraphs too: they wrap into those short lines.
     // A page whose text has none of the lead bytes such a character starts with has no line to
     // reorder.
-    if (!std::any_of(page.text.begin(), page.text.end(), [](char c) { return RightToLeftLead(static_cast<unsigned char>(c)); }))
-        return;
+    if (!HasRightToLeftLead(page.text)) return;
     BidiScratch bidi;
     float left = INFINITY, right = -INFINITY;
     for (const Line& line : page.lines)

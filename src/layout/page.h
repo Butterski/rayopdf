@@ -12,8 +12,10 @@
 #include "pdf/value.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace RayoPdf::Layout {
@@ -177,6 +179,29 @@ struct Line {
     uint8_t reserved = 0;
 };
 
+// The allocator of PageData::glyphs: std::allocator's, except that a record the vector grows by
+// without a value (resize, emplace_back()) is left unset, for its writer to give every field: the
+// interpreter grows the vector once per text operator by a record per byte and writes each record
+// it keeps (a record's default fields would be written twice). Glyph is trivially copyable and
+// destructible, so an unset record is storage the writer fills.
+template <typename T>
+struct UnsetAllocator : std::allocator<T> {
+    template <typename U>
+    struct rebind {
+        using other = UnsetAllocator<U>;
+    };
+    UnsetAllocator() = default;
+    template <typename U>
+    UnsetAllocator(const UnsetAllocator<U>&) noexcept {}
+    template <typename U>
+    void construct(U*) noexcept {}
+    template <typename U, typename... Args>
+    void construct(U* p, Args&&... args) {
+        ::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
+    }
+};
+using GlyphVector = std::vector<Glyph, UnsetAllocator<Glyph>>;
+
 // A math font's glyph without text, and its code (PageData::mathCodes).
 struct MathCode {
     uint32_t glyph = 0;  // index into PageData::glyphs
@@ -186,7 +211,7 @@ struct MathCode {
 struct PageData {
     int number = 0;              // 1-based page number
     float width = 0, height = 0; // upright page size
-    std::vector<Glyph> glyphs;   // in content order
+    GlyphVector glyphs;          // in content order
     std::string text;            // glyph texts and link URIs
     std::vector<Shape> shapes;
     std::vector<ImageBox> images;

@@ -229,6 +229,33 @@ inline bool SameBits(double x, double y) {
     return u == v;
 }
 
+// The slots of a font that has none (not simple): no code is in a pool, so each takes Next.
+struct NoSlots {
+    Text::FontSlot of[256];
+    constexpr NoSlots() : of() {
+        for (Text::FontSlot& slot : of) slot.state = Text::FontSlotState::Pending;
+    }
+};
+constexpr NoSlots kNoSlots;
+
+// The glyph counts of ShowText's common case, packed in one word: shown codes in bits 0-20,
+// unmapped ones (UnicodeSource::None) in bits 21-41, guessed ones (Guess) in bits 42-62, added
+// per code by its source. A cursor moves them into its separate counts after a string that
+// leaves kCountFlush shown or more: a string has at most kMaxGlyphsPerPage codes, so no field
+// passes 21 bits.
+constexpr int kCountBits = 21;
+constexpr uint64_t kCountMask = (uint64_t(1) << kCountBits) - 1;
+constexpr uint64_t kCountFlush = uint64_t(1) << 20;
+static_assert(kCountFlush + kMaxGlyphsPerPage <= kCountMask, "packed glyph counts fit 21 bits");
+constexpr uint64_t kSourceCounts[] = {1, 1, 1, 1, 1 | uint64_t(1) << (2 * kCountBits), 1 | uint64_t(1) << kCountBits};
+
+// Whether a TJ adjustment, Multiply([1 0 0 1 tx ty], Tm), leaves Tm's linear part with its bits:
+// each term plus a zero product keeps its bits unless it is -0 or the product is not 0.
+inline bool KeepsLinear(double ta, double tb, double tc, double td) {
+    return SameBits(ta + 0.0 * tc, ta) && SameBits(tb + 0.0 * td, tb) && SameBits(0.0 * ta + tc, tc) &&
+           SameBits(0.0 * tb + td, td);
+}
+
 // What placing a text operator's glyphs needs (Interpreter::ShowText), in one local: the
 // graphics state's text parameters, Tm × CTM's linear part and what the glyph loop reads of the
 // run made for it. Only `ready` is initialised: Read sets the rest.
@@ -239,7 +266,7 @@ struct Placement {
     double tma, tmb, tmc, tmd;    // Tm × CTM's linear part
     double ctmA, ctmB, ctmC, ctmD, ctmE, ctmF;
     const Text::Font* font;
-    const Text::FontSlot* slots;  // a simple font's slots (Font::SimpleSlots)
+    const Text::FontSlot* slots;  // a simple font's slots (Font::SimpleSlots), else kNoSlots.of
     const char* pool;
     double tfs, th, charSpace, wordSpace;
     double riseC, riseD;          // Trise × (Tm × CTM)'s c and d: Trm's translation less Tm × CTM's
@@ -255,20 +282,18 @@ struct Placement {
     int32_t mcid;
     uint8_t fontMath;
     std::vector<GlyphUse>* uses;
-    // A TJ adjustment, Multiply([1 0 0 1 tx ty], Tm), leaves Tm's linear part with its bits: each
-    // term plus a zero product keeps its bits unless it is -0 or the product is not 0.
-    bool keepsLinear;
+    // KeepsLinear of the text matrix's linear part, found at the first adjustment: -1 until then.
+    int8_t keepsLinear;
 
     void Read(const GState& gs, const Matrix& textMatrix, const Matrix& tm, const GlyphRun& r) {
         ready = true;
         run = &r;
         ta = textMatrix.a, tb = textMatrix.b, tc = textMatrix.c, td = textMatrix.d;
-        keepsLinear = SameBits(ta + 0.0 * tc, ta) && SameBits(tb + 0.0 * td, tb) && SameBits(0.0 * ta + tc, tc) &&
-                      SameBits(0.0 * tb + td, td);
+        keepsLinear = -1;
         tma = tm.a, tmb = tm.b, tmc = tm.c, tmd = tm.d;
         ctmA = gs.ctm.a, ctmB = gs.ctm.b, ctmC = gs.ctm.c, ctmD = gs.ctm.d, ctmE = gs.ctm.e, ctmF = gs.ctm.f;
         font = gs.font;
-        slots = gs.font->SimpleSlots();
+        slots = gs.font->SimpleSlots() != nullptr ? gs.font->SimpleSlots() : kNoSlots.of;
         pool = gs.font->SimplePool();
         tfs = gs.fontSize, th = gs.hScale, charSpace = gs.charSpace, wordSpace = gs.wordSpace;
         riseC = gs.rise * tm.c, riseD = gs.rise * tm.d;
@@ -284,13 +309,23 @@ struct Placement {
 };
 
 // Where glyph placement is along the strings of a text operator: the text matrix's translation
-// and Tm × CTM's (which advances alike), the glyph counts for PageStats and the records written.
+// and Tm × CTM's (which advances alike), the glyph counts for PageStats (packed in `counts` by
+// the common case, see kSourceCounts) and the records written.
 struct GlyphCursor {
     double te, tf;
     double tme, tmf;
+    uint64_t counts = 0;
     uint64_t shown = 0, unmapped = 0, guessed = 0;
     size_t placed = 0;
 };
+
+// Moves a cursor's packed counts into its separate ones.
+inline void FlushCounts(GlyphCursor& cur) {
+    cur.shown += cur.counts & kCountMask;
+    cur.unmapped += (cur.counts >> kCountBits) & kCountMask;
+    cur.guessed += cur.counts >> (2 * kCountBits);
+    cur.counts = 0;
+}
 
 // A glyph's box outside HorizontalBox's case (a vertical run, a term or the width not finite): the
 // corners [x y] × Trm with the glyph's own edge, its width (the right edge) or its vertical advance
@@ -1041,7 +1076,7 @@ void Interpreter::EndMarked() {
     if (!mc.hasActualText) return;
     // ActualText replaces the enclosed glyphs (§14.9.4): the first visible one carries the text and
     // the union of their boxes; the others leave the text.
-    std::vector<Glyph>& glyphs = page_.glyphs;
+    GlyphVector& glyphs = page_.glyphs;
     uint32_t carrier = UINT32_MAX;
     for (uint32_t i = mc.firstGlyph; i < glyphs.size(); ++i) {
         Glyph& g = glyphs[i];
@@ -1235,7 +1270,7 @@ bool Interpreter::ShowText(const PdfValue* items, size_t count, std::string_view
 // exceed.
 RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t count, std::string_view single,
                                                size_t& placed) {
-    std::vector<Glyph>& glyphs = page_.glyphs;
+    GlyphVector& glyphs = page_.glyphs;
     Placement p;
     int vertical = -1;  // the font's writing mode, read at the first adjustment
     const size_t strings = items != nullptr ? count : 1;
@@ -1307,6 +1342,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t cou
                     break;
                 }
                 if (items == nullptr) break;
+                if ((cur.counts & kCountMask) >= kCountFlush) FlushCounts(cur);
                 size_t next = k + 1;
                 bool adjusted = false;  // the linear part lost its bits: the outer loop goes on
                 for (; next < count; ++next) {
@@ -1318,6 +1354,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::ShowItems(const PdfValue* items, size_t cou
                     const double tx = -adjust / 1000 * p.tfs * p.th, ty = 0;
                     cur.te = tx * p.ta + ty * p.tc + cur.te;
                     cur.tf = tx * p.tb + ty * p.td + cur.tf;
+                    if (p.keepsLinear < 0) p.keepsLinear = KeepsLinear(p.ta, p.tb, p.tc, p.td) ? 1 : 0;
                     if (!p.keepsLinear) {
                         textMatrix_.a = p.ta + 0.0 * p.tc, textMatrix_.b = p.tb + 0.0 * p.td;
                         textMatrix_.c = 0.0 * p.ta + p.tc, textMatrix_.d = 0.0 * p.tb + p.td;
@@ -1360,11 +1397,12 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
     const Text::Font* font = p.font;
     // The text matrix moves by each advance; its linear part stays.
     double &te = cur.te, &tf = cur.tf, &tme = cur.tme, &tmf = cur.tmf;
-    uint64_t &shown = cur.shown, &unmapped = cur.unmapped, &guessed = cur.guessed;
+    uint64_t &counts = cur.counts, &shown = cur.shown, &unmapped = cur.unmapped, &guessed = cur.guessed;
     size_t& placed = cur.placed;
-    std::vector<Glyph>& glyphs = page_.glyphs;
+    GlyphVector& glyphs = page_.glyphs;
     std::string& text = page_.text;
     Glyph* const records = glyphs.data();
+    Glyph* out = records + placed;  // kFast: the next record
     bool open = true;
     size_t at = 0;
     while (at < bytes.size()) {
@@ -1377,7 +1415,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
         Text::UnicodeSource source;
         std::string_view unicode;
         const uint8_t c = static_cast<uint8_t>(bytes[at]);
-        if (p.slots != nullptr && p.slots[c].state == Text::FontSlotState::Pool) {
+        if (p.slots[c].state == Text::FontSlotState::Pool) {
             const Text::FontSlot& slot = p.slots[c];
             ++at;
             codeValue = c;
@@ -1409,9 +1447,13 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
         } else {
             advance = (width * p.tfs + p.charSpace + (wordSpaceCode ? p.wordSpace : 0)) * p.th;
         }
-        shown++;
-        if (source == Text::UnicodeSource::None) unmapped++;
-        if (source == Text::UnicodeSource::Guess) guessed++;
+        if (kFast) {
+            counts += kSourceCounts[static_cast<uint8_t>(source)];
+        } else {
+            shown++;
+            if (source == Text::UnicodeSource::None) unmapped++;
+            if (source == Text::UnicodeSource::Guess) guessed++;
+        }
         if ((!kFast && glyphs.size() >= kMaxGlyphsPerPage) || text.size() >= (size_t(1) << 30)) {
             // The budget ends the page; this code does not move the text matrix.
             budgetHit_ = true;
@@ -1449,7 +1491,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
             // appended; given every field: the string's, then the box's and the glyph's own. Its
             // box: the corners [x y] × Trm, the run's terms with the glyph's own edge, its width
             // (the right edge) or its vertical advance (the bottom edge).
-            Glyph& g = kFast ? records[placed++] : glyphs.emplace_back();
+            Glyph& g = kFast ? *out++ : glyphs.emplace_back();
             g.size = p.size;
             g.dir = p.dir;
             g.mcStream = p.mcStream;
@@ -1489,6 +1531,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
             tf += advance * p.tb;
         }
     }
+    if (kFast) placed = static_cast<size_t>(out - records);
     return open;
 }
 
@@ -1496,9 +1539,9 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
 RAYOPDF_HOT_INLINE void Interpreter::EndCursor(const GlyphCursor& cur) {
     textMatrix_.e = cur.te;
     textMatrix_.f = cur.tf;
-    stats_.glyphs += cur.shown;
-    stats_.unmapped += cur.unmapped;
-    stats_.guessed += cur.guessed;
+    stats_.glyphs += cur.shown + (cur.counts & kCountMask);
+    stats_.unmapped += cur.unmapped + ((cur.counts >> kCountBits) & kCountMask);
+    stats_.guessed += cur.guessed + (cur.counts >> (2 * kCountBits));
 }
 
 // PlaceGlyphs outside its common case, out of line: ShowText's glyph loop keeps one inline copy.
