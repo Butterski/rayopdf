@@ -3,7 +3,7 @@
 //
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
-//                                   [--ocr-addon=PATH] [--report] [--workers=N]
+//                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -411,8 +411,8 @@ int Inspect(const std::string& input, std::string_view password) {
     }
     AppendField(json, "broken_objects", static_cast<uint64_t>(report.brokenObjects));
     json += "}\n";
-    // One write(2), as before unchecked: stdio's first write to stdout would also fstat it and
-    // allocate its buffer, which a fresh process pays for (--inspect is timed fresh-process).
+    // One unchecked write(2): stdio's first write to stdout would also fstat it and allocate its
+    // buffer, which a fresh process pays for (--inspect is timed fresh-process).
     File::WriteAll("-", json);
     return kExitOk;
 }

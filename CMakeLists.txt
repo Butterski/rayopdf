@@ -97,8 +97,6 @@ foreach(module ${RAYOPDF_MODULES})
         if(module STREQUAL "common")
             target_link_libraries(rayopdf_common PUBLIC Threads::Threads)
         endif()
-    else()
-        message(STATUS "rayopdf: module ${module} has no sources yet")
     endif()
 endforeach()
 
