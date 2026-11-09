@@ -474,24 +474,29 @@ void SetOneShotAllocator() {
 #endif
 }
 
-// Converts `input` into `markdown` and writes it to `output` ("-": standard output; "": not
-// written, the caller takes `markdown`). `record` gets the outcome: code, error, pages, bytes and,
-// when `counters`, the counters (ms is the caller's). `inputBuffer`: a buffer the caller keeps from
-// document to document for small inputs (the batch modes' workers), or null.
-void ConvertDocument(const std::string& input, const std::string& output, std::string_view password,
-                     const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
-                     bool counters, std::string* inputBuffer = nullptr) {
+// What a conversion reads: the input's bytes and the document over them.
+struct Source {
     File::InputFile file;
     std::unique_ptr<Document> document;
-    int code = ReadInput(input, file, record.error, inputBuffer);
-    if (code == kExitOk) code = OpenDocument(input, file.Bytes(), password, document, record.error);
+};
+
+// Converts `input` into `markdown` and writes it to `output` ("-": standard output; "": not
+// written, the caller takes `markdown`). `record` gets the outcome: code, error, pages, bytes and,
+// when `counters`, the counters (ms is the caller's). `source` holds the input and the document
+// until the caller drops it. `inputBuffer`: a buffer the caller keeps from document to document
+// for small inputs (the batch modes' workers), or null.
+void ConvertSource(const std::string& input, const std::string& output, std::string_view password,
+                   const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
+                   bool counters, Source& source, std::string* inputBuffer) {
+    int code = ReadInput(input, source.file, record.error, inputBuffer);
+    if (code == kExitOk) code = OpenDocument(input, source.file.Bytes(), password, source.document, record.error);
     if (code != kExitOk) {
         record.status = "error";
         record.code = code;
         return;
     }
     Layout::ConvertReport report;
-    Layout::Convert(*document, options, markdown, report);
+    Layout::Convert(*source.document, options, markdown, report);
     if (!output.empty() && !File::WriteAll(output, markdown)) {
         record.status = "error";
         record.code = kExitUnwritable;
@@ -500,15 +505,27 @@ void ConvertDocument(const std::string& input, const std::string& output, std::s
     }
     record.pages = static_cast<uint64_t>(report.pages);
     record.bytes = markdown.size();
-    if (counters) AppendCounters(record.counters, report, document->Report());
+    if (counters) AppendCounters(record.counters, report, source.document->Report());
 }
 
+// ConvertSource with a source of its own, dropped when the conversion is done.
+void ConvertDocument(const std::string& input, const std::string& output, std::string_view password,
+                     const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
+                     bool counters, std::string* inputBuffer = nullptr) {
+    Source source;
+    ConvertSource(input, output, password, options, markdown, record, counters, source, inputBuffer);
+}
+
+// --convert: one conversion in a process of its own, which main ends with _Exit when this
+// returns. The input's mapping, the document and the Markdown are never taken apart: the kernel
+// takes the address space back whole at the end, so the unmapping of the input and every free
+// would be work for nothing.
 int ConvertFile(const std::string& input, const std::string& output, const DocumentOptions& document,
                 const Layout::ConvertOptions& options, bool report) {
     const Clock::time_point start = report ? Clock::now() : Clock::time_point();
-    std::string markdown;
+    std::string& markdown = *new std::string();
     Batch::Record record;
-    ConvertDocument(input, output, document.password, options, markdown, record, report);
+    ConvertSource(input, output, document.password, options, markdown, record, report, *new Source(), nullptr);
     if (record.code != kExitOk) PrintError(record.error);
     if (report) {
         record.input = input;
@@ -1000,7 +1017,10 @@ int main(int argc, char** argv) {
             SetOneShotAllocator();
             Layout::ConvertOptions options = document.convert;
             ChooseImageTarget(output, document, options);
-            return ConvertFile(input, output, document, options, report);
+            const int code = ConvertFile(input, output, document, options, report);
+            // No exit handlers, static destructors or frees after the output is written (ConvertFile).
+            std::fflush(nullptr);
+            std::_Exit(code);
         }
         case Mode::Batch:
             batch.report = report;

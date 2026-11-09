@@ -128,6 +128,8 @@ if(TARGET rayopdf_layout)
         # Relative relocations packed (DT_RELR): 53 KB less to read and apply at start. The static
         # binary carries its own start code, so this needs no newer glibc where it runs.
         target_link_options(rayopdf PRIVATE -static-pie $<$<CONFIG:Release>:-Wl,-z,pack-relative-relocs>)
+        # glibc start-up work the static binary has no use for (static_start.cpp).
+        target_sources(rayopdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/cli/static_start.cpp)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)
         target_link_options(rayopdf PRIVATE -static-libstdc++ -static-libgcc)
     endif()
