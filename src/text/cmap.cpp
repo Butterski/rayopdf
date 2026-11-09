@@ -330,6 +330,9 @@ void Parse(std::string_view data, Sink& sink) {
     }
 }
 
+// One-unit bfranges of this many codes or more are written in place (UnicodeSink::Range).
+constexpr uint64_t kInPlaceCodes = 8;
+
 class UnicodeSink final : public Sink {
 public:
     explicit UnicodeSink(ToUnicodeMap& map) : map_(map) { codespace = &map.codespace; }
@@ -379,14 +382,47 @@ public:
         const size_t count = UnitsOf(destination.text, units, kMaxUnits);
         if (count == 0) return;
         const uint16_t last = units[count - 1];
-        if (count == 1) {
-            // One unit counting up, the common range.
+        if (count == 1 && static_cast<uint64_t>(high) - low + 1 < kInPlaceCodes) {
+            // A short one-unit range: code by code (sizing the map for it costs more).
             for (uint32_t code = low; code <= high && !Full(); ++code) {
                 const size_t start = map_.text.size();
                 AppendUnit(static_cast<uint16_t>(last + (code - low)), map_.text);
                 Add(code, start);
                 if (code == UINT32_MAX) break;
             }
+            return;
+        }
+        if (count == 1) {
+            // One unit counting up, the common range: every code gets an entry of 1-3 bytes
+            // (AppendUnit), written in place, up to the map's limit.
+            const size_t first = map_.entries.size();
+            const uint64_t room = first < kMaxMappedCodes ? kMaxMappedCodes - first : 0;
+            const uint64_t span = static_cast<uint64_t>(high) - low + 1;
+            const size_t n = static_cast<size_t>(span < room ? span : room);
+            const size_t start = map_.text.size();
+            map_.entries.resize(first + n);
+            map_.text.resize(start + 3 * n);
+            UnicodeEntry* entry = map_.entries.data() + first;
+            char* const base = &map_.text[0];
+            size_t at = start;
+            for (size_t i = 0; i < n; ++i) {
+                uint32_t u = static_cast<uint16_t>(last + i);
+                const size_t from = at;
+                if (u < 0x80) {
+                    base[at++] = static_cast<char>(u);
+                } else {
+                    if (u >= 0xD800 && u <= 0xDFFF) u = Utf8::kReplacement;
+                    if (u < 0x800) {
+                        base[at++] = static_cast<char>(0xC0 | (u >> 6));
+                    } else {
+                        base[at++] = static_cast<char>(0xE0 | (u >> 12));
+                        base[at++] = static_cast<char>(0x80 | ((u >> 6) & 0x3F));
+                    }
+                    base[at++] = static_cast<char>(0x80 | (u & 0x3F));
+                }
+                entry[i] = UnicodeEntry{low + static_cast<uint32_t>(i), static_cast<uint32_t>(from), static_cast<uint32_t>(at - from)};
+            }
+            map_.text.resize(at);
             return;
         }
         for (uint32_t code = low; code <= high && !Full(); ++code) {
