@@ -977,7 +977,7 @@ OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, O
 OcrStatus RecogniseVectorPage(const Document& document, OcrSession& session, PageData& page, uint32_t& added) {
     added = 0;
     const int index = static_cast<int>(page.number) - 1;
-    std::string content;
+    std::string_view content;
     const StreamStatus read = document.PageContent(index, content);
     if (read == StreamStatus::NotStream || content.empty()) return OcrStatus::Ok;
     OcrCanvas canvas;

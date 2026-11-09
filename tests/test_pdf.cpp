@@ -341,9 +341,9 @@ Opened OpenOk(std::string bytes, int code, std::string_view password = "") {
 }
 
 std::string Content(const Document& doc, int page) {
-    std::string out;
+    std::string_view out;
     doc.PageContent(page, out);
-    return out;
+    return std::string(out);
 }
 
 // OnePage: catalog 1, pages 2, content 3, page 4.
@@ -602,7 +602,8 @@ void TestClassic() {
                       doc->Object(99).IsNull(),
                   220);
     std::string out;
-    RAYOPDF_CHECK(doc->PageContent(5, out) == StreamStatus::NotStream, 220);
+    std::string_view content;
+    RAYOPDF_CHECK(doc->PageContent(5, content) == StreamStatus::NotStream && content.empty(), 220);
     RAYOPDF_CHECK(doc->StreamData(doc->Catalog(), out) == StreamStatus::NotStream, 238);
 }
 
@@ -830,8 +831,10 @@ void TestStreams() {
     b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page1) + " 0 R " + std::to_string(page2) + " 0 R] >>");
     const auto doc = OpenOk(b.Build(catalog), 237);
     std::string out;
-    RAYOPDF_CHECK(doc->PageContent(0, out) == StreamStatus::Ok && out == "BT (A) Tj\nET ET ", 237);
-    RAYOPDF_CHECK(doc->PageContent(1, out) == StreamStatus::Salvaged && out.compare(0, 10, "BT (A) Tj\n") == 0, 243);
+    std::string_view content;
+    RAYOPDF_CHECK(doc->PageContent(0, content) == StreamStatus::Ok && content == "BT (A) Tj\nET ET ", 237);
+    RAYOPDF_CHECK(doc->PageContent(1, content) == StreamStatus::Salvaged && content.compare(0, 10, "BT (A) Tj\n") == 0,
+                  243);
     RAYOPDF_CHECK(doc->Report().salvagedStreams == 1 && doc->Report().failedStreams == 0, 243);
     PdfValue ref;
     ref.type = PdfValue::Type::Ref;

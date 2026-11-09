@@ -320,7 +320,7 @@ void Interpreter::Run(int index, bool withLinks) {
     gs_.ctm = base;
     gs_.clip = pageBox_;
 
-    std::string content;
+    std::string_view content;
     const StreamStatus status = doc_.PageContent(index, content);
     if (status == StreamStatus::Corrupt || status == StreamStatus::Salvaged || status == StreamStatus::TooLarge)
         page_.contentErrors++;

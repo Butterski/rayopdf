@@ -9,6 +9,8 @@
 #include "common/per_thread.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -358,36 +360,22 @@ bool ZlibHeader(const uint8_t* p) {
     return (p[0] & 15) == 8 && (p[0] >> 4) <= 7 && ((p[0] << 8) | p[1]) % 31 == 0;
 }
 
-// The decoders' output buffer: grown without zero-filling (every byte kept is written first).
-struct Buffer {
-    std::unique_ptr<uint8_t[]> bytes;
-    size_t size = 0;
-
-    // At least `want` bytes, the first `keep` as they were.
-    uint8_t* Reserve(size_t want, size_t keep) {
-        if (want > size) {
-            std::unique_ptr<uint8_t[]> grown(new uint8_t[want]);
-            if (keep > 0) std::memcpy(grown.get(), bytes.get(), keep);
-            bytes.swap(grown);
-            size = want;
-        }
-        return bytes.get();
-    }
-};
-
+// Every byte of the decoders' output buffer that is kept is written first: it grows without
+// zero-filling (Output).
 class Inflater {
 public:
-    Inflater(const uint8_t* data, size_t size, Buffer& out, size_t maxOut)
-        : begin_(data), in_(data), end_(data + size), out_(out), maxOut_(maxOut) {}
+    // Decodes into `out` from its byte `at` on (`at` 0 when streaming).
+    Inflater(const uint8_t* data, size_t size, Output& out, size_t at, size_t maxOut)
+        : begin_(data), in_(data), end_(data + size), out_(out), at_(at), maxOut_(maxOut) {}
 
     // Inflates the whole input into the buffer: Length() bytes of it.
     Result Run() {
         SkipHeader();
         // A first guess at the size: content streams inflate 3 to 6 times; the buffer doubles. A
         // buffer kept from an earlier stream is used whole.
-        const size_t kept = out_.size > kSlack ? out_.size - kSlack : 0;
+        const size_t room = out_.Capacity() > at_ + kSlack ? out_.Capacity() - at_ - kSlack : 0;
         const size_t guess = std::max<size_t>(size_t(4096), static_cast<size_t>(end_ - begin_) * 4);
-        if (!Resize(std::min(Cap(), std::max(guess, kept)))) return Result::Corrupt;
+        if (!Resize(std::min(Cap(), std::max(guess, room)))) return Result::Corrupt;
         Step step = Step::Ok;
         bool done = false;
         while (!done) {
@@ -426,7 +414,7 @@ public:
         SkipHeader();
         growable_ = false;
         room_ = std::min(kWindow + piece, Cap());
-        buf_ = out_.Reserve(room_ + kSlack, 0);
+        buf_ = out_.Reserve(room_ + kSlack);
         cap_ = room_;
     }
 
@@ -466,7 +454,7 @@ private:
     size_t Cap() const { return maxOut_ + 1; }
 
     bool Resize(size_t capacity) {
-        buf_ = out_.Reserve(capacity + kSlack, o_);
+        buf_ = out_.Reserve(at_ + capacity + kSlack) + at_;
         cap_ = capacity;
         return true;
     }
@@ -796,7 +784,8 @@ private:
     unsigned bitsleft_ = 0;
     unsigned overread_ = 0;  // zero bytes put in the bit buffer past the end of the input
 
-    Buffer& out_;
+    Output& out_;
+    const size_t at_;  // where the output starts in out_
     uint8_t* buf_ = nullptr;
     size_t cap_ = 0;  // bytes of buf_ before the slack
     size_t o_ = 0;    // bytes of output (in the buffer, when streaming)
@@ -825,19 +814,51 @@ constexpr size_t kKeptBuffer = size_t(1) << 20;
 
 } // namespace
 
+Output::~Output() { std::free(data_); }
+
+uint8_t* Output::Reserve(size_t capacity) {
+    if (capacity > capacity_) {
+        void* grown = std::realloc(data_, capacity);
+        // As operator new[] without exceptions: no memory ends the process.
+        if (!grown) std::abort();
+        data_ = static_cast<uint8_t*>(grown);
+        capacity_ = capacity;
+    }
+    return data_;
+}
+
+uint8_t* Output::Grow(size_t capacity) {
+    if (capacity <= capacity_) return data_;
+    return Reserve(std::max(capacity, capacity_ > SIZE_MAX / 2 ? SIZE_MAX : capacity_ * 2));
+}
+
+void Output::Release() {
+    std::free(data_);
+    data_ = nullptr;
+    capacity_ = 0;
+}
+
 Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
     limit = std::min(limit, (size_t(1) << 40));
-    Buffer& buffer = PerThread<Buffer>();
-    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, limit);
+    Output& buffer = PerThread<Output>();
+    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, 0, limit);
     const Result result = inflater.Run();
-    out.assign(reinterpret_cast<const char*>(buffer.bytes.get()), inflater.Length());
-    if (buffer.size > kKeptBuffer) buffer = Buffer();
+    out.assign(reinterpret_cast<const char*>(buffer.Data()), inflater.Length());
+    if (buffer.Capacity() > kKeptBuffer) buffer.Release();
+    return result;
+}
+
+Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length) {
+    limit = std::min(limit, (size_t(1) << 40));
+    Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, at, limit);
+    const Result result = inflater.Run();
+    length = inflater.Length();
     return result;
 }
 
 struct Stream::State {
-    Buffer buffer;
+    Output buffer;
     std::unique_ptr<Inflater> inflater;
 };
 
@@ -848,7 +869,7 @@ void Stream::Start(std::string_view in, size_t limit) {
     limit = std::min(limit, (size_t(1) << 40));
     if (!state_) state_ = std::make_unique<State>();
     state_->inflater = std::make_unique<Inflater>(reinterpret_cast<const uint8_t*>(in.data()), in.size(),
-                                                  state_->buffer, limit);
+                                                  state_->buffer, 0, limit);
     state_->inflater->BeginStream(kPiece);
 }
 

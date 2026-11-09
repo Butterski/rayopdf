@@ -527,6 +527,18 @@ StreamStatus Decode(Kind kind, const Params& params, std::string_view in, std::s
     return status;
 }
 
+StreamStatus DecodeFlateInto(std::string_view in, Inflate::Output& out, size_t at, size_t limit, size_t& length) {
+    const size_t bomb = SaturatingAdd(SaturatingMul(in.size(), kMaxFlateRatio), kFlateAllowance);
+    switch (Inflate::InflateInto(in, out, at, std::min(limit, bomb), length)) {
+        case Inflate::Result::Ok: return StreamStatus::Ok;
+        case Inflate::Result::Salvaged: return StreamStatus::Salvaged;
+        case Inflate::Result::TooLarge: return StreamStatus::TooLarge;
+        case Inflate::Result::Corrupt: break;
+    }
+    length = 0;
+    return StreamStatus::Corrupt;
+}
+
 // ---------------------------------------------------------------- a piece at a time
 
 struct Decoder::State {

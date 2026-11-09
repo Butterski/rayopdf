@@ -115,8 +115,9 @@ public:
     int Rotate(int index) const;
     const PdfValue& Resources(int index) const;
     // The page's content: its /Contents stream, or the streams of a /Contents array joined with
-    // a newline, decoded into `out` (replaced). The worst status of its streams.
-    StreamStatus PageContent(int index, std::string& out) const;
+    // a newline, decoded. `out` views a buffer of the calling thread, valid until its next call of
+    // PageContent. The worst status of its streams.
+    StreamStatus PageContent(int index, std::string_view& out) const;
 
 private:
     struct Impl;

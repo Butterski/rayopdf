@@ -25,8 +25,35 @@ enum class Result : uint8_t {
     Corrupt,   // corrupt or truncated before any output; `out` is empty
 };
 
+// A growable byte buffer for Inflate's output, grown with realloc: its bytes are never zero-filled,
+// and a large block (one glibc maps on its own) moves without being copied or faulted again.
+class Output {
+public:
+    Output() = default;
+    ~Output();
+    Output(const Output&) = delete;
+    Output& operator=(const Output&) = delete;
+
+    uint8_t* Data() const { return data_; }
+    size_t Capacity() const { return capacity_; }
+    // At least `capacity` bytes, those before kept.
+    uint8_t* Reserve(size_t capacity);
+    // At least `capacity` bytes and, when it has to grow, at least twice the bytes it had.
+    uint8_t* Grow(size_t capacity);
+    void Release();
+
+private:
+    uint8_t* data_ = nullptr;
+    size_t capacity_ = 0;
+};
+
 // Inflates `in` into `out` (replaced), at most `limit` bytes.
 Result Inflate(std::string_view in, std::string& out, size_t limit);
+
+// Inflate onto `out` from its byte `at` on (the bytes before stay as they are; the data's matches
+// never reach them): `length` bytes of output, the same bytes and Result as Inflate. `out` may
+// grow; bytes past `at + length` are undefined.
+Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length);
 
 // Inflate's output a piece at a time, holding the 32 KB window and one piece (kPiece bytes) of
 // output instead of all of it: the same bytes in order, and the same Result.

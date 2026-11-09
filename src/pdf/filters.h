@@ -22,6 +22,10 @@ enum class StreamStatus : uint8_t {
     NotStream,    // the value is no stream
 };
 
+namespace Inflate {
+class Output;
+}
+
 namespace Filters {
 
 enum class Kind : uint8_t {
@@ -56,6 +60,9 @@ struct Params {
 // Decodes `in` with one filter into `out` (replaced), at most `limit` bytes. Image filters,
 // Crypt, Brotli and Unknown return Unsupported with `out` = `in`.
 StreamStatus Decode(Kind kind, const Params& params, std::string_view in, std::string& out, size_t limit);
+// Decode(Flate, params of no predictor, in, ·, limit) onto `out` from its byte `at` on (the bytes
+// before kept): `length` bytes, the same bytes and status (no bytes when Corrupt).
+StreamStatus DecodeFlateInto(std::string_view in, Inflate::Output& out, size_t at, size_t limit, size_t& length);
 
 // Decode's output a piece at a time: the same bytes in order and the same status, holding only
 // what the filter needs (Flate's 32 KB window and a piece, LZW's table and a piece, a predictor's

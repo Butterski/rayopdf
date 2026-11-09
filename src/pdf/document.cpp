@@ -10,7 +10,9 @@
 // dictionaries; the scan runs at most once per document.
 #include "pdf/document.h"
 
+#include "common/per_thread.h"
 #include "crypt/crypt.h"
+#include "pdf/inflate.h"
 #include "pdf/syntax.h"
 
 #include <algorithm>
@@ -144,6 +146,15 @@ struct ScanSlot {
     bool present = false;
 };
 
+// A page's content, its pieces decoded onto the end of one buffer kept by each thread across pages
+// and documents (PageContent's view points into it); a page that left it larger than
+// kKeptContent frees it at the next page.
+struct PageBuffer {
+    Inflate::Output bytes;
+    std::string piece;  // a piece decoded whole before it is copied onto the page's bytes
+};
+constexpr size_t kKeptContent = size_t(8) << 20;
+
 using Stage = Filters::Stage;
 
 } // namespace
@@ -226,7 +237,6 @@ struct Document::Impl {
     std::string scratch;
     std::string scratch2;
     std::string decrypted;
-    std::string piece;
     // Streams being read that are not counted yet (StreamReader), in the order they were opened.
     std::vector<StreamReader*> uncounted;
 
@@ -730,6 +740,40 @@ struct Document::Impl {
         if (prepared != StreamStatus::Ok) return prepared;
         const StreamStatus status = Worse(start, RunStages(raw, stages, count, out, limit));
         Count(status, out.size());
+        return status;
+    }
+
+    // StreamData(value, ·, limit) onto `out` from its byte `at` on: `length` bytes, the same bytes,
+    // status and counts. A stream of one Flate filter (Crypt aside) without a predictor inflates
+    // straight into `out`; any other is decoded into `piece` as StreamData decodes it, then copied.
+    StreamStatus StreamDataInto(const PdfValue& value, Inflate::Output& out, size_t at, size_t limit,
+                                std::string& piece, size_t& length) {
+        length = 0;
+        Stage stages[kMaxFilters];
+        size_t count = 0;
+        std::string_view raw;
+        StreamStatus start = StreamStatus::Ok;
+        const StreamStatus prepared = Prepare(value, limit, stages, count, scratch, raw, start);
+        if (prepared != StreamStatus::Ok) return prepared;
+        // The filters RunStages runs (it skips Crypt).
+        const Stage* last = nullptr;
+        size_t decoders = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (stages[i].kind == Filters::Kind::Crypt) continue;
+            decoders++;
+            last = &stages[i];
+        }
+        StreamStatus status;
+        if (decoders == 1 && last->kind == Filters::Kind::Flate && last->params.predictor != 2 &&
+            last->params.predictor < 10) {
+            status = Worse(start, Filters::DecodeFlateInto(raw, out, at, limit, length));
+        } else {
+            status = Worse(start, RunStages(raw, stages, count, piece, limit));
+            length = piece.size();
+            uint8_t* data = out.Grow(at + length);
+            if (length > 0) std::memcpy(data + at, piece.data(), length);
+        }
+        Count(status, length);
         return status;
     }
 
@@ -1550,27 +1594,38 @@ const PdfValue& Document::Resources(int index) const {
     return resources ? *resources : Null();
 }
 
-StreamStatus Document::PageContent(int index, std::string& out) const {
-    out.clear();
+StreamStatus Document::PageContent(int index, std::string_view& out) const {
+    out = {};
     Impl& d = *impl_;
     if (index < 0 || static_cast<size_t>(index) >= d.pages.size()) return StreamStatus::NotStream;
+    PageBuffer& buffer = PerThread<PageBuffer>();
+    if (buffer.bytes.Capacity() > kKeptContent) buffer.bytes.Release();
     const PdfValue& contents = d.Get(*d.pages[static_cast<size_t>(index)].dict, "Contents");
     if (contents.IsNull()) return StreamStatus::Ok;  // a blank page
-    if (!contents.IsArray()) return d.StreamData(contents, out, kDefaultStreamLimit);
+    size_t size = 0;
     StreamStatus status = StreamStatus::Ok;
-    bool first = true;
-    for (const PdfValue& item : contents.Array()) {
-        if (out.size() >= kDefaultStreamLimit) {
-            status = Worse(status, StreamStatus::TooLarge);
-            d.report.limitHits++;
-            break;
+    if (!contents.IsArray()) {
+        status = d.StreamDataInto(contents, buffer.bytes, 0, kDefaultStreamLimit, buffer.piece, size);
+    } else {
+        bool first = true;
+        for (const PdfValue& item : contents.Array()) {
+            if (size >= kDefaultStreamLimit) {
+                status = Worse(status, StreamStatus::TooLarge);
+                d.report.limitHits++;
+                break;
+            }
+            // A newline before every piece but the first, whatever the piece holds.
+            const size_t at = first ? size : size + 1;
+            size_t length = 0;
+            const StreamStatus piece =
+                d.StreamDataInto(item, buffer.bytes, at, kDefaultStreamLimit - size, buffer.piece, length);
+            status = Worse(status, piece);
+            if (!first) buffer.bytes.Grow(at)[size] = '\n';
+            first = false;
+            size = at + length;
         }
-        const StreamStatus piece = d.StreamData(item, d.piece, kDefaultStreamLimit - out.size());
-        status = Worse(status, piece);
-        if (!first) out.push_back('\n');
-        first = false;
-        out.append(d.piece);
     }
+    if (size > 0) out = std::string_view(reinterpret_cast<const char*>(buffer.bytes.Data()), size);
     return status;
 }
 
