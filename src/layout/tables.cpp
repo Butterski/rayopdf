@@ -213,15 +213,41 @@ void ComputeSpans(Grid& g) {
     }
 }
 
-// The minimal cell of point (x, y), or false outside the grid.
-bool Locate(const Grid& g, float x, float y, int& r, int& c) {
-    if (x < g.xs.front() || x > g.xs.back() || y > g.ys.front() || y < g.ys.back()) return false;
-    c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), x) - g.xs.begin()) - 1;
-    c = std::min(std::max(c, 0), g.Cols() - 1);
-    r = static_cast<int>(std::upper_bound(g.ys.begin(), g.ys.end(), y, std::greater<float>()) - g.ys.begin()) - 1;
-    r = std::min(std::max(r, 0), g.Rows() - 1);
-    return true;
-}
+// The minimal cell of point (x, y) in a grid, or false outside it (the last boundary at or before
+// the point, clamped to the cells), for the words or glyphs of a grid in reading order: the row and
+// the column of the last point are tried before a search where the grid's boundaries are in order
+// (no NaN among them), which gives the same cell. The grid must not change while in use.
+class Locator {
+public:
+    explicit Locator(const Grid& g) : g_(g) {
+        for (size_t k = 0; k + 1 < g.xs.size() && ordered_; ++k) ordered_ = g.xs[k] <= g.xs[k + 1];
+        for (size_t k = 0; k + 1 < g.ys.size() && ordered_; ++k) ordered_ = g.ys[k] >= g.ys[k + 1];
+    }
+
+    bool Find(float x, float y, int& r, int& c) {
+        if (x < g_.xs.front() || x > g_.xs.back() || y > g_.ys.front() || y < g_.ys.back()) return false;
+        const size_t nx = g_.xs.size(), ny = g_.ys.size();
+        size_t k = static_cast<size_t>(column_);
+        if (!(ordered_ && column_ >= 0 && g_.xs[k] <= x && (k + 1 == nx || x < g_.xs[k + 1])))
+            column_ = static_cast<int>(std::upper_bound(g_.xs.begin(), g_.xs.end(), x) - g_.xs.begin()) - 1;
+        if (!(y == y_)) {  // the same y (glyphs of a line) has the same row; NaN is never the same
+            y_ = y;
+            k = static_cast<size_t>(row_);
+            if (!(ordered_ && row_ >= 0 && g_.ys[k] >= y && (k + 1 == ny || y > g_.ys[k + 1])))
+                row_ = static_cast<int>(std::upper_bound(g_.ys.begin(), g_.ys.end(), y, std::greater<float>()) - g_.ys.begin()) - 1;
+        }
+        c = std::min(std::max(column_, 0), g_.Cols() - 1);
+        r = std::min(std::max(row_, 0), g_.Rows() - 1);
+        return true;
+    }
+
+private:
+    const Grid& g_;
+    bool ordered_ = true;  // xs ascend and ys descend
+    int column_ = -1;      // the last point's: the last xs at or left of it
+    int row_ = -1;         // the last ys at or above it
+    float y_ = NAN;        // the last point's y
+};
 
 // A page reference of a contents list: a number of four digits at most, or a roman numeral.
 bool PageNumber(std::string_view t) {
@@ -325,6 +351,15 @@ bool InkColumns(const Ink& ink, float xa, float xb, float minGap, std::vector<Ga
     return !gaps.empty();
 }
 
+// The edges of one connected component of a page's rulings: indices into the horizontal and the
+// vertical edges, ascending.
+struct Component {
+    const uint32_t* h;
+    size_t hCount;
+    const uint32_t* v;
+    size_t vCount;
+};
+
 // What the table tests read of a word's text, gathered once a page (Detector::Chars): its length
 // in bytes, its first three bytes, its ASCII digits and letters (Numeric adds them up over a
 // cell), and whether every byte could belong to a number ParseNumber reads (digits, '.', and an
@@ -425,7 +460,7 @@ private:
     // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
     void CollapseEmpty(Grid& g) const;
-    void Boundaries(Grid& g, int32_t root) const;
+    void Boundaries(Grid& g, const Component& comp) const;
     void SplitByText(Grid& g) const;
     void SplitRowsByLines(Grid& g) const;
     void SplitColumnsByText(Grid& g) const;
@@ -672,14 +707,18 @@ bool Detector::Free(float x0, float y0, float x1, float y1) const {
 }
 
 // Rows of the words whose centre lies in [xa, xb] with a baseline in [ylo, yhi], top first.
-// Words of accepted grids are left out.
+// Words of accepted grids are left out. rowWords holds the rows' words (rows' first and count);
+// entries after the last row's are left over.
 void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords) {
     rows.clear();
-    rowWords.clear();
     // words_ is sorted by baseline descending: the first word at or below yhi.
     auto it = std::lower_bound(words_.begin(), words_.end(), yhi,
                                [](const TWord& w, float y) { return w.base > y; });
-    for (size_t i = static_cast<size_t>(it - words_.begin()); i < words_.size(); ++i) {
+    // rowWords is written by index, grown to the words from yhi to the end.
+    const size_t start = static_cast<size_t>(it - words_.begin());
+    if (rowWords.size() < words_.size() - start) rowWords.resize(words_.size() - start);
+    size_t count = 0;
+    for (size_t i = start; i < words_.size(); ++i) {
         const TWord& w = words_[i];
         if (w.base < ylo) break;
         if (wordUsed_[i]) continue;
@@ -700,7 +739,7 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
             }
         } else {
             Row r;
-            r.first = static_cast<uint32_t>(rowWords.size());
+            r.first = static_cast<uint32_t>(count);
             r.count = 1;
             r.base = w.base, r.top = w.y1, r.bottom = w.y0, r.x0 = w.x0, r.x1 = w.x1, r.size = w.size;
             r.mono = w.mono ? 1 : 0;
@@ -708,7 +747,7 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
             r.proseGlyphs = w.mono ? 0 : w.k1 - w.k0;
             rows.push_back(r);
         }
-        rowWords.push_back(static_cast<uint32_t>(i));
+        rowWords[count++] = static_cast<uint32_t>(i);
     }
     // Words of a row left to right (rows may gather words of several lines).
     for (const Row& r : rows)
@@ -737,12 +776,13 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
         // Few words for the width: the cover changes only at their bins, so the starts and ends
         // (2 * bin + 1 a start, 2 * bin an end) are sorted and walked one stretch of bins of one
         // cover at a time.
-        events_.clear();
+        events_.resize(2 * words);
+        size_t at = 0;
         for (size_t r = rowBegin; r < rowEnd; ++r)
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(skip && (*skip)[r]); ++k) {
                 const TWord& w = words_[rowWords[k]];
-                events_.push_back(static_cast<uint32_t>(binOf(w.x0)) * 2 + 1);
-                events_.push_back(static_cast<uint32_t>(binOf(w.x1) + 1) * 2);
+                events_[at++] = static_cast<uint32_t>(binOf(w.x0)) * 2 + 1;
+                events_[at++] = static_cast<uint32_t>(binOf(w.x1) + 1) * 2;
             }
         std::sort(events_.begin(), events_.end());
         for (size_t e = 0; e < events_.size();) {
@@ -1112,13 +1152,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
 
 // The boundary maps of a lattice from its component's edges (each edge counts for the nearest
 // boundary: one whose sliver of a column was collapsed counts for the boundary that took its place).
-void Detector::Boundaries(Grid& g, int32_t root) const {
+void Detector::Boundaries(Grid& g, const Component& comp) const {
     const int rows = g.Rows(), cols = g.Cols();
     const float reach = Fmax(kSnap, 1.2f * bodySize_);
     g.vb.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols + 1), 0);
     g.hb.assign(static_cast<size_t>(rows + 1) * static_cast<size_t>(cols), 0);
-    for (const Edge& e : v_) {
-        if (e.comp != root) continue;
+    for (size_t m = 0; m < comp.vCount; ++m) {
+        const Edge& e = v_[comp.v[m]];
         int c = 0;
         for (int k = 1; k <= cols; ++k)
             if (std::fabs(g.xs[static_cast<size_t>(k)] - e.pos) < std::fabs(g.xs[static_cast<size_t>(c)] - e.pos)) c = k;
@@ -1129,8 +1169,8 @@ void Detector::Boundaries(Grid& g, int32_t root) const {
             if (overlap >= 0.5f * (top - bottom)) g.vb[static_cast<size_t>(r * (cols + 1) + c)] = 1;
         }
     }
-    for (const Edge& e : h_) {
-        if (e.comp != root) continue;
+    for (size_t m = 0; m < comp.hCount; ++m) {
+        const Edge& e = h_[comp.h[m]];
         int r = 0;
         for (int k = 1; k <= rows; ++k)
             if (std::fabs(g.ys[static_cast<size_t>(k)] - e.pos) < std::fabs(g.ys[static_cast<size_t>(r)] - e.pos)) r = k;
@@ -1151,10 +1191,11 @@ void Detector::SplitByText(Grid& g) const {
     const size_t n = static_cast<size_t>(rows) * static_cast<size_t>(cols + 1);
     std::vector<uint8_t> left(n, 0), right(n, 0), across(n, 0);
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
+    Locator locate(g);
     for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
         const TWord& w = *it;
         int r = 0, c = 0;
-        if (!Locate(g, (w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, r, c)) continue;
+        if (!locate.Find((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, r, c)) continue;
         const size_t row = static_cast<size_t>(r) * static_cast<size_t>(cols + 1);
         left[row + static_cast<size_t>(c) + 1] = 1;  // ink left of the column's right boundary
         right[row + static_cast<size_t>(c)] = 1;     // ink right of its left boundary
@@ -1188,6 +1229,7 @@ void Detector::SplitRowsByLines(Grid& g) const {
     std::vector<uint8_t> vb, hb(g.hb.begin(), g.hb.begin() + cols);
     uint64_t first = 0;  // the row's first column with text
     const auto full = [&](const Baseline& l) { return (l.mask & first) && Bits(l.mask) >= 2; };
+    Locator locate(g);  // g's rows and columns stay as they are until the end
     for (int r = 0; r < rows; ++r) {
         const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
         lines.clear();
@@ -1196,7 +1238,7 @@ void Detector::SplitRowsByLines(Grid& g) const {
         for (; it != words_.end() && it->base >= bottom - 20; ++it) {
             const TWord& w = *it;
             int wr = 0, c = 0;
-            if (!Locate(g, (w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, wr, c) || wr != r) continue;
+            if (!locate.Find((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, wr, c) || wr != r) continue;
             const uint64_t bit = uint64_t(1) << c;
             const uint64_t number = Numeric(Chars(w)) ? bit : 0;
             if (!lines.empty() && lines.back().base - w.base <= 0.35f * w.size) {
@@ -1256,13 +1298,14 @@ void Detector::SplitColumnsByText(Grid& g) const {
     };
     std::vector<Ink> ink;
     std::vector<uint8_t> left(static_cast<size_t>(rows)), right(static_cast<size_t>(rows)), any(static_cast<size_t>(rows));
+    Locator locate(g);  // g stays as it is until the end
     for (int c = 0; c < cols; ++c) {
         ink.clear();
         float size = 0;
         auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
         for (; it != words_.end() && it->base >= g.y0 - 20 && ink.size() < 4096; ++it) {
             int r = 0, wc = 0;
-            if (!Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, wc) || wc != c || r == 0) continue;
+            if (!locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, wc) || wc != c || r == 0) continue;
             ink.push_back(Ink{it->x0, it->x1, r});
             size = Fmax(size, it->size);
         }
@@ -1304,7 +1347,7 @@ void Detector::SplitColumnsByText(Grid& g) const {
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
     for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
         int r = 0, c = 0;
-        if (!Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) continue;
+        if (!locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) continue;
         for (int k = 1; k < n; ++k)
             if (oldBoundary[static_cast<size_t>(k)] < 0 && it->x0 < xs[static_cast<size_t>(k)] - 0.5f && it->x1 > xs[static_cast<size_t>(k)] + 0.5f)
                 vb[static_cast<size_t>(r * (n + 1) + k)] = 0;
@@ -1321,9 +1364,10 @@ void Detector::LatticeHeader(Grid& g) const {
     const int rows = g.Rows(), cols = g.Cols();
     std::vector<uint8_t> filled(g.cells.size(), 0);
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
+    Locator locate(g);
     for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
         int r = 0, c = 0;
-        if (Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c))
+        if (locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c))
             filled[static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)])] = 1;
     }
     int header = 0;
@@ -1341,7 +1385,7 @@ void Detector::LatticeHeader(Grid& g) const {
         it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
         for (; it != words_.end() && it->base >= g.y0 - 20 && !numbers; ++it) {
             int r = 0, c = 0;
-            numbers = Locate(g, (it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c) && r == header && Numeric(Chars(*it));
+            numbers = locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c) && r == header && Numeric(Chars(*it));
         }
         if (!numbers) ++header;
     }
@@ -1465,32 +1509,50 @@ void Detector::Lattices() {
         (i < nh ? h_[i] : v_[i - nh]).comp = r;
         if (r == static_cast<int32_t>(i)) roots.push_back(r);
     }
+    // A grid takes two edges of each direction: without them, no component is one.
+    if (nh < 2 || nv < 2) roots.clear();
+    // Each component's edges, in edge order (a counting sort by root): the loops below over one
+    // component's edges visit them as loops over all edges skipping other components did.
+    std::vector<uint32_t> hFirst, vFirst, hOf, vOf;
+    if (!roots.empty()) {
+        hFirst.assign(nh + nv + 1, 0), vFirst.assign(nh + nv + 1, 0), hOf.resize(nh), vOf.resize(nv);
+        for (size_t i = 0; i < nh; ++i) hFirst[static_cast<size_t>(h_[i].comp) + 1]++;
+        for (size_t i = 0; i < nv; ++i) vFirst[static_cast<size_t>(v_[i].comp) + 1]++;
+        for (size_t k = 1; k <= nh + nv; ++k) hFirst[k] += hFirst[k - 1], vFirst[k] += vFirst[k - 1];
+        std::vector<uint32_t> hAt(hFirst.begin(), hFirst.end() - 1), vAt(vFirst.begin(), vFirst.end() - 1);
+        for (size_t i = 0; i < nh; ++i) hOf[hAt[static_cast<size_t>(h_[i].comp)]++] = static_cast<uint32_t>(i);
+        for (size_t i = 0; i < nv; ++i) vOf[vAt[static_cast<size_t>(v_[i].comp)]++] = static_cast<uint32_t>(i);
+    }
     std::vector<uint8_t> hUsed(nh, 0);
     for (int32_t root : roots) {
         if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) break;
+        const size_t ri = static_cast<size_t>(root);
+        const Component comp{hOf.data() + hFirst[ri], hFirst[ri + 1] - hFirst[ri], vOf.data() + vFirst[ri],
+                             vFirst[ri + 1] - vFirst[ri]};
         Grid g;
         g.kind = TableKind::Lattice;
         g.x0 = INFINITY, g.y0 = INFINITY, g.x1 = -INFINITY, g.y1 = -INFINITY;
-        int hs = 0, vs = 0;
-        bool drawn = false;  // drawn vertical rules and a drawn top rule, not only sides of filled areas
-        for (const Edge& e : h_)
-            if (e.comp == root) {
-                hs++;
-                g.ys.push_back(e.pos);
-                g.x0 = Fmin(g.x0, e.a), g.x1 = Fmax(g.x1, e.b);
-                g.y0 = Fmin(g.y0, e.pos), g.y1 = Fmax(g.y1, e.pos);
-            }
-        for (const Edge& e : v_)
-            if (e.comp == root) {
-                vs++;
-                drawn = drawn || !e.area;
-                g.xs.push_back(e.pos);
-                g.x0 = Fmin(g.x0, e.pos), g.x1 = Fmax(g.x1, e.pos);
-                g.y0 = Fmin(g.y0, e.a), g.y1 = Fmax(g.y1, e.b);
-            }
+        const int hs = static_cast<int>(comp.hCount), vs = static_cast<int>(comp.vCount);
         if (hs < 2 || vs < 2) continue;
+        bool drawn = false;  // drawn vertical rules and a drawn top rule, not only sides of filled areas
+        for (size_t m = 0; m < comp.hCount; ++m) {
+            const Edge& e = h_[comp.h[m]];
+            g.ys.push_back(e.pos);
+            g.x0 = Fmin(g.x0, e.a), g.x1 = Fmax(g.x1, e.b);
+            g.y0 = Fmin(g.y0, e.pos), g.y1 = Fmax(g.y1, e.pos);
+        }
+        for (size_t m = 0; m < comp.vCount; ++m) {
+            const Edge& e = v_[comp.v[m]];
+            drawn = drawn || !e.area;
+            g.xs.push_back(e.pos);
+            g.x0 = Fmin(g.x0, e.pos), g.x1 = Fmax(g.x1, e.pos);
+            g.y0 = Fmin(g.y0, e.a), g.y1 = Fmax(g.y1, e.b);
+        }
         bool drawnTop = false;
-        for (const Edge& e : h_) drawnTop = drawnTop || (e.comp == root && !e.area && e.pos >= g.y1 - kSnap);
+        for (size_t m = 0; m < comp.hCount; ++m) {
+            const Edge& e = h_[comp.h[m]];
+            drawnTop = drawnTop || (!e.area && e.pos >= g.y1 - kSnap);
+        }
         drawn = drawn && drawnTop;
         g.xs.push_back(g.x0), g.xs.push_back(g.x1);
         g.ys.push_back(g.y0), g.ys.push_back(g.y1);
@@ -1500,7 +1562,7 @@ void Detector::Lattices() {
         CollapseEmpty(g);
         if (g.Rows() < 1 || g.Cols() < 1 || g.Rows() > kMaxTableRows || g.Cols() > kMaxTableCols) continue;
         if (!Free(g.x0, g.y0, g.x1, g.y1)) continue;
-        Boundaries(g, root);
+        Boundaries(g, comp);
         // A horizontal boundary drawn across fewer than half the columns (the bottom of a short
         // header cell, a line under one value) parts no rows: it goes, and the rows join.
         {
@@ -1514,7 +1576,7 @@ void Detector::Lattices() {
                     pruned = true;
                 }
             }
-            if (pruned) Boundaries(g, root);
+            if (pruned) Boundaries(g, comp);
         }
         SplitByText(g);
         SplitRowsByLines(g);
@@ -1549,14 +1611,12 @@ void Detector::Lattices() {
         bool figure = false;
         if (!Validate(g, column, &figure)) {
             // A chart's gridlines or a diagram's boxes: their lines are no rules of a table either.
-            for (size_t i = 0; i < nh && figure; ++i)
-                if (h_[i].comp == root) hUsed[i] = 1;
+            for (size_t m = 0; m < comp.hCount && figure; ++m) hUsed[comp.h[m]] = 1;
             continue;
         }
         LatticeHeader(g);
         RowsBelow(g);
-        for (size_t i = 0; i < nh; ++i)
-            if (h_[i].comp == root) hUsed[i] = 1;
+        for (size_t m = 0; m < comp.hCount; ++m) hUsed[comp.h[m]] = 1;
         MarkUsed(g);
         grids_.push_back(std::move(g));
     }
@@ -1660,11 +1720,12 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
     bool axis = false;
     std::string scratch;
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
+    Locator locate(g);
     for (; it != words_.end() && it->base >= g.y0; ++it) {
         const TWord& w = *it;
         const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
         int r = 0, c = 0;
-        if (!Locate(g, cx, cy, r, c)) continue;
+        if (!locate.Find(cx, cy, r, c)) continue;
         inside++;
         mono += w.mono;
         if (sizes.size() < 1024) sizes.push_back(w.size);
@@ -2324,6 +2385,9 @@ void Detector::Commit() {
     std::vector<Piece> pieces;
     std::vector<uint32_t> pieceGlyphs;
     std::vector<int32_t> glyphCell;  // per glyph of the current line: grid * 65536 + cell, or -1
+    std::vector<Locator> locators;
+    locators.reserve(grids_.size());
+    for (const Grid& g : grids_) locators.emplace_back(g);
     const uint32_t lineCount = static_cast<uint32_t>(page_.lines.size());
     for (uint32_t li = 0; li < lineCount; ++li) {
         const Line& line = page_.lines[li];
@@ -2340,7 +2404,7 @@ void Detector::Commit() {
             for (uint32_t gi = 0; gi < grids_.size(); ++gi) {
                 const Grid& g = grids_[gi];
                 int r = 0, c = 0;
-                if (!Locate(g, cx, cy, r, c)) continue;
+                if (!locators[gi].Find(cx, cy, r, c)) continue;
                 glyphCell[k] = static_cast<int32_t>(gi * 65536u + static_cast<uint32_t>(g.owner[static_cast<size_t>(r * g.Cols() + c)]));
                 in++;
                 break;
