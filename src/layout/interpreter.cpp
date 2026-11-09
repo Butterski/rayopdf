@@ -15,6 +15,9 @@
 namespace RayoPdf::Layout {
 namespace {
 
+// The most glyphs (and text bytes) reserved for a page from its content's length (Run).
+constexpr size_t kGlyphReserveMax = size_t(1) << 16;
+
 // An affine matrix in PDF's row-vector convention: [x y 1] × M (ISO 32000-1 §8.3.4).
 struct Matrix {
     double a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
@@ -321,6 +324,15 @@ void Interpreter::Run(int index, bool withLinks) {
     const StreamStatus status = doc_.PageContent(index, content);
     if (status == StreamStatus::Corrupt || status == StreamStatus::Salvaged || status == StreamStatus::TooLarge)
         page_.contentErrors++;
+    // The glyph vector and the page text sized once from the content, not grown by doubling:
+    // each doubling copies every glyph so far into new memory, which a fresh process first-touches
+    // a page at a time (111 page faults of odl 192's 4,277 glyphs). A shown code takes at least
+    // one content byte and a glyph about 7-11 (median over odl, olmOCR and SafeDocs; 1.6-3.3 at
+    // the 1st percentile): half a glyph a byte covers nearly every page, and memory reserved but
+    // never written costs no page. Glyphs of forms grow it as before.
+    const size_t expected = content.size() / 2 < kGlyphReserveMax ? content.size() / 2 : kGlyphReserveMax;
+    page_.glyphs.reserve(expected);
+    page_.text.reserve(expected);
     if (!content.empty()) RunStream(content, doc_.Resources(index), 0);
     // Marked content left open at the end still applies its ActualText.
     while (!marked_.empty()) EndMarked();
