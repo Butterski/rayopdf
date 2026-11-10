@@ -302,6 +302,29 @@ void TestListNotTable() {
     RAYOPDF_CHECK(report.tables == 0, 566);
 }
 
+// An algorithm box: a rule, the title, a rule, the steps with their line numbers ("3:") apart from
+// the text, a rule. The steps of a listing, not a table.
+void TestAlgorithmBox() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 728);
+    AddText(page, "Algorithm 1 Largest gap method", 72, 716);
+    HLine(page, 72, 400, 712);
+    const char* const steps[] = {"Sort the received data", "Calculate the gaps between points", "Find the largest gap",
+                                 "Count the points to its right"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 700 - 12.0f * float(r);
+        AddText(page, std::to_string(r + 1) + ":", 76, y, 8);
+        AddText(page, steps[r], 92, y);
+    }
+    HLine(page, 72, 400, 658);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("algorithm box", md);
+    RAYOPDF_CHECK(report.tables == 0, 595);
+    RAYOPDF_CHECK(Contains(md, "Sort the received data") && Contains(md, "Count the points to its right"), 599);
+}
+
 // A full-width ruled table between two columns of text: the columns are read before it, the table
 // is one block, and the columns after it follow.
 void TestTableAcrossColumns() {
@@ -995,6 +1018,7 @@ int main(int argc, char** argv) {
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();
+    TestAlgorithmBox();
     TestTableAcrossColumns();
     TestHostileRulings();
     TestDegenerateGrids();

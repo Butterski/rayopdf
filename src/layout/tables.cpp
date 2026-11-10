@@ -969,7 +969,16 @@ bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& 
     return texty >= 2 || (!closed && sentenceColumns >= 1);
 }
 
-// A first column of list markers (bullets, enumerators) is a list, not a table.
+// The number of a line of a numbered listing ("7:", as LaTeX's algorithmic sets its steps).
+bool LineNumber(std::string_view t) {
+    if (t.size() < 2 || t.size() > 5 || t.back() != ':') return false;
+    for (size_t k = 0; k + 1 < t.size(); ++k)
+        if (t[k] < '0' || t[k] > '9') return false;
+    return true;
+}
+
+// A first column of list markers (bullets, enumerators, the line numbers of a listing) is a list
+// or the steps of an algorithm, not a table.
 bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                         size_t rowEnd, const std::vector<Gap>& gaps) {
     int markers = 0, filled = 0;
@@ -980,8 +989,8 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
         if (ColumnOf(gaps, (w.x0 + w.x1) / 2) != 0) continue;
         filled++;
         uint32_t value = 0;
-        const Marker m = ParseMarker(WordText(w, scratch), value);
-        if (m != Marker::None) markers++;
+        const std::string_view text = WordText(w, scratch);
+        if (ParseMarker(text, value) != Marker::None || LineNumber(text)) markers++;
     }
     return filled > 0 && markers * 2 > filled;
 }

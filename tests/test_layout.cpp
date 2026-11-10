@@ -436,6 +436,37 @@ void TestPdfTextState() {
     RAYOPDF_CHECK(Contains(md, "x<sup>2</sup> squared"), 456);
 }
 
+// The rules of a one-column lattice painted as dvips with Ghostscript paints every rule of TeX: a
+// stencil mask of one sample scaled to the rule. The painted sample (0, or 1 under /D [1 0]) is a
+// ruling and the rows are a table; a sample that is masked out, or a turned one, paints no rule.
+void TestPdfStencilRules() {
+    const auto page = [](const std::string& image, const std::string& turn) {
+        std::string content;
+        const auto rule = [&](double w, double h, double x, double y) {
+            char cm[96];
+            std::snprintf(cm, sizeof(cm), "q %s%.1f 0 0 %.1f %.1f %.1f cm ", turn.c_str(), w, h, x, y);
+            content += cm + image + " Q\n";
+        };
+        for (int i = 0; i <= 4; ++i) rule(300, 0.4, 100, 700 - 20 * i);
+        rule(0.4, 80, 100, 620);
+        rule(0.4, 80, 400, 620);
+        const char* const rows[] = {"Competence Framework", "Recycle", "Lifecycle", "Social"};
+        for (int r = 0; r < 4; ++r)
+            content += "BT /F1 10 Tf 104 " + std::to_string(686 - 20 * r) + " Td (" + rows[r] + ") Tj ET\n";
+        return ConvertPdf(Test::OnePage(content));
+    };
+    const std::string table = "| Competence Framework |\n| --- |\n| Recycle |";
+    const std::string zero = page(std::string("BI /IM true /W 1 /H 1 /BPC 1 ID ") + '\0' + "\nEI", "");
+    Show("pdf stencil rules", zero);
+    RAYOPDF_CHECK(Contains(zero, table), 434);
+    const std::string one = page("BI /IM true /W 1 /H 1 /BPC 1 /D [1 0] ID \x80\nEI", "");
+    RAYOPDF_CHECK(Contains(one, table), 435);
+    const std::string masked = page("BI /IM true /W 1 /H 1 /BPC 1 ID \x80\nEI", "");
+    RAYOPDF_CHECK(!Contains(masked, "| ---") && Contains(masked, "Competence Framework"), 436);
+    const std::string turned = page(std::string("BI /IM true /W 1 /H 1 /BPC 1 ID ") + '\0' + "\nEI", "0.8 0.6 -0.6 0.8 0 0 cm ");
+    RAYOPDF_CHECK(!Contains(turned, "| ---") && Contains(turned, "Competence Framework"), 437);
+}
+
 void TestPdfForm() {
     Test::PdfBuilder b;
     const int catalog = b.Reserve();
@@ -1374,6 +1405,7 @@ int main() {
     TestRightToLeft();
     TestPdfTjTj();
     TestPdfTextState();
+    TestPdfStencilRules();
     TestPdfForm();
     TestPdfNestedShortForm();
     TestPdfRotation();
