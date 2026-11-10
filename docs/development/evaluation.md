@@ -29,6 +29,7 @@ harness answers each condition:
 |odl|`data/odl-bench/pdfs`|200 single-page PDFs|`data/odl-bench/ground-truth/markdown`|development|
 |olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development|
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
+|readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 |multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
@@ -36,6 +37,28 @@ harness answers each condition:
 Suite ids are paths relative to the suite root without `.pdf`. READoc's selection: the ground-truth
 stems of each subset (`<subset>_ground_truth/*.md`) sorted by the SHA-256 of the stem, first 150
 whose PDF is in `<subset>.zip`; `data/READoc-data/selection.json` records it.
+
+### READoc development split
+
+READoc has 1,009 arXiv and 1,224 GitHub documents; the holdout takes 150 of each. `readoc-dev`
+is 150 more of each for development: numbers 151 to 300 of the same order (ground-truth stems
+sorted by the SHA-256 of the stem, those with a same-stem PDF), so no document is in both.
+`fetch --only readoc-dev` downloads the two zips of the pinned revision again (one on disk at a
+time, deleted afterwards), fails when the first 150 of the order are not the holdout's
+`selection.json` or a selected stem is in it, and writes `data/READoc-data/selection-dev.json`
+(rule, counts, stems).
+
+The two suites have different rules:
+
+- `readoc-dev` may be inspected document by document: the PDFs, the ground truth, the outputs
+  and each document's scores (`scores/readoc-dev/<tool>-<subset>-docs.json`, § READoc under
+  Metrics). Heuristics for arXiv papers and GitHub READMEs are designed and checked on it.
+- `readoc` stays the holdout: aggregate scores only, never a per-document output or score, and
+  measured once per release candidate, not during development. A change is judged on
+  `readoc-dev`; the holdout then shows whether the gain carries over.
+
+[baselines-readoc-dev-2026-11-10.md](../benchmarks/baselines-readoc-dev-2026-11-10.md) has
+every tool's scores on the split beside the holdout's.
 
 Pinned sources:
 
@@ -250,6 +273,17 @@ wordnet baked in). Keys: `text_eds`, `text_f1` (text edit similarity and vocabul
 Kendall tau and Spearman, block and token level); the GitHub subset has no formula or table keys.
 READoc normalises headings, formulas and tables and strips links and images before scoring.
 
+`readoc-dev` is scored by `eval/scorer/readoc_docs.py` in the same image. It imports the
+evaluator from the clone (nothing of it is copied): `file_evaluate` scores each document, on
+every CPU of the work cpuset at once, and `e2e_evaluate` then aggregates those scores, so
+`scores/readoc-dev/<tool>-<subset>.json` is the file `suite_e2e.py` writes (checked against a
+plain `suite_e2e.py` run: identical). `scores/readoc-dev/<tool>-<subset>-docs.json` has the
+per-document values: `docs.<stem>.<key>` for the keys above (`null` where the evaluator leaves
+the document out of that mean, for example `table_teds` of a document without a table),
+`metrics.<stem>` with every metric the evaluator computes (`<task>.<group>.<measure>`, such as
+`table.mapped.teds_f1`), `keys` (which metric each key reports), `empty` (documents without
+output) and `aggregate`. The weakest documents of a key are the lowest `docs.<stem>.<key>`.
+
 ## Multiscript suite
 
 `python3 tools/eval.py corpus --suite multiscript` runs `eval/producers/multiscript.py` (the
@@ -363,7 +397,7 @@ RayoPDF's own Unicode repair.
 ```sh
 python3 tools/eval.py all [--resume]          # everything below, in order, then report.md
 python3 tools/eval.py images [--only NAMES]   # build images, write images.json
-python3 tools/eval.py fetch [--only odl,olmocr,readoc,safedocs]
+python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,safedocs]
 python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
 python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
 python3 tools/eval.py corpus --suite multiscript [--jobs 6]
@@ -380,6 +414,10 @@ complete conversions, existing speed results and an existing census. `all` check
 free disk less what the harness already uses; `fetch` checks for the space its downloads need.
 Neither ever prunes Docker images. `all` does not run speed passes for the OCR tools.
 
+Containers that are not timed run on the work cpuset `0-2,4,6-8,10`; `RAYOPDF_EVAL_CPUS`
+replaces it (never with CPU 3, the timing CPU), so that several conversions can run side by
+side on disjoint CPUs: `RAYOPDF_EVAL_CPUS=0-2 python3 tools/eval.py convert …`.
+
 Output layout under `benchmark-output/eval/` (ignored by git):
 
 ```
@@ -392,6 +430,7 @@ suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
 scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
+scores/readoc-dev/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
 scores/multiscript/<tool>.json (and .md, the tables)
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
@@ -405,7 +444,7 @@ RayoPDF's fully static build runs there as is:
 
 ```sh
 python3 tools/dev.py build --config static        # build/static/rayopdf
-for s in synthetic odl olmocr readoc scanned olmocr-scans multiscript; do
+for s in synthetic odl olmocr readoc readoc-dev scanned olmocr-scans multiscript; do
     python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
     python3 tools/eval.py score --suite $s --tools cli
 done

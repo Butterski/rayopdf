@@ -10,6 +10,7 @@ against the baselines; each version record compares RayoPDF with them.
 |---|---|
 | [baselines-2026-11-05.md](baselines-2026-11-05.md) | The competitors on every suite, the census; the reference for every gate |
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
+| [baselines-readoc-dev-2026-11-10.md](baselines-readoc-dev-2026-11-10.md) | The READoc development split (`readoc-dev`): RayoPDF and the competitors on 300 READoc documents outside the holdout, beside their holdout scores |
 | [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | The latest version: speed and the comparison with other tools; output byte-identical to 0.0.11 |
 | [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) and [v0.0.10-2026-11-09.md](v0.0.10-2026-11-09.md) | The latest quality numbers: 0.0.10 on every suite, 0.0.11 the optional LaTeX math |
 | [release-check-2026-11-09.md](release-check-2026-11-09.md) | 0.0.10 (and the 0.0.11 update) against the 0.1.0 release bar |

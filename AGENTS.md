@@ -35,9 +35,11 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
    `tools/bench.py` (docs/development/performance.md § Rerunning), which prints that scope with
    its numbers; a time is quoted only from a CPU nothing else ran on.
 
-7. Holdout: never inspect per-document outputs of the `weasyprint` producer or the `readoc`
-   suite while designing converter heuristics; use aggregate scores only. RayoMD producers never
-   use `--embed-source`. Tagged and untagged producers are always reported separately.
+7. Holdout: never inspect per-document outputs or scores of the `weasyprint` producer or the
+   `readoc` suite (the 300 READoc documents of `data/READoc-data/selection.json`) while
+   designing converter heuristics; use aggregate scores only. `readoc-dev` (300 other READoc
+   documents, `selection-dev.json`) is a development suite: inspect it freely. RayoMD producers
+   never use `--embed-source`. Tagged and untagged producers are always reported separately.
 
 8. Never copy AGPL or GPL code or data into the repository (PyMuPDF/MuPDF, Poppler, marker).
    They run as black boxes inside images only. READoc's code has no licence: run it from a
