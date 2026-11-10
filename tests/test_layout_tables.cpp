@@ -325,6 +325,37 @@ void TestAlgorithmBox() {
     RAYOPDF_CHECK(Contains(md, "Sort the received data") && Contains(md, "Count the points to its right"), 599);
 }
 
+// A ruled table in sections: between the rules around each section's rows, a band with one label
+// centred across the table. One table with its header; each label is a row, its text in the first
+// cell. A label band under the last rows heads nothing and stays out.
+void TestRuledSectionLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {712.0f, 698.0f, 684.0f, 642.0f, 628.0f, 586.0f, 572.0f}) HLine(page, 72, 330, y);
+    AddText(page, "Covariate", 76, 702);
+    AddText(page, "Lag 0", 190, 702);
+    AddText(page, "Lag 1", 270, 702);
+    const char* const names[] = {"NDVI", "NDWI", "Temp"};
+    for (int s = 0; s < 2; ++s) {
+        const float top = s == 0 ? 688.0f : 632.0f;
+        AddText(page, s == 0 ? "Batch 1" : "Batch 2", 185, top);
+        for (int r = 0; r < 3; ++r) {
+            const float y = top - 16 - 12.0f * float(r);
+            AddText(page, names[r], 76, y);
+            AddText(page, "0." + std::to_string(31 + 7 * r + 40 * s), 190, y);
+            AddText(page, "0." + std::to_string(12 + 5 * r + 40 * s), 270, y);
+        }
+    }
+    AddText(page, "Values of the correlation", 150, 576);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("ruled section labels", md);
+    RAYOPDF_CHECK(report.tables == 1, 862);
+    RAYOPDF_CHECK(Contains(md, "| Covariate | Lag 0 | Lag 1 |\n| --- | --- | --- |\n| Batch 1 |  |  |\n| NDVI | 0.31 | 0.12 |"), 863);
+    RAYOPDF_CHECK(Contains(md, "| Temp | 0.45 | 0.22 |\n| Batch 2 |  |  |\n| NDVI | 0.71 | 0.52 |"), 864);
+    RAYOPDF_CHECK(!Contains(md, "| Values of the correlation") && Contains(md, "Values of the correlation"), 865);
+}
+
 // A full-width ruled table between two columns of text: the columns are read before it, the table
 // is one block, and the columns after it follow.
 void TestTableAcrossColumns() {
@@ -1019,6 +1050,7 @@ int main(int argc, char** argv) {
     TestTwoColumnProse();
     TestListNotTable();
     TestAlgorithmBox();
+    TestRuledSectionLabels();
     TestTableAcrossColumns();
     TestHostileRulings();
     TestDegenerateGrids();

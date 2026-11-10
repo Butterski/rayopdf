@@ -75,6 +75,8 @@ struct Grid {
     std::vector<int32_t> owner;  // rows x cols: the cell of each minimal cell
     std::vector<Span> cells;     // row-major by top-left corner
     float size = 0;              // median text size
+    std::vector<uint8_t> labelRow;  // per row, or empty: the row is one label across the table (the
+                                    // name of a section of rows); its text is the first cell's
     int Rows() const { return static_cast<int>(ys.size()) - 1; }
     int Cols() const { return static_cast<int>(xs.size()) - 1; }
 };
@@ -473,7 +475,8 @@ private:
     bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps);
     void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
-                  const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb);
+                  const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb,
+                  const std::vector<uint8_t>* labels = nullptr);
     bool Free(float x0, float y0, float x1, float y1) const;
     // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
@@ -998,10 +1001,11 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
 // A grid from text rows and whitespace gaps: row boundaries halfway between rows, column boundaries
 // in the middle of the gaps; words crossing a column boundary make that row's cells span it. A row
 // whose first cell is empty and whose other cells continue cells above that run to their column's
-// right edge is the wrapped text of the row above (multi-line cells).
+// right edge is the wrapped text of the row above (multi-line cells). Rows flagged in `labels` are
+// labels across the table: each a row of its own, whatever columns its words lie over.
 void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                         size_t rowEnd, const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa,
-                        float xb) {
+                        float xb, const std::vector<uint8_t>* labels) {
     if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) return;
     const int cols = static_cast<int>(gaps.size()) + 1;
     if (rowEnd <= rowBegin || cols < 2 || cols > kMaxTableCols) return;
@@ -1019,7 +1023,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const uint32_t base = rows[rowBegin].first;
     std::vector<float> colLeft(static_cast<size_t>(cols), INFINITY), colRight(static_cast<size_t>(cols), -INFINITY);
     for (size_t r = rowBegin; r < rowEnd; ++r)
-        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(labels && (*labels)[r]); ++k) {
             const TWord& w = words_[rowWords[k]];
             const size_t c = static_cast<size_t>(columns[k - base]);
             colLeft[c] = Fmin(colLeft[c], w.x0), colRight[c] = Fmax(colRight[c], w.x1);
@@ -1090,6 +1094,12 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             if (!wrapped) starts.push_back(r);
             above.swap(here);
         }
+    }
+    if (labels) {
+        for (size_t r = rowBegin + 1; r < rowEnd; ++r)
+            if ((*labels)[r] || (*labels)[r - 1]) starts.push_back(r);
+        std::sort(starts.begin(), starts.end());
+        starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
     }
     // Without a header rule: up to four leading lines with no number in any cell, above a body whose
     // rows mostly hold numbers, are the header ("Aug 21," over "2011").
@@ -1167,6 +1177,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     std::string scratch;
     for (size_t r = rowBegin; r < rowEnd; ++r) {
         if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
+        if (labels && (*labels)[r]) {
+            if (g.labelRow.empty()) g.labelRow.assign(static_cast<size_t>(nrows), 0);
+            g.labelRow[static_cast<size_t>(group)] = 1;
+            continue;
+        }
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
             // A chart's axis in a cell: no table. Pieces of tall brackets (U+239B-U+23AD): a
@@ -1878,6 +1893,8 @@ void Detector::RuleStacks() {
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
     std::vector<Gap> gaps, trial;
+    std::vector<size_t> labelBands;  // the rule above each label band of the run
+    std::vector<uint8_t> label;      // per row of the run: it lies in a label band
     for (const Stack& s : stacks) {
         if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
@@ -1888,6 +1905,11 @@ void Detector::RuleStacks() {
             // rules); a taller empty band holds something else (a heading out of the rules' width).
             size_t j = i;
             float em = bodySize_;
+            // A band of one line that does not split into columns, below a tabular band and above
+            // another, is a label across the table (the name of the rows that follow it): the run
+            // goes on through it.
+            labelBands.clear();
+            size_t tabularEnd = i;  // the rule under the last tabular band
             while (j + 1 < s.ys.size()) {
                 BuildRows(xa, xb, s.ys[j + 1], s.ys[j], rows, rowWords);
                 if (rows.empty()) {
@@ -1899,9 +1921,21 @@ void Detector::RuleStacks() {
                     bool even = true;
                     for (size_t q = 1; q < rows.size() && even; ++q)
                         even = SizeFits(rows[q], em) && rows[q - 1].bottom - rows[q].top < 1.6f * em;
-                    if (!even || !Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) break;
+                    if (!even) break;
+                    if (Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) {
+                        tabularEnd = j + 1;
+                    } else if (rows.size() == 1 && tabularEnd > i && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
+                        labelBands.push_back(j);
+                    } else {
+                        break;
+                    }
                 }
                 ++j;
+            }
+            // A label band with no tabular band below it heads nothing: the run ends above it.
+            while (!labelBands.empty() && labelBands.back() >= tabularEnd) {
+                j = labelBands.back();
+                labelBands.pop_back();
             }
             // Rows from rule i down to rule j. A run of one or two rules (a header rule; top and
             // mid rules of a table that continues on the next page) has no closing rule: rows below
@@ -1917,6 +1951,11 @@ void Detector::RuleStacks() {
                 if (single) yhi = Fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
             }
             BuildRows(xa, xb, ylo, yhi, rows, rowWords);
+            label.assign(rows.size(), 0);
+            for (size_t band : labelBands)
+                for (size_t r = 0; r < rows.size(); ++r)
+                    if (rows[r].base < s.ys[band] && rows[r].base > s.ys[band + 1]) label[r] = 1;
+            const std::vector<uint8_t>* labels = labelBands.empty() ? nullptr : &label;
             // Core rows: between the rules.
             size_t coreBegin = rows.size(), coreEnd = 0;
             for (size_t r = 0; r < rows.size(); ++r)
@@ -1961,7 +2000,7 @@ void Detector::RuleStacks() {
             Ink& grown = scratch_.grown;
             const auto columns = [&](const Ink& rowsInk, size_t from, size_t to, std::vector<Gap>& out) {
                 return rowsInk.proper ? InkColumns(rowsInk, xa, xb, minGap, out)
-                                      : Columns(rows, rowWords, from, to, xa, xb, minGap, out);
+                                      : Columns(rows, rowWords, from, to, xa, xb, minGap, out, labels);
             };
             const auto extend = [&](size_t& from, size_t& to, bool down) {
                 for (;;) {
@@ -1996,6 +2035,7 @@ void Detector::RuleStacks() {
             };
             ink.Clear();
             for (size_t q = begin; q < end; ++q) {
+                if (label[q]) continue;  // a label lies across the columns
                 AddInk(rows[q], rowWords, ink, grown);
                 std::swap(ink, grown);
             }
@@ -2063,12 +2103,12 @@ void Detector::RuleStacks() {
                 const size_t before = grids_.size();
                 float y0 = rows[end - 1].bottom, y1 = rows[begin].top;
                 if (header > 0 && end - begin >= header + 3u &&
-                    Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial) && trial.size() > gaps.size() &&
+                    Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial, labels) && trial.size() > gaps.size() &&
                     KeepsGaps(gaps, trial) && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb);
+                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels);
                 // Without such a label (or when its rows do not make a grid): the columns of all rows.
                 if (grids_.size() == before && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb);
+                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels);
             }
             i = j + 1;
         }
@@ -2454,6 +2494,7 @@ void Detector::Commit() {
                 const Grid& g = grids_[gi];
                 int r = 0, c = 0;
                 if (!locators[gi].Find(cx, cy, r, c)) continue;
+                if (!g.labelRow.empty() && g.labelRow[static_cast<size_t>(r)]) c = 0;
                 glyphCell[k] = static_cast<int32_t>(gi * 65536u + static_cast<uint32_t>(g.owner[static_cast<size_t>(r * g.Cols() + c)]));
                 in++;
                 break;
