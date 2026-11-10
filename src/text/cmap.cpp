@@ -90,21 +90,23 @@ public:
         while (at < end && Syntax::IsWhite(static_cast<unsigned char>(data[at]))) ++at;
         if (at >= end || data[at] != '<') return false;
         size = 0;
-        int high = -1;
-        for (++at; at < end; ++at) {
-            const unsigned char ch = static_cast<unsigned char>(data[at]);
-            const int d = Syntax::kHexValues.of[ch];
-            if (d < 0) break;
-            if (high < 0) {
+        // Two digits a byte; an odd last digit is its byte's high half.
+        for (++at; at + 1 < end; at += 2) {
+            const int high = Syntax::kHexValues.of[static_cast<unsigned char>(data[at])];
+            const int low = Syntax::kHexValues.of[static_cast<unsigned char>(data[at + 1])];
+            if ((high | low) < 0) break;
+            if (size == capacity) return false;
+            out[size++] = static_cast<char>(high << 4 | low);
+        }
+        if (at < end) {
+            const int high = Syntax::kHexValues.of[static_cast<unsigned char>(data[at])];
+            if (high >= 0) {
                 if (size == capacity) return false;
-                high = d;
-            } else {
-                out[size++] = static_cast<char>(high << 4 | d);
-                high = -1;
+                out[size++] = static_cast<char>(high << 4);
+                ++at;
             }
         }
         if (at >= end || data[at] != '>') return false;
-        if (high >= 0) out[size++] = static_cast<char>(high << 4);
         cursor_.pos = at + 1;
         return true;
     }
@@ -217,7 +219,9 @@ public:
 // A bfchar or bfrange entry of plain hex strings (nearly every entry), read without tokens: the
 // sink gets the calls Parse's token loop makes for it. False, nothing read, for any other entry
 // (a name, number or array destination, a comment, a code of no 1-4 bytes), which the loop reads.
-bool FastEntry(Lexer& lexer, Section section, Sink& sink) {
+// A template on the (final) sink class, as Parse: its calls are direct.
+template <typename S>
+bool FastEntry(Lexer& lexer, Section section, S& sink) {
     const size_t start = lexer.Position();
     char low[4], high[4], destination[kMaxUnits * 2];
     size_t lowSize = 0, highSize = 0, destinationSize = 0;
@@ -245,7 +249,8 @@ bool FastEntry(Lexer& lexer, Section section, Sink& sink) {
     return true;
 }
 
-void Parse(std::string_view data, Sink& sink) {
+template <typename S>
+void Parse(std::string_view data, S& sink) {
     Lexer lexer(data);
     Token token;
     Token group[3];

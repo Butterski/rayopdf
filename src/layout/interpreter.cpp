@@ -5,6 +5,7 @@
 #include "common/utf8.h"
 #include "layout/glyph_box.h"
 #include "layout/math.h"
+#include "layout/path_box.h"
 #include "pdf/content_lexer.h"
 
 #include <cmath>
@@ -793,30 +794,20 @@ void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect
     pieces_.push_back(PathPiece{ax < bx ? ax : bx, ay < by ? ay : by, ax > bx ? ax : bx, ay > by ? ay : by, rect});
 }
 
-// The `kCount` points (x, y) of `xy` added to the path's box in device space. The box holds finite
-// points only, so its bounds grow by plain comparisons, the values Fmin and Fmax give without a
-// NaN; an empty path's box starts at infinities, which the first point replaces whole. The CTM and
-// the box stay in locals for the points of one operator.
+// The `kCount` points (x, y) of `xy` added to the path's box in device space (layout/path_box.h).
+// The box holds finite points only; an empty path's box starts at infinities, which the first
+// point replaces whole.
 template <int kCount>
 RAYOPDF_HOT_INLINE void Interpreter::PathPoints(const double* xy, bool curve) {
     constexpr double kInfinity = std::numeric_limits<double>::infinity();
-    const Matrix m = gs_.ctm;
-    Box box = pathEmpty_ ? Box{kInfinity, kInfinity, -kInfinity, -kInfinity} : pathBox_;
-    bool any = false;
-    for (int i = 0; i < kCount; ++i) {
-        const double x = xy[2 * i], y = xy[2 * i + 1];
-        const double dx = x * m.a + y * m.c + m.e;
-        const double dy = x * m.b + y * m.d + m.f;
-        // Both finite: x - x is 0 for a finite x and NaN for an infinity or NaN.
-        if (!((dx - dx) + (dy - dy) == 0)) continue;
-        box.x0 = box.x0 < dx ? box.x0 : dx;
-        box.y0 = box.y0 < dy ? box.y0 : dy;
-        box.x1 = box.x1 > dx ? box.x1 : dx;
-        box.y1 = box.y1 > dy ? box.y1 : dy;
-        any = true;
-    }
-    if (!any) return;
-    pathBox_ = box;
+    static_assert(sizeof(Matrix) == 6 * sizeof(double) && sizeof(Box) == 4 * sizeof(double),
+                  "Matrix holds a b c d e f and Box x0 y0 x1 y1, as PathBounds reads them");
+    double m[6];
+    std::memcpy(m, &gs_.ctm, sizeof m);
+    double box[4] = {kInfinity, kInfinity, -kInfinity, -kInfinity};
+    if (!pathEmpty_) std::memcpy(box, &pathBox_, sizeof box);
+    if (!PathBounds(m, xy, kCount, box)) return;
+    std::memcpy(&pathBox_, box, sizeof box);
     pathEmpty_ = false;
     if (curve) pathCurved_ = true;
 }

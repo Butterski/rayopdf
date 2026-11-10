@@ -10,6 +10,7 @@
 #include "layout/glyph_box.h"
 #include "layout/lines.h"
 #include "layout/page.h"
+#include "layout/path_box.h"
 #include "layout/pipeline.h"
 
 #include <cmath>
@@ -1302,6 +1303,53 @@ void TestGlyphBox() {
                   747);
 }
 
+// layout/path_box.h: the SSE2 path bounds have the scalar reference's bits, and the same answer
+// whether any point was finite, on random CTMs and points with ±0, equal values, overflow to
+// infinity, infinities and NaN mixed in, from an empty box and from a grown one.
+void TestPathBox() {
+    uint64_t state = 7;
+    const auto next = [&state]() {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(state >> 33);
+    };
+    const auto value = [&]() -> double {
+        switch (next() % 10) {
+        case 0: return (next() & 1) ? 0.0 : -0.0;
+        case 1: return static_cast<double>(static_cast<int>(next() % 5) - 2);
+        case 2: return ((next() & 1) ? 1 : -1) * 1e308 * (1 + (next() % 7) / 8.0);
+        case 3: return (next() & 1) ? INFINITY : -INFINITY;
+        case 4: return (next() % 4 == 0) ? NAN : 1.5;
+        default: return (static_cast<double>(next()) - 2147483648.0) / 4194304.0;
+        }
+    };
+    size_t skipped = 0, grown = 0;
+    for (int i = 0; i < 200000; ++i) {
+        double m[6], xy[6], a[4], b[4];
+        for (double& v : m) v = value();
+        for (double& v : xy) v = value();
+        if (next() & 1) {
+            a[0] = a[1] = INFINITY, a[2] = a[3] = -INFINITY;
+        } else {
+            for (double& v : a) v = static_cast<double>(static_cast<int>(next() % 9) - 4);
+        }
+        std::memcpy(b, a, sizeof a);
+        const int count = 1 + static_cast<int>(next() % 3);
+        const bool anyScalar = PathScalar(m, xy, count, a);
+#if defined(RAYOPDF_PATH_BOX_SSE2)
+        const bool anySimd = PathSse2(m, xy, count, b);
+#else
+        const bool anySimd = PathScalar(m, xy, count, b);
+#endif
+        RAYOPDF_CHECK(anyScalar == anySimd && std::memcmp(a, b, sizeof a) == 0, 748);
+        (anyScalar ? grown : skipped)++;
+    }
+    // [2 0 0 3 10 20]: (1, 1) and (-1, 2) give (12, 23) and (8, 26); an infinite point leaves.
+    const double m[6] = {2, 0, 0, 3, 10, 20}, xy[6] = {1, 1, INFINITY, 0, -1, 2};
+    double box[4] = {INFINITY, INFINITY, -INFINITY, -INFINITY};
+    const bool any = PathBounds(m, xy, 3, box);
+    RAYOPDF_CHECK(any && grown > 0 && skipped > 0 && box[0] == 8 && box[1] == 23 && box[2] == 12 && box[3] == 26, 749);
+}
+
 } // namespace
 
 int main() {
@@ -1359,6 +1407,7 @@ int main() {
     TestMarkers();
     TestMonospaceDocument();
     TestGlyphBox();
+    TestPathBox();
     std::puts("test_layout: all checks passed");
     return 0;
 }
