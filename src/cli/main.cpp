@@ -466,11 +466,17 @@ double MillisecondsSince(Clock::time_point start) {
 // from the heap rather than each from a mapping of its own (the threshold starts at 128 KiB), so a
 // freed block's pages are used again instead of being unmapped and faulted in afresh: 4.3 % fewer
 // page faults over odl, 313 -> 263 at the 95th percentile. Larger blocks (decoded images) are
-// still mapped and given back when freed, so peak memory stays as it was. --batch and --bench
-// have settings of their own (SetBatchAllocator); --serve and --inspect have the C library's.
+// still mapped and given back when freed, so peak memory stays as it was. The heap grows 8 MiB
+// of address space at a time rather than by what each request needs: a page thread's heap, which
+// glibc otherwise makes writable a few pages at a time (one mprotect each), is writable from the
+// start (a 54-page document at the automatic thread count: 151 -> 8 mprotect calls, 25 -> 6 brk;
+// the 27 documents of the pages measurement: 3.7 % fewer page faults, 1 % more on one thread).
+// Pages nothing writes to are never resident. --batch and --bench have settings of their own
+// (SetBatchAllocator); --serve and --inspect have the C library's.
 void SetOneShotAllocator() {
 #if defined(__GLIBC__)
     mallopt(M_MMAP_THRESHOLD, 1 << 20);
+    mallopt(M_TOP_PAD, 8 << 20);
 #endif
 }
 
