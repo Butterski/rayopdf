@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Repository Hygiene
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Rules, scripts and documents
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository rules (AGENTS.md)
+        run: python3 -B tools/check_repo.py
+      - name: Python syntax
+        run: python3 -m py_compile tools/*.py tests/*.py $(git ls-files 'eval/*.py')
+      - name: Host tools start
+        run: |
+          for tool in tools/*.py tests/verify_cli.py tests/verify_ocr.py; do
+            python3 -B "$tool" --help > /dev/null || { echo "$tool --help failed" >&2; exit 1; }
+          done
+      - name: Release excerpt of the README builds
+        run: python3 -B -c "import sys; sys.path.insert(0, 'tools'); import package; package.readme_excerpt(open('VERSION').read().strip(), package.REPOSITORY_URL)"

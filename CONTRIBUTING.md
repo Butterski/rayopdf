@@ -29,10 +29,12 @@ python3 tools/dev.py test --config asan       # core tests and the CLI verifier,
 python3 tools/dev.py test --config tsan       # the same under ThreadSanitizer
 python3 tools/dev.py test --config windows    # rayopdf.exe (MinGW-w64), tested under Wine
 python3 tools/fuzz.py replay                  # every fuzz target over the committed regressions
+python3 tools/check_repo.py                   # the repository's rules that need no build
 ```
 
-Before a change is proposed: `test --config asan` passes and a fresh build has no compiler
-warning. Changes to threads also pass `--config tsan`; changes to files, paths or processes also
+Before a change is proposed: `test --config asan` passes, a fresh build has no compiler
+warning and `tools/check_repo.py` finds nothing (the Repository Hygiene workflow runs it on
+every push). Changes to threads also pass `--config tsan`; changes to files, paths or processes also
 pass `--config windows`; changes to the add-on pass `--config ocr` (image `rayopdf-ocr:1`).
 
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range

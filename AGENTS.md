@@ -66,3 +66,7 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
 
 14. To bump the version, change `VERSION` (CMake and `tools/package.py` read it) and the version
     in the README's Status section in the same commit.
+
+15. `python3 tools/check_repo.py` checks rules 1, 2, 12 and 13, the fuzz targets' names and the
+    relative links of the documents; it finds nothing before a push (the Repository Hygiene
+    workflow runs it).
