@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Build image
+description: >-
+  Build docker/build.Dockerfile as rayopdf-build:2, the image tools/dev.py runs every build in,
+  and load it into the runner's Docker. Its layers are kept in the GitHub Actions cache (scope
+  rayopdf-build): a run on the default branch fills it, every other run reads it, and a changed
+  Dockerfile rebuilds.
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+    - uses: docker/build-push-action@v7
+      env:
+        DOCKER_BUILD_SUMMARY: "false"
+        DOCKER_BUILD_RECORD_UPLOAD: "false"
+      with:
+        context: docker
+        file: docker/build.Dockerfile
+        tags: rayopdf-build:2
+        load: true
+        provenance: false
+        cache-from: type=gha,scope=rayopdf-build
+        cache-to: type=gha,scope=rayopdf-build,mode=max

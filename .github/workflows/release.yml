@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: Apache-2.0
+# A tag v<VERSION> builds the core archives (tools/package.py) and makes a draft release with
+# them and SHA256SUMS. Run by hand (`gh workflow run release.yml`) it is a dry run: the same
+# archives as workflow artifacts, no release. The OCR add-on's archives need the rayopdf-ocr:1
+# image and are built and attached locally: CONTRIBUTING.md § Versions and releases.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  archives:
+    name: Core archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: The tag is v<VERSION>
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(cat VERSION)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but VERSION holds $version (expected v$version)"
+            exit 1
+          fi
+      - name: Image rayopdf-build:2
+        uses: ./.github/actions/build-image
+      - name: Build rayopdf (linux-x64-static)
+        run: python3 tools/dev.py build --config static
+      - name: Build rayopdf.exe (windows-x64)
+        run: python3 tools/dev.py build --config windows
+      - name: Package, twice with the same bytes
+        run: |
+          python3 tools/package.py --out build/dist
+          python3 tools/package.py --out build/dist-again > /dev/null
+          diff -r build/dist build/dist-again
+          cd build/dist && sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rayopdf-core-archives
+          path: |
+            build/dist/rayopdf-*.tar.gz
+            build/dist/rayopdf-*.zip
+            build/dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Draft release
+    if: github.ref_type == 'tag'
+    needs: archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: rayopdf-core-archives
+          path: dist
+      - name: Draft release with the core archives and SHA256SUMS
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cd dist && sha256sum -c SHA256SUMS
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # A second run of the same tag replaces the files of the release it made.
+            gh release upload "$tag" rayopdf-*.tar.gz rayopdf-*.zip SHA256SUMS --clobber
+          else
+            gh release create "$tag" --draft --verify-tag --title "RayoPDF ${tag#v}" \
+              --notes "Core archives of commit $GITHUB_SHA, built by the Release workflow; SHA256SUMS lists their checksums. The OCR add-on's archives are built and attached by hand (CONTRIBUTING.md, Versions and releases)." \
+              rayopdf-*.tar.gz rayopdf-*.zip SHA256SUMS
+          fi
