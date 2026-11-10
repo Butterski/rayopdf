@@ -192,6 +192,64 @@ void TestSharedCycle() {
     RAYOPDF_CHECK(doc->EndShared(), 1619);
 }
 
+// Two pages whose contents are streams of one chain of `length`, each stream's /Length the next
+// stream: page 1 has the chain's head, page 2 the stream `tail` further on.
+std::string Chain(int length, int tail) {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pagesNum = b.Reserve();
+    std::vector<int> chain;
+    for (int i = 0; i < length; ++i) chain.push_back(b.Reserve());
+    for (int i = 0; i < length; ++i) {
+        const std::string next = i + 1 < length ? std::to_string(chain[static_cast<size_t>(i) + 1]) + " 0 R" : "33";
+        b.Set(chain[static_cast<size_t>(i)], "<< /Length " + next + " >>\nstream\nBT /F1 12 Tf 72 720 Td (Link) Tj ET"
+                                             "\nendstream");
+    }
+    std::string kids;
+    for (const int stream : {chain[0], chain[static_cast<size_t>(tail)]}) {
+        const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pagesNum) + " 0 R /MediaBox [0 0 612 792] "
+                               "/Contents " + std::to_string(stream) + " 0 R >>");
+        kids += std::to_string(page) + " 0 R ";
+    }
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pagesNum) + " 0 R >>");
+    b.Set(pagesNum, "<< /Type /Pages /Kids [" + kids + "] /Count 2 >>");
+    return b.Build(catalog);
+}
+
+// The nesting limit that page order hits and another order does not (the chain's tail parsed
+// first, so that the head's parse stops at it): the section is undone. A chain within the limit
+// read the same way stands.
+void TestSharedNesting() {
+    const std::string deep = Chain(40, 20);
+    const auto serial = OpenOk(deep, 1605);
+    Content(*serial, 0);
+    Content(*serial, 1);
+    const auto doc = OpenOk(deep, 1605);
+    const DocumentReport before = doc->Report();
+    RAYOPDF_CHECK(serial->Report().limitHits > before.limitHits, 1606);
+    RAYOPDF_CHECK(doc->BeginShared(), 1607);
+    std::thread([&] { Content(*doc, 1); }).join();
+    RAYOPDF_CHECK(doc->SharedIntact(), 1608);
+    Content(*doc, 0);
+    RAYOPDF_CHECK(!doc->SharedIntact(), 1609);
+    RAYOPDF_CHECK(!doc->EndShared(), 1624);
+    RAYOPDF_CHECK(SameReport(doc->Report(), before), 1625);
+    Content(*doc, 0);
+    Content(*doc, 1);
+    RAYOPDF_CHECK(SameReport(doc->Report(), serial->Report()), 1626);
+
+    const std::string shallow = Chain(30, 20);
+    const auto flat = OpenOk(shallow, 1627);
+    const auto other = OpenOk(shallow, 1627);
+    Content(*flat, 0);
+    Content(*flat, 1);
+    RAYOPDF_CHECK(other->BeginShared(), 1628);
+    std::thread([&] { Content(*other, 1); }).join();
+    Content(*other, 0);
+    RAYOPDF_CHECK(other->EndShared(), 1629);
+    RAYOPDF_CHECK(SameReport(other->Report(), flat->Report()), 1629);
+}
+
 // A StreamReader open: no shared mode (its count could have to come before another thread's).
 void TestSharedWithReader() {
     const std::string pdf = ManyPages(2);  // the document views it
@@ -345,6 +403,7 @@ void TestPagePoolStart() {
 int main() {
     TestSharedObjects();
     TestSharedCycle();
+    TestSharedNesting();
     TestSharedWithReader();
     TestSharedFonts();
     TestWorkerCounts();

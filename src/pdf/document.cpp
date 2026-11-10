@@ -176,6 +176,9 @@ struct Slot {
     uint32_t aux = 0;
     SlotKind kind = SlotKind::None;
     SlotState state = SlotState::Unread;  // through StateOf and SetState once Open is done
+    // Parsed in a shared section: how many parses deep its own parse went, itself included (what
+    // an object that needs it would nest by, had it come first). Written before Read is stored.
+    uint8_t height = 0;
 };
 
 // A slot's state, read without the parse lock in shared mode: Read is stored with release once the
@@ -230,6 +233,7 @@ struct Document::Impl {
     struct ObjectStream {
         bool ok = false;
         bool loading = false;  // being read (an object of it needed meanwhile fails)
+        int height = 0;        // read in a shared section: how many parses deep the reading went
         size_t first = 0;
         std::string data;
         std::vector<std::pair<uint32_t, size_t>> index;  // object number, offset from /First
@@ -299,7 +303,10 @@ struct Document::Impl {
 
     uint64_t decoded = 0;
     DocumentReport report;
-    int loads = 0;          // nested parses (the parse lock's holder's, while shared)
+    // Nested parses (the parse lock's holder's, while shared; other threads only ask whether it
+    // is zero, hence atomic: plain moves).
+    std::atomic<int> loads{0};
+    int deepest = 0;  // while shared: the deepest a parse under way would have gone (Reach)
     std::string decrypted;  // DecryptStrings (under the parse lock while shared)
     StreamScratch scratch;  // StreamData's buffers, while not shared (Scratch)
     // Streams being read that are not counted yet (StreamReader), in the order they were opened,
@@ -346,6 +353,22 @@ struct Document::Impl {
 
     // Something whose outcome can depend on the order objects are read in (BeginShared).
     void OrderSensitive() { orderSensitive.store(true, std::memory_order_relaxed); }
+
+    // This thread's parses under way in a shared section (ObjectShared).
+    struct Nesting {
+        int depth = 0;
+    };
+
+    // While shared, under the parse lock: the parse under way needs something already parsed that
+    // took `height` parses of its own. Read in another order (this one first) the parses would
+    // have nested `depth` deep: past the limit, one of them would have failed.
+    void Reach(int depth) {
+        if (depth > kMaxNestedLoads) {
+            OrderSensitive();
+            depth = kMaxNestedLoads + 1;
+        }
+        if (depth > deepest) deepest = depth;
+    }
 
     // Slot `num` is about to leave Unread (under the parse lock).
     void Leaving(uint32_t num) {
@@ -544,13 +567,19 @@ struct Document::Impl {
         const auto it = objectStreams.find(container);
         if (it != objectStreams.end()) {
             if (it->second->loading) OrderSensitive();  // which of its objects fails depends on the order
+            if (RAYOPDF_UNLIKELY(shared)) Reach(loads.load(std::memory_order_relaxed) + it->second->height);
             return it->second.get();
         }
         // The entry goes in first (not ok): a stream reached again while it loads fails.
         ObjectStream* stream = (objectStreams[container] = std::make_unique<ObjectStream>()).get();
         if (shared) undoStreams.push_back(container);
         stream->loading = true;
+        const int depth = loads.load(std::memory_order_relaxed);
+        const int outer = deepest;
+        deepest = depth;
         FillObjectStream(container, *stream);
+        if (shared) stream->height = deepest - depth;
+        if (outer > deepest) deepest = outer;
         stream->loading = false;
         return stream;
     }
@@ -605,12 +634,27 @@ struct Document::Impl {
     }
 
     // Object while shared: without a lock once Read; a first parse under the parse lock, so that
-    // only its holder parses and Reading is always a slot on its own stack.
+    // only its holder parses and Reading is always a slot on its own stack. An object the section
+    // parsed, needed by a parse of this thread: Reach.
     RAYOPDF_NOINLINE const PdfValue& ObjectShared(uint32_t num) {
         const Slot& seen = slots[num];
-        if (StateOf(seen) == SlotState::Read) return seen.value ? *seen.value : Null();
+        if (StateOf(seen) == SlotState::Read) {
+            if (RAYOPDF_UNLIKELY(seen.height != 0 && loads.load(std::memory_order_relaxed) != 0) &&
+                PerThread<Nesting>().depth != 0) {
+                Reach(loads.load(std::memory_order_relaxed) + seen.height);
+            }
+            return seen.value ? *seen.value : Null();
+        }
         std::lock_guard<std::recursive_mutex> lock(parseMutex);
-        return Load(num);
+        Nesting& nesting = PerThread<Nesting>();
+        if (StateOf(seen) == SlotState::Read) {  // parsed by another thread meanwhile
+            if (nesting.depth != 0) Reach(loads.load(std::memory_order_relaxed) + seen.height);
+            return seen.value ? *seen.value : Null();
+        }
+        ++nesting.depth;
+        const PdfValue& value = Load(num);
+        --nesting.depth;
+        return value;
     }
 
     RAYOPDF_HOT_INLINE const PdfValue& Load(uint32_t num) {
@@ -628,7 +672,7 @@ struct Document::Impl {
                 SetState(slot, SlotState::Read);
                 return Null();
             }
-            if (loads >= kMaxNestedLoads) {
+            if (loads.load(std::memory_order_relaxed) >= kMaxNestedLoads) {
                 Hit(&DocumentReport::limitHits);
                 OrderSensitive();  // how deep a parse nests depends on what was parsed before
                 return Null();
@@ -636,7 +680,10 @@ struct Document::Impl {
             Leaving(num);
             SetState(slot, SlotState::Reading);
         }
-        loads++;
+        const int depth = loads.load(std::memory_order_relaxed) + 1;
+        loads.store(depth, std::memory_order_relaxed);
+        const int outer = deepest;
+        deepest = depth;
         // Slots are read by index from here: nothing below resizes them, but references are kept
         // short anyway.
         const SlotKind kind = slots[num].kind;
@@ -665,7 +712,7 @@ struct Document::Impl {
             }
             if (!ok) Hit(&DocumentReport::brokenObjects);
         }
-        loads--;
+        loads.store(depth - 1, std::memory_order_relaxed);
         const PdfValue* stored = nullptr;
         if (ok && !value.IsNull()) {
             void* block = arena.Allocate(sizeof(PdfValue));
@@ -673,6 +720,8 @@ struct Document::Impl {
         }
         Slot& slot = slots[num];
         slot.value = stored;
+        if (RAYOPDF_UNLIKELY(shared)) slot.height = static_cast<uint8_t>(deepest - depth + 1);
+        if (outer > deepest) deepest = outer;
         SetState(slot, SlotState::Read);
         return stored ? *stored : Null();
     }
