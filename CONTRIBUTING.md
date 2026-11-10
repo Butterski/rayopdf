@@ -37,6 +37,11 @@ warning and `tools/check_repo.py` finds nothing (the Repository Hygiene workflow
 every push). Changes to threads also pass `--config tsan`; changes to files, paths or processes also
 pass `--config windows`; changes to the add-on pass `--config ocr` (image `rayopdf-ocr:1`).
 
+The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same image on pull
+requests and once a night when master changed: the release build without warnings, the tests in
+release and ASan + UBSan, and the fuzz regressions; on a tag `v*` and by hand
+(`gh workflow run ci.yml`) also ThreadSanitizer and Windows. It does not run on pushes to master.
+
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range
 `tests/check.h` lists, and build the PDFs they read in memory. `tests/verify_cli.py` checks the
 built binary from outside.
@@ -63,12 +68,27 @@ Output quality is measured by the harness of
 
 ## Changing the speed
 
-[performance.md](docs/development/performance.md) has the method and what was tried.
+[performance.md](docs/development/performance.md) has the method and what was tried;
+`tools/bench.py` measures (performance.md § Rerunning; `--help` has every option). `BASE` is the
+binary of the commit before, `NEW` the changed one, both kept as files outside `build/`:
+
+```sh
+docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker       # the measuring image, once
+E=benchmark-output/eval; O=$E/data/odl-bench/pdfs
+python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O   # same output
+python3 tools/bench.py instr --bin base=BASE --bin new=NEW --doc DOC.pdf --opt=--images=none
+python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
+python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
+python3 tools/bench.py pages --bin NEW --dir MULTIPAGE-PDFS             # per --workers count
+python3 tools/bench.py tools --bin NEW --doc NAME=DOC.pdf               # against the other tools
+```
 
 - The output stays byte-identical (Markdown, image files, exit codes, `--report` records) on the
-  whole corpus and for every `--workers` count, unless changing it is the purpose.
-- Instruction counts decide (callgrind per conversion, no fixture more than 0.3 % up); times are
-  reported from one pinned, otherwise idle CPU, base and candidate interleaved.
+  whole corpus and for every `--workers` count, unless changing it is the purpose
+  (`bench.py identical`: 0 differ).
+- Instruction counts decide (`bench.py instr`: callgrind per conversion, no fixture more than
+  0.3 % up); times (`warm`, `fresh`) are reported from one pinned, otherwise idle CPU, base and
+  candidate interleaved, with the line `bench.py` prints first: machine, CPU, date.
 - One step is one commit with its numbers. An attempt that lost goes into performance.md's
   "Tried and rejected" with its numbers, so that it is not tried again blindly.
 - `src/hot.ld` is generated (`tools/hot_sections.py`); regenerate it after hot code moved.
@@ -83,7 +103,46 @@ After changing a generator, regenerate and check: `python3 tools/gen_<name>_tabl
 `VERSION` holds the version; CMake and `tools/package.py` read it, and the README's Status section
 names it (change both in one commit). `tools/package.py` builds the release archives byte for
 byte reproducibly from already-built binaries; it copies the README's `Status`, `Usage` and
-`License` sections, so those three headings stay.
+`License` sections, so those three headings stay, and puts into each archive the licences of what
+that archive holds (`LICENSES` in the script: a new file under `third_party/licenses/` is added
+there).
+
+A release is a tag `v<VERSION>` on a commit of master:
+
+```sh
+V=$(cat VERSION)
+gh workflow run release.yml              # optional dry run: the core archives as workflow artifacts
+git tag v$V && git push origin v$V
+```
+
+The tag starts two workflows. CI runs every configuration, ThreadSanitizer and Windows included.
+Release stops unless the tag is `v<VERSION>`, builds `--config static` and `--config windows` in
+the build image, packages them twice to check the bytes repeat, and makes a **draft** release
+with `rayopdf-$V-linux-x64-static.tar.gz`, `rayopdf-$V-windows-x64.zip` and `SHA256SUMS`.
+
+The OCR add-on's archives need the `rayopdf-ocr:1` image (inference runtimes and models; its
+build takes about 50 minutes), so they are built locally from the tagged commit and attached to
+the draft:
+
+```sh
+git checkout v$V
+python3 tools/dev.py image --name ocr                        # rayopdf-ocr:1, once
+python3 tools/dev.py test --config ocr                       # the add-on and its tests
+python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
+python3 tools/dev.py --image rayopdf-ocr:1 run -- \
+    sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
+rm -rf build/dist && mkdir -p build/dist
+gh release download v$V --dir build/dist --pattern "rayopdf-$V-*"   # the draft's two core archives
+for part in ocr-linux ocr-windows ocr-scripts-linux ocr-scripts-windows; do
+    python3 tools/package.py --only $part                    # SHA256SUMS: every archive in build/dist
+done
+(cd build/dist && sha256sum -c SHA256SUMS)                   # six archives
+gh release upload v$V build/dist/rayopdf-ocr-* build/dist/SHA256SUMS --clobber
+```
+
+`SHA256SUMS` then lists all six archives, the two core ones with the bytes the workflow built.
+Publish the draft (`gh release edit v$V --draft=false`) once CI has passed on the tag and the
+version has its record under `docs/benchmarks/`.
 
 ## Licence
 

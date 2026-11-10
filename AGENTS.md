@@ -31,7 +31,9 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
    versions in `/opt/eval/versions.json`.
 
 6. Benchmark claims are dated and scoped: hardware, versions, threads, and warm or fresh
-   process. Third-party numbers are marked "reproduced" or "claimed".
+   process. Third-party numbers are marked "reproduced" or "claimed". Speed is measured with
+   `tools/bench.py` (docs/development/performance.md § Rerunning), which prints that scope with
+   its numbers; a time is quoted only from a CPU nothing else ran on.
 
 7. Holdout: never inspect per-document outputs of the `weasyprint` producer or the `readoc`
    suite while designing converter heuristics; use aggregate scores only. RayoMD producers never
@@ -57,7 +59,9 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
     generated file matches with `python3 tools/gen_<name>_tables.py --check`.
 
 12. `README.md` keeps the H2 headings `Status`, `Usage` and `License`: `tools/package.py`
-    (`README_SECTIONS`) copies them into the release archives and stops if one is missing.
+    (`README_SECTIONS`) copies them into the release archives and stops if one is missing. Each
+    archive carries the licences of what it holds: a new file under `third_party/licenses/` is
+    added to `LICENSES` in `tools/package.py`.
 
 13. Each version measured on the harness gets one record `docs/benchmarks/v<version>-<date>.md`;
     baselines are `baselines-<suite>-<date>.md` or `baselines-<date>.md`, release checks
@@ -65,8 +69,15 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
     records and history) in the same commit.
 
 14. To bump the version, change `VERSION` (CMake and `tools/package.py` read it) and the version
-    in the README's Status section in the same commit.
+    in the README's Status section in the same commit. A release is the tag `v<VERSION>`
+    (CONTRIBUTING.md § Versions and releases); agents create no tag and no release unless asked.
 
 15. `python3 tools/check_repo.py` checks rules 1, 2, 12 and 13, the fuzz targets' names and the
     relative links of the documents; it finds nothing before a push (the Repository Hygiene
     workflow runs it).
+
+16. GitHub Actions minutes are a monthly budget. The CI workflow runs rule 10's commands in the
+    build image on pull requests, tags `v*`, once a night and by hand, never on pushes to master;
+    keep it so, with `concurrency` that cancels superseded runs and `timeout-minutes` on every
+    job. A workflow runs the same `tools/` commands a developer runs, in the image built from
+    `docker/build.Dockerfile` (`.github/actions/build-image`), not its own build steps.

@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# Measuring image of the performance campaign (docs/development/performance.md): the build image
-# (same glibc and libstdc++ as the binaries under test) plus valgrind (callgrind) and perf. Used
-# through the agent skills' dkrun.sh: `dkrun.sh --image rayopdf-perf:1 [--perf] --cpus 3 -- ...`.
-# perf comes from linux-tools of the image's kernel series; the scripts call the versioned binary
-# under /usr/lib/linux-tools/*/perf, which works against a newer host kernel. libdeflate and zlib
+# Measuring image of tools/bench.py and the performance campaign (docs/development/performance.md):
+# the build image (same glibc and libstdc++ as the binaries under test, and its compiler for the
+# timers under tools/bench/) plus valgrind (callgrind) and perf. Build it after `tools/dev.py image`:
+# `docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker`. perf comes from linux-tools of
+# the image's kernel series; call the versioned binary under /usr/lib/linux-tools/*/perf, which
+# works against a newer host kernel (and needs a privileged container). libdeflate and zlib
 # are reference decoders for decoder benchmarks and differential checks only (roadmap D2: test
 # oracles), never linked into RayoPDF.
 FROM rayopdf-build:2

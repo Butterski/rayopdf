@@ -41,6 +41,10 @@ IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayop
 CONFIG_IMAGES = {"ocr": "rayopdf-ocr:1", "ocr-ort": "rayopdf-ocr:1", "ocr-windows": "rayopdf-ocr:1"}
 OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:1
 
+# MinGW's linker writes the link time into the PE header unless told not to; without it two builds
+# of one source differ in four bytes, and so would the release archives (tools/package.py).
+PE_NO_TIMESTAMP = "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp"
+
 CONFIGS = {
     "release": ["-DCMAKE_BUILD_TYPE=Release"],
     "debug": ["-DCMAKE_BUILD_TYPE=Debug"],
@@ -54,7 +58,8 @@ CONFIGS = {
     "windows": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Windows",
                 "-DCMAKE_SYSTEM_PROCESSOR=x86_64", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix",
                 "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix",
-                "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine"],
+                "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine",
+                PE_NO_TIMESTAMP],
     "ocr": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
             "-DRAYOPDF_OCR_RUNTIME=ncnn", "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux",
             f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
@@ -65,6 +70,7 @@ CONFIGS = {
                     "-DCMAKE_SYSTEM_PROCESSOR=x86_64", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix",
                     "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix",
                     "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine",
+                    PE_NO_TIMESTAMP,
                     "-DRAYOPDF_OCR_ADDON=ON", "-DRAYOPDF_OCR_RUNTIME=ncnn",
                     "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/windows", f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
 }

@@ -800,29 +800,53 @@ scanned documents, `--bench`). Static binary 3,515,432 -> 3,315,776 bytes, relea
 
 ## Rerunning
 
-The campaign's scripts live outside the repository in its lab directory; they call the agent
-skills' `outcmp.py`, `abbench.py`, `freshstat.py` and `ledger.py`:
+`tools/bench.py` runs the measurements of this document and of the version records from the
+repository (`python3 tools/bench.py --help` has every option). Everything runs in Docker without
+network: RayoPDF's binaries in the measuring image, the other tools in their evaluation images
+(`tools/eval.py images`); binaries and documents are mounted read-only, outputs go to a RAM disk
+in the container, and `RAYOPDF_OCR` names nothing. Each command prints a first line with what it
+measured, on which CPU and machine, and when; `--json FILE` keeps the whole result.
 
-|Script|Does|
-|---|---|
-|`gate.sh bytes\|quick\|warm\|fresh\|suite\|batch`|the gates of a step against a snapshot binary|
-|`land.sh`|one landing under a lock: rebase, static and release builds without warnings, tests, G-bytes quick, push|
-|`instr.sh`|user instructions of `--batch --workers=1` per document group|
-|`fresh_timer.cpp`, `freshrot.sh`|the native fresh-process timer; rounds with the binaries' order rotated|
-|`pageswall.sh`, `cmdbench.c`|fresh wall time of multi-page documents per worker count|
-|`compare.sh`|every tool's own command line as a fresh process (the comparison of a version record)|
-|`final.sh gates\|time`|a round's final gates and timings|
+|Command|Measures|In this document|
+|---|---|---|
+|`bench.py identical`|two binaries over every PDF under folders, per option set: exit code, `--report` record without `ms`, every output file|G-bytes|
+|`bench.py instr`|instructions a conversion under callgrind, `(I(2N) - I(N)) / N`, and the change|G-warm, the steps' tables|
+|`bench.py warm`|`--bench` best of 3 per document, the binaries alternating: ms/page median, p95, mean, pages/s|release bar, warm|
+|`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults|release bar, fresh|
+|`bench.py pages`|fresh wall time of multi-page documents per `--workers` count, summed (`tools/bench/cmdbench.c`)|Pages in parallel|
+|`bench.py tools`|every tool through its own command line as a fresh process: time, factor against RayoPDF, peak RSS|the comparison of a version record|
 
 ```sh
-docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker
-python3 tools/dev.py build --config release --dir perf-release   # copy the binary out first
-gate.sh bytes STEP PREV NEW; gate.sh warm STEP PREV NEW; gate.sh suite STEP LABEL...
+python3 tools/dev.py image && docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker   # once
+python3 tools/dev.py build --config static --dir perf-static   # then copy build/perf-static/rayopdf away: NEW
+E=benchmark-output/eval; O=$E/data/odl-bench/pdfs
+python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O --set none=--images=none \
+    --set images= --set nostruct=--no-structure
+python3 tools/bench.py instr --bin base=BASE --bin new=NEW --opt=--images=none --doc FIXTURE.pdf --doc ...
+python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
+python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
+python3 tools/bench.py pages --bin NEW --list MULTIPAGE.txt --cpus 2,3,4,5
+python3 tools/bench.py tools --bin NEW --doc odl183=$O/01030000000183.pdf --doc safe348=0000348.pdf \
+    --cpus 3 --cpus 2,3,4,5
 python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/benchmark-output:ro -- \
     python3 tools/hot_sections.py --build-dir build/release --build-dir build/static   # src/hot.ld
 ```
 
-`TCPU=N gate.sh warm|suite ...` runs on another CPU than 3 (instruction counts do not depend on
-it; times then are indicative only). CPU 9 is CPU 3's second thread and stays idle while CPU 3
-times; `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11` keeps `tools/dev.py`'s containers off both. A `-g`
-build for profiles needs `-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=gold`: with `src/hot.ld` GNU ld drops
-the line information of the functions it places.
+- **Binaries:** compare files kept outside `build/` (the base is the binary of the commit
+  before), static builds or builds made in `rayopdf-build:2`.
+- **CPUs:** `warm` and `fresh` time on one CPU (`--cpu 3` here), `pages` and `tools` on the CPUs of
+  `--cpus`; a time counts only when nothing else runs on them or on their sibling threads (here
+  CPU 9 is CPU 3's second thread). `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11` keeps the containers of
+  `tools/dev.py`, `bench.py identical` and `bench.py instr` off both. Instruction counts and
+  `identical` do not depend on the load; under load every time grows (the same binaries gave 2,215
+  pages/s on the idle machine and about 1,550 with sixty processes runnable beside the pinned
+  CPU), while the change between two binaries interleaved in one run moved by a point or two.
+- **Not in the tool:** the task-clock and user instructions of `--batch --workers=1` come from
+  `perf stat -e instructions:u` in a privileged container of `rayopdf-perf:1` (host
+  `perf_event_paranoid` is 4; the binary is `/usr/lib/linux-tools/*/perf`).
+- **Before `bench.py`:** the numbers up to 0.0.12 were measured with the campaign's scripts outside
+  the repository, which `bench.py` ports (the warm suite, the two native timers, the rotation, the
+  tools' commands) or replaces (`identical` and `instr` for the agent skills' `outcmp.py` and
+  `abbench.py`).
+- A `-g` build for profiles needs `-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=gold`: with `src/hot.ld` GNU
+  ld drops the line information of the functions it places.
