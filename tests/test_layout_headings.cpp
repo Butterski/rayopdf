@@ -128,7 +128,7 @@ void TestSmallCapitals() {
     AddBody(paper[0], 580, 3);
     AddText(paper[0], "III. RESULTS", 72, 520, 10);
     AddBody(paper[0], 500, 3);
-    const std::vector<OutlineEntry> outline{{"Introduction", 1}, {"Related Work on Headings", 1}, {"Results", 1}};
+    const std::vector<OutlineEntry> outline{{"I Introduction", 1}, {"II Related Work on Headings", 1}, {"III Results", 1}};
     const std::string md = Run(paper, outline);
     Show("small capitals", md);
     RAYOPDF_CHECK(Contains(md, "# A Title In Small Capitals With A Broken Word And CNN Layers\n"), 1804);
@@ -137,11 +137,45 @@ void TestSmallCapitals() {
     RAYOPDF_CHECK(Contains(md, "\n## III. RESULTS\n"), 1806);
 }
 
+void TestOutlineNumbering() {
+    // The bookmark numbers a subsection "II-B", its line "B.": the same title. Set in italics in
+    // the body's size and pitch right above its paragraph, it is still a block of its own. The
+    // bookmark's hyphen may be another character than the line's.
+    std::vector<PageData> paper{NewPage(1), NewPage(2)};
+    AddText(paper[0], "Contents", 72, 680, 12, kGlyphBold);
+    AddText(paper[0], "II. Related Work", 72, 656, 10);
+    AddText(paper[0], "2", 520, 656, 10);
+    AddText(paper[0], "II-B. GAN-based Predictions", 72, 644, 10);
+    AddText(paper[0], "2", 520, 644, 10);
+    AddBody(paper[1], 690, 2);
+    AddText(paper[1], "II. Related Work", 72, 640, 10, kGlyphBold);
+    AddBody(paper[1], 620, 3);
+    AddText(paper[1], "B. GAN-based Predictions", 72, 572, 10, kGlyphItalic);
+    AddBody(paper[1], 560, 3);
+    AddText(paper[1], "C. Plain Subsection", 72, 512, 10);
+    AddBody(paper[1], 500, 3);
+    AddText(paper[1], "Appendix A. Proofs", 72, 440, 10, kGlyphBold);
+    AddBody(paper[1], 420, 3);
+    const std::vector<OutlineEntry> outline{{"II Related Work", 1},
+                                            {"II-B GAN\xE2\x80\x91" "based Predictions", 2},
+                                            {"II-C Plain Subsection", 2},
+                                            {"Proofs", 1}};
+    const std::string md = Run(paper, outline);
+    Show("outline numbering", md);
+    RAYOPDF_CHECK(Contains(md, "\n## II. Related Work\n"), 1807);
+    RAYOPDF_CHECK(Contains(md, "\n### B. GAN-based Predictions\n\nBody text"), 1808);
+    RAYOPDF_CHECK(Contains(md, "\n### C. Plain Subsection\n\nBody text"), 1811);
+    RAYOPDF_CHECK(Contains(md, "\n## Appendix A. Proofs\n"), 1809);
+    // The table of contents repeats the titles beside their page numbers: no headings.
+    RAYOPDF_CHECK(!Contains(md, "# II-B") && Contains(md, "II-B. GAN-based Predictions"), 1810);
+}
+
 } // namespace
 
 int main() {
     TestTitleAboveOutline();
     TestSmallCapitals();
+    TestOutlineNumbering();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

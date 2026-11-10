@@ -231,20 +231,84 @@ bool NoTitle(std::string_view t) {
            (words >= 4 && 2 * letters < 3 * words);
 }
 
-// Lowercase ASCII letters and digits plus every non-ASCII byte: the outline matching key.
+// The length of the section numbering that opens a title, with the spaces after it: "4.3. ",
+// "III-C ", "A. ", "B.2 ", "II-A1 ", "Appendix A "; 0 when there is none ("3D Printing"). Its
+// parts are joined by "." or "-": up to three digits, a roman numeral of I, V and X, or one
+// capital letter with up to two digits; "." ":" or ")" may end it. One letter alone numbers a
+// title only with such an end or after "Appendix" ("A Survey", "I Think" start with words).
+size_t NumberingPrefix(std::string_view t) {
+    size_t i = 0;
+    bool appendix = false;
+    if (t.size() > 9 && t[8] == ' ') {
+        static const char kWord[] = "appendix";
+        appendix = true;
+        for (size_t k = 0; k < 8 && appendix; ++k) appendix = (t[k] | 0x20) == kWord[k];
+        if (appendix) i = 9;
+    }
+    const auto digit = [&](size_t k) { return k < t.size() && t[k] >= '0' && t[k] <= '9'; };
+    bool lone = false;
+    for (int parts = 0; parts < 8; ++parts) {
+        const size_t start = i;
+        if (digit(i)) {
+            while (digit(i) && i - start < 4) ++i;
+            if (i - start > 3) return 0;
+            lone = false;
+        } else {
+            while (i < t.size() && (t[i] == 'I' || t[i] == 'V' || t[i] == 'X') && i - start < 8) ++i;
+            if (i == start) {
+                if (i >= t.size() || t[i] < 'A' || t[i] > 'Z') return 0;
+                ++i;
+            }
+            lone = parts == 0 && i - start == 1;
+            if (i - start == 1)
+                for (int d = 0; d < 2 && digit(i); ++d) ++i, lone = false;
+        }
+        if (i + 1 < t.size() && (t[i] == '.' || t[i] == '-') && t[i + 1] != ' ') {
+            ++i;
+            continue;
+        }
+        break;
+    }
+    bool ended = false;
+    if (i < t.size() && (t[i] == '.' || t[i] == ':' || t[i] == ')')) ++i, ended = true;
+    if (i >= t.size() || t[i] != ' ' || (lone && !ended && !appendix)) return 0;
+    while (i < t.size() && t[i] == ' ') ++i;
+    // A title's word follows the numbering ("Z0 1" has none).
+    const unsigned char next = i < t.size() ? static_cast<unsigned char>(t[i]) : 0;
+    return ((next | 0x20) >= 'a' && (next | 0x20) <= 'z') || next >= 0xC3 ? i : 0;
+}
+
+// The outline matching key: lowercase ASCII letters and digits plus every non-ASCII byte but
+// those of hyphens (U+00AD, U+2010, U+2011: a bookmark and its line may differ in them; a dash
+// may be a list's bullet); `stripNumbering` leaves the section numbering out (NumberingPrefix).
 void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
     key.clear();
-    size_t i = 0;
-    if (stripNumbering) {
-        while (i < text.size() && ((text[i] >= '0' && text[i] <= '9') || text[i] == '.' || text[i] == ' ')) ++i;
-    }
-    for (; i < text.size(); ++i) {
+    for (size_t i = stripNumbering ? NumberingPrefix(text) : 0; i < text.size(); ++i) {
         const char c = text[i];
-        if (c >= 'A' && c <= 'Z')
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (c >= 'A' && c <= 'Z') {
             key.push_back(static_cast<char>(c - 'A' + 'a'));
-        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || static_cast<unsigned char>(c) >= 0x80)
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
             key.push_back(c);
+        } else if (u == 0xC2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) == 0xAD) {
+            ++i;
+        } else if (u == 0xE2 && i + 2 < text.size() && static_cast<unsigned char>(text[i + 1]) == 0x80 &&
+                   static_cast<unsigned char>(text[i + 2]) >= 0x90 && static_cast<unsigned char>(text[i + 2]) <= 0x91) {
+            i += 2;
+        } else if (u >= 0x80) {
+            key.push_back(c);
+        }
     }
+}
+
+// The text ends in a row of leader dots (four or more, spaced or not), with or without the page
+// number after them ("2.1 Methods . . . . . 17"): a table-of-contents entry.
+bool EndsInLeader(std::string_view t) {
+    size_t i = t.size();
+    while (i > 0 && (t[i - 1] == ' ' || (t[i - 1] >= '0' && t[i - 1] <= '9'))) --i;
+    uint32_t dots = 0;
+    while (i > 0 && (t[i - 1] == '.' || t[i - 1] == ' ')) dots += t[i - 1] == '.' ? 1 : 0, --i;
+    return dots >= 4;
 }
 
 // Small painted shapes near the left of lines: vector bullets, task boxes, quote bars.
@@ -1149,6 +1213,58 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         MatchKey(outline[t].title, scratch, true);
         if (!scratch.empty()) titles[scratch].push_back(t);
     }
+    // A heading set like the text under it (IEEE's italic "B. Problem statement" in the body's
+    // size and pitch) was grouped with that paragraph: where the first line of a block of body
+    // text alone is an outline title and the block as a whole is none, the line makes a block of
+    // its own. A title's first line may be a section's title too: what follows a title's line is
+    // no paragraph (two lines or more, or the end of a sentence), or is set large.
+    if (!titles.empty()) {
+        std::string joined;
+        const auto titled = [&](uint32_t from, uint32_t count) {
+            joined.clear();
+            for (uint32_t i = from; i < from + count; ++i) {
+                const PageData& page = pages[infos[i].page];
+                LineText(page, page.lines[infos[i].line], scratch);
+                if (!joined.empty()) joined.push_back(' ');
+                joined += scratch;
+            }
+            for (int strip = 0; strip < 2; ++strip) {
+                MatchKey(joined, scratch, strip == 1);
+                if (titles.find(scratch) != titles.end()) return true;
+            }
+            return false;
+        };
+        const auto block = [&](uint32_t from, uint32_t count, const RawBlock& whole) {
+            RawBlock b = whole;
+            b.first = from;
+            b.count = count;
+            b.bold = (infos[from].flags & kLineAllBold) != 0;
+            b.bodyU0 = infos[count > 1 ? from + 1 : from].u0;
+            b.right = infos[from].u1;
+            for (uint32_t i = from + 1; i < from + count; ++i)
+                b.bodyU0 = Fmin(b.bodyU0, infos[i].u0), b.right = Fmax(b.right, infos[i].u1);
+            if (count > 1) b.pitch = infos[from].baseline - infos[from + 1].baseline;
+            return b;
+        };
+        std::vector<RawBlock> split;
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const RawBlock b = raws[r];
+            const Info& first = infos[b.first];
+            const bool candidate =
+                b.count >= 2 && b.note == 0 && !b.mono && first.hasLetter && first.chars <= 120 && !first.pageRef &&
+                !first.startsLower && first.size < kHeadingSize * body &&
+                (b.count >= 3 || infos[b.first + 1].endsTerminal) &&
+                !(first.flags & (kLineTable | kLineFormula | kLineTableAnchor | kLineImage | kLineInvisible));
+            if (candidate && !(b.count <= 4 && titled(b.first, b.count)) && titled(b.first, 1)) {
+                if (split.empty()) split.assign(raws.begin(), raws.begin() + static_cast<std::ptrdiff_t>(r));
+                split.push_back(block(b.first, 1, b));
+                split.push_back(block(b.first + 1, b.count - 1, b));
+            } else if (!split.empty()) {
+                split.push_back(b);
+            }
+        }
+        if (!split.empty()) raws.swap(split);
+    }
 
     // Classification.
     struct Classified {
@@ -1211,8 +1327,19 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             k.kind = BlockKind::Code;
             continue;
         }
-        // The outline.
-        if (!titles.empty() && b.count <= 4 && chars <= 300 && letter) {
+        // The outline. A table-of-contents entry repeats a title and heads nothing: a line with
+        // its page number far to its right next to another such line set alone (without one it
+        // is a heading beside a number in the other column), or one ending in a row of leader dots.
+        const auto contentsEntry = [&]() {
+            if (!first.pageRef) return false;
+            for (size_t q = r >= 2 ? r - 2 : 0; q < raws.size() && q <= r + 2; ++q) {
+                const Info& near = infos[raws[q].first];
+                if (q != r && raws[q].count == 1 && near.pageRef && !near.endsTerminal && near.page == first.page)
+                    return true;
+            }
+            return false;
+        };
+        if (!titles.empty() && b.count <= 4 && chars <= 300 && letter && !contentsEntry()) {
             text.clear();
             for (uint32_t i = b.first; i < b.first + b.count; ++i) {
                 const PageData& page = pages[infos[i].page];
@@ -1220,7 +1347,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 if (!text.empty()) text.push_back(' ');
                 text += line;
             }
-            for (int strip = 0; strip < 2 && k.level == 0; ++strip) {
+            for (int strip = EndsInLeader(text) ? 2 : 0; strip < 2 && k.level == 0; ++strip) {
                 MatchKey(text, scratch, strip == 1);
                 auto it = titles.find(scratch);
                 if (it == titles.end()) continue;
