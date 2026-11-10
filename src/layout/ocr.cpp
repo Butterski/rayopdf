@@ -46,24 +46,29 @@ OcrStatus RecogniseAlt(OcrSession& session, const OcrCanvas& canvas, PageData& p
 
 } // namespace
 
+void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mode, PageRoute& route) {
+    PageSignals signals;
+    MeasurePage(page, quality.glyphs, quality.unreliable, signals);
+    route.broken = signals.broken && signals.visibleChars + signals.invisibleChars >= kPageMinChars;
+    route.vectorText = signals.vectorText;
+    PlanPage(page, signals, mode, route.plan);
+    route.glyphShapes = signals.broken || signals.junk >= kGlyphRecoveryMinJunk;
+}
+
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report,
-                    bool imagesWritten) {
+                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                    const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten) {
     if (options.mode == OcrMode::Off) return;
-    std::vector<OcrPlan> plans(pages.size());
     std::vector<uint32_t> glyphPages, vectorPages;
     bool any = false;
     for (size_t p = 0; p < pages.size(); ++p) {
-        PageSignals signals;
-        const PageTextQuality q = p < quality.size() ? quality[p] : PageTextQuality();
-        MeasurePage(pages[p], q.glyphs, q.unreliable, signals);
-        if (signals.broken && signals.visibleChars + signals.invisibleChars >= kPageMinChars) report.ocrBrokenPages++;
-        if (signals.vectorText) report.ocrVectorTextPages++;
-        PlanPage(pages[p], signals, options.mode, plans[p]);
-        any = any || plans[p].route != OcrRoute::None;
-        if (plans[p].route == OcrRoute::Page) continue;
-        if (signals.broken || signals.junk >= kGlyphRecoveryMinJunk) glyphPages.push_back(static_cast<uint32_t>(p));
-        if (signals.vectorText) vectorPages.push_back(static_cast<uint32_t>(p));
+        const PageRoute& route = routes[p];
+        if (route.broken) report.ocrBrokenPages++;
+        if (route.vectorText) report.ocrVectorTextPages++;
+        any = any || route.plan.route != OcrRoute::None;
+        if (route.plan.route == OcrRoute::Page) continue;
+        if (route.glyphShapes) glyphPages.push_back(static_cast<uint32_t>(p));
+        if (route.vectorText) vectorPages.push_back(static_cast<uint32_t>(p));
     }
     if (!any && glyphPages.empty() && vectorPages.empty()) return;
 
@@ -102,7 +107,7 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
     if (!any) return;
     OcrCanvas canvas;
     for (size_t p = 0; p < pages.size(); ++p) {
-        const OcrPlan& plan = plans[p];
+        const OcrPlan& plan = routes[p].plan;
         if (plan.route == OcrRoute::None) continue;
         PageData& page = pages[p];
         const bool whole = plan.route == OcrRoute::Page;

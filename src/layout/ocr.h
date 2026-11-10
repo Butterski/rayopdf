@@ -14,6 +14,7 @@
 
 #include "layout/convert.h"
 #include "layout/ocr_options.h"
+#include "layout/ocr_route.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
 #include "pdf/document.h"
@@ -23,7 +24,19 @@
 
 namespace RayoPdf::Layout {
 
-// Routes and recognises `pages` (interpreted with `fonts`; `quality` per page, as Convert fills it)
+// What routing reads of one page and decides for it (layout/ocr_route.h).
+struct PageRoute {
+    OcrPlan plan;
+    bool broken = false;       // its text layer fails the broken-text checks (ocrBrokenPages)
+    bool vectorText = false;   // it looks like text drawn as vector outlines (ocrVectorTextPages)
+    bool glyphShapes = false;  // its fonts are candidates for glyph-shape recovery
+};
+
+// Routes one interpreted page (`quality` as Convert fills it) for `mode` other than Off. It reads
+// the page only, so Convert routes each page on the thread that interpreted it.
+void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mode, PageRoute& route);
+
+// Recognises `pages` (interpreted with `fonts`; `quality` and `routes` per page, from RoutePage)
 // and adds the OCR counters to `report`: ocrPagesRouted, ocrPages, ocrFailures, ocrAddonMissing,
 // ocrBrokenPages, ocrVectorTextPages, ocrGlyphFonts, ocrGlyphs. Sets quality[p].ocrFailed for
 // routed pages left without text by a failing add-on. Does nothing with OcrMode::Off.
@@ -33,7 +46,7 @@ namespace RayoPdf::Layout {
 // when the image has no /Alt), so the figure's words stay with the figure instead of entering the
 // body; without images it is body text at the image's place (an OCR text layer).
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report,
-                    bool imagesWritten);
+                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                    const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten);
 
 } // namespace RayoPdf::Layout

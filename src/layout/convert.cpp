@@ -26,13 +26,34 @@ unsigned PageWorkers(unsigned asked, size_t pages) {
     return Batch::WorkerCount(asked, pages);
 }
 
-// One page's counters, into the report and the page's quality.
-void Tally(const PageStats& stats, PageTextQuality& quality, ConvertReport& report) {
+// What one conversion holds from its first stage to its last, in the order it is made (the
+// pool's threads end before the pages they read go).
+struct Conversion {
+    explicit Conversion(const Document& document) : fonts(document) {}
+
+    std::vector<PageData> pages;
+    std::vector<PageTextQuality> quality;
+    std::vector<PageRoute> routes;   // each page's OCR route (layout/ocr.h), unless OCR is off
+    std::unique_ptr<PagePool> pool;  // one document's threads, from the first page-local phase to the last
+    Text::FontCache fonts;
+    std::vector<OutlineEntry> outline;
+    Structure structure;
+};
+
+// A page just interpreted: its counters into its quality, and its OCR route. They read the page
+// only, so the thread that interpreted the page takes them while the page is in its cache.
+void Measure(const PageStats& stats, OcrMode ocr, size_t slot, Conversion& conversion) {
+    PageTextQuality& quality = conversion.quality[slot];
+    quality.glyphs = stats.glyphs;
+    quality.unreliable = stats.unmapped + stats.guessed;
+    if (ocr != OcrMode::Off) RoutePage(conversion.pages[slot], quality, ocr, conversion.routes[slot]);
+}
+
+// One page's counters into the report.
+void Tally(const PageStats& stats, ConvertReport& report) {
     report.glyphs += stats.glyphs;
     report.unmappedGlyphs += stats.unmapped;
     report.guessedGlyphs += stats.guessed;
-    quality.glyphs = stats.glyphs;
-    quality.unreliable = stats.unmapped + stats.guessed;
 }
 
 // When the page threads start. A thread is not free (its start, and the first touch of its
@@ -62,16 +83,18 @@ struct ThreadStart {
     }
 };
 
-// Pages `first` (0-based) on into `pages` (and their counters into `quality` and `report`), on the
-// threads of `pool` sharing the document and the fonts when the document allows it
-// (Document::BeginShared): what a thread reads cannot depend on the others, unless the document
-// says it might have, and then the pages are read again on this thread in page order (roadmap D4:
-// the output never depends on the number of threads). True: read; false: left to the caller.
-bool InterpretShared(const Document& document, Text::FontCache& fonts, bool links, int first,
-                     std::vector<PageData>& pages, std::vector<PageTextQuality>& quality, ConvertReport& report,
-                     PagePool& pool) {
+// Pages `first` (0-based) on into the pages of `conversion` (with their quality and OCR routes,
+// and their counters into `report`), on the threads of its pool sharing the document and the fonts
+// when the document allows it (Document::BeginShared): what a thread reads cannot depend on the
+// others, unless the document says it might have, and then the pages are read again on this
+// thread in page order (roadmap D4: the output never depends on the number of threads). True:
+// read; false: left to the caller.
+bool InterpretShared(const Document& document, const ConvertOptions& options, int first, Conversion& conversion,
+                     ConvertReport& report) {
     if (!document.BeginShared()) return false;
-    const size_t count = pages.size();
+    PagePool& pool = *conversion.pool;
+    Text::FontCache& fonts = conversion.fonts;
+    const size_t count = conversion.pages.size();
     std::vector<PageStats> stats(count);
     {
         std::vector<std::unique_ptr<Text::FontCache>> caches;  // workers 1 on; worker 0 uses `fonts`
@@ -88,29 +111,18 @@ bool InterpretShared(const Document& document, Text::FontCache& fonts, bool link
                 stats[slot].contentRead = &ThreadStart::ContentRead;
                 stats[slot].contentContext = &start;
             }
-            InterpretPage(document, cache, first + static_cast<int>(slot), links, pages[slot], stats[slot]);
+            InterpretPage(document, cache, first + static_cast<int>(slot), options.annotations, conversion.pages[slot],
+                          stats[slot]);
+            Measure(stats[slot], options.ocr.mode, slot, conversion);
         });
     }
     if (!document.EndShared()) {
         fonts.Clear();
         return false;
     }
-    for (size_t slot = 0; slot < count; ++slot) Tally(stats[slot], quality[slot], report);
+    for (size_t slot = 0; slot < count; ++slot) Tally(stats[slot], report);
     return true;
 }
-
-// What one conversion holds from its first stage to its last, in the order it is made (the
-// pool's threads end before the pages they read go).
-struct Conversion {
-    explicit Conversion(const Document& document) : fonts(document) {}
-
-    std::vector<PageData> pages;
-    std::vector<PageTextQuality> quality;
-    std::unique_ptr<PagePool> pool;  // one document's threads, from the first page-local phase to the last
-    Text::FontCache fonts;
-    std::vector<OutlineEntry> outline;
-    Structure structure;
-};
 
 // The end of a conversion. A process that converts this document only is about to end
 // (ConvertOptions::oneShot): the conversion is not taken apart. Its threads stay waiting and its
@@ -135,6 +147,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     if (first <= last) {
         pages.resize(static_cast<size_t>(last - first + 1));
         quality.resize(pages.size());
+        if (options.ocr.mode != OcrMode::Off) conversion->routes.resize(pages.size());
     }
     const unsigned workers = PageWorkers(options.pageWorkers, pages.size());
     if (workers > 1) {
@@ -143,18 +156,20 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
         // by the content read (ThreadStart).
         if (options.pageWorkers != 0) pool->Start(workers - 1);
     }
-    if (!pool || !InterpretShared(document, fonts, options.annotations, first - 1, pages, quality, report, *pool)) {
+    if (!pool || !InterpretShared(document, options, first - 1, *conversion, report)) {
         for (int index = first - 1; index < last; ++index) {
             const size_t slot = static_cast<size_t>(index - (first - 1));
             PageStats stats;
             InterpretPage(document, fonts, index, options.annotations, pages[slot], stats);
-            Tally(stats, quality[slot], report);
+            Measure(stats, options.ocr.mode, slot, *conversion);
+            Tally(stats, report);
         }
     }
     // The pages' content is read: its buffer (this thread's) goes back to the heap for what follows.
     if (options.oneShot) Document::ReleasePageContent();
     report.pages = static_cast<int>(pages.size());
-    RecognisePages(document, fonts, options.ocr, pages, quality, report, !options.imageDirectory.empty());
+    RecognisePages(document, fonts, options.ocr, pages, quality, conversion->routes, report,
+                   !options.imageDirectory.empty());
     std::vector<OutlineEntry>& outline = conversion->outline;
     ReadOutline(document, outline);
     ImageOutput images;
