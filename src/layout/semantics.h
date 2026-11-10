@@ -56,7 +56,10 @@ struct Block {
     uint8_t task = 0;       // list items: 0 none, 1 open, 2 done
     bool ordered = false;   // list items
     bool listParagraph = false; // a further paragraph of the list item before it, at its `depth`
-    uint32_t number = 0;    // ordered list items: the enumerator's value; comments: the page number
+    // Ordered list items: the enumerator's value; comments: the page number; headings: when not
+    // 0, the heading is the first `number` glyphs of its line only (a label run in with its
+    // paragraph, which starts later on the same line).
+    uint32_t number = 0;
     uint32_t first = 0;     // lines: BlockLine[first, first + count)
     uint32_t count = 0;
     float size = 0;         // the size of most of its characters

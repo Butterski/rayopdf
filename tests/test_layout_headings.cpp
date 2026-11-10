@@ -170,12 +170,57 @@ void TestOutlineNumbering() {
     RAYOPDF_CHECK(!Contains(md, "# II-B") && Contains(md, "II-B. GAN-based Predictions"), 1810);
 }
 
+void TestStandardSections() {
+    // "Abstract" alone on its line in the abstract's smaller size, "References" in the body's
+    // face: a paper's standard sections, headings in any style.
+    std::vector<PageData> paper{NewPage(1)};
+    AddText(paper[0], "A Paper With An Abstract", 150, 690, 20);
+    AddText(paper[0], "Abstract", 280, 650, 9, kGlyphBold);
+    for (int i = 0; i < 3; ++i)
+        AddText(paper[0], "Text of the abstract in a smaller size than the body of the paper.", 100, 636 - 11.0f * i, 9);
+    AddText(paper[0], "1 Introduction", 72, 580, 14, kGlyphBold);
+    AddBody(paper[0], 560, 6);
+    AddText(paper[0], "References", 72, 470, 10);
+    AddBody(paper[0], 450, 3);
+    std::string md = Run(paper);
+    Show("standard sections", md);
+    RAYOPDF_CHECK(Contains(md, "# Abstract\n\nText of the abstract"), 1812);
+    RAYOPDF_CHECK(Contains(md, "# References\n\nBody text"), 1813);
+    RAYOPDF_CHECK(Contains(md, "# A Paper With An Abstract\n") && Contains(md, "\n## 1 Introduction\n"), 1814);
+    // The label run in with the abstract ("Abstract—We show"): a heading, and the paragraph
+    // starts after the label and its dash. A sentence that starts with the word is none, and so
+    // is a label closed by a period ("Abstract. We show"), which typesets a paragraph's label.
+    std::vector<PageData> runIn{NewPage(1)};
+    AddText(runIn[0], "Another Paper", 200, 690, 20);
+    float x = AddText(runIn[0], "Abstract\xE2\x80\x94", 72, 650, 9, kGlyphBold | kGlyphItalic);
+    AddText(runIn[0], "We show that a label heads its paragraph when", x, 650, 9, kGlyphBold);
+    AddText(runIn[0], "it is set off by a dash or a colon from the text.", 72, 639, 9, kGlyphBold);
+    AddText(runIn[0], "I. First Section", 72, 600, 12, kGlyphBold);
+    AddText(runIn[0], "Abstract algebra studies structures such as groups and rings,", 72, 580, 10);
+    AddText(runIn[0], "and this paragraph of the body is about it and nothing else.", 72, 568, 10);
+    md = Run(runIn);
+    Show("abstract run in", md);
+    RAYOPDF_CHECK(Contains(md, "# Abstract\n\n") && !Contains(md, "Abstract\xE2\x80\x94"), 1815);
+    RAYOPDF_CHECK(Contains(md, "We show that a label heads its paragraph when it is set off"), 1816);
+    RAYOPDF_CHECK(Contains(md, "\nAbstract algebra studies structures"), 1817);
+    std::vector<PageData> period{NewPage(1)};
+    AddText(period[0], "A Third Paper", 200, 690, 20);
+    x = AddText(period[0], "Abstract.", 72, 650, 9, kGlyphBold);
+    AddText(period[0], " We show that a label closed by a period stays in its paragraph,", x, 650, 9);
+    AddText(period[0], "as a paragraph's label set in bold does in many templates.", 72, 639, 9);
+    AddText(period[0], "1 Introduction", 72, 600, 12, kGlyphBold);
+    md = Run(period);
+    Show("abstract label with a period", md);
+    RAYOPDF_CHECK(!Contains(md, "# Abstract") && Contains(md, "We show that a label closed by a period"), 1818);
+}
+
 } // namespace
 
 int main() {
     TestTitleAboveOutline();
     TestSmallCapitals();
     TestOutlineNumbering();
+    TestStandardSections();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

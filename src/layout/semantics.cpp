@@ -311,6 +311,17 @@ bool EndsInLeader(std::string_view t) {
     return dots >= 4;
 }
 
+// The name of a standard unnumbered section of a paper, with or without a number before it
+// ("Abstract", "REFERENCES", "7. Acknowledgments"). `key` is scratch.
+bool StandardSection(std::string_view t, std::string& key) {
+    static const std::string_view kNames[] = {"abstract",       "references",      "bibliography",    "acknowledgments",
+                                              "acknowledgements", "acknowledgment", "acknowledgement", "appendix"};
+    MatchKey(t, key, true);
+    for (const std::string_view name : kNames)
+        if (key == name) return true;
+    return false;
+}
+
 // Small painted shapes near the left of lines: vector bullets, task boxes, quote bars.
 struct Marks {
     std::vector<const Shape*> small;  // bullets and boxes
@@ -594,7 +605,35 @@ struct RawBlock {
     bool mono = false;
     bool bold = false;
     uint32_t note = 0;  // a footnote's lines
+    // A label run in with its paragraph ("Abstract—"): the label's block is the first `take`
+    // glyphs of its line; the paragraph's block, on the same line, starts `labelSkip` glyphs in.
+    uint32_t take = 0, labelSkip = 0;
 };
+
+// A line that starts with the label "Abstract" run in with the abstract's text: the word and a
+// mark ("Abstract—We show", "ABSTRACT. In 1954", "Abstract: …"), or the word in bold before text
+// that is not bold. `take` is the label's glyphs, `skip` those before the text (the label and its
+// mark, which the heading stands for).
+bool AbstractLabel(const PageData& page, const Line& line, uint32_t& take, uint32_t& skip) {
+    static const char kWord[] = "abstract";
+    if (line.count < 12) return false;
+    bool bold = true;
+    for (uint32_t k = 0; k < 8; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        const std::string_view t = page.GlyphText(g);
+        if (t.size() != 1 || (t[0] | 0x20) != kWord[k] || (k > 0 && (g.flags & kGlyphSpaceBefore))) return false;
+        bold = bold && (g.flags & kGlyphBold) != 0;
+    }
+    const Glyph& mark = page.glyphs[page.lineGlyphs[line.first + 8]];
+    const std::string_view t = page.GlyphText(mark);
+    take = 8;
+    if (mark.flags & kGlyphSpaceBefore) {
+        skip = 8;
+        return bold && !(mark.flags & kGlyphBold);
+    }
+    skip = 9;
+    return t == ":" || t == "\xE2\x80\x94" || t == "\xE2\x80\x93";
+}
 
 // Small capitals (§6.1): a block whose letters are all capitals in two sizes on one baseline, the
 // larger where the source has a capital and the smaller where it has a lower-case letter (a
@@ -1204,6 +1243,24 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         raws.resize(kept);
     }
 
+    // The abstract's label run in with its text ("Abstract—We show …"): the label heads the
+    // paragraph as a block of its own on the paragraph's first line, whose text starts after it.
+    for (size_t r = 0; r < raws.size(); ++r) {
+        const RawBlock& b = raws[r];
+        const Info& first = infos[b.first];
+        if (b.count < 2 || b.note != 0 || b.mono || first.dir != 0 ||
+            (first.flags & (kLineTable | kLineFormula | kLineTableAnchor | kLineImage | kLineInvisible)))
+            continue;
+        uint32_t take = 0, skip = 0;
+        if (!AbstractLabel(pages[first.page], pages[first.page].lines[first.line], take, skip)) continue;
+        RawBlock label = b;
+        label.count = 1;
+        label.take = take;
+        raws[r].labelSkip = skip;
+        raws.insert(raws.begin() + static_cast<std::ptrdiff_t>(r), label);
+        break;  // a document has one abstract
+    }
+
     // Outline titles (D5: outline > style > numbering).
     std::unordered_map<std::string, std::vector<uint32_t>> titles;
     std::vector<uint8_t> titleUsed(outline.size(), 0);
@@ -1308,6 +1365,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         k.chars = chars;
         k.size = size;
         k.bold = b.bold;
+        if (b.take != 0) {
+            k.kind = BlockKind::Heading;
+            k.boldHeading = true;
+            k.chars = b.take;
+            continue;
+        }
         if (b.note != 0) {
             k.kind = BlockKind::Footnote;
             continue;
@@ -1457,6 +1520,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                           std::fabs(rest.baseline - first.baseline) <= 0.3f * first.size && rest.u0 >= first.u1 - 0.5f;
             }
             continue;
+        }
+        // A paper's standard unnumbered section named alone on its line ("Abstract", "References",
+        // "7. ACKNOWLEDGMENTS") heads it in any style and size: no sentence is set so.
+        if (shortBlock && b.count == 1 && chars <= 32 && first.dir == 0) {
+            const PageData& page = pages[first.page];
+            LineText(page, page.lines[first.line], line);
+            if (StandardSection(line, scratch)) {
+                k.kind = BlockKind::Heading;
+                k.boldHeading = true;
+                continue;
+            }
         }
         if (first.listStart()) k.kind = BlockKind::ListItem;
     }
@@ -1864,7 +1938,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             block.first = static_cast<uint32_t>(lines.size());
             block.count = b.count;
             block.size = first.size;
-            if (block.kind == BlockKind::Heading) block.smallCaps = SmallCapsSize(pages, infos, b);
+            if (block.kind == BlockKind::Heading) {
+                if (b.take != 0)
+                    block.number = b.take;
+                else
+                    block.smallCaps = SmallCapsSize(pages, infos, b);
+            }
             for (uint32_t i = b.first; i < b.first + b.count; ++i) {
                 BlockLine bl;
                 bl.page = infos[i].page;
@@ -1872,6 +1951,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 bl.skip = 0;
                 lines.push_back(bl);
             }
+            lines[block.first].skip = b.labelSkip;
             if (block.kind == BlockKind::Image) block.number = static_cast<uint32_t>(pages[first.page].number);
             if (block.kind == BlockKind::Table) {
                 // After the anchor line, the table's cell lines (cell order).

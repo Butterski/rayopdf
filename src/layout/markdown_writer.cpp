@@ -83,10 +83,12 @@ public:
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
-    // A heading in small capitals (Block::smallCaps) as one Markdown line in the source's case:
-    // its small capitals written as lower-case letters. False (nothing written) when a glyph of
-    // it may be math in LaTeX mode: Inline writes it then.
-    bool SmallCaps(const Block& block);
+    // A heading's text glyph by glyph, without styles, as one Markdown line: a heading in small
+    // capitals (Block::smallCaps) in the source's case, its small capitals written as lower-case
+    // letters; a label run in with its paragraph (Block::number), its glyphs alone. False
+    // (nothing written) when a glyph of a small-capitals heading may be math in LaTeX mode:
+    // Inline writes it then.
+    bool PlainHeading(const Block& block);
     // A fenced code block; `prefix` starts every line (block quotes).
     void Code(const Block& block, const std::string& prefix);
     // A display formula's block (one kLineFormula line) as $$…$$ LaTeX; false (nothing written)
@@ -770,7 +772,7 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
     return true;
 }
 
-bool Writer::SmallCaps(const Block& block) {
+bool Writer::PlainHeading(const Block& block) {
     other_.clear();
     const uint32_t blockEnd = block.first + block.count;
     bool joinNext = false;
@@ -779,10 +781,11 @@ bool Writer::SmallCaps(const Block& block) {
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
         size_t wordAt = other_.size();
-        for (uint32_t k = ref.skip; k < line.count; ++k) {
+        const uint32_t end = block.number != 0 ? std::min(block.number, line.count) : line.count;
+        for (uint32_t k = ref.skip; k < end; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             std::string_view text = page.GlyphText(g);
-            if (math_ == MathMode::Latex) {
+            if (math_ == MathMode::Latex && block.number == 0) {
                 const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
                 if (MayBeFormula(font, g.flags, text)) return false;
             }
@@ -1224,7 +1227,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             out += prefix;
             out.append(std::max<int>(1, std::min<int>(6, block.level)), '#');
             out.push_back(' ');
-            if (block.smallCaps > 0 && writer.SmallCaps(block)) break;
+            if ((block.smallCaps > 0 || block.number != 0) && writer.PlainHeading(block)) break;
             writer.Inline(block, false);
             break;
         case BlockKind::Paragraph: {
