@@ -36,8 +36,9 @@ struct ConvertOptions {
     MathMode math = MathMode::Unicode;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
     // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
-    // may run on, at most kDefaultPageWorkers. The output is the same for every count; 1 (and any
-    // document of one page) runs everything on the calling thread.
+    // may run on, at most kDefaultPageWorkers, each started only once the pages read so far are
+    // worth a thread (a document of small pages starts none). The output is the same for every
+    // count; 1 (and any document of one page) runs everything on the calling thread.
     unsigned pageWorkers = 1;
     // The process converts this document only (--convert): buffers kept for later documents are
     // freed once read, so that later stages reuse their memory instead of touching new pages.

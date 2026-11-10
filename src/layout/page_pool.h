@@ -17,14 +17,22 @@ namespace RayoPdf::Layout {
 
 class PagePool {
 public:
-    // `workers` (2 or more) threads: the calling thread of Run and workers - 1 of the pool's own,
-    // started here.
+    // Up to `workers` (2 or more) threads: the calling thread of Run and workers - 1 of the pool's
+    // own, which Start starts: a thread costs more than a small page does (its start, and the
+    // first touch of its buffers), so the caller starts them when it has seen the work.
     explicit PagePool(unsigned workers);
     ~PagePool();
     PagePool(const PagePool&) = delete;
     PagePool& operator=(const PagePool&) = delete;
 
     unsigned Workers() const { return workers_; }
+    // The pool's own threads started so far (below Workers()).
+    unsigned Started() const { return static_cast<unsigned>(threads_.size()); }
+
+    // Starts the pool's threads until `threads` of them run (at most Workers() - 1). For the
+    // thread that calls Run: between rounds, or from a job of its own during a round, which the
+    // new threads then join.
+    void Start(unsigned threads);
 
     // `run(context, worker, index)` for every index below `count`, each once, taken in increasing
     // order by whichever thread is free; `worker` (below Workers(); 0 is the calling thread)
@@ -39,18 +47,20 @@ public:
     }
 
 private:
-    // The pool's thread `worker` (1 on): each round's jobs, until the pool goes.
-    void Serve(unsigned worker);
+    // The pool's thread `worker` (1 on): the jobs of each round after round `seen`, until the
+    // pool goes.
+    void Serve(unsigned worker, uint64_t seen);
     // The round's indices left, taken one at a time.
     void Take(unsigned worker);
 
     const unsigned workers_;
-    std::vector<std::thread> threads_;
+    std::vector<std::thread> threads_;  // the calling thread's alone
     std::mutex mutex_;
     std::condition_variable start_;  // a round began, or the pool goes
     std::condition_variable done_;   // the last thread of a round finished
     uint64_t round_ = 0;             // rounds begun (under mutex_)
     unsigned busy_ = 0;              // the pool's threads still in the round (under mutex_)
+    bool active_ = false;            // a round is running (under mutex_)
     bool closing_ = false;           // under mutex_
     // The round: set under mutex_ before round_ moves, read by the threads after they see it.
     void (*run_)(void*, unsigned, size_t) = nullptr;

@@ -52,6 +52,10 @@ struct PageStats {
     uint64_t guessed = 0;   // codes whose Unicode text is a guess
     // When set (glyph-shape recovery interprets a page again), every glyph kept on the page.
     std::vector<GlyphUse>* uses = nullptr;
+    // When set, called with the size of the page's content once it is read, before it is
+    // interpreted (layout/convert.cpp starts its page threads by it).
+    void (*contentRead)(void* context, size_t bytes) = nullptr;
+    void* contentContext = nullptr;
 };
 
 // Interprets page `index` (0-based) of `document` into `page` (cleared first). `withLinks` reads

@@ -267,7 +267,7 @@ void TestWorkerCounts() {
             std::string expected;
             Layout::ConvertReport expectedReport;
             DocumentReport expectedDocument;
-            for (const unsigned workers : {1u, 2u, 4u, 8u}) {
+            for (const unsigned workers : {1u, 2u, 4u, 8u, 0u}) {
                 const auto doc = OpenOk(pdf, 1640);
                 Layout::ConvertOptions options;
                 options.pageWorkers = workers;
@@ -294,6 +294,7 @@ void TestWorkerCounts() {
 // calling thread; rounds one after another, many of them.
 void TestPagePool() {
     Layout::PagePool pool(4);
+    pool.Start(3);
     RAYOPDF_CHECK(pool.Workers() == 4, 1645);
     const std::thread::id self = std::this_thread::get_id();
     for (int round = 0; round < 200; ++round) {
@@ -309,6 +310,36 @@ void TestPagePool() {
     }
 }
 
+// Threads started on demand: none at first; started from a job of the calling thread they join
+// the round that runs, started between rounds they serve the next; never more than Workers() - 1,
+// and each index still runs once.
+void TestPagePoolStart() {
+    bool once = true, counts = true;
+    for (int round = 0; round < 200; ++round) {
+        Layout::PagePool pool(4);
+        counts = counts && pool.Started() == 0;
+        const size_t count = 64;
+        const size_t at = static_cast<size_t>(round % 5);
+        const unsigned first = static_cast<unsigned>(round % 4);  // 0: none during the round
+        std::vector<std::atomic<int>> runs(count);
+        std::atomic<int> wrong{0};
+        pool.Run(count, [&](unsigned worker, size_t index) {
+            if (worker == 0 && index == at) pool.Start(first);
+            runs[index].fetch_add(1);
+            if (worker > first) wrong.fetch_add(1);
+        });
+        for (const std::atomic<int>& runsOf : runs) once = once && runsOf.load() == 1;
+        counts = counts && pool.Started() == first && wrong.load() == 0;
+        pool.Start(9);
+        counts = counts && pool.Started() == 3;
+        std::vector<std::atomic<int>> again(7);
+        pool.Run(again.size(), [&](unsigned, size_t index) { again[index].fetch_add(1); });
+        for (const std::atomic<int>& runsOf : again) once = once && runsOf.load() == 1;
+    }
+    RAYOPDF_CHECK(once, 1648);
+    RAYOPDF_CHECK(counts, 1649);
+}
+
 } // namespace
 
 int main() {
@@ -318,6 +349,7 @@ int main() {
     TestSharedFonts();
     TestWorkerCounts();
     TestPagePool();
+    TestPagePoolStart();
     std::puts("layout pages tests passed");
     return 0;
 }

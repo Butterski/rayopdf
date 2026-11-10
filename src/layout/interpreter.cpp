@@ -493,6 +493,7 @@ void Interpreter::Run(int index, bool withLinks) {
     const StreamStatus status = doc_.PageContent(index, content);
     if (status == StreamStatus::Corrupt || status == StreamStatus::Salvaged || status == StreamStatus::TooLarge)
         page_.contentErrors++;
+    if (stats_.contentRead) stats_.contentRead(stats_.contentContext, content.size());
     // The glyph vector and the page text sized once from the content, not grown by doubling:
     // each doubling copies every glyph so far into new memory, which a fresh process first-touches
     // a page at a time (111 page faults of odl 192's 4,277 glyphs). A shown code takes at least

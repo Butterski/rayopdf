@@ -35,6 +35,33 @@ void Tally(const PageStats& stats, PageTextQuality& quality, ConvertReport& repo
     quality.unreliable = stats.unmapped + stats.guessed;
 }
 
+// When the page threads start. A thread is not free (its start, and the first touch of its
+// buffers): a document of nearly empty pages was 47 % slower with three threads than with none
+// (6 pages, 58 glyphs: 0.48 against 0.71 ms). So the calling thread starts one thread for every
+// kPageThreadBytes of content it has read itself, as long as pages are left for them; pages too
+// small for that are read by the calling thread alone. Measured over 27 documents of 4 to 39
+// pages, fresh process on four cores: 146.0 ms in all with every thread started at once, 146.7
+// at 16 KiB a thread, 151.4 at 32 KiB, 157.6 at 64 KiB; the small document 0.48 ms at each.
+constexpr size_t kPageThreadBytes = 16 * 1024;
+
+struct ThreadStart {
+    PagePool* pool = nullptr;
+    size_t pages = 0;  // of the round
+    size_t slot = 0;   // the page the calling thread reads now
+    size_t bytes = 0;  // the content the calling thread has read
+
+    // PageStats::contentRead of the calling thread's pages.
+    static void ContentRead(void* context, size_t bytes) {
+        ThreadStart& start = *static_cast<ThreadStart*>(context);
+        if (start.pool->Started() + 1 >= start.pool->Workers()) return;
+        start.bytes += bytes;
+        size_t threads = start.bytes / kPageThreadBytes;
+        const size_t left = start.pages - start.slot - 1;  // pages after this one
+        if (threads > left) threads = left;
+        if (threads > start.pool->Started()) start.pool->Start(static_cast<unsigned>(threads));
+    }
+};
+
 // Pages `first` (0-based) on into `pages` (and their counters into `quality` and `report`), on the
 // threads of `pool` sharing the document and the fonts when the document allows it
 // (Document::BeginShared): what a thread reads cannot depend on the others, unless the document
@@ -50,9 +77,17 @@ bool InterpretShared(const Document& document, Text::FontCache& fonts, bool link
         std::vector<std::unique_ptr<Text::FontCache>> caches;  // workers 1 on; worker 0 uses `fonts`
         caches.reserve(pool.Workers() - 1);
         for (unsigned worker = 1; worker < pool.Workers(); ++worker) caches.emplace_back(new Text::FontCache(fonts));
+        ThreadStart start;
+        start.pool = &pool;
+        start.pages = count;
         pool.Run(count, [&](unsigned worker, size_t slot) {
             if (!document.SharedIntact()) return;  // read again by the caller
             Text::FontCache& cache = worker == 0 ? fonts : *caches[worker - 1];
+            if (worker == 0) {
+                start.slot = slot;
+                stats[slot].contentRead = &ThreadStart::ContentRead;
+                stats[slot].contentContext = &start;
+            }
             InterpretPage(document, cache, first + static_cast<int>(slot), links, pages[slot], stats[slot]);
         });
     }
@@ -79,7 +114,12 @@ void ConvertDocument(const Document& document, const ConvertOptions& options, st
     }
     const unsigned workers = PageWorkers(options.pageWorkers, pages.size());
     std::unique_ptr<PagePool> pool;  // one document's threads, from the first page-local phase to the last
-    if (workers > 1) pool.reset(new PagePool(workers));
+    if (workers > 1) {
+        pool.reset(new PagePool(workers));
+        // A count that was asked for starts its threads at once; the automatic count starts them
+        // by the content read (ThreadStart).
+        if (options.pageWorkers != 0) pool->Start(workers - 1);
+    }
     Text::FontCache fonts(document);
     if (!pool || !InterpretShared(document, fonts, options.annotations, first - 1, pages, quality, report, *pool)) {
         for (int index = first - 1; index < last; ++index) {
