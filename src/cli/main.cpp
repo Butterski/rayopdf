@@ -466,8 +466,8 @@ double MillisecondsSince(Clock::time_point start) {
 // from the heap rather than each from a mapping of its own (the threshold starts at 128 KiB), so a
 // freed block's pages are used again instead of being unmapped and faulted in afresh: 4.3 % fewer
 // page faults over odl, 313 -> 263 at the 95th percentile. Larger blocks (decoded images) are
-// still mapped and given back when freed, so peak memory stays as it was. Elsewhere the C
-// library's allocator is as it is.
+// still mapped and given back when freed, so peak memory stays as it was. --batch and --bench
+// have settings of their own (SetBatchAllocator); --serve and --inspect have the C library's.
 void SetOneShotAllocator() {
 #if defined(__GLIBC__)
     mallopt(M_MMAP_THRESHOLD, 1 << 20);
@@ -543,8 +543,10 @@ int ConvertFile(const std::string& input, const std::string& output, const Docum
 }
 
 // --bench: the warm loop of the performance campaign. One untimed conversion, then `runs` timed
-// ones with the same Markdown buffer, each the whole path of --convert (read, open, convert,
-// write the Markdown and the images). Prints `runs=N best_ms=B median_ms=M pages=P`.
+// ones with the same Markdown and input buffers, as a worker of the batch modes converts one
+// document after another (their allocator settings too, SetBatchAllocator), each the whole path
+// of a conversion (read, open, convert, write the Markdown and the images). Prints
+// `runs=N best_ms=B median_ms=M pages=P`.
 int Bench(const std::string& input, const std::string& folder, std::string_view count, const DocumentOptions& document) {
     int runs = 0;
     if (!ParsePage(count, runs)) return Usage("--bench needs a run count of at least 1: ", count);
@@ -556,13 +558,14 @@ int Bench(const std::string& input, const std::string& folder, std::string_view 
     Layout::ConvertOptions options = document.convert;
     ChooseImageTarget(output, document, options);
     std::string markdown;
+    std::string inputBuffer;
     std::vector<double> times;
     times.reserve(static_cast<size_t>(runs));
     uint64_t pages = 0;
     for (int run = 0; run <= runs; ++run) {
         const Clock::time_point start = Clock::now();
         Batch::Record record;
-        ConvertDocument(input, output, document.password, options, markdown, record, false);
+        ConvertDocument(input, output, document.password, options, markdown, record, false, &inputBuffer);
         if (record.code != kExitOk) {
             PrintError(record.error);
             return record.code;
@@ -673,11 +676,13 @@ void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOp
     record.milliseconds = MillisecondsSince(start);
 }
 
-// glibc's allocator for a run of documents (--batch): blocks of up to 32 MiB from the heap rather
-// than each from a mapping of its own, and freed memory at the heap's top kept up to 256 MiB
-// rather than given back to the kernel after each document, so that the next document does not
-// map and fault the same pages in again (odl: 30 % fewer page faults; scanned pages with images
-// written: 71 % less system time). Peak memory stays that of the largest document.
+// glibc's allocator for a run of documents (--batch, and --bench, which measures what a batch
+// worker does): blocks of up to 32 MiB from the heap rather than each from a mapping of its own,
+// and freed memory at the heap's top kept up to 256 MiB rather than given back to the kernel
+// after each document, so that the next document does not map and fault the same pages in again
+// (odl: 30 % fewer page faults; scanned pages with images written: 71 % less system time). Peak
+// memory stays that of the largest document. Not for --serve: over 1,000 documents its time was
+// the same within noise and the process held 705 MiB rather than 525 MiB at the end.
 void SetBatchAllocator() {
 #if defined(__GLIBC__)
     mallopt(M_MMAP_THRESHOLD, 32 << 20);
@@ -1031,7 +1036,9 @@ int main(int argc, char** argv) {
             if (!json) return Usage("--serve needs --json");
             if (report) return Usage("--serve --json takes no --report: its answers are the records");
             return RunServe(document, batch.workersGiven ? batch.workers : 1);
-        case Mode::Bench: return Bench(input, output, benchCount, document);
+        case Mode::Bench:
+            SetBatchAllocator();
+            return Bench(input, output, benchCount, document);
         case Mode::None: break;
     }
     return Usage("nothing to do: give --convert, --batch, --serve --json or --inspect");
