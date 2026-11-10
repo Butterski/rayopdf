@@ -83,6 +83,10 @@ public:
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
+    // A heading in small capitals (Block::smallCaps) as one Markdown line in the source's case:
+    // its small capitals written as lower-case letters. False (nothing written) when a glyph of
+    // it may be math in LaTeX mode: Inline writes it then.
+    bool SmallCaps(const Block& block);
     // A fenced code block; `prefix` starts every line (block quotes).
     void Code(const Block& block, const std::string& prefix);
     // A display formula's block (one kLineFormula line) as $$…$$ LaTeX; false (nothing written)
@@ -766,6 +770,69 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
     return true;
 }
 
+bool Writer::SmallCaps(const Block& block) {
+    other_.clear();
+    const uint32_t blockEnd = block.first + block.count;
+    bool joinNext = false;
+    for (uint32_t bl = block.first; bl < blockEnd; ++bl) {
+        const BlockLine& ref = lines_[bl];
+        const PageData& page = pages_[ref.page];
+        const Line& line = page.lines[ref.line];
+        size_t wordAt = other_.size();
+        for (uint32_t k = ref.skip; k < line.count; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            std::string_view text = page.GlyphText(g);
+            if (math_ == MathMode::Latex) {
+                const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
+                if (MayBeFormula(font, g.flags, text)) return false;
+            }
+            // A soft hyphen shows only at a line's end, as a hyphen.
+            if (text == "\xC2\xAD") {
+                if (k + 1 < line.count) continue;
+                text = "-";
+            }
+            if (k == ref.skip ? (!joinNext && !other_.empty()) : (g.flags & kGlyphSpaceBefore) != 0) {
+                other_.push_back(' ');
+                wordAt = other_.size();
+            }
+            const size_t at = other_.size();
+            other_.append(text.data(), text.size());
+            if (g.size >= block.smallCaps) continue;
+            // ASCII and Latin-1 capitals to their lower-case letters (U+00C0-00DE but U+00D7).
+            for (size_t i = at; i < other_.size(); ++i) {
+                const unsigned char c = static_cast<unsigned char>(other_[i]);
+                if (c >= 'A' && c <= 'Z') {
+                    other_[i] = static_cast<char>(c + 0x20);
+                } else if (c == 0xC3 && i + 1 < other_.size()) {
+                    const unsigned char d = static_cast<unsigned char>(other_[i + 1]);
+                    if (d >= 0x80 && d <= 0x9E && d != 0x97) other_[i + 1] = static_cast<char>(d + 0x20);
+                    ++i;
+                }
+            }
+        }
+        // Dehyphenation, as InlinePlain does it: a word of two letters or more broken at a hyphen
+        // goes on in a lower-case letter, here a small capital.
+        joinNext = false;
+        if (bl + 1 >= blockEnd || other_.size() < wordAt + 3 || other_.back() != '-') continue;
+        const unsigned char before = static_cast<unsigned char>(other_[other_.size() - 2]);
+        const BlockLine& nextRef = lines_[bl + 1];
+        const PageData& nextPage = pages_[nextRef.page];
+        const Line& nextLine = nextPage.lines[nextRef.line];
+        if (nextRef.skip >= nextLine.count) continue;
+        const Glyph& next = nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]];
+        const std::string_view nextText = nextPage.GlyphText(next);
+        const bool letterBefore = (before >= 'a' && before <= 'z') || (before >= 'A' && before <= 'Z') || before >= 0x80;
+        const bool lowerNext = next.size < block.smallCaps && !nextText.empty() &&
+                               ((nextText[0] >= 'A' && nextText[0] <= 'Z') || nextText[0] == '\xC3');
+        if (!letterBefore || !lowerNext) continue;
+        other_.pop_back();
+        joinNext = true;
+    }
+    while (!other_.empty() && other_.back() == ' ') other_.pop_back();
+    AppendEscaped(other_, false);
+    return true;
+}
+
 void Writer::Inline(const Block& block, bool styles) {
     if (math_ == MathMode::Latex ? InlinePlain<true>(block, styles) : InlinePlain<false>(block, styles)) return;
     CollectWords(block);
@@ -1157,6 +1224,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             out += prefix;
             out.append(std::max<int>(1, std::min<int>(6, block.level)), '#');
             out.push_back(' ');
+            if (block.smallCaps > 0 && writer.SmallCaps(block)) break;
             writer.Inline(block, false);
             break;
         case BlockKind::Paragraph: {

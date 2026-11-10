@@ -532,6 +532,41 @@ struct RawBlock {
     uint32_t note = 0;  // a footnote's lines
 };
 
+// Small capitals (§6.1): a block whose letters are all capitals in two sizes on one baseline, the
+// larger where the source has a capital and the smaller where it has a lower-case letter (a
+// font's small capitals made by scaling its capitals, as LaTeX's Times and word processors do).
+// Returns the size below which its capitals are lower-case letters; 0 when it is not set so: a
+// lower-case letter, a script or an image in it, fewer than three small capitals, small capitals
+// of several sizes, or of less than 60 % or more than 92 % of the large ones.
+float SmallCapsSize(const std::vector<PageData>& pages, const std::vector<Info>& infos, const RawBlock& b) {
+    float large = 0, smallMin = INFINITY, smallMax = 0;
+    uint32_t smalls = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+            const PageData& page = pages[infos[i].page];
+            const Line& line = page.lines[infos[i].line];
+            for (uint32_t k = 0; k < line.count; ++k) {
+                const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+                const std::string_view t = page.GlyphText(g);
+                const uint32_t cp = FirstCodePoint(t);
+                const bool capital = (cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7);
+                if (pass == 0) {
+                    if (IsLower(cp) || (g.flags & kGlyphImage) || IsSuperscript(g, line) || IsSubscript(g, line)) return 0;
+                    for (const char c : t)
+                        if (c >= 'a' && c <= 'z') return 0;
+                    if (capital) large = Fmax(large, g.size);
+                } else if (capital && g.size <= 0.92f * large) {
+                    if (std::fabs(g.v - line.baseline) > 0.05f * large) return 0;
+                    smallMin = Fmin(smallMin, g.size), smallMax = Fmax(smallMax, g.size);
+                    smalls++;
+                }
+            }
+        }
+    }
+    if (smalls < 3 || smallMax > 1.03f * smallMin || smallMin < 0.6f * large) return 0;
+    return 0.5f * (smallMax + large);
+}
+
 // `monoDocument`: the document is set in a monospace font, whose lines are prose, not code.
 bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next, bool monoDocument) {
     if (next.page != last.page || next.dir != last.dir) return false;
@@ -1702,6 +1737,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             block.first = static_cast<uint32_t>(lines.size());
             block.count = b.count;
             block.size = first.size;
+            if (block.kind == BlockKind::Heading) block.smallCaps = SmallCapsSize(pages, infos, b);
             for (uint32_t i = b.first; i < b.first + b.count; ++i) {
                 BlockLine bl;
                 bl.page = infos[i].page;

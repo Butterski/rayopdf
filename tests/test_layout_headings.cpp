@@ -104,10 +104,44 @@ void TestTitleAboveOutline() {
     RAYOPDF_CHECK(Contains(md, "## Overview\n") && Contains(md, "\n## Install\n") && Contains(md, "\n## Usage\n"), 1803);
 }
 
+// Text set in small capitals made by scaling: a lower-case letter of `text` as its capital in
+// `small` points, everything else in `large` points. Returns the x after the text.
+float AddSmallCaps(PageData& page, std::string_view text, float x, float y, float large, float small,
+                   uint16_t flags = 0) {
+    for (const char c : text) {
+        const bool lower = c >= 'a' && c <= 'z';
+        const char upper = lower ? static_cast<char>(c - 0x20) : c;
+        x = AddText(page, std::string_view(&upper, 1), x, y, lower ? small : large, flags);
+    }
+    return x;
+}
+
+void TestSmallCapitals() {
+    // Sections in small capitals (capitals of two sizes on one baseline, the small ones in the
+    // body's size or below): written in the source's case. The outline names them.
+    std::vector<PageData> paper{NewPage(1)};
+    AddSmallCaps(paper[0], "A Title In Small Capitals With A Bro-", 100, 740, 20, 16);
+    AddSmallCaps(paper[0], "ken Word And CNN Layers", 150, 716, 20, 16);
+    AddSmallCaps(paper[0], "I. Introduction", 72, 680, 10, 8);
+    AddBody(paper[0], 660, 3);
+    AddSmallCaps(paper[0], "II. Related Work on Headings", 72, 600, 10, 8);
+    AddBody(paper[0], 580, 3);
+    AddText(paper[0], "III. RESULTS", 72, 520, 10);
+    AddBody(paper[0], 500, 3);
+    const std::vector<OutlineEntry> outline{{"Introduction", 1}, {"Related Work on Headings", 1}, {"Results", 1}};
+    const std::string md = Run(paper, outline);
+    Show("small capitals", md);
+    RAYOPDF_CHECK(Contains(md, "# A Title In Small Capitals With A Broken Word And CNN Layers\n"), 1804);
+    RAYOPDF_CHECK(Contains(md, "\n## I. Introduction\n") && Contains(md, "\n## II. Related Work on Headings\n"), 1805);
+    // Capitals of one size are the text's own case.
+    RAYOPDF_CHECK(Contains(md, "\n## III. RESULTS\n"), 1806);
+}
+
 } // namespace
 
 int main() {
     TestTitleAboveOutline();
+    TestSmallCapitals();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

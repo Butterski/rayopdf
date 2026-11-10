@@ -60,6 +60,9 @@ struct Block {
     uint32_t first = 0;     // lines: BlockLine[first, first + count)
     uint32_t count = 0;
     float size = 0;         // the size of most of its characters
+    // Headings set in small capitals (capitals of two sizes): its capitals below this size stand
+    // for lower-case letters and are written so; 0 otherwise.
+    float smallCaps = 0;
 };
 
 // A footnote reference: superscript glyphs [glyph, glyph + count) of a line in page `page`'s
