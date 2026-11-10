@@ -15,7 +15,8 @@ Usage:
 
 Seeds: the PDFs of the development suites (synthetic corpus without the weasyprint holdout, odl)
 and the first 300 PDFs of the SafeDocs sample, each at most 2 MB, for the targets that read whole
-PDFs (fuzz_pdf_document, fuzz_layout_document); the other targets start from their own inputs.
+PDFs (fuzz_pdf_document, fuzz_layout_document, fuzz_layout_pages); the other targets start from
+their own inputs.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ CORPUS = REPO / "build" / "fuzz-corpus"
 ARTIFACTS = REPO / "build" / "fuzz-artifacts"
 REGRESSIONS = REPO / "tests" / "fuzz" / "regressions"
 EVAL = REPO / "benchmark-output" / "eval"
-PDF_TARGETS = ("fuzz_pdf_document", "fuzz_layout_document")
+PDF_TARGETS = ("fuzz_pdf_document", "fuzz_layout_document", "fuzz_layout_pages")
 DEFAULT_CPUS = "0,1,2,4,6,7,8,10"
 SEED_LIMIT = 2 << 20
 
