@@ -9,6 +9,7 @@
 
 #include "common/file.h"
 #include "common/utf8.h"
+#include "layout/figures.h"
 #include "layout/interpreter.h"
 #include "layout/lines.h"
 #include "layout/page.h"
@@ -241,6 +242,60 @@ void TestBorderless() {
     Show("borderless", md);
     RAYOPDF_CHECK(report.tables == 1, 562);
     RAYOPDF_CHECK(Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 563);
+}
+
+// The labels of a plot stand in rows and columns like a borderless table. Over a drawing (curves
+// of many segments, tick marks) they are the figure's text: a figure region, no table, the text
+// kept. The same rows inside frames (a box with rounded corners around them, a shading under each
+// row) are a table: a box that holds text is no drawing.
+void TestFigureText() {
+    const auto build = [](bool plot) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        float y = AddProse(page, 72, 450, 740, 3) - 10;
+        const float top = y + 10;
+        const char* const names[] = {"Austria", "Belgium", "Croatia", "Denmark", "Estonia"};
+        for (int r = 0; r < 5; ++r) {
+            y -= 14;
+            AddText(page, names[r], 72, y);
+            AddText(page, std::to_string(1200 + 37 * r), 250, y);
+            AddText(page, std::to_string(1300 + 29 * r), 330, y);
+            AddText(page, std::to_string(r + 2) + ".1%", 410, y);
+            if (!plot) {
+                Shape shade;
+                shade.x0 = 70, shade.x1 = 452, shade.y0 = y - 3, shade.y1 = y + 10;
+                shade.kind = ShapeKind::Rect, shade.filled = true, shade.segments = 4;
+                page.shapes.push_back(shade);
+            }
+        }
+        // A curve across the labels (its box holds them), or a box with rounded corners around them.
+        Shape s;
+        s.x0 = 66, s.x1 = 456, s.y0 = y - 12, s.y1 = top;
+        s.kind = ShapeKind::Other, s.stroked = true, s.curved = true;
+        s.segments = plot ? 40 : 8;
+        page.shapes.push_back(s);
+        // Ten ticks along the lower edge.
+        for (int k = 0; k < 10 && plot; ++k) {
+            Shape tick;
+            tick.x0 = tick.x1 = 70 + 40.0f * float(k), tick.y0 = y - 10, tick.y1 = y - 7;
+            tick.kind = ShapeKind::Line, tick.stroked = true, tick.segments = 1;
+            page.shapes.push_back(tick);
+        }
+        AddProse(page, 72, 450, y - 30, 3);
+        return pages;
+    };
+    std::vector<PageData> plot = build(true), framed = build(false);
+    std::vector<FigureRegion> regions;
+    FigureRegions(plot[0], regions);
+    RAYOPDF_CHECK(regions.size() == 1 && regions[0].x0 <= 70 && regions[0].x1 >= 430, 866);
+    FigureRegions(framed[0], regions);
+    RAYOPDF_CHECK(regions.empty(), 867);
+    ConvertReport report;
+    std::string md = Run(plot, &report);
+    Show("figure text", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "Austria") && Contains(md, "1348"), 868);
+    md = Run(framed, &report);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 869);
 }
 
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
@@ -958,6 +1013,17 @@ int Dump(const char* path, int only) {
             for (const Ruling& r : page.rulings)
                 std::printf("  R %.1f,%.1f %.1f,%.1f %s%s\n", r.x0, r.y0, r.x1, r.y1, r.flags & kRulingStroke ? "S" : "",
                             r.flags & kRulingFill ? "F" : "");
+        if (std::getenv("RAYOPDF_DUMP_SHAPES")) {
+            for (const Shape& s : page.shapes)
+                std::printf("  S %.1f,%.1f %.1f,%.1f k=%d %s%s%s n=%d\n", s.x0, s.y0, s.x1, s.y1, int(s.kind), s.filled ? "F" : "",
+                            s.stroked ? "S" : "", s.curved ? "C" : "", int(s.segments));
+            for (const ImageBox& im : page.images) std::printf("  I %.1f,%.1f %.1f,%.1f\n", im.x0, im.y0, im.x1, im.y1);
+        }
+        if (std::getenv("RAYOPDF_DUMP_FIGURES")) {
+            std::vector<FigureRegion> regions;
+            FigureRegions(page, regions);
+            for (const FigureRegion& f : regions) std::printf("  FIG %.1f,%.1f %.1f,%.1f\n", f.x0, f.y0, f.x1, f.y1);
+        }
         if (std::getenv("RAYOPDF_DUMP_LINES"))
             for (const Line& l : page.lines) {
                 LineText(page, l, text);
@@ -1046,6 +1112,7 @@ int main(int argc, char** argv) {
     TestBooktabs();
     TestHeaderRule();
     TestBorderless();
+    TestFigureText();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();

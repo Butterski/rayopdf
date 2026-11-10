@@ -3,6 +3,7 @@
 
 #include "common/minmax.h"
 #include "common/per_thread.h"
+#include "layout/figures.h"
 #include "layout/lines.h"
 #include "layout/word_box.h"
 
@@ -500,6 +501,8 @@ private:
     void WordColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                      const std::vector<Gap>& gaps, std::vector<int>& out) const;
     bool MathWord(const TWord& w) const;
+    bool FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                    float em);
 
     PageData& page_;
     TableContinuation& continuation_;  // in: from the previous page; out: for the next (upright only)
@@ -521,6 +524,8 @@ private:
     float bodySize_ = 10;
     float wordSpace_ = 0.3f;  // the page's median space between words of a line, in ems
     int restored_ = 0;
+    std::vector<Ruling> figures_;  // the page's figure regions in this frame, once figuresKnown_
+    bool figuresKnown_ = false;
 };
 
 void Detector::CollectWords() {
@@ -728,6 +733,34 @@ bool Detector::MathWord(const TWord& w) const {
         math = true;
     }
     return math;
+}
+
+// Rows that are a figure's own text: most of their words stand in a figure region or within two
+// ems of it (tick labels along an axis, a legend, the labels of a diagram).
+bool Detector::FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                          size_t rowEnd, float em) {
+    if (!figuresKnown_) {
+        figuresKnown_ = true;
+        std::vector<FigureRegion> regions;
+        FigureRegions(page_, regions);
+        for (const FigureRegion& r : regions) figures_.push_back(ToFrame(Ruling{r.x0, r.y0, r.x1, r.y1, 0}, dir_));
+    }
+    if (figures_.empty()) return false;
+    const float reach = 2 * em;
+    size_t inside = 0, all = 0;
+    for (size_t r = rowBegin; r < rowEnd; ++r) {
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+            all++;
+            for (const Ruling& f : figures_)
+                if (cx >= f.x0 - reach && cx <= f.x1 + reach && cy >= f.y0 - reach && cy <= f.y1 + reach) {
+                    inside++;
+                    break;
+                }
+        }
+    }
+    return 5 * inside >= 3 * all;
 }
 
 bool Detector::Free(float x0, float y0, float x1, float y1) const {
@@ -2074,7 +2107,8 @@ void Detector::RuleStacks() {
             // A single rule closes nothing: its table needs three rows at least.
             if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&
                 multiCell() && !code() &&
-                !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps)) {
+                !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps) &&
+                !FigureText(rows, rowWords, begin, end, em)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
                 // above it when they are few and rows follow below it.
                 uint16_t header = 0;
@@ -2396,7 +2430,8 @@ void Detector::Borderless(float gapFactor) {
             }
         }
         const float y0 = rows[e - 1].bottom, y1 = rows[first].top;
-        if (high && Free(xa, y0, xb, y1)) TextGrid(rows, rowWords, first, e, gaps, TableKind::Borderless, 0, xa, xb);
+        if (high && Free(xa, y0, xb, y1) && !FigureText(rows, rowWords, first, e, TextSize(rows[first])))
+            TextGrid(rows, rowWords, first, e, gaps, TableKind::Borderless, 0, xa, xb);
         clearLabels();
         // A header row without numbers whose labels, centred over narrow columns of figures, fill
         // the gaps between them sets the columns wrong: the body is tried again without it.
