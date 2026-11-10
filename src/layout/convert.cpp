@@ -99,28 +99,50 @@ bool InterpretShared(const Document& document, Text::FontCache& fonts, bool link
     return true;
 }
 
-// The pages of `document` to Markdown (D4 steps 2-8).
-void ConvertDocument(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report) {
+// What one conversion holds from its first stage to its last, in the order it is made (the
+// pool's threads end before the pages they read go).
+struct Conversion {
+    explicit Conversion(const Document& document) : fonts(document) {}
+
+    std::vector<PageData> pages;
+    std::vector<PageTextQuality> quality;
+    std::unique_ptr<PagePool> pool;  // one document's threads, from the first page-local phase to the last
+    Text::FontCache fonts;
+    std::vector<OutlineEntry> outline;
+    Structure structure;
+};
+
+// The end of a conversion. A process that converts this document only is about to end
+// (ConvertOptions::oneShot): the conversion is not taken apart. Its threads stay waiting and its
+// pages, fonts and structure allocated until the kernel takes the address space back whole.
+void Finish(std::unique_ptr<Conversion>& conversion, const ConvertOptions& options) {
+    if (options.oneShot) (void)conversion.release();
+}
+
+// The pages of `document` to Markdown (D4 steps 2-8); what it held is the caller's to end.
+std::unique_ptr<Conversion> ConvertDocument(const Document& document, const ConvertOptions& options, std::string& markdown,
+                                            ConvertReport& report) {
     markdown.clear();
     report = ConvertReport();
     const int count = document.PageCount();
     const int first = std::max(1, options.firstPage);
     const int last = options.lastPage <= 0 ? count : std::min(count, options.lastPage);
-    std::vector<PageData> pages;
-    std::vector<PageTextQuality> quality;
+    std::unique_ptr<Conversion> conversion(new Conversion(document));
+    std::vector<PageData>& pages = conversion->pages;
+    std::vector<PageTextQuality>& quality = conversion->quality;
+    std::unique_ptr<PagePool>& pool = conversion->pool;
+    Text::FontCache& fonts = conversion->fonts;
     if (first <= last) {
         pages.resize(static_cast<size_t>(last - first + 1));
         quality.resize(pages.size());
     }
     const unsigned workers = PageWorkers(options.pageWorkers, pages.size());
-    std::unique_ptr<PagePool> pool;  // one document's threads, from the first page-local phase to the last
     if (workers > 1) {
         pool.reset(new PagePool(workers));
         // A count that was asked for starts its threads at once; the automatic count starts them
         // by the content read (ThreadStart).
         if (options.pageWorkers != 0) pool->Start(workers - 1);
     }
-    Text::FontCache fonts(document);
     if (!pool || !InterpretShared(document, fonts, options.annotations, first - 1, pages, quality, report, *pool)) {
         for (int index = first - 1; index < last; ++index) {
             const size_t slot = static_cast<size_t>(index - (first - 1));
@@ -133,16 +155,17 @@ void ConvertDocument(const Document& document, const ConvertOptions& options, st
     if (options.oneShot) Document::ReleasePageContent();
     report.pages = static_cast<int>(pages.size());
     RecognisePages(document, fonts, options.ocr, pages, quality, report, !options.imageDirectory.empty());
-    std::vector<OutlineEntry> outline;
+    std::vector<OutlineEntry>& outline = conversion->outline;
     ReadOutline(document, outline);
     ImageOutput images;
     images.document = &document;
     images.directory = options.imageDirectory;
     images.linkPrefix = options.imageLinkPrefix;
-    Structure structure;
+    Structure& structure = conversion->structure;
     if (options.structure && first <= last) ReadStructure(document, first - 1, last - 1, structure);
     ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure, options.math,
                  pool.get());
+    return conversion;
 }
 
 } // namespace
@@ -162,21 +185,24 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         check.imageLinkPrefix.clear();
         check.ocr.mode = OcrMode::Off;
         check.math = MathMode::Unicode;
-        ConvertDocument(document, check, markdown, report);
+        std::unique_ptr<Conversion> checked = ConvertDocument(document, check, markdown, report);
         ExactMatch match;
         if (SourceMatchesPages(source, markdown, match)) {
             markdown.assign(source.data(), source.size());
             report.exact = ExactUse::Used;
+            Finish(checked, options);
             return;
         }
         use = ExactUse::Mismatch;
         if (options.imageDirectory.empty() && options.ocr.mode == OcrMode::Off && options.math == MathMode::Unicode) {
             report.exact = use;
+            Finish(checked, options);
             return;
         }
     }
-    ConvertDocument(document, options, markdown, report);
+    std::unique_ptr<Conversion> conversion = ConvertDocument(document, options, markdown, report);
     report.exact = use;
+    Finish(conversion, options);
 }
 
 } // namespace RayoPdf::Layout

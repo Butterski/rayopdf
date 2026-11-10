@@ -40,8 +40,11 @@ struct ConvertOptions {
     // worth a thread (a document of small pages starts none). The output is the same for every
     // count; 1 (and any document of one page) runs everything on the calling thread.
     unsigned pageWorkers = 1;
-    // The process converts this document only (--convert): buffers kept for later documents are
-    // freed once read, so that later stages reuse their memory instead of touching new pages.
+    // The process converts this document only and ends when Convert has returned and the Markdown
+    // is written (--convert): buffers kept for later documents are freed once read, so that later
+    // stages reuse their memory instead of touching new pages; and what the conversion held when
+    // it ended (its pages, fonts and structure, and its page threads, left waiting) is not freed
+    // or joined, which the end of the process does at once.
     bool oneShot = false;
 };
 
