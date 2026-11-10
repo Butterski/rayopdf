@@ -1589,20 +1589,60 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 last = levelOf[r];
         }
     }
+    // The title of a document whose outline starts at its sections (LaTeX's bookmarks name the
+    // sections, never the title): the first heading, on the first page, above every heading the
+    // outline matched, set no smaller than any of them, in a style none of them has (in their
+    // style it is one of them, its bookmark written another way) and no front-matter word
+    // ("Abstract"). It sits alone on the top level, with the title lines of its style right
+    // after it; every other heading goes one level down.
+    bool documentTitle = false;
+    {
+        const auto style = [](const Classified& k) {
+            return static_cast<int>(std::lround(k.size * 2)) * 2 + (k.bold ? 1 : 0);
+        };
+        size_t matched = raws.size(), first = raws.size();
+        float matchedSize = 0;
+        bool ownStyle = true;
+        for (size_t r = 0; r < raws.size(); ++r) {
+            if (kinds[r].kind != BlockKind::Heading || levelOf[r] <= 0) continue;
+            if (kinds[r].level > 0) {
+                if (matched == raws.size()) matched = r;
+                matchedSize = Fmax(matchedSize, kinds[r].size);
+                ownStyle = ownStyle && (first == raws.size() || style(kinds[r]) != style(kinds[first]));
+            } else if (first == raws.size() && matched == raws.size()) {
+                first = r;
+            }
+        }
+        if (first < matched && matched < raws.size() && !kinds[first].runIn && ownStyle &&
+            infos[raws[first].first].page == infos[raws[0].first].page && kinds[first].size >= matchedSize - 0.25f) {
+            const Info& in = infos[raws[first].first];
+            LineText(pages[in.page], pages[in.page].lines[in.line], line);
+            if (!FrontMatter(line)) {
+                documentTitle = true;
+                size_t end = first + 1;
+                while (end < matched && kinds[end].kind == BlockKind::Heading && levelOf[end] > 0 &&
+                       kinds[first].styleKey >= 0 && kinds[end].styleKey == kinds[first].styleKey)
+                    ++end;
+                for (size_t r = 0; r < raws.size(); ++r)
+                    if (levelOf[r] > 0) levelOf[r] = r >= first && r < end ? 1 : levelOf[r] + 1;
+            }
+        }
+    }
     // Never skip a level: the levels in use renumbered 1..n. Then the top level is made absolute:
-    // it is a title (H1) when set clearly larger than the body, or when it is used once or twice
-    // above deeper levels and still set well above the body (LaTeX at 11 pt sets \section at 1.31
-    // times the body); it is the sections of a title-less document (H2) when smaller, or when one
-    // style alone heads several sections (Markdown documents carry one H1). The outline gives
-    // depths, not levels: a title-less document's sections are its top bookmarks too.
+    // it is a title (H1) when it is the document's title above its outline, when set clearly
+    // larger than the body, or when it is used once or twice above deeper levels and still set
+    // well above the body (LaTeX at 11 pt sets \section at 1.31 times the body); it is the
+    // sections of a title-less document (H2) when smaller, or when one style alone heads several
+    // sections (Markdown documents carry one H1). The outline gives depths, not levels: a
+    // title-less document's sections are its top bookmarks too.
     {
         bool used[8] = {};
         for (size_t r = 0; r < raws.size(); ++r)
             if (levelOf[r] > 0) used[levelOf[r]] = true;
         int map[8] = {};
         int next = 0;
-        for (int l = 1; l <= 6; ++l)
-            if (used[l]) map[l] = ++next;
+        for (int l = 1; l <= 7; ++l)
+            if (used[l]) map[l] = std::min(++next, 6);
         float topSize = 0;
         int topCount = 0;
         for (size_t r = 0; r < raws.size(); ++r) {
@@ -1610,7 +1650,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             levelOf[r] = map[levelOf[r]];
             if (levelOf[r] == 1) topSize = Fmax(topSize, kinds[r].size), topCount++;
         }
-        const bool title = next >= 2 && topCount <= 2 && topSize >= kSmallTitleSize * body;
+        const bool title = documentTitle || (next >= 2 && topCount <= 2 && topSize >= kSmallTitleSize * body);
         const bool sections =
             topCount > 0 && !title && (topSize < kTitleSize * body || (next == 1 && topCount >= 2));
         if (sections)
