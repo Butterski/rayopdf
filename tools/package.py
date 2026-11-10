@@ -4,7 +4,9 @@
 
 The layout mirrors RayoMD's releases: one archive per platform, holding one folder of the
 archive's name with the binary, README.md (the user part of the repository's README: status,
-usage and licence, with links made absolute), LICENSE, NOTICE, VERSION and third_party/licenses/.
+usage and licence, with links made absolute), LICENSE, NOTICE, VERSION and, under
+third_party/licenses/, the licences of what that archive holds (LICENSES: the core's data tables
+in the core archives, ncnn and the models in the add-on's, the script pack's models in its own).
 Every entry has the same fixed time (SOURCE_DATE_EPOCH, else the time of the HEAD commit), owner
 0 and fixed permissions, and the entries are sorted, so the same binaries give the same bytes.
 SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
@@ -16,8 +18,8 @@ With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well.
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
 the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
 tier and the tiny first pass, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a
-models.txt listing just those), rayopdf-ocr-models/orient/ (the text-line orientation classifier)
-and the same documents:
+models.txt listing just those), rayopdf-ocr-models/orient/ (the text-line orientation classifier),
+the same documents and the add-on's licences:
 
   rayopdf-ocr-VERSION-linux-x64-static.tar.gz   build/ocr/addon/rayopdf-ocr (static-pie)
   rayopdf-ocr-VERSION-windows-x64.zip           build/ocr-windows/addon/rayopdf-ocr.exe
@@ -103,14 +105,29 @@ def readme_excerpt(version: str, repository: str) -> bytes:
     return (body.rstrip("\n") + "\n" + note).encode("utf-8")
 
 
-def documents(version: str, repository: str) -> list[tuple[str, bytes, int]]:
-    """(name in the folder, bytes, mode) of everything beside the binary."""
+# third_party/licenses/ by the archive that holds the licensed material (NOTICE names each):
+# rayopdf carries the data tables generated into src/text and src/layout; rayopdf-ocr links ncnn
+# and none of those tables, and ships the PP-OCRv6 tiers and the orientation classifier; the
+# script pack holds PaddleOCR recognisers only.
+LICENSES = {
+    "core": ("agl-aglfn.txt", "cmap-resources.txt", "katex.txt", "unicode.txt"),
+    "ocr": ("ncnn.txt", "paddleocr-scripts.txt", "pp-ocrv6.txt"),
+    "ocr-scripts": ("paddleocr-scripts.txt",),
+}
+
+
+def documents(version: str, repository: str, part: str) -> list[tuple[str, bytes, int]]:
+    """(name in the folder, bytes, mode) of everything beside the binary and the models of an archive
+    of `part` (a key of LICENSES)."""
+    folder = REPO / "third_party" / "licenses"
+    unassigned = {p.name for p in folder.iterdir() if p.is_file()} - {n for names in LICENSES.values() for n in names}
+    if unassigned:
+        raise SystemExit(f"package: {sorted(unassigned)} under third_party/licenses/ belong to no archive (LICENSES)")
     files = [("README.md", readme_excerpt(version, repository), 0o644)]
     for name in ("LICENSE", "NOTICE", "VERSION"):
         files.append((name, (REPO / name).read_bytes(), 0o644))
-    for path in sorted((REPO / "third_party" / "licenses").iterdir()):
-        if path.is_file():
-            files.append((f"third_party/licenses/{path.name}", path.read_bytes(), 0o644))
+    for name in LICENSES[part]:
+        files.append((f"third_party/licenses/{name}", (folder / name).read_bytes(), 0o644))
     return files
 
 
@@ -272,7 +289,7 @@ def main() -> int:
 
     version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
     mtime = fixed_time()
-    docs = documents(version, args.repository.rstrip("/"))
+    docs = {part: documents(version, args.repository.rstrip("/"), part) for part in LICENSES}
     out = (REPO / args.out) if not Path(args.out).is_absolute() else Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     made = []
@@ -280,13 +297,13 @@ def main() -> int:
         binary = REPO / args.linux if not Path(args.linux).is_absolute() else Path(args.linux)
         check_linux(binary, version)
         name = f"rayopdf-{version}-linux-x64-static"
-        tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs, mtime)
+        tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs["core"], mtime)
         made.append(out / f"{name}.tar.gz")
     if args.only in (None, "windows"):
         binary = REPO / args.windows if not Path(args.windows).is_absolute() else Path(args.windows)
         check_windows(binary)
         name = f"rayopdf-{version}-windows-x64"
-        zip_archive(out / f"{name}.zip", name, [("rayopdf.exe", binary.read_bytes(), 0o755)] + docs, mtime)
+        zip_archive(out / f"{name}.zip", name, [("rayopdf.exe", binary.read_bytes(), 0o755)] + docs["core"], mtime)
         made.append(out / f"{name}.zip")
     ocr = {"ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"}
     wanted = ocr if args.ocr and args.only is None else {args.only}
@@ -301,22 +318,22 @@ def main() -> int:
         check_linux(binary, version, "rayopdf-ocr")
         name = f"rayopdf-{version}-linux-x64-static"
         tar_gz(out / f"rayopdf-ocr-{version}-linux-x64-static.tar.gz", name,
-               [("rayopdf-ocr", binary.read_bytes(), 0o755)] + models + docs, mtime)
+               [("rayopdf-ocr", binary.read_bytes(), 0o755)] + models + docs["ocr"], mtime)
         made.append(out / f"rayopdf-ocr-{version}-linux-x64-static.tar.gz")
     if "ocr-windows" in wanted:
         binary = REPO / args.ocr_windows if not Path(args.ocr_windows).is_absolute() else Path(args.ocr_windows)
         check_windows(binary)
         name = f"rayopdf-{version}-windows-x64"
         zip_archive(out / f"rayopdf-ocr-{version}-windows-x64.zip", name,
-                    [("rayopdf-ocr.exe", binary.read_bytes(), 0o755)] + models + docs, mtime)
+                    [("rayopdf-ocr.exe", binary.read_bytes(), 0o755)] + models + docs["ocr"], mtime)
         made.append(out / f"rayopdf-ocr-{version}-windows-x64.zip")
     if "ocr-scripts-linux" in wanted:
         tar_gz(out / f"rayopdf-ocr-scripts-{version}-linux-x64-static.tar.gz", f"rayopdf-{version}-linux-x64-static",
-               scripts + docs, mtime)
+               scripts + docs["ocr-scripts"], mtime)
         made.append(out / f"rayopdf-ocr-scripts-{version}-linux-x64-static.tar.gz")
     if "ocr-scripts-windows" in wanted:
         zip_archive(out / f"rayopdf-ocr-scripts-{version}-windows-x64.zip", f"rayopdf-{version}-windows-x64",
-                    scripts + docs, mtime)
+                    scripts + docs["ocr-scripts"], mtime)
         made.append(out / f"rayopdf-ocr-scripts-{version}-windows-x64.zip")
 
     # SHA256SUMS covers every archive of this version in the folder, also one packaged earlier.
