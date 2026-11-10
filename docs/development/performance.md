@@ -339,27 +339,490 @@ Every development and scanned JPX image decodes to the same components as before
   ToUnicode maps shared between fonts (581 of 583 streams distinct); sharing words between the
   table detector and the writer (they build different words).
 
+## Fourth round: research first, then ten areas at once (2026-11-09)
+
+Base `163408f` (0.0.11; snapshots `p4-base`, `p4-base-static`). The round started from three
+research notes: how RayoMD got its speed and which of its techniques transfer, how the fast PDF
+engines and parsers work ([speed.md](../research/speed.md)), and a profile of 0.0.11 with a cost
+model per stage, the page faults of a fresh process by source, and build experiments. Ten areas
+were then worked on at once, each in its own worktree, each step gated on its own: G-warm (no
+fixture more than +0.3 % instructions), G-bytes quick (synthetic and odl: 997 comparisons), and
+before an area's last landing G-bytes full (6,331 comparisons) and ten minutes of fuzzing for every
+changed parser of untrusted input. A landing script took one lock for all areas: rebase onto
+master, static and release builds without warnings, the core tests, G-bytes quick against the
+round's base, push. CPU 3 was kept for timing; the gates ran on instruction counts on the other
+CPUs.
+
+|Finding (base `p4-base`)|Number|
+|---|---|
+|odl in one batch, user instructions|1,103 M: InterpretPage 58.8 % (content lexer 17.5 %, ShowString 13.8 %, font loading 9.5 %, Inflate 12.8 % over all callers), BuildLines with FoldDuplicates 17.7 %, DetectTables 7.7 %, WriteMarkdown 7.2 %, BuildBlocks 3.0 %|
+|one page of odl (141: 4.17 MB of path operators, 7 glyphs)|17.7 ms warm, 14.1 % of odl's time; 43 % lexer, 38 % Inflate|
+|font loading on SafeDocs, olmOCR `multi_column` and `tables`|18 % of instructions|
+|a fresh conversion of the median odl page (183)|136 faults against the empty program's 26: heap 75, program text and data 40, stack 9; a new heap page costs 1.62 µs, a file-backed fault (16 pages) 3.4 µs: about 0.25 ms of 1.16 ms CPU|
+|odl 192, fresh|111 faults in the growth of the page's glyph vector|
+|`--batch` over odl|15 % of cycles in the kernel: about 10 system calls a document, re-faulted heap|
+|SafeDocs sample|703 of 1,000 documents have two pages or more (16 pages a document on average); page-local stages are 75 to 90 % of a conversion's instructions|
+|scanned pages with images written|JPEG 2000 tier-1 51 % of cycles, 148 ms a 200-dpi page|
+|`--math=latex` on olmOCR `arxiv_math`|the writer 21 % of instructions|
+
+### Steps
+
+Instructions per conversion (callgrind) against the step before in the same area.
+
+|Commit|Change|Largest effects|
+|---|---|---|
+|`22d56e0`, `0b53bbc`, `9811be0`, `a0a6d70`|Content lexer: its loop inline in `RunStream`, numbers of up to 18 digits read without end checks up to the data's last delimiter, path operators and their points handled in the loop, a point batch per operator; numbers of TJ arrays read straight into their item; operators told from `true`/`false`/`null` by one class load; `q Q cm re`, painting and clipping operators in the loop, `Execute` out of line with a small frame|odl 141 -16.0 %, -1.3 %; odl 183 -1.8 %; lexer 23.5 -> 16.8 instructions a content byte on odl|
+|`8e0a17e`, `16840d1`, `2a9ee3a`|Glyphs: the page's glyph vector and text reserved from the content length; one placement per text operator instead of per string, simple-font codes decoded inline, records written in place into a vector grown once an operator, all strings of a TJ array in one loop, a fast path for horizontal runs with finite terms, the glyph box in SSE2 (scalar reference compared bit for bit, test 744-747); the adjustment test and box terms once a run|odl 192 -7.6 %, lo manual -7.1 %, 2col -5.5 %, xelatex book -5.3 %; ShowString 420 -> 266 instructions a glyph on odl; odl 192 fresh: 111 growth faults -> 0|
+|`c923a7e`|Page content decoded piece by piece into one per-thread buffer that grows by `realloc`; a Flate piece inflates straight into it|odl 141 -4.9 %, fresh faults 2,540 -> 1,398, peak RSS 9.9 -> 8.6 MiB|
+|`8af8551`|Inflate decode loop: a literal flag in the table entry, extra bits masked through a table, short distances without a division; the loop compiled a second time for BMI2 and chosen at run time (test 265 compares both)|DecodeCodes -16.4 % instructions a byte on text streams; odl 141 -5.7 %; BMI2 against the same loop without it: -2.2 % time over all odl streams, equal on text streams|
+|`685089d`|Objects: an array's `n g R` found at the `R`, digit tokens, names, arrays and dictionaries read by inline readers, escaped strings decoded through a pointer, hex strings a table load a byte|object parsing -30.7 % over odl; chromium images -6.3 %, lo manual -4.8 %, typst -3.9 %|
+|`fbe0346`, `fce601f`, `87af237`, `dd7f0eb`|Lines: duplicates found through exact filter words and chains while the glyphs are collected (one pass), the probe table built only when a page needs it; line metrics taken in the pass that builds the line when no gutter splits it; the open fragment kept in registers; the filter at half size in zero-mapped scratch|BuildLines 198.1 -> 132.9 M over odl (537 -> 360 instructions a glyph); xelatex book -6.0 %; fresh faults -24 a conversion against the first three steps|
+|`eb057e1`, `48d5102`, `5d5a155`, `7225007`, `dbc5ea7`, `f0e67e9`, `ea5ed01`|Fonts: a ToUnicode map judged in the pass that reads it; one-unit ranges of 8 codes or more written in place; CID widths from a dense table; long runs judged by code point, the most-shared text counted only when it can be a majority; entry texts read without a bounds check where the scanner has checked them; glyph names through a generated hash (`tools/gen_text_tables.py`); ranges written by UTF-8 length|olm tables -47.3 %, -16.7 %, -14.4 %, -6.9 %; FontCache::Get -68.7 % on SafeDocs, -50.1 % on `multi_column`, -50.4 % on `tables`|
+|`80dcc52`, `0d1e901`, `99b784b`, `2241adf`, `c644d07`|Tables and order: a run's column extents grown a row at a time (was rebuilt per row: quadratic); Breuel's order tests a pair's lines-between through overlap bit sets above 32 lines (was cubic); a word's text facts gathered once a page; lattice cells looked up from the last hit, edges listed per component; ordered items not sorted again|odl 192 -6.1 %, odl 183 -3.0 %, 2col -2.1 %; DetectTables + OrderLines 504 -> 261 M on `multi_column`, 229 -> 170 M on `tables`|
+|`4c0cadf`, `6a83ea7`|Writer and blocks: blocks without emphasis, scripts, inline images or links written in one pass; style passes linear; line facts in two phases, the footnote finder reads raised lines only|synthetic -2.5 to -4.8 %, odl 107 -3.6 %; WriteMarkdown + BuildBlocks 114.5 -> 81.8 M over odl|
+|`534f431`, `99e779a`, `c02e883`|`--math=latex`: glyph classes by table, accent candidates listed once a page; the builder's storage per thread, its baseline weights linear (were quadratic), blocks without a formula candidate on the plain path; the finder's word tests|`--math=latex`: olm arxiv -8.2 %, -6.9 %; synthetic up to -16.3 %; writer and math stages 2,473 -> 1,386 M on `arxiv_math`|
+|`2f38e4a`|Linux release builds without unwind tables and without libgcc's unwinder, emergency pool and demangler (RayoMD's stubs; a throw still ends in `terminate`); DT_RELR for the static build|static binary 3,515,432 -> 3,192,752 B; fresh faults median 176 -> 172|
+|`e2a476c`, `8c8d842`|`src/hot.ld`: the sections 52 fresh conversions run, in one block before `.text` (`tools/hot_sections.py` regenerates it with callgrind)|fresh faults median 172 -> 158 at the time; warm instructions +0.001 %|
+|`70f42b5`, `934b1c6`, `f7284e1`|One-shot `--convert` keeps blocks below 1 MiB on the heap; `--batch`: inputs up to 256 KiB read into a per-worker buffer, the temporary output created with its final mode, counters built only with `--report`, the calling thread is worker 0; batch keeps blocks up to 32 MiB on the heap and 256 MiB untrimmed|batch over odl: faults -40 %, kernel instructions -28 %|
+|`ab6d68e`, `135b017`, `b32ee64`|Pages of one document on several threads, started by the content read (below)|27 documents of 4 to 39 pages on four cores: -44 % wall against 0.0.11|
+|`60a129a`, `64686d3`, `21d8aeb`, `072578d`|JPEG 2000 tier-1: rows to code found from bit masks, refinement two columns a word, the MQ decoder's registers in 64 bits with one branch on the common path; tile buffers not zero-filled on growth. PNG: filter chosen and applied in one pass, Paeth on bytes (all 2^24 inputs against the scalar form); deflate's main loop without end checks, candidates whose first 4 bytes differ skipped|JPX page with images written 145.4 -> 128.7 ms (same session); branch misses -46 %; PNG encoding -20.0 % instructions|
+|`7f95997`, `bf1b10e`|Text path again: a page's glyph records are left unset when the vector grows (`GlyphVector`; the interpreter writes every field: builds that fill new records with 0x00 and with 0xA5 give the same output on 1,835 conversions, memcheck reports nothing), the shown, unmapped and guessed counts in one word, `MeasurePage`'s letters and vowels counted in one word, the line builder's nearness test on the coordinates' bits; path points and boxes in SSE2 (scalar reference, tests 748-749); the ToUnicode parser without virtual calls, hex digits two a step|odl -1.7 %, -0.8 %; syn6 -2.8 %; heavy pages -2.3 %; ShowText 262 -> 248, BuildLines 360 -> 340 instructions a glyph|
+|`94988dd`|Tables: grid bounds read once and the cell lookup inline, rows and words sorted only when out of order, a word located once for every column split, word boxes in SSE2 (scalar reference, tests 859-861); bullet marks indexed by height once 16 lines have scanned them|`tables` -2.3 %, odl -1.2 %, `multi_column` -1.2 %|
+|`7e9145b`, `1614601`, `d7df386`|Fresh process: the static binary's start no longer reads the `/proc/self/exe` link (a stand-in for glibc's `_dl_get_origin`, `src/cli/static_start.cpp`), and `--convert` ends with `_Exit` after its output is written; Inflate's dynamic tables per thread instead of a 26 KB stack frame; a one-shot conversion frees the page content buffer once the pages are read, so later stages reuse it|odl 183: kernel cycles -6 %, stack faults 9 -> 3; fresh faults median 167 -> 160; fresh -4.3 % (8 paired rounds)|
+
+### Pages in parallel
+
+`--convert` reads a document of two pages or more on up to four threads (`--workers=N`; one page
+or `--workers=1` starts none), and the output is the same for every count (roadmap D4):
+
+- The document is shared: objects already parsed are read without a lock, a first parse takes
+  one lock, the report counters and the decode budget another. One font cache serves every thread
+  and loads a font once.
+- What depends on page order is not left to the threads. When a shared read meets such a case (a
+  reference cycle, the nesting limit, an object stream reached while it loads, a decode budget
+  that is nearly spent), the threaded pass is undone and the pages are read again in order.
+- Interpretation, lines, tables, reading order, run-in headings and display formulas run per page
+  on the threads. A table that runs on from the page before is the one cross-page input of table
+  detection: each page is first detected as if nothing ran on, and in page order a page whose
+  previous page ends in a table is put back and detected again with the real state.
+- Structure, running lines, images, blocks and the writer stay on the calling thread.
+- A thread costs its start and the first touch of its buffers, so no thread starts by itself: the
+  calling thread starts one for every 16 KiB of page content it has read, while pages are left
+  for it. A document of nearly empty pages (6 pages, 58 glyphs) took 0.71 ms with three threads
+  started at once and takes 0.48 ms with none; over the 27 documents the sum is the same as with
+  all threads at once (146.7 against 146.0 ms; 151.4 at 32 KiB a thread, 157.6 at 64 KiB). A
+  count given with `--workers` starts its threads at once.
+
+### Results (base `p4-base` against the final tree)
+
+CPU 3, base and final interleaved, 2026-11-10 07:15 UTC with the machine otherwise idle; static
+builds. Warm: `--bench`, best of 3 per document, two alternating rounds. Fresh: the native timer,
+11 runs a document after 2, in 12 rounds with the order of the two binaries rotated.
+
+|odl, 200 one-page PDFs, `--images=none`|Base (0.0.11)|Final (0.0.12)|
+|---|---|---|
+|warm, ms/page median|0.492|0.370|
+|warm, ms/page p95|1.056|0.686|
+|warm, ms/page mean|0.630|0.452|
+|warm, pages/s|1,587|2,215 (+40 %)|
+|fresh, ms a document, median|1.065 (1.055-1.078 over the rounds)|0.885 (0.878-0.894); -16.9 % paired|
+|fresh, p95 and mean|1.80, 1.23|1.45, 1.01|
+|fresh, CPU ms median|1.020|0.843|
+|fresh, page faults median, p95, mean|161, 315, 188|150, 264, 167|
+|fresh with images written, median|1.359|1.110|
+|`--batch --workers=1`: task-clock|125.5 ms|93.9 ms (-25 %)|
+|`--batch --workers=1`: kernel share of cycles, page faults|14.7 %, 4,336|13.0 %, 1,951|
+
+User instructions of `--batch --workers=1` (perf stat):
+
+|Documents|Base, M|Final, M|Change|
+|---|---|---|---|
+|odl (200 pages)|1,103.0|777.1|-29.5 %|
+|the 10 heaviest odl pages|277.2|201.1|-27.4 %|
+|6 synthetic documents of several pages|174.6|121.8|-30.2 %|
+|40 SafeDocs documents (315 pages)|2,309.0|1,538.8|-33.4 %|
+|olmOCR `multi_column` (231 pages)|2,774.4|1,671.2|-39.8 %|
+|olmOCR `tables` (188 pages)|1,515.2|1,004.7|-33.7 %|
+|olmOCR `arxiv_math` (522 pages), `--math=latex`|7,974.5|5,495.2|-31.1 %|
+
+Per fixture, instructions a conversion (callgrind) and time (the same gate run, on CPU 4; A/A
+within 1.5 %):
+
+|Fixture|Instructions|Time|
+|---|---|---|
+|odl 107 (smallest)|-22.4 %|-11.9 %|
+|odl 141 (vector page)|-29.6 %|-30.9 % (19.6 -> 13.6 ms)|
+|odl 183 (median)|-25.2 %|-17.8 %|
+|odl 192 (p95)|-34.3 %|-43.2 %|
+|olm arxiv_math page|-21.4 %|-15.7 %|
+|olm tables page|-69.7 %|-61.6 %|
+|xelatex 2col paragraphs|-30.4 %|-39.6 %|
+|chromium images|-21.7 %|-12.8 %|
+|libreoffice manual (7 pages)|-26.0 %|-5.9 %|
+|rayomd-pdfua report (4 pages)|-21.5 %|-7.0 %|
+|typst unicode|-24.5 %|-17.2 %|
+|xelatex book chapter (6 pages)|-28.2 %|-20.6 %|
+|odl 107, images written|-14.6 %| |
+|chromium images, images written|-18.2 %| |
+
+The documents of several pages gain less time than instructions in the `--bench` loop: with
+glibc's default thresholds the loop gives its large blocks back after every conversion and maps
+them again (with `--batch`'s settings the same loop takes 1.66 ms instead of 1.97 for the manual,
+2.84 instead of 3.33 for the book chapter). `--batch` has those settings; `--bench` and `--serve`
+do not.
+
+Documents of several pages (27 documents of 4 to 39 pages: 6 synthetic, 21 from SafeDocs), a
+fresh `--convert --images=none` on four cores, median of 15 runs a document, summed:
+
+|Run|Sum, ms|Against 0.0.11|
+|---|---|---|
+|0.0.11 (one thread)|262.8| |
+|final, `--workers=1`|205.1|-22 %|
+|final, `--workers=2`|154.9|-41 %|
+|final, `--workers=4`|147.9|-44 %|
+|final, default (threads started by the content read)|147.4|-44 %|
+
+
+
+Output of the final tree against the base, every comparison identical (Markdown, image files,
+exit codes and `--report` records): 6,331 conversions of the synthetic corpus, odl, olmOCR
+born-digital, SafeDocs and the scanned suite (images off and on, structure off); 1,842 with
+`--math=latex`; 1,491 of READoc's 300 PDFs, olmOCR's old scans and the multiscript suite (compared
+by bytes only); `--workers=1` against 2, 4 and 8, 9,197 each; the default page threads against the
+base's one thread over all of the above; `--batch --workers=1` against `--workers=4`. Tests pass
+in the release, ASan + UBSan, ThreadSanitizer and Windows builds; ThreadSanitizer and ASan
+conversions of 399 documents with the default threads and with four report nothing; every changed
+parser of untrusted input was fuzzed for ten minutes per step, clean.
+
+### The remaining gap
+
+- **Warm median (release 0.505, static 0.493 ms/page):** at the bar.
+- **Warm throughput (1,563 pages/s, mean 0.640 ms):** the mean needs 22 % less. No single function
+  holds a large share (final callgrind over odl): content lexer 13.1 % + 1.3 % (numbers about
+  7-8 instructions a digit; reading 8 or 2 digits a step measured slower), Inflate 10.4 % (1.15x
+  libdeflate's time on text streams), ShowString 10.0 % (about 300 instructions a glyph),
+  BuildLines 7.5 % and FoldDuplicates 7.3 %, writer 3.6 %, tables 2.5 %, the OCR route's
+  `MeasurePage` 1.3 % on every page (OCR code, not in this round), object parsing about 4 %, font
+  loading about 9 %. The heavy pages weigh most in the mean (p95 1.05 ms; odl 141, a vector page,
+  is 195.7 M instructions).
+- **Fresh (static 1.061 ms):** about 0.23 ms is process start-up (the empty static program; 158
+  faults against its 26) and the rest the conversion with cold caches, so fresh follows the warm
+  time: about 0.47 ms warm would give 1 ms fresh. A fresh conversion now takes 4 (static) and 10
+  (release) more faults than at the base; after the first group of steps it took 9 and 3 fewer
+  (145 and 187), so the last group of steps added about 13.
+- **Peak RSS:** no longer grows with a Flate image (5-15 MiB for every Flate-dominated document
+  above, apart from the input file itself, which is mapped: a 130 MB PDF read for its images is
+  130 MB resident). It still grows with JPEG samples (decoded whole: SafeDocs 0000157, 200 MiB),
+  JPEG 2000 planes (scanned weasyprint d04 paper, 150 MiB: the scanned suite's 161 MiB peak) and
+  CCITT/JBIG2 bitmaps (1 bit a pixel).
+
+### Tried and rejected (2026-11-08)
+
+- **Glyph run set up per string** (first design of `79fd9de`): odl 183 +0.62 %, lo manual +0.49 %;
+  their TJ arrays hold one or two glyphs a string. Kept as a run reused while its inputs are
+  bit-identical.
+- **Number digits eight at a time (SWAR)**: odl 141 +7.0 %, every fixture up (1-4 digit runs).
+  **Two digits a step**: odl 141 +2.9 %, odl 183 +0.6 %.
+- **White-space skipping inlined into the content lexer** (with the byte-scan `n g R` look-ahead):
+  odl 141 +0.58 %; kept as `138fc71` without the inlining.
+- **ToUnicode entries reserved at data size / 16**: olm tables +0.37 %; **ParseToUnicode templated
+  on its sink with reserves**: olm tables +1.09 %. **One-byte fast paths with the junk test out of
+  line**: olm tables +1.02 % (kept with it inline).
+- **Lexer operand slots zeroed per stream** (10 KB): chromium images +1.09 %; kept growing from 8.
+  **PathPoint inlined into Execute**: pushed the operator lookup out of line, odl 141 +2 %. **Array
+  and string dispatch inside `Next`**: spills in the white-space loop, odl 141 +0.3 %.
+- **ShowString record built in place, rise and spacing read once a string** (not gated, out of
+  time): odl 192 -0.55 %, odl 183 -0.21 %; the next step on ShowString.
+- **Duplicate filter as one 64-bit word per key and 8 x 8 cell block**: +0.1 to +1.1 % on 11
+  fixtures. **Per-thread scratch recording every slot set** (three designs before `0413103`): odl
+  107 +0.10 to +0.24 %. **Column histogram walked a run of equal coverage at a time**: under 0.3 %
+  on two fixtures only. **Min/max with a five-field NaN sum and an 8-byte right-to-left scan**: lost
+  the inlining of `PlaceGlyphs`, +0.1 % everywhere. **Word sort keys zero-filled first**: odl 192
+  -0.05 % only. **Detector members as references into the scratch**: odl 192 +0.09 %.
+- **Inflate: a literal tested before the subtable at the top of the decode loop**: +1.5 % (goto)
+  to +25 % (lambda; register spills) on text streams.
+- **A counting pass over an image's rows before its PNG** (to know its height first): inflate is
+  32 % of odl 136 with images written, so about +24 %; the PNG restarts at the shorter height
+  instead.
+- **JPX**: branchless MQ decoding (everywhere +1.0 %, for sign/refinement/uniform contexts only
+  +2.5 % on 0000315), a lazy MQ fast path (+7.2 %), SSE2 skipping of empty columns (+0.75 %),
+  prefetching the vertical pass's stores (+3.0 %), the 9/7 lifting fused into one sweep (+1.8 to
+  +3.3 %).
+- **Measured and dropped**: fonts loaded lazily as a whole (4 of 833 loaded fonts are never shown);
+  ToUnicode maps shared between fonts (581 of 583 streams distinct); sharing words between the
+  table detector and the writer (they build different words).
+
+## Fourth round: research first, then ten areas at once (2026-11-09)
+
+Base `163408f` (0.0.11; snapshots `p4-base`, `p4-base-static`). The round started from three
+research notes: how RayoMD got its speed and which of its techniques transfer, how the fast PDF
+engines and parsers work ([speed.md](../research/speed.md)), and a profile of 0.0.11 with a cost
+model per stage, the page faults of a fresh process by source, and build experiments. Ten areas
+were then worked on at once, each in its own worktree, each step gated on its own: G-warm (no
+fixture more than +0.3 % instructions), G-bytes quick (synthetic and odl: 997 comparisons), and
+before an area's last landing G-bytes full (6,331 comparisons) and ten minutes of fuzzing for every
+changed parser of untrusted input. A landing script took one lock for all areas: rebase onto
+master, static and release builds without warnings, the core tests, G-bytes quick against the
+round's base, push. CPU 3 was kept for timing; the gates ran on instruction counts on the other
+CPUs.
+
+|Finding (base `p4-base`)|Number|
+|---|---|
+|odl in one batch, user instructions|1,103 M: InterpretPage 58.8 % (content lexer 17.5 %, ShowString 13.8 %, font loading 9.5 %, Inflate 12.8 % over all callers), BuildLines with FoldDuplicates 17.7 %, DetectTables 7.7 %, WriteMarkdown 7.2 %, BuildBlocks 3.0 %|
+|one page of odl (141: 4.17 MB of path operators, 7 glyphs)|17.7 ms warm, 14.1 % of odl's time; 43 % lexer, 38 % Inflate|
+|font loading on SafeDocs, olmOCR `multi_column` and `tables`|18 % of instructions|
+|a fresh conversion of the median odl page (183)|136 faults against the empty program's 26: heap 75, program text and data 40, stack 9; a new heap page costs 1.62 µs, a file-backed fault (16 pages) 3.4 µs: about 0.25 ms of 1.16 ms CPU|
+|odl 192, fresh|111 faults in the growth of the page's glyph vector|
+|`--batch` over odl|15 % of cycles in the kernel: about 10 system calls a document, re-faulted heap|
+|SafeDocs sample|703 of 1,000 documents have two pages or more (16 pages a document on average); page-local stages are 75 to 90 % of a conversion's instructions|
+|scanned pages with images written|JPEG 2000 tier-1 51 % of cycles, 148 ms a 200-dpi page|
+|`--math=latex` on olmOCR `arxiv_math`|the writer 21 % of instructions|
+
+### Steps
+
+Instructions per conversion (callgrind) against the step before in the same area.
+
+|Commit|Change|Largest effects|
+|---|---|---|
+|`22d56e0`, `0b53bbc`, `9811be0`, `a0a6d70`|Content lexer: its loop inline in `RunStream`, numbers of up to 18 digits read without end checks up to the data's last delimiter, path operators and their points handled in the loop, a point batch per operator; numbers of TJ arrays read straight into their item; operators told from `true`/`false`/`null` by one class load; `q Q cm re`, painting and clipping operators in the loop, `Execute` out of line with a small frame|odl 141 -16.0 %, -1.3 %; odl 183 -1.8 %; lexer 23.5 -> 16.8 instructions a content byte on odl|
+|`8e0a17e`, `16840d1`, `2a9ee3a`|Glyphs: the page's glyph vector and text reserved from the content length; one placement per text operator instead of per string, simple-font codes decoded inline, records written in place into a vector grown once an operator, all strings of a TJ array in one loop, a fast path for horizontal runs with finite terms, the glyph box in SSE2 (scalar reference compared bit for bit, test 744-747); the adjustment test and box terms once a run|odl 192 -7.6 %, lo manual -7.1 %, 2col -5.5 %, xelatex book -5.3 %; ShowString 420 -> 266 instructions a glyph on odl; odl 192 fresh: 111 growth faults -> 0|
+|`c923a7e`|Page content decoded piece by piece into one per-thread buffer that grows by `realloc`; a Flate piece inflates straight into it|odl 141 -4.9 %, fresh faults 2,540 -> 1,398, peak RSS 9.9 -> 8.6 MiB|
+|`8af8551`|Inflate decode loop: a literal flag in the table entry, extra bits masked through a table, short distances without a division; the loop compiled a second time for BMI2 and chosen at run time (test 265 compares both)|DecodeCodes -16.4 % instructions a byte on text streams; odl 141 -5.7 %; BMI2 against the same loop without it: -2.2 % time over all odl streams, equal on text streams|
+|`685089d`|Objects: an array's `n g R` found at the `R`, digit tokens, names, arrays and dictionaries read by inline readers, escaped strings decoded through a pointer, hex strings a table load a byte|object parsing -30.7 % over odl; chromium images -6.3 %, lo manual -4.8 %, typst -3.9 %|
+|`fbe0346`, `fce601f`, `87af237`, `dd7f0eb`|Lines: duplicates found through exact filter words and chains while the glyphs are collected (one pass), the probe table built only when a page needs it; line metrics taken in the pass that builds the line when no gutter splits it; the open fragment kept in registers; the filter at half size in zero-mapped scratch|BuildLines 198.1 -> 132.9 M over odl (537 -> 360 instructions a glyph); xelatex book -6.0 %; fresh faults -24 a conversion against the first three steps|
+|`eb057e1`, `48d5102`, `5d5a155`, `7225007`, `dbc5ea7`, `f0e67e9`, `ea5ed01`|Fonts: a ToUnicode map judged in the pass that reads it; one-unit ranges of 8 codes or more written in place; CID widths from a dense table; long runs judged by code point, the most-shared text counted only when it can be a majority; entry texts read without a bounds check where the scanner has checked them; glyph names through a generated hash (`tools/gen_text_tables.py`); ranges written by UTF-8 length|olm tables -47.3 %, -16.7 %, -14.4 %, -6.9 %; FontCache::Get -68.7 % on SafeDocs, -50.1 % on `multi_column`, -50.4 % on `tables`|
+|`80dcc52`, `0d1e901`, `99b784b`, `2241adf`, `c644d07`|Tables and order: a run's column extents grown a row at a time (was rebuilt per row: quadratic); Breuel's order tests a pair's lines-between through overlap bit sets above 32 lines (was cubic); a word's text facts gathered once a page; lattice cells looked up from the last hit, edges listed per component; ordered items not sorted again|odl 192 -6.1 %, odl 183 -3.0 %, 2col -2.1 %; DetectTables + OrderLines 504 -> 261 M on `multi_column`, 229 -> 170 M on `tables`|
+|`4c0cadf`, `6a83ea7`|Writer and blocks: blocks without emphasis, scripts, inline images or links written in one pass; style passes linear; line facts in two phases, the footnote finder reads raised lines only|synthetic -2.5 to -4.8 %, odl 107 -3.6 %; WriteMarkdown + BuildBlocks 114.5 -> 81.8 M over odl|
+|`534f431`, `99e779a`, `c02e883`|`--math=latex`: glyph classes by table, accent candidates listed once a page; the builder's storage per thread, its baseline weights linear (were quadratic), blocks without a formula candidate on the plain path; the finder's word tests|`--math=latex`: olm arxiv -8.2 %, -6.9 %; synthetic up to -16.3 %; writer and math stages 2,473 -> 1,386 M on `arxiv_math`|
+|`2f38e4a`|Linux release builds without unwind tables and without libgcc's unwinder, emergency pool and demangler (RayoMD's stubs; a throw still ends in `terminate`); DT_RELR for the static build|static binary 3,515,432 -> 3,192,752 B; fresh faults median 176 -> 172|
+|`e2a476c`, `8c8d842`|`src/hot.ld`: the sections 52 fresh conversions run, in one block before `.text` (`tools/hot_sections.py` regenerates it with callgrind)|fresh faults median 172 -> 158 at the time; warm instructions +0.001 %|
+|`70f42b5`, `934b1c6`, `f7284e1`|One-shot `--convert` keeps blocks below 1 MiB on the heap; `--batch`: inputs up to 256 KiB read into a per-worker buffer, the temporary output created with its final mode, counters built only with `--report`, the calling thread is worker 0; batch keeps blocks up to 32 MiB on the heap and 256 MiB untrimmed|batch over odl: faults -40 %, kernel instructions -28 %|
+|`ab6d68e`, `135b017`, `b32ee64`|Pages of one document on several threads, started by the content read (below)|27 documents of 4 to 39 pages on four cores: -44 % wall against 0.0.11|
+|`60a129a`, `64686d3`, `21d8aeb`, `072578d`|JPEG 2000 tier-1: rows to code found from bit masks, refinement two columns a word, the MQ decoder's registers in 64 bits with one branch on the common path; tile buffers not zero-filled on growth. PNG: filter chosen and applied in one pass, Paeth on bytes (all 2^24 inputs against the scalar form); deflate's main loop without end checks, candidates whose first 4 bytes differ skipped|JPX page with images written 145.4 -> 128.7 ms (same session); branch misses -46 %; PNG encoding -20.0 % instructions|
+|`7f95997`, `bf1b10e`|Text path again: a page's glyph records are left unset when the vector grows (`GlyphVector`; the interpreter writes every field: builds that fill new records with 0x00 and with 0xA5 give the same output on 1,835 conversions, memcheck reports nothing), the shown, unmapped and guessed counts in one word, `MeasurePage`'s letters and vowels counted in one word, the line builder's nearness test on the coordinates' bits; path points and boxes in SSE2 (scalar reference, tests 748-749); the ToUnicode parser without virtual calls, hex digits two a step|odl -1.7 %, -0.8 %; syn6 -2.8 %; heavy pages -2.3 %; ShowText 262 -> 248, BuildLines 360 -> 340 instructions a glyph|
+|`94988dd`|Tables: grid bounds read once and the cell lookup inline, rows and words sorted only when out of order, a word located once for every column split, word boxes in SSE2 (scalar reference, tests 859-861); bullet marks indexed by height once 16 lines have scanned them|`tables` -2.3 %, odl -1.2 %, `multi_column` -1.2 %|
+|`7e9145b`, `1614601`, `d7df386`|Fresh process: the static binary's start no longer reads the `/proc/self/exe` link (a stand-in for glibc's `_dl_get_origin`, `src/cli/static_start.cpp`), and `--convert` ends with `_Exit` after its output is written; Inflate's dynamic tables per thread instead of a 26 KB stack frame; a one-shot conversion frees the page content buffer once the pages are read, so later stages reuse it|odl 183: kernel cycles -6 %, stack faults 9 -> 3; fresh faults median 167 -> 160; fresh -4.3 % (8 paired rounds)|
+
+### Pages in parallel
+
+`--convert` reads a document of two pages or more on up to four threads (`--workers=N`; one page
+or `--workers=1` starts none), and the output is the same for every count (roadmap D4):
+
+- The document is shared: objects already parsed are read without a lock, a first parse takes
+  one lock, the report counters and the decode budget another. One font cache serves every thread
+  and loads a font once.
+- What depends on page order is not left to the threads. When a shared read meets such a case (a
+  reference cycle, the nesting limit, an object stream reached while it loads, a decode budget
+  that is nearly spent), the threaded pass is undone and the pages are read again in order.
+- Interpretation, lines, tables, reading order, run-in headings and display formulas run per page
+  on the threads. A table that runs on from the page before is the one cross-page input of table
+  detection: each page is first detected as if nothing ran on, and in page order a page whose
+  previous page ends in a table is put back and detected again with the real state.
+- Structure, running lines, images, blocks and the writer stay on the calling thread.
+- A thread costs its start and the first touch of its buffers, so no thread starts by itself: the
+  calling thread starts one for every 16 KiB of page content it has read, while pages are left
+  for it. A document of nearly empty pages (6 pages, 58 glyphs) took 0.71 ms with three threads
+  started at once and takes 0.48 ms with none; over the 27 documents the sum is the same as with
+  all threads at once (146.7 against 146.0 ms; 151.4 at 32 KiB a thread, 157.6 at 64 KiB). A
+  count given with `--workers` starts its threads at once.
+
+### Results (base `p4-base` against the final tree)
+
+CPU 3, base and final interleaved, 2026-11-10 07:15 UTC with the machine otherwise idle; static
+builds. Warm: `--bench`, best of 3 per document, two alternating rounds. Fresh: the native timer,
+11 runs a document after 2, in 12 rounds with the order of the two binaries rotated.
+
+|odl, 200 one-page PDFs, `--images=none`|Base (0.0.11)|Final (0.0.12)|
+|---|---|---|
+|warm, ms/page median|0.492|0.370|
+|warm, ms/page p95|1.056|0.686|
+|warm, ms/page mean|0.630|0.452|
+|warm, pages/s|1,587|2,215 (+40 %)|
+|fresh, ms a document, median|1.065 (1.055-1.078 over the rounds)|0.885 (0.878-0.894); -16.9 % paired|
+|fresh, p95 and mean|1.80, 1.23|1.45, 1.01|
+|fresh, CPU ms median|1.020|0.843|
+|fresh, page faults median, p95, mean|161, 315, 188|150, 264, 167|
+|fresh with images written, median|1.359|1.110|
+|`--batch --workers=1`: task-clock|125.5 ms|93.9 ms (-25 %)|
+|`--batch --workers=1`: kernel share of cycles, page faults|14.7 %, 4,336|13.0 %, 1,951|
+
+User instructions of `--batch --workers=1` (perf stat):
+
+|Documents|Base, M|Final, M|Change|
+|---|---|---|---|
+|odl (200 pages)|1,103.0|777.1|-29.5 %|
+|the 10 heaviest odl pages|277.2|201.1|-27.4 %|
+|6 synthetic documents of several pages|174.6|121.8|-30.2 %|
+|40 SafeDocs documents (315 pages)|2,309.0|1,538.8|-33.4 %|
+|olmOCR `multi_column` (231 pages)|2,774.4|1,671.2|-39.8 %|
+|olmOCR `tables` (188 pages)|1,515.2|1,004.7|-33.7 %|
+|olmOCR `arxiv_math` (522 pages), `--math=latex`|7,974.5|5,495.2|-31.1 %|
+
+Per fixture, instructions a conversion (callgrind) and time (the same gate run, on CPU 4; A/A
+within 1.5 %):
+
+|Fixture|Instructions|Time|
+|---|---|---|
+|odl 107 (smallest)|-22.4 %|-11.9 %|
+|odl 141 (vector page)|-29.6 %|-30.9 % (19.6 -> 13.6 ms)|
+|odl 183 (median)|-25.2 %|-17.8 %|
+|odl 192 (p95)|-34.3 %|-43.2 %|
+|olm arxiv_math page|-21.4 %|-15.7 %|
+|olm tables page|-69.7 %|-61.6 %|
+|xelatex 2col paragraphs|-30.4 %|-39.6 %|
+|chromium images|-21.7 %|-12.8 %|
+|libreoffice manual (7 pages)|-26.0 %|-5.9 %|
+|rayomd-pdfua report (4 pages)|-21.5 %|-7.0 %|
+|typst unicode|-24.5 %|-17.2 %|
+|xelatex book chapter (6 pages)|-28.2 %|-20.6 %|
+|odl 107, images written|-14.6 %| |
+|chromium images, images written|-18.2 %| |
+
+The documents of several pages gain less time than instructions in the `--bench` loop: with
+glibc's default thresholds the loop gives its large blocks back after every conversion and maps
+them again (with `--batch`'s settings the same loop takes 1.66 ms instead of 1.97 for the manual,
+2.84 instead of 3.33 for the book chapter). `--batch` has those settings; `--bench` and `--serve`
+do not.
+
+Documents of several pages (27 documents of 4 to 39 pages: 6 synthetic, 21 from SafeDocs), a
+fresh `--convert --images=none` on four cores, median of 15 runs a document, summed:
+
+|Run|Sum, ms|Against 0.0.11|
+|---|---|---|
+|0.0.11 (one thread)|262.8| |
+|final, `--workers=1`|205.1|-22 %|
+|final, `--workers=2`|154.9|-41 %|
+|final, `--workers=4`|147.9|-44 %|
+|final, default (threads started by the content read)|147.4|-44 %|
+
+A JPEG 2000 page with its image written: 140.9 -> 125.9 ms (median over the 100 pages of 40
+scanned documents, `--bench`). Static binary 3,515,432 -> 3,315,776 bytes, release 2,594,128 ->
+2,493,336.
+
+### The remaining gap
+
+- **Release bar (c):** met on this machine: 2,215 pages/s warm against 2,000, and 0.885 ms fresh
+  against 1 ms.
+- **Warm:** what is left is spread again. Over odl the content lexer is about 17 instructions a
+  content byte (exact number parsing is 55 to 70 instructions a number, and odl has a million of
+  them), BuildLines about 340 and ShowText about 248 instructions a glyph (each was above 400),
+  Inflate about 10 instructions a byte, font loading 11 % with no hot spot, the writer and blocks
+  about 10 %, tables about 8 %.
+- **Fresh:** 0.24 ms is the empty static program and 150 page faults are about 0.25 ms. The heap
+  faults a document, averaged over 18 odl pages: the glyph array 25 (56 bytes a glyph), the
+  duplicate filter about 20, table vectors 10. The start of the static PIE binary costs 9 faults
+  for relocation writes and about 12 in glibc.
+- **Pages:** on the synthetic documents 44 % of one thread's time stays serial (process start,
+  structure, running lines, blocks, the writer), and a thread costs about what 16 KB of content
+  cost. Images are still written by one thread.
+- **Scans:** JPEG 2000 tier-1 is still 63 % of a page with its image written; most of its branch
+  misses come from the decoded data itself.
+
+### Tried and rejected (2026-11-09)
+
+- **Build level** (one build each, output compared over 4,020 conversions):
+  - profile-guided optimisation, with and without LTO: +3 to +4 % pages/s, fresh -2 %, output
+    identical, held-out pages gain as much as the training pages. Not taken: the training corpus is
+    not in the repository, so a release could not be rebuilt from it; untrained JPEG 2000 pages ran
+    1.5 % slower; MinGW would need the same two-stage build.
+  - `-O3`: +0.9 % warm for 336 KB, fresh slower. LTO alone: within noise. `-march=x86-64-v3`:
+    slower, and 10 PNG files differ (FMA contraction in the image code). Static without PIE:
+    fresh +1.5 to +2.7 %. BOLT (this CPU records no branches): warm -2 to -6 %, 9.2 MB.
+  - a bump allocator: -16 to -26 % (every allocation touches new memory; malloc is 2 % of cycles).
+    Huge pages: 0.2 ms for one 2 MiB fault. Pre-faulting (`MAP_POPULATE`, `MADV_POPULATE_READ`):
+    no cheaper a page than faulting.
+- **Page content read through a window while the page is interpreted** (for odl 141's faults):
+  not exact. A page that reaches the 256 MB stream limit before its last piece no longer loads its
+  objects in the old order, which the report counters and reference cycles can show. The buffer is
+  filled eagerly instead.
+- **Lexer:** one digit loop across the decimal point, odl 141 +4.8 %; names and strings of TJ
+  arrays written in place, +0.95 M over odl; `Execute` inlined into the loop, text fixtures -0.1
+  to -0.8 % but odl 141 +0.8 %; a cache of decoded forms: forms drawn again are 0.55 % of SafeDocs
+  at most. Eight digits at a time was estimated at 72 to 82 instructions a token against 65.
+- **Glyphs:** the vector grown once a string, +3 to +9 instructions a glyph; the page text grown
+  once an operator with ASCII stored in place, 266 -> 285 a glyph; text operators dispatched in
+  the lexer loop, +0.01 %.
+- **The OCR route's counts taken in the glyph loop** (to drop `MeasurePage`'s pass, 1.4 % of odl):
+  exact on 3,066 files, but the counting costs what the pass costs (odl +0.3 to +0.6 %).
+- **Objects:** 16-byte SSE2 scans for names and literal strings, more instructions (they are
+  short); a literal-string scan four bytes a step, 9.6 -> 11.1 M.
+- **Lines:** the first filter design sent every later glyph of a page with a probe table down
+  the slow path, olm tables +0.47 %; fragment state in locals, +2.4 M; row words of 4 bits, cell
+  chains and branchless bucket heads all above 72 M against the 51.7 M kept.
+- **Fonts:** ranges of every length written in place, odl 183 +1.0 % (2- and 3-code ranges);
+  runs as a step of their own, olm arxiv +0.30 %; a glyph-name hash of 2^13 slots (55 % full).
+- **Tables:** a cell cache per word, `tables` -11.5 M but odl 183 +0.50 % and 2col +0.48 %; the
+  row-word vector sized exactly, +0.68 M; text facts through a 256-entry table, slower.
+- **Writer:** link boxes tested per word on the plain path, odl 192 +1.3 %; the LaTeX test as a
+  run-time flag on the plain path, +0.01 to +0.03 % on every fixture (a template instead).
+- **Process:** a 32 MiB heap threshold for one-shot runs, the same faults and 10 MB more for
+  scanned documents; every input below 4 MiB through `read`, no gain; batch with only one of its
+  two malloc thresholds, more faults than none; `_Exit` after a conversion, about 4 µs.
+- **Pages:** per-thread stream buffers on the single-thread path, chromium images +0.70 %; the
+  lock inline in the object lookup, +0.3 to +0.4 % (the shared branches are split out instead);
+  glibc arena settings against the threads' extra faults, no effect.
+- **JPEG 2000:** column pairs skipped in the significance pass, +6 % cycles; branch-free marking
+  of the neighbour stripes, +2.5 %; the vertical wavelet pass on 32-column strips, +0.6 %; a lazy
+  MQ register, +2 to +3 % (as in round 3).
+- **Fresh process:** the static binary without PIE, 5 faults and about 57 K instructions less
+  a start, not taken: the image would lose address randomisation in a parser of untrusted input.
+  The duplicate filter at half its size, 10 faults less on average but odl 192 +0.37 % and xelatex
+  book +0.73 %. A 4 MiB heap top pad, within noise. Page-aligned inflate tables, 5 faults more.
+  The binary's pointer tables as offsets, about 3 faults for 500 entries in 15 tables.
+- **Second pass on the text path:** printable ASCII gathered a string at a time, 248 -> 274
+  instructions a glyph (a TJ string holds 2 or 3 glyphs); the OCR route's counts in the glyph loop
+  a third time, odl +0.25 %. The plain writer path chosen by a block's box against the page's
+  links, odl 192 +0.37 % (+1.7 % with `--math=latex`); the bullet-mark index built eagerly, odl 141
+  +0.5 %.
+
 ## Open candidates (measured, not done)
 
-- ShowString: the record built in place (draft above); about 300 instructions a glyph.
-- Line and word texts copied once when contiguous in the page text (`LineText`, `WordText`, about
-  5 M instructions over odl each).
-- The OCR route's `MeasurePage` on pages that cannot go to OCR (1.3 % of odl).
-- JPX: a row-streaming vertical wavelet pass for tall tiles; ICT and RGB interleave per row; the
-  tier-1 per-block zero-fill replaced by the significance bits. JPEG, JPEG 2000, CCITT and JBIG2
-  decoded a row or band at a time for bounded RSS.
+- **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults
+  (about 3.5 faults a document for every 8 bytes); a smaller record means a new `page.h`.
+- **Text path:** a dense code index for Type0 ToUnicode maps (about 1.7 M over odl, a few faults a
+  font); the empty-clip flag folded into the SSE2 clip test (about 3 instructions a glyph); line
+  and word texts copied once when contiguous in the page text.
+- **The OCR route's `MeasurePage`** (1.6 % of odl): three attempts to count in the glyph loop cost
+  what the pass costs; counts per font slot are untried.
+- **Objects and order:** hex strings read in one pass (13.6 M on `multi_column`, 6 M on odl);
+  Breuel's topological order (about 20 M on `multi_column`); the writer's `StyleWords` (33 M on
+  `multi_column`).
+- **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
+  tagged documents); images encoded on the page threads; a fuzz target that converts with several
+  workers (the fuzz targets convert with one; the sanitizer sweeps and tests cover the rest).
+- **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
+  same peak RSS, but freed memory stays with the process.
+- **Profile-guided builds:** +3 to +4 % warm with identical output, once a training set can live
+  in the repository.
+- **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
+  wavelet pass; ICT and RGB interleave per row. PNG: a carry-less-multiply CRC behind run-time
+  dispatch. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or band at a time for bounded RSS.
 
 ## Rerunning
 
-The lab scripts of the campaign (`gate.sh`, `warmsuite.py`, `fresh_timer.cpp`, `profile.sh`,
-`ledger.jsonl`) live outside the repository in the campaign's lab directory; they call the agent
+The campaign's scripts live outside the repository in its lab directory; they call the agent
 skills' `outcmp.py`, `abbench.py`, `freshstat.py` and `ledger.py`:
+
+|Script|Does|
+|---|---|
+|`gate.sh bytes\|quick\|warm\|fresh\|suite\|batch`|the gates of a step against a snapshot binary|
+|`land.sh`|one landing under a lock: rebase, static and release builds without warnings, tests, G-bytes quick, push|
+|`instr.sh`|user instructions of `--batch --workers=1` per document group|
+|`fresh_timer.cpp`, `freshrot.sh`|the native fresh-process timer; rounds with the binaries' order rotated|
+|`pageswall.sh`, `cmdbench.c`|fresh wall time of multi-page documents per worker count|
+|`compare.sh`|every tool's own command line as a fresh process (the comparison of a version record)|
+|`final.sh gates\|time`|a round's final gates and timings|
 
 ```sh
 docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker
 python3 tools/dev.py build --config release --dir perf-release   # copy the binary out first
 gate.sh bytes STEP PREV NEW; gate.sh warm STEP PREV NEW; gate.sh suite STEP LABEL...
+python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/benchmark-output:ro -- \
+    python3 tools/hot_sections.py --build-dir build/release --build-dir build/static   # src/hot.ld
 ```
 
 `TCPU=N gate.sh warm|suite ...` runs on another CPU than 3 (instruction counts do not depend on
-it; times then are indicative only).
+it; times then are indicative only). CPU 9 is CPU 3's second thread and stays idle while CPU 3
+times; `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11` keeps `tools/dev.py`'s containers off both. A `-g`
+build for profiles needs `-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=gold`: with `src/hot.ld` GNU ld drops
+the line information of the functions it places.

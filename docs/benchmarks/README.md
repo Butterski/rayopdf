@@ -10,7 +10,8 @@ against the baselines; each version record compares RayoPDF with them.
 |---|---|
 | [baselines-2026-11-05.md](baselines-2026-11-05.md) | The competitors on every suite, the census; the reference for every gate |
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
-| [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) | The latest version, a delta on [v0.0.10](v0.0.10-2026-11-09.md): default output byte-identical, optional LaTeX math |
+| [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | The latest version: speed and the comparison with other tools; output byte-identical to 0.0.11 |
+| [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) and [v0.0.10-2026-11-09.md](v0.0.10-2026-11-09.md) | The latest quality numbers: 0.0.10 on every suite, 0.0.11 the optional LaTeX math |
 | [release-check-2026-11-09.md](release-check-2026-11-09.md) | 0.0.10 (and the 0.0.11 update) against the 0.1.0 release bar |
 
 ## History
@@ -30,6 +31,7 @@ Each version record links its predecessor.
 | 0.0.9 | 2026-11-08 | [v0.0.9-2026-11-08.md](v0.0.9-2026-11-08.md) | The OCR add-on, scan codecs, glyph-shape recovery, exact recovery |
 | 0.0.10 | 2026-11-09 | [v0.0.10-2026-11-09.md](v0.0.10-2026-11-09.md) | OCR scripts and rotation, performance rounds 2 and 3, a quality round |
 | 0.0.11 | 2026-11-09 | [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) | Optional LaTeX math (`--math=latex`) |
+| 0.0.12 | 2026-11-10 | [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | Performance round 4: 2,215 pages/s warm, 0.885 ms fresh, pages on threads; output byte-identical to 0.0.11 |
 
 ## Naming
 

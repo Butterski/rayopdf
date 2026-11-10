@@ -113,7 +113,10 @@ Source: [algorithms §1.3, §1.4, §3.3](../research/algorithms.md).
 7. **Writers:** the Markdown writer and the image writer.
 8. **Report:** the `--report` counters.
 
-Pages are processed in parallel. The output must not depend on the thread count.
+Pages are processed in parallel. The output must not depend on the thread count. Since 0.0.12
+`--convert` reads the pages of a document on up to four threads (interpretation, lines, tables and
+reading order per page; the cross-page stages on the calling thread); whatever depends on page
+order is redone in order ([performance.md](performance.md#pages-in-parallel)).
 
 Source: [algorithms §2, §4, §5, §6](../research/algorithms.md).
 
@@ -239,13 +242,14 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-09)
+### Status (2026-11-10)
 
-0.1.0 is not tagged: the [release check](../benchmarks/release-check-2026-11-09.md) finds (d)
-security and (e) footprint met; (a) quality and (b) tables open on READoc arXiv (and olmOCR
-`arxiv_math` in the default Unicode math mode); (c) speed open and worked on in performance round 4
-([performance.md](performance.md)). The numbers are in the latest records, listed in the
-[benchmark index](../benchmarks/README.md).
+0.1.0 is not tagged. (c) speed is met since 0.0.12 (2,215 pages/s warm, 0.885 ms fresh:
+[v0.0.12](../benchmarks/v0.0.12-2026-11-10.md)); the
+[release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
+met, to be repeated on the code that is released; (a) quality and (b) tables are open on READoc
+arXiv (`text_eds`, `head_teds`, `table_teds`, `seg_kt`). The numbers are in the latest records,
+listed in the [benchmark index](../benchmarks/README.md).
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
   campaign covered 22 fuzz targets; `fuzz_layout_math` (0.0.11) has had 2 × 5 min so far.
@@ -257,8 +261,9 @@ security and (e) footprint met; (a) quality and (b) tables open on READoc arXiv 
 - **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
   ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M7 Product:** front ends, Windows build and packaging done; speed bar open
-  ([v0.0.11](../benchmarks/v0.0.11-2026-11-09.md), [performance.md](performance.md)).
+- **M7 Product:** front ends, Windows build, packaging and the speed bar done
+  ([v0.0.12](../benchmarks/v0.0.12-2026-11-10.md), [performance.md](performance.md)); the rest of
+  the release bar open.
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)); open: Hebrew, Kannada and

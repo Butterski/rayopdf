@@ -4,7 +4,7 @@ PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 ## Status
 
-Version 0.0.11: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.0.12: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
 are read by the optional OCR add-on; math is written as Unicode text, or as LaTeX with
@@ -43,7 +43,8 @@ then the counters behind the uncertainty comments (glyphs without Unicode, pages
 repairs, limits reached, `exact`, ...).
 
 `--workers=N` (1 to 64) never changes the output. With `--convert` it is the number of pages of
-the document read at once (by default one a CPU, at most 4).
+the document read at once (by default up to one a CPU and at most 4, each thread started only
+when the pages read so far are worth it).
 
 ### Exact recovery of RayoMD PDFs
 
