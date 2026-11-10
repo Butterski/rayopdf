@@ -131,6 +131,24 @@ void Finish(std::unique_ptr<Conversion>& conversion, const ConvertOptions& optio
     if (options.oneShot) (void)conversion.release();
 }
 
+// The document's outline and structure tree for pages `first` to `last` (0-based), read while the
+// pages' lines are built (DocumentRead, layout/pipeline.h).
+struct DocumentParts {
+    const Document* document;
+    Conversion* conversion;
+    int first;
+    int last;
+    bool structure;  // ConvertOptions::structure
+
+    static bool Read(void* context) {
+        const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
+        ReadOutline(*parts.document, parts.conversion->outline);
+        if (parts.structure && parts.first <= parts.last)
+            ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
+        return parts.document->Report().repaired;
+    }
+};
+
 // The pages of `document` to Markdown (D4 steps 2-8); what it held is the caller's to end.
 std::unique_ptr<Conversion> ConvertDocument(const Document& document, const ConvertOptions& options, std::string& markdown,
                                             ConvertReport& report) {
@@ -170,16 +188,14 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     report.pages = static_cast<int>(pages.size());
     RecognisePages(document, fonts, options.ocr, pages, quality, conversion->routes, report,
                    !options.imageDirectory.empty());
-    std::vector<OutlineEntry>& outline = conversion->outline;
-    ReadOutline(document, outline);
     ImageOutput images;
     images.document = &document;
     images.directory = options.imageDirectory;
     images.linkPrefix = options.imageLinkPrefix;
-    Structure& structure = conversion->structure;
-    if (options.structure && first <= last) ReadStructure(document, first - 1, last - 1, structure);
-    ConvertPages(pages, quality, outline, document.Report().repaired, markdown, report, &images, &structure, options.math,
-                 pool.get());
+    DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure};
+    const DocumentRead read{&DocumentParts::Read, &parts};
+    ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,
+                 options.math, pool.get(), &read);
     return conversion;
 }
 

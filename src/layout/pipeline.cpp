@@ -49,14 +49,24 @@ int LayOutPages(std::vector<PageData>& pages, PagePool& pool, MathMode math) {
 
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
-                  const ImageOutput* images, const Structure* structure, MathMode math, PagePool* pool) {
+                  const ImageOutput* images, const Structure* structure, MathMode math, PagePool* pool,
+                  const DocumentRead* document) {
     // Page-local stages first: they depend on nothing outside their page (D4: pages in parallel).
+    // The caller's reads of the document (DocumentRead) are the round's first job: the calling
+    // thread takes it while the pool's threads build lines.
+    const size_t reads = document ? 1 : 0;
     if (pool) {
-        pool->Run(pages.size(), [&](unsigned, size_t p) {
-            if (math == MathMode::Latex) PrepareMathGlyphs(pages[p]);
-            BuildLines(pages[p]);
+        pool->Run(reads + pages.size(), [&](unsigned, size_t job) {
+            if (job < reads) {
+                repaired = document->read(document->context);
+                return;
+            }
+            PageData& page = pages[job - reads];
+            if (math == MathMode::Latex) PrepareMathGlyphs(page);
+            BuildLines(page);
         });
     } else {
+        if (document) repaired = document->read(document->context);
         for (PageData& page : pages) {
             if (math == MathMode::Latex) PrepareMathGlyphs(page);
             BuildLines(page);

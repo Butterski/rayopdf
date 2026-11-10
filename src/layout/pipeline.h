@@ -23,6 +23,18 @@ struct PageTextQuality {
     bool ocrFailed = false;
 };
 
+// The reads of the document that Convert leaves to ConvertPages: `read(context)` is called once,
+// before anything looks at `outline` or `structure`, and fills the objects the caller passed as
+// these (the document's outline and structure tree); what it returns replaces `repaired`. It runs
+// while the pages' lines are built: on the calling thread, or with a pool on whichever thread
+// takes it while the others build lines, which read no document. So the document is still read by
+// one thread at a time and in the order of a conversion on one thread (pages, OCR, outline,
+// structure), and nothing can depend on the thread count.
+struct DocumentRead {
+    bool (*read)(void* context) = nullptr;
+    void* context = nullptr;
+};
+
 // Lines, header/footer removal, images, reading order, semantics and the writer over `pages`
 // (each with its glyphs, shapes and links filled). Appends to `markdown`; adds to the counters of
 // `report` that these stages own (pagesWithoutText, hiddenGlyphs, headings, paragraphs, listItems,
@@ -36,6 +48,6 @@ struct PageTextQuality {
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images = nullptr, const Structure* structure = nullptr,
-                  MathMode math = MathMode::Unicode, PagePool* pool = nullptr);
+                  MathMode math = MathMode::Unicode, PagePool* pool = nullptr, const DocumentRead* document = nullptr);
 
 } // namespace RayoPdf::Layout
