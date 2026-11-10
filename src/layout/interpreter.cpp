@@ -407,7 +407,8 @@ private:
     template <int kCount>
     RAYOPDF_HOT_INLINE void PathPoints(const double* xy, bool curve);
     void AddPiece(double x0, double y0, double x1, double y1, bool rect);
-    RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources);
+    RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources, std::string_view data);
+    void PaintedSample(const PdfValue& dictionary, std::string_view data);
     void ReadLinks(int index);
     void NextLine(double tx, double ty) {
         Matrix t;
@@ -725,7 +726,7 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
         DoXObject(resources, operands.back().Name(), depth);
         return true;
     case Op::BI:
-        if (!operands.empty()) InlineImage(operands.back(), resources);
+        if (!operands.empty()) InlineImage(operands.back(), resources, lexer.InlineImageData());
         return true;
     case Op::w:
         if (!Numbers(lexer, 1, n)) return false;
@@ -753,10 +754,52 @@ bool Interpreter::Execute(Op op, const ContentLexer& lexer, const PdfValue& reso
     }
 }
 
-// The inline image BI just read (its dictionary; opSource_ is its source, BI to EI) as an image of
-// the page. The source is kept: Layout re-reads it when it extracts the image (the lexer's
-// dictionary does not outlive the next operator). Out of line: Execute keeps no image record.
-void Interpreter::InlineImage(const PdfValue& dictionary, const PdfValue& resources) {
+// A stencil mask of one sample that paints (BI /IM true /W 1 /H 1, its sample 0 unless /D [1 0]) is
+// its unit square filled with the fill colour: dvips with Ghostscript writes each rule of TeX so
+// (the rules of a table, a fraction bar). Axis-aligned on the page, it is recorded as the filled
+// rectangle it paints: a shape and a ruling, as `re f` leaves them.
+void Interpreter::PaintedSample(const PdfValue& dictionary, std::string_view data) {
+    const auto entry = [&](const char* brief, const char* full) {
+        const PdfValue* v = dictionary.Find(brief);
+        return v ? v : dictionary.Find(full);
+    };
+    const PdfValue* mask = entry("IM", "ImageMask");
+    const PdfValue* w = entry("W", "Width");
+    const PdfValue* h = entry("H", "Height");
+    if (!mask || !mask->Bool() || !w || !h || w->Int() != 1 || h->Int() != 1 || data.empty()) return;
+    if (entry("F", "Filter")) return;  // encoded data: an image like any other
+    bool inverted = false;
+    if (const PdfValue* decode = entry("D", "Decode")) {
+        double first = 0;
+        inverted = decode->IsArray() && !decode->Array().empty() && doc_.Number(decode->Array()[0], first) && first == 1;
+    }
+    const bool sample = (static_cast<unsigned char>(data[0]) & 0x80) != 0;
+    if (sample != inverted) return;  // the sample is masked out: nothing is painted
+    const Matrix& m = gs_.ctm;
+    const bool axisAligned = (std::fabs(m.b) < 1e-9 && std::fabs(m.c) < 1e-9) || (std::fabs(m.a) < 1e-9 && std::fabs(m.d) < 1e-9);
+    if (!axisAligned) return;
+    const Box square = UnitSquare(m);
+    if (!std::isfinite(square.x0) || !std::isfinite(square.y0) || !std::isfinite(square.x1) || !std::isfinite(square.y1)) return;
+    const Box visible = Intersect(square, gs_.clip);
+    if (!(visible.x1 >= visible.x0 && visible.y1 >= visible.y0)) return;
+    if (page_.shapes.size() < kMaxShapesPerPage) {
+        Shape s;
+        s.x0 = float(square.x0), s.y0 = float(square.y0), s.x1 = float(square.x1), s.y1 = float(square.y1);
+        s.filled = true;
+        s.segments = 4;
+        s.kind = ShapeKind::Rect;
+        page_.shapes.push_back(s);
+    }
+    if (page_.rulings.size() < kMaxRulingsPerPage)
+        page_.rulings.push_back(Ruling{float(visible.x0), float(visible.y0), float(visible.x1), float(visible.y1), kRulingFill});
+}
+
+// The inline image BI just read (its dictionary; opSource_ is its source, BI to EI; `data` its
+// samples) as an image of the page. The source is kept: Layout re-reads it when it extracts the
+// image (the lexer's dictionary does not outlive the next operator). Out of line: Execute keeps no
+// image record.
+void Interpreter::InlineImage(const PdfValue& dictionary, const PdfValue& resources, std::string_view data) {
+    PaintedSample(dictionary, data);
     const Box box = Intersect(UnitSquare(gs_.ctm), pageBox_);
     if (box.Empty() || page_.images.size() >= kMaxShapesPerPage ||
         page_.inlineImages.size() + opSource_.size() > kMaxInlineImageBytes)
