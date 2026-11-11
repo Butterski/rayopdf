@@ -843,6 +843,30 @@ void TestTitleNotes() {
     RAYOPDF_CHECK(Contains(md, "source.[^1]") && Contains(md, "\n\n[^1]: Doe, On Footnotes, 2021.\n") &&
                       !Contains(md, "[^2]"),
                   443);
+    // A page that opens with body text (an excerpt), or a title followed by a long paragraph,
+    // has no title block: a note referenced from that text stays a footnote.
+    const auto excerpt = [](bool title) {
+        std::vector<PageData> page{NewPage(1)};
+        float y = 740;
+        if (title) {
+            AddText(page[0], "A Title of the Paper", 72, y, 16);
+            y -= 28;
+        }
+        float at = AddText(page[0], "The excerpt opens in the middle of the text, and its claim needs a source.", 72, y, 10);
+        AddText(page[0], "1", at, y + 4, 6);
+        for (int i = 1; i < 6; ++i)
+            AddText(page[0], "Body text of the excerpt that runs on long enough to fill a whole line", 72, y - 14.0f * i, 10);
+        AddText(page[0], "2 Methods", 72, y - 110, 12, kGlyphBold);
+        for (int i = 0; i < 20; ++i)
+            AddText(page[0], "Body text of the section that runs on long enough to fill a whole line", 72, y - 134 - 14.0f * i, 10);
+        at = AddText(page[0], "1", 72, 94, 5);
+        AddText(page[0], "Doe, On Footnotes, 2021.", at, 90, 8);
+        return Run(page);
+    };
+    const std::string bare = excerpt(false), titled = excerpt(true);
+    Show("excerpt notes", bare);
+    RAYOPDF_CHECK(Contains(bare, "source.[^1]") && Contains(bare, "\n\n[^1]: Doe, On Footnotes, 2021.\n"), 444);
+    RAYOPDF_CHECK(Contains(titled, "source.[^1]") && Contains(titled, "\n\n[^1]: Doe, On Footnotes, 2021.\n"), 445);
 }
 
 void TestFigureObstacle() {

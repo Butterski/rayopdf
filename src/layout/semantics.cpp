@@ -1205,6 +1205,7 @@ void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& block
                 blocks.end());
 }
 
+constexpr uint32_t kTitleBlockLines = 4;  // lines of a title block's paragraph (an author list, an affiliation) at most
 constexpr uint64_t kMaxTitleGlyphs = uint64_t(1) << 16;  // glyphs of the title block searched for note marks
 
 // Notes referenced from the title block (an author's affiliation or address, "Corresponding
@@ -1212,10 +1213,14 @@ constexpr uint64_t kMaxTitleGlyphs = uint64_t(1) << 16;  // glyphs of the title 
 // are written as paragraphs under the title block, before the abstract (or the first heading),
 // each with its mark first, and their marks stay raised text. The title block is the document's
 // first blocks up to that point, all on its first page. The other notes are numbered anew in
-// their order. `blocks` and `lines` hold the body only; `notes` index `noteLines`.
+// their order. The block must open with the title (a heading) and hold short paragraphs only: a
+// page that starts with body text (an excerpt) has no title block. `blocks` and `lines` hold the
+// body only; `notes` index `noteLines`.
 void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines,
                 std::vector<Block>& notes, const std::vector<BlockLine>& noteLines, std::vector<NoteRef>& refs) {
-    if (notes.empty() || refs.empty() || blocks.size() < 2 || blocks[0].count == 0) return;
+    if (notes.empty() || refs.empty() || blocks.size() < 2 || blocks[0].count == 0 ||
+        blocks[0].kind != BlockKind::Heading)
+        return;
     const uint32_t page = lines[blocks[0].first].page;
     std::string line;
     size_t abstract = 0;
@@ -1228,6 +1233,7 @@ void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, 
             abstract = i;
             break;
         }
+        if (b.count > kTitleBlockLines) return;
     }
     if (abstract == 0) return;
     // The note numbers whose marks stand in the title block.
