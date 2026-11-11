@@ -446,6 +446,7 @@ struct WordChars {
     uint32_t size = 0, digits = 0, letters = 0;
     unsigned char head[3] = {0, 0, 0};
     bool numberish = true;
+    bool at = false;  // an '@' among them (an e-mail address has one)
     uint32_t page = 0;  // the page they were gathered for (TableScratch::charsPage)
 };
 
@@ -739,6 +740,7 @@ const WordChars& Detector::Chars(const TWord& w) const {
             if (digit) c.digits++;
             else if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) c.letters++;
             c.numberish = c.numberish && (digit || ch == '.' || ch == '-' || u == 0xE2 || u == 0x88 || u == 0x92);
+            c.at = c.at || ch == '@';
         }
     }
     return c;
@@ -1350,13 +1352,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             const TWord& w = words_[rowWords[k]];
             // E-mail addresses side by side on a line: the authors' addresses under their names
             // and affiliations (an author block set in columns), no table.
-            if (EmailAddress(WordText(w, scratch))) emails |= uint64_t(1) << std::min(columns[k - base], 63);
+            const WordChars& t = Chars(w);
+            if (t.at && EmailAddress(WordText(w, scratch))) emails |= uint64_t(1) << std::min(columns[k - base], 63);
             if (Bits(emails) >= 2) return;
             // A chart's axis in a cell: no table. Pieces of tall brackets (U+239B-U+23AD): a
             // matrix set in display math.
             float value = 0;
             const size_t cell = static_cast<size_t>(group * cols + columns[k - base]);
-            const WordChars& t = Chars(w);
             if (t.numberish && ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
             if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
             // The word before it in the row, when only a word space apart: one cell's text.

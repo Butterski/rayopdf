@@ -1689,11 +1689,19 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // no paragraph (two lines or more, or the end of a sentence), or is set large.
     if (!titles.empty()) {
         std::string joined;
+        // The text of the line a candidate block starts with, kept for its second test.
+        std::string firstText;
+        uint32_t firstLine = UINT32_MAX;
         const auto titled = [&](uint32_t from, uint32_t count) {
             joined.clear();
             for (uint32_t i = from; i < from + count; ++i) {
-                const PageData& page = pages[infos[i].page];
-                LineText(page, page.lines[infos[i].line], scratch);
+                if (i == firstLine) {
+                    scratch = firstText;
+                } else {
+                    const PageData& page = pages[infos[i].page];
+                    LineText(page, page.lines[infos[i].line], scratch);
+                    if (i == from) firstText = scratch, firstLine = i;
+                }
                 if (!joined.empty()) joined.push_back(' ');
                 joined += scratch;
             }
