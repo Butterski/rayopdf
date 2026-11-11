@@ -298,6 +298,53 @@ void TestFigureText() {
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 869);
 }
 
+// A box of rulings with text in its cells drawn inside a plot (a legend) is part of the figure;
+// the same box alone is a table.
+void TestLatticeInFigure() {
+    const auto build = [](bool plot) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        for (float y : {600.0f, 584.0f, 568.0f, 552.0f}) HLine(page, 200, 360, y);
+        for (float x : {200.0f, 280.0f, 360.0f}) VLine(page, x, 552, 600);
+        const char* const cells[] = {"Label", "Value", "alpha", "0.51", "beta", "0.52"};
+        for (int k = 0; k < 6; ++k) AddText(page, cells[k], k % 2 ? 284.0f : 204.0f, 588 - 16.0f * float(k / 2));
+        if (plot) {
+            Shape s;
+            s.x0 = 150, s.x1 = 420, s.y0 = 520, s.y1 = 640;
+            s.kind = ShapeKind::Other, s.stroked = true, s.curved = true, s.segments = 40;
+            page.shapes.push_back(s);
+            for (int k = 0; k < 10; ++k) {
+                Shape tick;
+                tick.x0 = tick.x1 = 155 + 26.0f * float(k), tick.y0 = 522, tick.y1 = 525;
+                tick.kind = ShapeKind::Line, tick.stroked = true, tick.segments = 1;
+                page.shapes.push_back(tick);
+            }
+        }
+        return pages;
+    };
+    std::vector<PageData> plot = build(true), alone = build(false);
+    ConvertReport report;
+    std::string md = Run(plot, &report);
+    Show("lattice in a figure", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "alpha"), 875);
+    md = Run(alone, &report);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| alpha | 0.51 |"), 876);
+}
+
+// A ruling of a lattice running on past its top rule makes no empty row above the table.
+void TestLatticeRulingPastTop() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {584.0f, 568.0f, 552.0f}) HLine(page, 200, 360, y);
+    for (float x : {200.0f, 280.0f, 360.0f}) VLine(page, x, 552, 584);
+    VLine(page, 280, 584, 600);
+    const char* const cells[] = {"Label", "Value", "alpha", "0.51"};
+    for (int k = 0; k < 4; ++k) AddText(page, cells[k], k % 2 ? 284.0f : 204.0f, 572 - 16.0f * float(k / 2));
+    const std::string md = Run(pages);
+    Show("lattice ruling past its top", md);
+    RAYOPDF_CHECK(Contains(md, "| Label | Value |\n| --- | --- |\n| alpha | 0.51 |"), 877);
+}
+
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
 // text: its words still sort top to bottom (the tie leaves them to std::sort), and it stays a table.
 void TestBorderlessWordOrder() {
@@ -1164,6 +1211,8 @@ int main(int argc, char** argv) {
     TestHeaderRule();
     TestBorderless();
     TestFigureText();
+    TestLatticeInFigure();
+    TestLatticeRulingPastTop();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();

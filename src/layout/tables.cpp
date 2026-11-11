@@ -508,6 +508,7 @@ private:
     void WordColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                      const std::vector<Gap>& gaps, std::vector<int>& out) const;
     bool MathWord(const TWord& w) const;
+    const std::vector<Ruling>& Figures();
     bool FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                     float em);
 
@@ -742,17 +743,22 @@ bool Detector::MathWord(const TWord& w) const {
     return math;
 }
 
-// Rows that are a figure's own text: most of their words stand in a figure region or within two
-// ems of it (tick labels along an axis, a legend, the labels of a diagram).
-bool Detector::FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
-                          size_t rowEnd, float em) {
+// The page's figure regions in the detector's frame, found on first use.
+const std::vector<Ruling>& Detector::Figures() {
     if (!figuresKnown_) {
         figuresKnown_ = true;
         std::vector<FigureRegion> regions;
         FigureRegions(page_, regions);
         for (const FigureRegion& r : regions) figures_.push_back(ToFrame(Ruling{r.x0, r.y0, r.x1, r.y1, 0}, dir_));
     }
-    if (figures_.empty()) return false;
+    return figures_;
+}
+
+// Rows that are a figure's own text: most of their words stand in a figure region or within two
+// ems of it (tick labels along an axis, a legend, the labels of a diagram).
+bool Detector::FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                          size_t rowEnd, float em) {
+    if (Figures().empty()) return false;
     const float reach = 2 * em;
     size_t inside = 0, all = 0;
     for (size_t r = rowBegin; r < rowEnd; ++r) {
@@ -1762,9 +1768,15 @@ void Detector::Lattices() {
         if (!column && drawn && cols >= 2) HeaderAbove(g);
         if (!column && (cols < 2 || g.Rows() < 2 || wholeRows * 2 > g.Rows())) continue;
         bool figure = false;
-        if (!Validate(g, column, &figure)) {
+        // A grid drawn inside a figure region (the boxes of a diagram or a legend) is part of the
+        // figure.
+        bool drawing = false;
+        for (const Ruling& f : Figures())
+            drawing = drawing || (g.x0 >= f.x0 - 2 * bodySize_ && g.x1 <= f.x1 + 2 * bodySize_ &&
+                                  g.y0 >= f.y0 - 2 * bodySize_ && g.y1 <= f.y1 + 2 * bodySize_);
+        if (drawing || !Validate(g, column, &figure)) {
             // A chart's gridlines or a diagram's boxes: their lines are no rules of a table either.
-            for (size_t m = 0; m < comp.hCount && figure; ++m) hUsed[comp.h[m]] = 1;
+            for (size_t m = 0; m < comp.hCount && (figure || drawing); ++m) hUsed[comp.h[m]] = 1;
             continue;
         }
         LatticeHeader(g);
@@ -1835,7 +1847,8 @@ void Detector::JoinStripes() {
 
 // Grid columns and rows no word falls in that are narrower than the text (the space between double
 // rulings, a cell background's edge beside a ruling) separate nothing: their boundary goes, and
-// they join a neighbour.
+// they join a neighbour. An empty first or last row (a ruling running on past the table's last
+// rule) holds nothing at all: it goes.
 void Detector::CollapseEmpty(Grid& g) const {
     if (g.xs.size() < 3 && g.ys.size() < 3) return;
     std::vector<uint8_t> colInk(g.xs.size(), 0), rowInk(g.ys.size(), 0);
@@ -1848,6 +1861,15 @@ void Detector::CollapseEmpty(Grid& g) const {
         colInk[std::min(std::max<size_t>(c, 1), g.xs.size() - 1) - 1] = 1;
         rowInk[std::min(std::max<size_t>(r, 1), g.ys.size() - 1) - 1] = 1;
     }
+    if (g.ys.size() > 2 && !rowInk[0]) {
+        g.ys.erase(g.ys.begin());
+        rowInk.erase(rowInk.begin());
+    }
+    if (g.ys.size() > 2 && !rowInk[g.ys.size() - 2]) {
+        rowInk.erase(rowInk.begin() + static_cast<std::ptrdiff_t>(g.ys.size() - 2));
+        g.ys.pop_back();
+    }
+    g.y1 = g.ys.front(), g.y0 = g.ys.back();
     const float narrow = 1.2f * bodySize_;
     // Positions removed from the end backwards keep the indices of the rest.
     for (size_t c = g.xs.size() - 1; c-- > 0 && g.xs.size() > 2;)
