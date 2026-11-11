@@ -298,23 +298,27 @@ size_t NumberingPrefix(std::string_view t) {
 // those of hyphens (U+00AD, U+2010, U+2011: a bookmark and its line may differ in them; a dash
 // may be a list's bullet); `stripNumbering` leaves the section numbering out (NumberingPrefix).
 void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
-    key.clear();
+    // A key is never longer than its text: written in place, then cut to its length.
+    key.resize(text.size());
+    char* const out = &key[0];
+    size_t n = 0;
     for (size_t i = stripNumbering ? NumberingPrefix(text) : 0; i < text.size(); ++i) {
         const char c = text[i];
         const unsigned char u = static_cast<unsigned char>(c);
         if (c >= 'A' && c <= 'Z') {
-            key.push_back(static_cast<char>(c - 'A' + 'a'));
+            out[n++] = static_cast<char>(c - 'A' + 'a');
         } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
-            key.push_back(c);
+            out[n++] = c;
         } else if (u == 0xC2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) == 0xAD) {
             ++i;
         } else if (u == 0xE2 && i + 2 < text.size() && static_cast<unsigned char>(text[i + 1]) == 0x80 &&
                    static_cast<unsigned char>(text[i + 2]) >= 0x90 && static_cast<unsigned char>(text[i + 2]) <= 0x91) {
             i += 2;
         } else if (u >= 0x80) {
-            key.push_back(c);
+            out[n++] = c;
         }
     }
+    key.resize(n);
 }
 
 // The text ends in a row of leader dots (four or more, spaced or not), with or without the page
