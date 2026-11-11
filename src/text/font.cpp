@@ -676,8 +676,8 @@ RAYOPDF_NOINLINE uint8_t CountText(std::string_view text, Repair::MapStats& stat
                                 (one.thai ? kEntryThai : 0));
 }
 
-// The code point of `text` when it is one well-formed UTF-8 sequence of 1-3 bytes (as Utf8::Decode
-// reads it), else kNoCodePoint.
+// The code point of `text` when it is one well-formed UTF-8 sequence (as Utf8::Decode reads it),
+// else kNoCodePoint.
 RAYOPDF_HOT_INLINE uint32_t SingleCodePoint(std::string_view text) {
     const unsigned char* p = reinterpret_cast<const unsigned char*>(text.data());
     if (text.size() == 1) return p[0] < 0x80 ? p[0] : kNoCodePoint;
@@ -690,6 +690,12 @@ RAYOPDF_HOT_INLINE uint32_t SingleCodePoint(std::string_view text) {
         if ((p[0] & 0xF0) != 0xE0 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80) return kNoCodePoint;
         const uint32_t cp = static_cast<uint32_t>(p[0] & 0x0F) << 12 | static_cast<uint32_t>(p[1] & 0x3F) << 6 | (p[2] & 0x3F);
         return cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF) ? kNoCodePoint : cp;
+    }
+    if (text.size() == 4) {
+        if ((p[0] & 0xF8) != 0xF0 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80) return kNoCodePoint;
+        const uint32_t cp = static_cast<uint32_t>(p[0] & 0x07) << 18 | static_cast<uint32_t>(p[1] & 0x3F) << 12 |
+                            static_cast<uint32_t>(p[2] & 0x3F) << 6 | (p[3] & 0x3F);
+        return cp < 0x10000 || cp > 0x10FFFF ? kNoCodePoint : cp;
     }
     return kNoCodePoint;
 }

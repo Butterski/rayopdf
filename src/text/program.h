@@ -61,9 +61,11 @@ struct CmapSubtable {
 
     // The glyph of `code`, 0 for none.
     uint32_t Glyph(uint32_t code) const;
-    // Calls visit(code, glyph) for each mapped code, at most `limit` codes in all.
+    // Calls visit(code, glyph) for each mapped code in the subtable's order. Every code read,
+    // mapped or not, takes one from `budget`, a format 4 code found by search (segments out of
+    // order or overlapping) sixteen; the walk stops when it is 0.
     template <class Visit>
-    void ForEach(Visit& visit, uint32_t limit) const;
+    void ForEach(Visit& visit, uint32_t& budget) const;
 };
 
 struct Sfnt {
@@ -82,14 +84,16 @@ bool ReadSfnt(std::string_view data, Sfnt& out);
 // The 'post' glyph names (formats 1 and 2), empty when it has none.
 bool ReadPostNames(std::string_view post, uint32_t glyphCount, Names& out);
 // Unicode of each glyph id below `glyphCount` from the font's Unicode subtables ((3,10), (3,1),
-// (0,*)): the lowest code point that maps to it, 0 for none.
+// (0,*), a subtable listed twice read once): the lowest code point that maps to it, 0 for none.
+// At most kMaxInvertedCodes codes are read over all the subtables.
+constexpr uint32_t kMaxInvertedCodes = 1u << 20;
 void InvertUnicodeCmap(const Sfnt& sfnt, uint32_t glyphCount, std::vector<uint32_t>& unicodeOfGlyph);
 
 // Implementation of CmapSubtable::ForEach.
-void ForEachMapping(const CmapSubtable& table, uint32_t limit, void (*visit)(void*, uint32_t, uint32_t), void* context);
+void ForEachMapping(const CmapSubtable& table, uint32_t& budget, void (*visit)(void*, uint32_t, uint32_t), void* context);
 template <class Visit>
-void CmapSubtable::ForEach(Visit& visit, uint32_t limit) const {
-    ForEachMapping(*this, limit, [](void* c, uint32_t code, uint32_t glyph) { (*static_cast<Visit*>(c))(code, glyph); },
+void CmapSubtable::ForEach(Visit& visit, uint32_t& budget) const {
+    ForEachMapping(*this, budget, [](void* c, uint32_t code, uint32_t glyph) { (*static_cast<Visit*>(c))(code, glyph); },
                    &visit);
 }
 

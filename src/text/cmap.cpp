@@ -468,6 +468,9 @@ public:
         }
         for (uint32_t code = low; code <= high && !Full(); ++code) {
             units[count - 1] = static_cast<uint16_t>(last + (code - low));
+            // A surrogate pair is one code point; the texts of several draw on kMaxRangeUnits.
+            const bool pair = count == 2 && units[0] >= 0xD800 && units[0] <= 0xDBFF && units[1] >= 0xDC00 && units[1] <= 0xDFFF;
+            if (!pair && !DrawUnits(count)) return;
             const size_t start = map_.text.size();
             AppendUtf16(units, count, map_.text);
             Add(code, start);
@@ -482,7 +485,19 @@ private:
         map_.entries.push_back(UnicodeEntry{code, static_cast<uint32_t>(start), static_cast<uint32_t>(length)});
     }
 
+    // Draws `units` on kMaxRangeUnits for a code of a range that maps to several units; false, the
+    // map cut, once the budget is spent.
+    bool DrawUnits(size_t units) {
+        if (units > kMaxRangeUnits - rangeUnits_) {
+            Cut();
+            return false;
+        }
+        rangeUnits_ += units;
+        return true;
+    }
+
     ToUnicodeMap& map_;
+    size_t rangeUnits_ = 0;  // drawn on kMaxRangeUnits
 };
 
 class CidSink final : public Sink {

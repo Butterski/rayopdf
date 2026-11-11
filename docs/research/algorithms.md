@@ -204,7 +204,7 @@ Flate robustness matters more than raw throughput:
 - bfrange with an array destination: one string per code (the spec example ff/fi/ffl ligatures).
 - Also accept `begincidrange`/`cidchar` in mislabelled ToUnicode streams, as pdf.js does `[unverified]`.
 - Tolerate missing `endcmap`, odd hex lengths and dst strings over 2 bytes on 1-byte codes.
-- Bound everything: at most 65 536 bfrange iterations per range `[INFERENCE]`, total entries ≤ 2^20.
+- Bound everything: at most 65 536 bfrange iterations per range `[INFERENCE]`, total entries ≤ 2^20, at most 2^14 UTF-16 units written by ranges for codes that map to more than one code point (a 256-unit destination over 65 536 codes would be 50 MB of text; on 2026-11-11 no map of the development corpora and the SafeDocs sample had more than 622 bytes of text in entries other than one BMP code point, ranges and single codes together).
 
 ### 3.3 Simple-font encodings
 - Base encodings: Standard, WinAnsi, MacRoman, MacExpert (Annex D.2), Symbol and ZapfDingbats built-in (D.5/D.6).
@@ -237,7 +237,7 @@ Flate robustness matters more than raw throughput:
   - Licence: **BSD-3-Clause** ([cmapres] LICENSE.md), compatible with Apache-2.0 plus NOTICE.
   - Note: cid2code.txt for Japan1 alone is 2.69 MB of text. Generate compact tables at build time.
 - **Identity-H/V without ToUnicode**:
-  - CIDFontType2 + embedded TrueType: invert the font's (3,1)/(3,10) cmap through CIDToGIDMap (pdfminer approach).
+  - CIDFontType2 + embedded TrueType: invert the font's (3,1)/(3,10) cmap through CIDToGIDMap (pdfminer approach). At most 2^20 codes are read over all the Unicode subtables (a format 4 code found by search, its segments out of order or overlapping, counts 16), a subtable listed under several encodings once (the most in the development corpora and SafeDocs sample on 2026-11-11 was 22 860).
   - CIDFontType0 (CFF): use CFF charset glyph names if the font is name-keyed `[INFERENCE]`.
   - Otherwise: no Unicode; emit U+FFFD and flag the font. Do not emit raw codes; PDFBox and Acrobat skip composite codes.
 - Vertical mode (`WMode 1`, `-V` CMaps): `W2`/`DW2` metrics; columns read top-to-bottom, right-to-left (§9.7.4.3).

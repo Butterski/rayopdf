@@ -135,6 +135,21 @@ void TestToUnicode() {
     ToUnicodeMap huge;
     ParseToUnicode("beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange", huge);
     RAYOPDF_CHECK(huge.truncated && huge.entries.size() == kMaxRangeCodes, 332);
+    // Ranges whose codes map to several code points draw on kMaxRangeUnits (a 200-unit destination
+    // over 65,536 codes would be 13 MB of text); a range of surrogate pairs (one code point each)
+    // and a short ligature range do not reach it.
+    ToUnicodeMap wide;
+    std::string wideCmap = "beginbfrange <10> <1F> <00660066> <0100> <FFFF> <";
+    for (int i = 0; i < 200; ++i) wideCmap += "0041";
+    wideCmap += "> endbfrange";
+    ParseToUnicode(wideCmap, wide);
+    ToUnicodeMap pairs;
+    ParseToUnicode("beginbfrange <0000> <03FF> <D840DC00> endbfrange", pairs);
+    const UnicodeEntry* lastPair = pairs.Find(0x3FF);
+    RAYOPDF_CHECK(wide.truncated && wide.entries.size() == 16 + (kMaxRangeUnits - 16 * 2) / 200 &&
+                      wide.Find(0x1F) && wide.Text(*wide.Find(0x1F)) == "fu" && !pairs.truncated &&
+                      pairs.entries.size() == 0x400 && lastPair && pairs.Text(*lastPair) == "\xF0\xA0\x8F\xBF",
+                  1472);
     // Entries of plain hex strings take a scanner of their own: the same map as the general lexer
     // gives, which reads them when every string has white space inside.
     const std::string plain = "beginbfchar <41> <0041> <42> <D840DC3E> <043> <0066006> <44> <> <0102030405> <41>\n"
@@ -288,6 +303,85 @@ std::string Sfnt(uint16_t platform, uint16_t encoding, uint16_t first, uint16_t 
     return out + body;
 }
 
+// A format 4 cmap subtable of segments (end, start, delta), every range offset 0.
+struct Segment {
+    uint16_t end, start, delta;
+};
+std::string Format4(const std::vector<Segment>& segments) {
+    const uint32_t segX2 = static_cast<uint32_t>(segments.size() * 2);
+    std::string sub;
+    Put16(sub, 4);
+    Put16(sub, 16 + 4 * segX2);
+    Put16(sub, 0);
+    Put16(sub, segX2);
+    Put16(sub, 0);
+    Put16(sub, 0);
+    Put16(sub, 0);
+    for (const Segment& s : segments) Put16(sub, s.end);
+    Put16(sub, 0);
+    for (const Segment& s : segments) Put16(sub, s.start);
+    for (const Segment& s : segments) Put16(sub, s.delta);
+    for (size_t i = 0; i < segments.size(); ++i) Put16(sub, 0);
+    return sub;
+}
+
+// A format 13 cmap subtable of one group: codes `first`..`last` to `glyph`.
+std::string Format13(uint32_t first, uint32_t last, uint32_t glyph) {
+    std::string sub;
+    Put16(sub, 13);
+    Put16(sub, 0);
+    Put32(sub, 28);
+    Put32(sub, 0);
+    Put32(sub, 1);
+    Put32(sub, first);
+    Put32(sub, last);
+    Put32(sub, glyph);
+    return sub;
+}
+
+// An sfnt of 'maxp' (`glyphs` glyphs) and 'cmap': records (platform, encoding, index into
+// `subtables`), records of one index sharing its offset.
+std::string CmapFont(const std::vector<std::tuple<uint16_t, uint16_t, size_t>>& records,
+                     const std::vector<std::string>& subtables, uint16_t glyphs) {
+    std::string cmap;
+    Put16(cmap, 0);
+    Put16(cmap, static_cast<uint32_t>(records.size()));
+    std::vector<uint32_t> offsets;
+    uint32_t at = 4 + 8 * static_cast<uint32_t>(records.size());
+    for (const std::string& sub : subtables) {
+        offsets.push_back(at);
+        at += static_cast<uint32_t>(sub.size());
+    }
+    for (const auto& r : records) {
+        Put16(cmap, std::get<0>(r));
+        Put16(cmap, std::get<1>(r));
+        Put32(cmap, offsets[std::get<2>(r)]);
+    }
+    for (const std::string& sub : subtables) cmap += sub;
+    std::string maxp;
+    Put32(maxp, 0x00005000);
+    Put16(maxp, glyphs);
+    std::string out;
+    Put32(out, 0x00010000);
+    Put16(out, 2);
+    Put16(out, 0);
+    Put16(out, 0);
+    Put16(out, 0);
+    const uint32_t cmapAt = 12 + 2 * 16;
+    const uint32_t maxpAt = cmapAt + static_cast<uint32_t>((cmap.size() + 3) / 4 * 4);
+    out += "cmap";
+    Put32(out, 0);
+    Put32(out, cmapAt);
+    Put32(out, static_cast<uint32_t>(cmap.size()));
+    out += "maxp";
+    Put32(out, 0);
+    Put32(out, maxpAt);
+    Put32(out, static_cast<uint32_t>(maxp.size()));
+    out += cmap;
+    out.resize(maxpAt, '\0');
+    return out + maxp;
+}
+
 std::string CffIndex(const std::vector<std::string>& items) {
     std::string out;
     Put16(out, static_cast<uint32_t>(items.size()));
@@ -353,6 +447,38 @@ void TestPrograms() {
                       type1.codes.Name(65) == "Omega" && type1.codes.Name(66) == "f_l" && type1.codes.Name(67).empty(),
                   351);
     RAYOPDF_CHECK(Program::ReadType1Encoding("/Encoding StandardEncoding def", type1) && type1.standard, 352);
+    // An inverted Unicode cmap: the lowest code of each glyph, none for glyph 0.
+    std::vector<uint32_t> unicode;
+    const std::string latin = Sfnt(3, 1, 0x41, 2, {});
+    Program::ReadSfnt(latin, sfnt);
+    Program::InvertUnicodeCmap(sfnt, 3, unicode);
+    RAYOPDF_CHECK(unicode.size() == 3 && unicode[0] == 0 && unicode[1] == 0x41 && unicode[2] == 0x42, 1473);
+    // The subtables share kMaxInvertedCodes, and one subtable under several encodings is read once:
+    // a (3,10) group of 2^19 codes listed again at the same offset leaves room for the (0,3)
+    // subtable that maps "A", the same group at a second offset spends the budget before it.
+    const std::string group = Format13(0, (1u << 19) - 1, 0);
+    const std::string letter = Format4({{0x41, 0x41, static_cast<uint16_t>(1 - 0x41)}, {0xFFFF, 0xFFFF, 1}});
+    std::vector<uint32_t> once, twice;
+    const std::string shared = CmapFont({{3, 10, 0}, {0, 4, 0}, {0, 3, 1}}, {group, letter}, 2);
+    Program::ReadSfnt(shared, sfnt);
+    Program::InvertUnicodeCmap(sfnt, 2, once);
+    const std::string copied = CmapFont({{3, 10, 0}, {0, 4, 1}, {0, 3, 2}}, {group, group, letter}, 2);
+    Program::ReadSfnt(copied, sfnt);
+    Program::InvertUnicodeCmap(sfnt, 2, twice);
+    RAYOPDF_CHECK(sfnt.cmaps.size() == 3 && once.size() == 2 && once[1] == 0x41 && twice.size() == 2 && twice[1] == 0, 1474);
+    // A format 4 subtable whose end codes are out of order is read by search, with the glyphs Glyph
+    // gives, sixteen of the budget a code: a budget of 128 reads codes 0-7.
+    const std::string unsorted = CmapFont({{3, 1, 0}}, {Format4({{0x00FF, 0, 0}, {0x0010, 0, 0}})}, 300);
+    Program::ReadSfnt(unsorted, sfnt);
+    uint32_t budget = 128;
+    size_t visited = 0;
+    bool sameGlyphs = sfnt.cmaps.size() == 1;
+    auto visit = [&](uint32_t code, uint32_t glyph) {
+        ++visited;
+        sameGlyphs = sameGlyphs && sfnt.cmaps[0].Glyph(code) == glyph && glyph == code;
+    };
+    if (sameGlyphs) sfnt.cmaps[0].ForEach(visit, budget);
+    RAYOPDF_CHECK(sameGlyphs && visited == 7 && budget == 0, 1475);
     // Truncated and corrupt programs fail without reading out of bounds.
     for (size_t cut = 0; cut < font.size(); cut += 7) Program::ReadSfnt(std::string_view(font).substr(0, cut), sfnt);
     const std::string cffData = Cff();

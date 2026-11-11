@@ -15,10 +15,14 @@ namespace RayoPdf::Text {
 
 // Bounds of a parsed CMap (algorithms §3.2): at most kMaxMappedCodes codes in all, at most
 // kMaxRangeCodes codes from one range (the rest of a longer range is dropped), at most
-// kMaxCodespaceRanges codespace ranges. A map that reaches a limit keeps what it read.
+// kMaxCodespaceRanges codespace ranges, and in a ToUnicode CMap at most kMaxRangeUnits UTF-16
+// units written by ranges for codes that map to more than one code point (a range copies its
+// destination for every code: 65,536 codes of a 256-unit string are 50 MB of text). A map that
+// reaches a limit keeps what it read.
 constexpr uint32_t kMaxMappedCodes = 1u << 20;
 constexpr uint32_t kMaxRangeCodes = 1u << 16;
 constexpr size_t kMaxCodespaceRanges = 256;
+constexpr size_t kMaxRangeUnits = 1u << 14;
 
 // A codespace range of 1-4 bytes: a code of `bytes` bytes is in it when every byte lies within
 // the range's bounds for that byte (§9.7.6.2).
