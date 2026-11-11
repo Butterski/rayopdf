@@ -1313,6 +1313,67 @@ void TestBracketMatrix() {
     RAYOPDF_CHECK(report.tables == 0, 858);
 }
 
+// A lattice without rules between its rows whose verticals are drawn row by row (TeX's | columns):
+// each piece is a row, its cells of two lines one row.
+void TestLatticeRowsByVerticals() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "Intro text before the table.", 72, 730);
+    HLine(page, 72, 440, 710);
+    HLine(page, 72, 440, 640);
+    for (float x : {72.0f, 200.0f, 440.0f}) {
+        VLine(page, x, 670, 710);
+        VLine(page, x, 640, 670);
+    }
+    AddText(page, "Alpha", 76, 698);
+    AddText(page, "(note)", 76, 686);
+    AddText(page, "first line of text", 204, 698);
+    AddText(page, "and its second line", 204, 686);
+    AddText(page, "Beta", 76, 656);
+    AddText(page, "third", 204, 656);
+    AddText(page, "Text after the table.", 72, 620);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("lattice rows by verticals", md);
+    RAYOPDF_CHECK(report.tables == 1 &&
+                      Contains(md, "| Alpha (note) | first line of text and its second line |\n| --- | --- |\n| Beta | third |"),
+                  888);
+}
+
+// A table in sections, each boxed under its label set between the rules (the second label's words
+// on both sides of a column boundary): one table, each label a row, the first one the header.
+void TestLatticeSections() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "Intro text before the table.", 72, 740);
+    HLine(page, 72, 440, 720);
+    AddText(page, "General analysis tools", 76, 707, 10, kGlyphBold);
+    for (const float top : {700.0f, 638.0f}) {
+        HLine(page, 72, 440, top);
+        HLine(page, 72, 440, top - 40);
+        if (top > 650) HLine(page, 72, 440, top - 42);  // a double rule under the first section
+        for (float x : {72.0f, 200.0f, 440.0f}) {
+            VLine(page, x, top - 20, top);
+            VLine(page, x, top - 40, top - 20);
+        }
+    }
+    AddText(page, "Enrichment", 150, 645, 10, kGlyphBold);
+    AddText(page, "analysis", 203.5f, 645, 10, kGlyphBold);
+    const char* const cells[4][2] = {{"Alpha", "12 units"}, {"Beta", "34 units"}, {"Gamma", "56 units"}, {"Delta", "78 units"}};
+    const float bases[4] = {686, 666, 624, 604};
+    for (int r = 0; r < 4; ++r) {
+        AddText(page, cells[r][0], 76, bases[r]);
+        AddText(page, cells[r][1], 204, bases[r]);
+    }
+    AddText(page, "Text after the table.", 72, 570);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("lattice sections", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| General analysis tools |  |\n| --- | --- |\n| Alpha | 12 units |\n"
+                                                     "| Beta | 34 units |\n| Enrichment analysis |  |\n| Gamma | 56 units |"),
+                  889);
+}
+
 // LaTeX mode: a number in a table cell ("308±6", "−0.1") is text as in the default mode; the same
 // number in a paragraph is a formula.
 void TestCellNumbersLatex() {
@@ -1500,6 +1561,8 @@ int main(int argc, char** argv) {
     TestTimingBoxes();
     TestEquationArray();
     TestBracketMatrix();
+    TestLatticeRowsByVerticals();
+    TestLatticeSections();
     TestCellNumbersLatex();
     TestWordBox();
     std::puts("test_layout_tables: ok");

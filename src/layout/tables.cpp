@@ -540,12 +540,15 @@ private:
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
     void CollapseEmpty(Grid& g) const;
     void Boundaries(Grid& g, const Component& comp) const;
+    void SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& read) const;
     void SplitByText(Grid& g) const;
     void SplitRowsByLines(Grid& g) const;
     void SplitColumnsByText(Grid& g) const;
     bool HeaderAbove(Grid& g);
     bool HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
                            const std::vector<uint8_t>& label, const Row& header, float minGap, std::vector<Gap>& gaps);
+    uint64_t LineColumns(const Row& r, const std::vector<uint32_t>& rowWords, const Grid& g) const;
+    float LabelAbove(const Grid& g);
     void LatticeHeader(Grid& g) const;
     void RowsBelow(Grid& g);
     void JoinStripes();
@@ -1431,6 +1434,88 @@ void Detector::SplitByText(Grid& g) const {
         }
 }
 
+// Rows of a lattice drawn without rules between them whose vertical rules are drawn row by row
+// (TeX draws a row's | rules with the row): a height inside a grid row where the rule of every
+// boundary drawn in that row ends and another piece of it starts, and through no word, parts the
+// row. Pieces shorter than a line (the dashes of a dashed rule) say nothing. `pieces`: the page's
+// vertical rule pieces as drawn (before MergeEdges joins them), by x, read on first use (`read`).
+void Detector::SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& read) const {
+    const int rows = g.Rows(), cols = g.Cols();
+    const float minPiece = Fmax(kMinEdge, 0.8f * bodySize_);
+    if (!read) {
+        read = true;
+        if (page_.rulings.size() > 8 * size_t(kMaxTableEdges)) return;
+        for (const Ruling& upright : page_.rulings) {
+            const Ruling r = ToFrame(upright, dir_);
+            const float w = r.x1 - r.x0, t = r.y1 - r.y0;
+            if (w >= 0 && w <= kMaxThick && t >= minPiece && t > w) pieces.push_back(Edge{(r.x0 + r.x1) / 2, r.y0, r.y1});
+        }
+        std::sort(pieces.begin(), pieces.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
+    }
+    if (cols < 2 || pieces.size() < 4) return;
+    struct Piece {
+        int k;       // the grid's vertical boundary it lies on
+        float a, b;  // its lower and upper end
+    };
+    std::vector<Piece> ends, starts;  // by boundary, then lower (upper) end
+    for (int k = 0; k <= cols; ++k) {
+        const float x = g.xs[static_cast<size_t>(k)];
+        auto it = std::lower_bound(pieces.begin(), pieces.end(), x - kSnap, [](const Edge& p, float at) { return p.pos < at; });
+        for (; it != pieces.end() && it->pos <= x + kSnap; ++it)
+            if (it->b >= g.y0 - kSnap && it->a <= g.y1 + kSnap) ends.push_back(Piece{k, it->a, it->b});
+    }
+    if (ends.size() < 4) return;
+    starts = ends;
+    std::sort(ends.begin(), ends.end(), [](const Piece& p, const Piece& q) { return p.k != q.k ? p.k < q.k : p.a < q.a; });
+    std::sort(starts.begin(), starts.end(), [](const Piece& p, const Piece& q) { return p.k != q.k ? p.k < q.k : p.b < q.b; });
+    // A piece of boundary k with its lower (upper) end within kSnap of y.
+    const auto has = [](const std::vector<Piece>& v, int k, float y, bool lower) {
+        auto it = std::lower_bound(v.begin(), v.end(), y - kSnap, [&](const Piece& p, float at) {
+            return p.k != k ? p.k < k : (lower ? p.a : p.b) < at;
+        });
+        return it != v.end() && it->k == k && (lower ? it->a : it->b) <= y + kSnap;
+    };
+    std::vector<float> ys{g.ys.front()}, cuts;
+    std::vector<uint8_t> vb, hb(g.hb.begin(), g.hb.begin() + cols);
+    for (int r = 0; r < rows; ++r) {
+        const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
+        const size_t row = static_cast<size_t>(r) * static_cast<size_t>(cols + 1);
+        cuts.clear();
+        int first = -1, drawn = 0;
+        for (int k = 0; k <= cols; ++k)
+            if (g.vb[row + static_cast<size_t>(k)]) drawn++, first = first < 0 ? k : first;
+        auto it = std::lower_bound(ends.begin(), ends.end(), bottom + minPiece, [&](const Piece& p, float at) {
+            return p.k != first ? p.k < first : p.a < at;
+        });
+        for (; drawn >= 2 && it != ends.end() && it->k == first && it->a < top - minPiece; ++it) {
+            const float y = it->a;
+            if (!cuts.empty() && y - cuts.back() <= kSnap) continue;
+            bool all = has(starts, first, y, false);
+            for (int k = first + 1; k <= cols && all; ++k)
+                if (g.vb[row + static_cast<size_t>(k)]) all = has(ends, k, y, true) && has(starts, k, y, false);
+            if (!all) continue;
+            auto w = std::lower_bound(words_.begin(), words_.end(), y + 2 * bodySize_, [](const TWord& q, float at) { return q.base > at; });
+            for (; w != words_.end() && w->base >= y - 2 * bodySize_ && all; ++w)
+                all = !(w->y0 < y - 1 && w->y1 > y + 1 && w->x1 > g.x0 && w->x0 < g.x1);
+            if (all) cuts.push_back(y);
+        }
+        // Ascending from the pieces' order: the grid's rows go top down.
+        std::sort(cuts.begin(), cuts.end(), std::greater<float>());
+        for (float y : cuts) {
+            ys.push_back(y);
+            vb.insert(vb.end(), g.vb.begin() + static_cast<std::ptrdiff_t>(row), g.vb.begin() + static_cast<std::ptrdiff_t>(row + cols + 1));
+            hb.insert(hb.end(), static_cast<size_t>(cols), 1);
+        }
+        ys.push_back(bottom);
+        vb.insert(vb.end(), g.vb.begin() + static_cast<std::ptrdiff_t>(row), g.vb.begin() + static_cast<std::ptrdiff_t>(row + cols + 1));
+        hb.insert(hb.end(), g.hb.begin() + (r + 1) * cols, g.hb.begin() + (r + 2) * cols);
+    }
+    if (ys.size() == g.ys.size() || static_cast<int>(ys.size()) - 1 > kMaxTableRows) return;
+    g.ys.swap(ys);
+    g.vb.swap(vb);
+    g.hb.swap(hb);
+}
+
 // Rows of a lattice drawn without rules between them (rules only under the header and at the
 // bottom, or a box around the body): a grid row whose text sits on two baselines or more (three in
 // a box of one row) that each hold text in the row's first column and another ("full" lines), with
@@ -1641,9 +1726,30 @@ void Detector::LatticeHeader(Grid& g) const {
     if (header >= 2 && rows - header >= 2) g.headerRows = static_cast<uint16_t>(header);
 }
 
+// The columns of grid g that line r fills (a bit each), or 0 when a word of it lies outside the
+// grid or across a column boundary, or two words a word space apart lie on both sides of one (one
+// label across the columns, a section's name).
+uint64_t Detector::LineColumns(const Row& r, const std::vector<uint32_t>& rowWords, const Grid& g) const {
+    const int cols = g.Cols();
+    uint64_t mask = 0;
+    for (uint32_t k = r.first; k < r.first + r.count; ++k) {
+        const TWord& w = words_[rowWords[k]];
+        if (w.x0 < g.x0 - 1 || w.x1 > g.x1 + 1) return 0;
+        const TWord* before = k > r.first ? &words_[rowWords[k - 1]] : nullptr;
+        const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
+        for (int c = 1; c < cols; ++c) {
+            const float x = g.xs[static_cast<size_t>(c)];
+            if ((w.x0 < x - 1 && w.x1 > x + 1) || (joined && before->x0 + before->x1 < 2 * x && w.x0 + w.x1 > 2 * x)) return 0;
+        }
+        const int c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), (w.x0 + w.x1) / 2) - g.xs.begin()) - 1;
+        mask |= uint64_t(1) << std::min(std::max(c, 0), 63);
+    }
+    return mask;
+}
+
 // Rows set right below a lattice without rules of their own (the last rows of a table whose
-// rules stop short): each line within an em of the grid's bottom whose words all fall inside its
-// columns, filling half of them and two at least, with nothing else on that line, extends it.
+// rules stop short): each line within an em of the grid's bottom that lies in its columns
+// (LineColumns), filling half of them and two at least, with nothing else on that line, extends it.
 void Detector::RowsBelow(Grid& g) {
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
@@ -1652,18 +1758,8 @@ void Detector::RowsBelow(Grid& g) {
     bool added = false;
     for (const Row& r : rows) {
         if (g.Rows() >= kMaxTableRows || !(r.top < g.y0 + 1) || g.y0 - r.top > r.size || !SizeFits(r, g.size)) break;
-        uint64_t mask = 0;
-        bool inside = true;
-        for (uint32_t k = r.first; k < r.first + r.count && inside; ++k) {
-            const TWord& w = words_[rowWords[k]];
-            inside = w.x0 >= g.x0 - 1 && w.x1 <= g.x1 + 1;
-            for (int c = 1; c < cols && inside; ++c)
-                inside = !(w.x0 < g.xs[static_cast<size_t>(c)] - 1 && w.x1 > g.xs[static_cast<size_t>(c)] + 1);
-            const int c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), (w.x0 + w.x1) / 2) - g.xs.begin()) - 1;
-            mask |= uint64_t(1) << std::min(std::max(c, 0), 63);
-        }
-        const int filled = Bits(mask);
-        if (!inside || filled < 2 || 2 * filled < cols || !Free(g.x0, r.bottom - 1, g.x1, g.y0)) break;
+        const int filled = Bits(LineColumns(r, rowWords, g));
+        if (filled < 2 || 2 * filled < cols || !Free(g.x0, r.bottom - 1, g.x1, g.y0)) break;
         g.ys.push_back(r.bottom - 1);
         g.vb.insert(g.vb.end(), static_cast<size_t>(cols + 1), 1);
         g.hb.insert(g.hb.end(), static_cast<size_t>(cols), 1);
@@ -1674,7 +1770,7 @@ void Detector::RowsBelow(Grid& g) {
 }
 
 // A header row set right above a lattice (rules drawn around the body only): the line of text
-// within an em of its top whose words all fall inside its columns, filling half of them and two at
+// within an em of its top that lies in its columns (LineColumns), filling half of them and two at
 // least, with nothing else on that line, becomes its first row. True when it did.
 bool Detector::HeaderAbove(Grid& g) {
     std::vector<Row> rows;
@@ -1684,16 +1780,7 @@ bool Detector::HeaderAbove(Grid& g) {
     const Row& r = rows.back();
     if (!(r.base > g.y1) || r.bottom - g.y1 > r.size || !Free(g.x0, g.y1, g.x1, r.top + 1)) return false;
     const int cols = g.Cols();
-    uint64_t mask = 0;
-    for (uint32_t k = r.first; k < r.first + r.count; ++k) {
-        const TWord& w = words_[rowWords[k]];
-        if (w.x0 < g.x0 - 1 || w.x1 > g.x1 + 1) return false;
-        for (int c = 1; c < cols; ++c)
-            if (w.x0 < g.xs[static_cast<size_t>(c)] - 1 && w.x1 > g.xs[static_cast<size_t>(c)] + 1) return false;
-        const int c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), (w.x0 + w.x1) / 2) - g.xs.begin()) - 1;
-        mask |= uint64_t(1) << std::min(std::max(c, 0), 63);
-    }
-    const int filled = Bits(mask);
+    const int filled = Bits(LineColumns(r, rowWords, g));
     if (filled < 2 || 2 * filled < cols) return false;
     g.ys.insert(g.ys.begin(), r.top + 1);
     g.vb.insert(g.vb.begin(), static_cast<size_t>(cols + 1), 1);
@@ -1701,6 +1788,25 @@ bool Detector::HeaderAbove(Grid& g) {
     g.y1 = g.ys.front();
     ComputeSpans(g);
     return true;
+}
+
+// The rule over a lattice's label: a drawn rule of the grid's width less than three lines above
+// its top, with one line of text between that does not part into columns (a phrase). NaN when
+// there is none.
+float Detector::LabelAbove(const Grid& g) {
+    float rule = NAN, nearest = 2.5f * bodySize_;
+    for (const Edge& e : h_) {
+        if (e.area || std::fabs(e.a - g.x0) > 2.5f || std::fabs(e.b - g.x1) > 2.5f) continue;
+        const float d = e.pos - g.y1;
+        if (d > 0.5f * bodySize_ && d <= nearest) rule = e.pos, nearest = d;
+    }
+    if (std::isnan(rule)) return NAN;
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    std::vector<Gap> gaps;
+    BuildRows(g.x0, g.x1, g.y1, rule, rows, rowWords);
+    if (rows.size() != 1 || Columns(rows, rowWords, 0, 1, g.x0, g.x1, Fmax(3.0f, 0.5f * TextSize(rows[0])), gaps)) return NAN;
+    return rule;
 }
 
 void Detector::Lattices() {
@@ -1773,6 +1879,8 @@ void Detector::Lattices() {
         for (size_t i = 0; i < nv; ++i) vOf[vAt[static_cast<size_t>(v_[i].comp)]++] = static_cast<uint32_t>(i);
     }
     std::vector<uint8_t> hUsed(nh, 0);
+    std::vector<Edge> pieces;  // SplitRowsByVerticals': the vertical rule pieces as drawn
+    bool piecesRead = false;
     for (int32_t root : roots) {
         if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) break;
         const size_t ri = static_cast<size_t>(root);
@@ -1827,6 +1935,7 @@ void Detector::Lattices() {
             }
             if (pruned) Boundaries(g, comp);
         }
+        SplitRowsByVerticals(g, pieces, piecesRead);
         SplitByText(g);
         SplitRowsByLines(g);
         SplitColumnsByText(g);
@@ -1882,8 +1991,14 @@ void Detector::Lattices() {
 
 // Tables shaded on every other row draw boxes around the shaded rows only: lattices with the same
 // columns stacked a row apart, with a row of text between them that keeps their columns, are one
-// table with that row between.
+// table with that row between. Tables in sections, each boxed under its label (a line across the
+// columns, set between double rules), are one too: a line between two lattices that does not part
+// into columns is a label row, and so is the label under a rule of the table's width over the
+// first section.
 void Detector::JoinStripes() {
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    std::vector<Gap> gaps;
     for (size_t a = 0; a < grids_.size(); ++a) {
         if (grids_[a].kind != TableKind::Lattice) continue;
         for (size_t b = 0; b < grids_.size(); ++b) {
@@ -1895,11 +2010,15 @@ void Detector::JoinStripes() {
             for (size_t k = 0; k < up.xs.size() && same; ++k) same = std::fabs(up.xs[k] - down.xs[k]) <= 3;
             const float gapTop = up.y0, gapBottom = down.y1;
             if (!same || gapBottom >= gapTop || gapTop - gapBottom > 2.5f * bodySize_) continue;
-            // The row between: words inside one column each, two columns filled.
+            // The row between: one line that does not part into columns (a label), or words inside
+            // one column each, two columns filled.
+            BuildRows(up.xs.front(), up.xs.back(), gapBottom, gapTop, rows, rowWords);
+            const bool label = rows.size() == 1 && !Columns(rows, rowWords, 0, 1, up.xs.front(), up.xs.back(),
+                                                            Fmax(3.0f, 0.5f * TextSize(rows[0])), gaps);
             uint64_t columns = 0;
             bool crossing = false;
             auto it = std::lower_bound(words_.begin(), words_.end(), gapTop, [](const TWord& w, float y) { return w.base > y; });
-            for (; it != words_.end() && it->base >= gapBottom; ++it) {
+            for (; it != words_.end() && it->base >= gapBottom && !label; ++it) {
                 const float cx = (it->x0 + it->x1) / 2;
                 if (cx < up.xs.front() || cx > up.xs.back()) continue;
                 for (size_t k = 1; k + 1 < up.xs.size(); ++k) crossing = crossing || (it->x0 < up.xs[k] - 1 && it->x1 > up.xs[k] + 1);
@@ -1908,7 +2027,7 @@ void Detector::JoinStripes() {
             }
             int filled = 0;
             for (uint64_t m = columns; m; m &= m - 1) filled++;
-            if (crossing || filled < 2 || up.Rows() + down.Rows() + 1 > kMaxTableRows) continue;
+            if ((!label && (crossing || filled < 2)) || up.Rows() + down.Rows() + 1 > kMaxTableRows) continue;
             const int cols = up.Cols();
             Grid joined;
             joined.kind = TableKind::Lattice;
@@ -1924,6 +2043,13 @@ void Detector::JoinStripes() {
             joined.y0 = down.y0, joined.y1 = up.y1;
             joined.size = up.size;
             joined.headerRows = up.headerRows;
+            if (label || !up.labelRow.empty() || !down.labelRow.empty()) {
+                joined.labelRow = up.labelRow;
+                joined.labelRow.resize(static_cast<size_t>(up.Rows()), 0);
+                joined.labelRow.push_back(label ? 1 : 0);
+                joined.labelRow.insert(joined.labelRow.end(), down.labelRow.begin(), down.labelRow.end());
+                joined.labelRow.resize(static_cast<size_t>(joined.Rows()), 0);
+            }
             ComputeSpans(joined);
             if (!Validate(joined, false)) continue;
             MarkUsed(joined);
@@ -1932,6 +2058,21 @@ void Detector::JoinStripes() {
             if (b < a) --a;
             b = static_cast<size_t>(-1);  // look again: a third stripe may follow
         }
+    }
+    // The label over the first section: the table's first row.
+    for (Grid& g : grids_) {
+        if (g.kind != TableKind::Lattice || g.labelRow.empty() || g.Rows() >= kMaxTableRows) continue;
+        const float rule = LabelAbove(g);
+        if (std::isnan(rule) || !Free(g.x0, g.y1, g.x1, rule)) continue;
+        const int cols = g.Cols();
+        g.ys.insert(g.ys.begin(), rule - 0.5f);
+        g.vb.insert(g.vb.begin(), static_cast<size_t>(cols + 1), 1);
+        g.hb.insert(g.hb.begin(), static_cast<size_t>(cols), 1);
+        g.labelRow.insert(g.labelRow.begin(), 1);
+        g.y1 = g.ys.front();
+        g.headerRows = 1;
+        ComputeSpans(g);
+        MarkUsed(g);
     }
 }
 
