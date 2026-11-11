@@ -345,6 +345,20 @@ void TestLatticeRulingPastTop() {
     RAYOPDF_CHECK(Contains(md, "| Label | Value |\n| --- | --- |\n| alpha | 0.51 |"), 877);
 }
 
+// A lattice whose body is one ruled row of two lines, each a label and numbers: two table rows.
+void TestLatticeTwoLineRow() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {600.0f, 584.0f, 552.0f}) HLine(page, 100, 400, y);
+    for (float x : {100.0f, 250.0f, 325.0f, 400.0f}) VLine(page, x, 552, 600);
+    const char* const cells[] = {"Ratio", "Car", "Foot", "Node ratio", "0.52", "0.54", "Edge ratio", "0.64", "0.65"};
+    const float xs[] = {104, 254, 329};
+    for (int k = 0; k < 9; ++k) AddText(page, cells[k], xs[k % 3], k < 3 ? 588.0f : (k < 6 ? 571.0f : 559.0f));
+    const std::string md = Run(pages);
+    Show("lattice row of two lines", md);
+    RAYOPDF_CHECK(Contains(md, "| Ratio | Car | Foot |\n| --- | --- | --- |\n| Node ratio | 0.52 | 0.54 |\n| Edge ratio | 0.64 | 0.65 |"), 878);
+}
+
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
 // text: its words still sort top to bottom (the tie leaves them to std::sort), and it stays a table.
 void TestBorderlessWordOrder() {
@@ -1213,6 +1227,7 @@ int main(int argc, char** argv) {
     TestFigureText();
     TestLatticeInFigure();
     TestLatticeRulingPastTop();
+    TestLatticeTwoLineRow();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();

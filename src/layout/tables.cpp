@@ -1343,9 +1343,10 @@ void Detector::SplitByText(Grid& g) const {
 }
 
 // Rows of a lattice drawn without rules between them (rules only under the header and at the
-// bottom, or a box around the body): a grid row whose text sits on three baselines or more that
-// each hold text in the row's first column and another ("full" lines), with a column of numbers on
-// most of them, is that many table rows. It parts halfway between those lines; a line
+// bottom, or a box around the body): a grid row whose text sits on two baselines or more (three in
+// a box of one row) that each hold text in the row's first column and another ("full" lines), with
+// a column of numbers on two thirds of them (on both of two), is that many table rows. It parts
+// halfway between those lines; a line
 // with text in one column only (a wrapped cell) or set less than a line below the one above
 // (cells set to the middle of a row) stays with the line above.
 void Detector::SplitRowsByLines(Grid& g) const {
@@ -1384,7 +1385,7 @@ void Detector::SplitRowsByLines(Grid& g) const {
         size_t fullLines = 0;
         for (const Baseline& l : lines) fullLines += full(l);
         bool numbers = false;
-        for (int c = 0; c < cols && fullLines >= 3 && !numbers; ++c) {
+        for (int c = 0; c < cols && fullLines >= (rows > 1 ? 2u : 3u) && !numbers; ++c) {
             size_t n = 0;
             for (const Baseline& l : lines) n += full(l) && ((l.numeric >> c) & 1);
             numbers = 3 * n >= 2 * fullLines;
