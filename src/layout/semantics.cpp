@@ -1157,23 +1157,36 @@ bool InCapitals(std::string_view t) {
 void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines) {
     if (blocks.size() < 3 || blocks[0].kind != BlockKind::Heading || lines[blocks[0].first].page != 0) return;
     std::string text, line, authors;
+    // The abstract (or the first heading) first, from each block's first line where that is long
+    // enough to tell: a block's text starts with its first line's.
     size_t abstract = 0;
-    bool capitals = false;
     for (size_t i = 1; i < blocks.size() && i <= kTitleBlocks; ++i) {
         const Block& b = blocks[i];
         if (b.count == 0 || lines[b.first].page != 0) return;
-        BlockText(pages, lines, b, text, line);
-        if (b.kind == BlockKind::Heading || StartsFolded(text, "abstract")) {
+        bool found = b.kind == BlockKind::Heading;
+        if (!found) {
+            const PageData& page = pages[lines[b.first].page];
+            LineText(page, page.lines[lines[b.first].line], line, lines[b.first].skip);
+            const bool shortLine = line.size() < 8;
+            if (shortLine) BlockText(pages, lines, b, text, line);
+            found = StartsFolded(shortLine ? text : line, "abstract");
+        }
+        if (found) {
             abstract = i;
             break;
         }
         if (b.kind != BlockKind::Paragraph) return;
+    }
+    if (abstract < 2) return;
+    bool capitals = false;
+    for (size_t i = 1; i < abstract; ++i) {
+        BlockText(pages, lines, blocks[i], text, line);
         capitals = capitals || InCapitals(text);
         authors += text;
         authors.push_back('\n');
         if (authors.size() > kMaxAuthorText) return;
     }
-    if (abstract < 2 || !capitals) return;
+    if (!capitals) return;
     size_t start = blocks.size();
     bool named = false;
     while (start - 1 > abstract && blocks.size() - start < kMaxAddressBlocks) {
