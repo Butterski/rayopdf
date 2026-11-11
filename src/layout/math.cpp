@@ -2125,6 +2125,32 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     close();
 }
 
+void KeepNumbersText(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_t>& run) {
+    const uint32_t n = static_cast<uint32_t>(glyphs.size());
+    for (uint32_t k = 0; k < n; ++k) {
+        const uint32_t to = run[k];
+        if (to == 0 || to > n) continue;
+        bool number = true, digit = false;
+        for (uint32_t i = k; i < to && number; ++i) {
+            number = !glyphs[i].script;
+            const std::string_view t = glyphs[i].text;
+            for (size_t at = 0; at < t.size() && number;) {
+                uint32_t cp = static_cast<unsigned char>(t[at]);
+                size_t length = 1;
+                if (cp >= 0x80 && !Utf8::Decode(t, at, cp, length)) cp = 0, length = 1;
+                at += length;
+                // Digits as text or as mathematical alphanumerics (bold, sans-serif and the like).
+                const bool isDigit = (cp >= '0' && cp <= '9') || (cp >= 0x1D7CE && cp <= 0x1D7FF);
+                digit = digit || isDigit;
+                number = isDigit || cp == '.' || cp == ',' || cp == '+' || cp == '-' || cp == '%' || cp == ' ' ||
+                         cp == 0x2212 || cp == 0xB1 || cp == 0x2213 || cp == 0xA0 || (cp >= 0x2002 && cp <= 0x200A) ||
+                         cp == 0x202F;
+            }
+        }
+        if (number && digit) run[k] = 0;
+    }
+}
+
 namespace {
 
 // Facts of one ordered line for display formulas.

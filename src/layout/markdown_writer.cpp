@@ -842,9 +842,13 @@ void Writer::Inline(const Block& block, bool styles) {
     StyleWords(styles);
     depth_ = 0;
     for (int s = 0; s < kStyleCount; ++s) runFrom_[s] = runTo_[s] = 0;
-    // LaTeX mode: formulas found among the glyphs are written as $…$ in their place.
+    // LaTeX mode: formulas found among the glyphs are written as $…$ in their place; a table
+    // cell's number stays text.
     const bool latex = math_ == MathMode::Latex;
-    if (latex) FindFormulas();
+    if (latex) {
+        FindFormulas();
+        if (block.kind == BlockKind::Table) KeepNumbersText(inline_, mathRun_);
+    }
     uint32_t skipTo = 0;  // the glyphs before it went into a formula
     int32_t openLink = -1;
     // Heading and table cell text is inline: "## 1. Installation" opens no list.

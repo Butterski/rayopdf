@@ -226,8 +226,9 @@ password required, 12 unwritable output, 13 unsupported encryption.
 Formulas are written as Unicode text with `<sup>`/`<sub>` by default. `--math=latex` writes them
 as LaTeX instead, rebuilt from the glyphs' positions: inline formulas as `$…$`, displayed ones as
 `$$…$$` (an equation number follows as `(n)`), with fractions, radicals, scripts, limits,
-matrices and cases; a formula it cannot rebuild stays Unicode text, and a `$` of the text is
-written `\$` where it could open a formula (`$8,000` stays as it is).
+matrices and cases; a formula it cannot rebuild stays Unicode text, a number in a table cell
+(`−0.1`, `308±6`) stays text as in the default mode, and a `$` of the text is written `\$` where
+it could open a formula (`$8,000` stays as it is).
 
 `--report` prints one JSON record of the document: `input`, `output`, `status` (`ok`, `skipped`
 or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,

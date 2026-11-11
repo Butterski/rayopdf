@@ -155,6 +155,10 @@ struct InlineGlyph {
 };
 // Marks math runs: `run[i]` = the end (exclusive) of the formula that starts at glyph i, or 0.
 void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_t>& run);
+// Unmarks the runs that are only a number: digits (also mathematical alphanumeric ones), signs,
+// ±, ∓, decimal points and commas, spaces and percent signs, nothing raised or lowered. A table
+// cell's number is text ("−0.1", "308±6"), written as the default mode writes it.
+void KeepNumbersText(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_t>& run);
 // Whether FindInlineFormulas takes the glyph (font, flags and text as in InlineGlyph) for strong
 // math, the kind that starts a formula: a run of glyphs none of which it takes so has no formula.
 // ASCII here; the rest in MayBeFormulaOther.

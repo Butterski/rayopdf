@@ -330,7 +330,8 @@ void TestFonts() {
 // Inline runs over words written glyph by glyph: `fonts` per glyph (spaces are no glyphs) of
 // `text`: 'm' math italic, 'i' italic text font, anything else the upright text font; spaces start
 // words.
-std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::vector<Glyph>& store) {
+std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::vector<Glyph>& store,
+                           std::vector<InlineGlyph>* glyphsOut = nullptr) {
     store.assign(text.size(), Glyph());
     std::vector<InlineGlyph> glyphs;
     bool space = false;
@@ -354,6 +355,7 @@ std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::v
     }
     std::vector<uint32_t> run;
     FindInlineFormulas(glyphs, run);
+    if (glyphsOut) glyphsOut->swap(glyphs);
     return run;
 }
 
@@ -376,6 +378,19 @@ void TestInline() {
     RAYOPDF_CHECK(run[0] == 4 && run[4] == 0 && run[7] == 10, 1590);
     run = Runs("(see x)", "....m.", store);
     RAYOPDF_CHECK(run[0] == 0 && run[4] == 5, 1596);
+}
+
+// A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the
+// decimal point; a run with a letter stays a formula.
+void TestNumbersText() {
+    std::vector<Glyph> store;
+    std::vector<InlineGlyph> glyphs;
+    // Glyphs: − 0 . 1 | a n d | 3 0 8 ± 6 | o r | x + 1 | a n d | 𝟐 𝟒 ± 𝟏
+    std::vector<uint32_t> run = Runs("\xE2\x88\x92" "0.1 and 308\xC2\xB1" "6 or x+1 and \xF0\x9D\x9F\x90\xF0\x9D\x9F\x92\xC2\xB1\xF0\x9D\x9F\x8F",
+                                     "..............m", store, &glyphs);
+    const bool found = run[0] == 4 && run[7] == 12 && run[14] == 17 && run[20] == 24;
+    KeepNumbersText(glyphs, run);
+    RAYOPDF_CHECK(found && run[0] == 0 && run[7] == 0 && run[14] == 17 && run[20] == 0, 1597);
 }
 
 // A page: glyphs of `text` at (x, y) in font `font` (page-local: 0 text, 1 math italic).
@@ -451,6 +466,7 @@ int main() {
     TestFallback();
     TestFonts();
     TestInline();
+    TestNumbersText();
     TestPages();
     std::puts("test_layout_math: ok");
     return 0;

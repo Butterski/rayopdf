@@ -74,11 +74,11 @@ PageData NewPage(int number = 1) {
     return page;
 }
 
-std::string Run(std::vector<PageData>& pages, ConvertReport* reportOut = nullptr) {
+std::string Run(std::vector<PageData>& pages, ConvertReport* reportOut = nullptr, MathMode math = MathMode::Unicode) {
     std::string md;
     ConvertReport report;
     std::vector<PageTextQuality> quality(pages.size());
-    ConvertPages(pages, quality, {}, false, md, report);
+    ConvertPages(pages, quality, {}, false, md, report, nullptr, nullptr, math);
     if (reportOut) *reportOut = report;
     return md;
 }
@@ -1313,6 +1313,25 @@ void TestBracketMatrix() {
     RAYOPDF_CHECK(report.tables == 0, 858);
 }
 
+// LaTeX mode: a number in a table cell ("308±6", "−0.1") is text as in the default mode; the same
+// number in a paragraph is a formula.
+void TestCellNumbersLatex() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f}) HLine(page, 72, 300, y);
+    for (float x : {72.0f, 180.0f, 300.0f}) VLine(page, x, 660, 700);
+    AddText(page, "Error", 76, 686);
+    AddText(page, "308\xC2\xB1" "6", 184, 686);
+    AddText(page, "Shift", 76, 666);
+    AddText(page, "\xE2\x88\x92" "0.1", 184, 666);
+    AddText(page, "The error is 308\xC2\xB1" "6 in all runs.", 72, 630);
+    ConvertReport report;
+    const std::string md = Run(pages, &report, MathMode::Latex);
+    Show("cell numbers latex", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Error | 308\xC2\xB1" "6 |\n| --- | --- |\n| Shift | \xE2\x88\x92" "0.1 |"), 890);
+    RAYOPDF_CHECK(Contains(md, "The error is $308\\pm6$ in all runs."), 891);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1481,6 +1500,7 @@ int main(int argc, char** argv) {
     TestTimingBoxes();
     TestEquationArray();
     TestBracketMatrix();
+    TestCellNumbersLatex();
     TestWordBox();
     std::puts("test_layout_tables: ok");
     return 0;
