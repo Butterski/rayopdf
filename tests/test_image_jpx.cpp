@@ -15,9 +15,11 @@
 #include "check.h"
 #include "image/jpx.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace RayoPdf::Image;
@@ -1595,6 +1597,67 @@ void TestVectors() {
     }
 }
 
+// Threads for the decoder (common/threads.h): each round on three threads of its own and the
+// calling thread, which take the indices in turn; a round inside a round runs on its caller.
+class TestThreads final : public RayoPdf::Threads {
+public:
+    unsigned Workers() const override { return 4; }
+    unsigned Started() const override { return 3; }
+    void Start(unsigned) override {}
+    void Run(unsigned caller, size_t count, void (*run)(void*, unsigned, size_t), void* context) override {
+        rounds_.fetch_add(1, std::memory_order_relaxed);
+        if (busy_.exchange(true)) {
+            for (size_t index = 0; index < count; index++) run(context, caller, index);
+            return;
+        }
+        std::atomic<size_t> next{0};
+        const auto serve = [&](unsigned worker) {
+            for (size_t index = next.fetch_add(1); index < count; index = next.fetch_add(1)) run(context, worker, index);
+        };
+        std::thread helpers[3] = {std::thread(serve, 1u), std::thread(serve, 2u), std::thread(serve, 3u)};
+        serve(caller);
+        for (std::thread& helper : helpers) helper.join();
+        busy_.store(false);
+    }
+    size_t Rounds() const { return rounds_.load(std::memory_order_relaxed); }
+
+private:
+    std::atomic<bool> busy_{false};
+    std::atomic<size_t> rounds_{0};
+};
+
+// Every vector decoded on threads, split into the smallest parts (code-blocks, wavelet lines,
+// component transform, rows of the image), gives the samples the calling thread alone gives.
+void TestThreaded() {
+    TestThreads threads;
+    Jpx::Options split;
+    split.threads = &threads;
+    split.splitSamples = 1;
+    split.partLines = 16;
+    for (const Vector& v : kVectors) {
+        const std::string data = Bytes(v);
+        for (int reduce = 0; reduce < 3; reduce++) {
+            if (v.hash[reduce] == 0) continue;
+            split.reduce = reduce;
+            std::vector<Jpx::Component> components;
+            Jpx::Info info;
+            RAYOPDF_CHECK(Jpx::DecodeComponents(reinterpret_cast<const uint8_t*>(data.data()), data.size(), split, info,
+                                                components) == Jpx::Result::Ok &&
+                              Hash(components) == v.hash[reduce],
+                          1182);
+        }
+        split.reduce = 0;
+        Jpx::Image alone;
+        Jpx::Image shared;
+        const Jpx::Result one = Decode(data, Jpx::Options(), alone);
+        RAYOPDF_CHECK(Decode(data, split, shared) == one, 1183);
+        RAYOPDF_CHECK(alone.width == shared.width && alone.height == shared.height &&
+                          alone.channels == shared.channels && alone.samples == shared.samples,
+                      1184);
+    }
+    RAYOPDF_CHECK(threads.Rounds() > 0, 1185);
+}
+
 void TestPdfOutput() {
     Jpx::Image image;
     RAYOPDF_CHECK(Decode(Bytes(Find("rev_rgb")), Jpx::Options(), image) == Jpx::Result::Ok, 1155);
@@ -1824,6 +1887,7 @@ void TestDamage() {
 
 int main() {
     TestVectors();
+    TestThreaded();
     TestPdfOutput();
     TestJp2();
     TestDamage();

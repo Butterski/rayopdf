@@ -5,6 +5,10 @@
 // at the same place on at least half the pages (a logo). A kept image is written once, however
 // often it is drawn, as p<page>-<n>.<ext> (the page of its first placement, n counting that page's
 // files), and each placement gets an anchor line (kLineImage) that OrderLines orders with the text.
+//
+// The images are decoded and encoded on the conversion's threads when they are worth it (roadmap
+// D4): each into a file of its own without a name yet, and the files are named, and counted, in
+// page order afterwards, so the files, their names and the report are those of one thread.
 #pragma once
 
 #include "image/image.h"
@@ -17,10 +21,17 @@
 
 namespace RayoPdf::Layout {
 
+class PagePool;
+
 struct ImageOutput {
     const Document* document = nullptr;
     std::string directory;   // created when the first file is written
     std::string linkPrefix;  // put before each file name in the Markdown link
+    // The conversion's threads, when it has some (layout/page_pool.h), and the threads it may
+    // use (ConvertOptions::pageWorkers: 0 automatic, 1 none): a document of one page has no pool,
+    // and PlaceImages makes one when the images are worth it.
+    PagePool* pool = nullptr;
+    unsigned pageWorkers = 1;
 };
 
 // Decides, writes and anchors the images of `pages` (after BuildLines and header/footer removal,

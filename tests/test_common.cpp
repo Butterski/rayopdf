@@ -253,6 +253,35 @@ void TestBufferedInput() {
                   1692);
 }
 
+// A staged file named only after it was written (an image made on a page thread, named in page
+// order): Close keeps it under its temporary name, CommitAs gives it its name, Discard removes it.
+void TestStagedNames() {
+    std::string folder;
+    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-staged-", folder), 1693);
+    File::StagedFile closed;
+    File::StagedFile open;
+    File::StagedFile dropped;
+    File::StagedFile droppedOpen;
+    RAYOPDF_CHECK(closed.Open(folder + "/image.tmp-0") && closed.Write("closed ") && closed.WriteAt(0, "C") &&
+                      closed.Close() && open.Open(folder + "/image.tmp-1") && open.Write("open") &&
+                      dropped.Open(folder + "/image.tmp-2") && dropped.Write("dropped") && dropped.Close() &&
+                      droppedOpen.Open(folder + "/image.tmp-3") && droppedOpen.Write("dropped"),
+                  1694);
+    std::vector<File::DirectoryEntry> staged;
+    RAYOPDF_CHECK(File::ListDirectory(folder, staged) && staged.size() == 4, 1695);  // four temporary files
+    dropped.Discard();
+    droppedOpen.Discard();
+    RAYOPDF_CHECK(closed.CommitAs(folder + "/b.png") && open.CommitAs(folder + "/a.png"), 1696);
+    File::InputFile input;
+    RAYOPDF_CHECK(input.Open(folder + "/b.png", 1024) == File::ReadStatus::Ok && input.Bytes() == "Closed ", 1697);
+    RAYOPDF_CHECK(input.Open(folder + "/a.png", 1024) == File::ReadStatus::Ok && input.Bytes() == "open", 1698);
+    input.Open(folder + "/missing", 1024);  // unmaps the file, so Windows lets it go
+    std::vector<File::DirectoryEntry> named;
+    RAYOPDF_CHECK(File::ListDirectory(folder, named) && named.size() == 2 && File::RemoveFile(folder + "/a.png") &&
+                      File::RemoveFile(folder + "/b.png") && File::RemoveEmptyDirectory(folder),
+                  1699);
+}
+
 } // namespace
 
 int main() {
@@ -263,6 +292,7 @@ int main() {
     TestPaths();
     TestBufferedInput();
     TestFiles();
+    TestStagedNames();
     std::puts("test_common: all checks passed");
     return 0;
 }

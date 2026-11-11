@@ -13,6 +13,7 @@
 #include "image/jpx_internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <memory>
 
@@ -560,9 +561,40 @@ private:
     size_t capacity_ = 0;
 };
 
+// One thread's buffers for tier-1 and the wavelet transform.
+struct TileScratch {
+    T1Decoder t1;
+    std::vector<int32_t> coefficients;
+    std::vector<uint8_t> blockData;
+    std::vector<uint32_t> segmentLengths;
+    std::vector<uint32_t> segmentPasses;
+    std::vector<int32_t> intLanes;
+    std::vector<float> floatLanes;
+};
+
+// A code-block and where its samples go in its tile component's buffer.
+struct BlockPlace {
+    uint32_t block;  // in blocks_
+    uint32_t comp;
+    size_t x, y;
+    size_t stride;
+    int orientation;
+    float step;      // half the band's step (tier-1's samples have one fractional bit)
+    bool clear;      // without data its samples are set to zero (else they are zero already)
+};
+
+// Tier-1 on threads (Workers): a thread is started for every kThreadSamples samples of
+// code-blocks with data (16 blocks of 64 x 64: a block takes 0.1 to 0.3 ms, a thread's start
+// about 0.1 ms).
+constexpr uint64_t kThreadSamples = uint64_t(1) << 16;
+
 class TileDecoder {
 public:
-    TileDecoder(const uint8_t* data, const Header& h, int reduce) : data_(data), h_(h), reduce_(reduce) {}
+    TileDecoder(const uint8_t* data, const Header& h, int reduce, Workers workers)
+        : data_(data), h_(h), reduce_(reduce), workers_(workers) {
+        if (workers_.threads) helpers_.resize(workers_.threads->Workers());
+        workers_.partLines = std::max<uint32_t>(16, workers_.partLines & ~uint32_t(15));
+    }
 
     Result Decode(uint32_t tile, const TilePart* parts, size_t partCount, TileSink& sink);
 
@@ -572,16 +604,30 @@ private:
     Result Progress();
     Result Packet(uint32_t layer, uint32_t r, uint32_t c, uint32_t precinct);
     Result DecodeBlocks();
+    bool DecodeBlock(const BlockPlace& place, TileScratch& scratch);
     void Transform(TileSink& sink);
+    void InverseOnThreads(size_t c, const Resolution& res, const Resolution& low);
 
     uint32_t NewTree(uint32_t w, uint32_t h);
     bool TagDecode(Bio& bio, uint32_t tree, uint32_t leaf, int32_t threshold);
     int32_t NextBlockSegment(CodeBlock& block, int32_t s);
     void InitSegment(int32_t s, bool first, uint32_t previousMax, uint8_t style);
 
+    // The buffers of thread `worker` of workers_.threads: the decoder's own for the thread that
+    // decodes, else that thread's, made when it first comes (a slot is its thread's alone).
+    TileScratch& ScratchOf(unsigned worker) {
+        if (worker == workers_.worker) return scratch_;
+        std::unique_ptr<TileScratch>& slot = helpers_[worker];
+        if (!slot) slot.reset(new TileScratch);
+        return *slot;
+    }
+    // Threads run, to split work over.
+    bool Threaded() const { return workers_.threads && workers_.threads->Started() > 0; }
+
     const uint8_t* data_;
     const Header& h_;
     int reduce_;
+    Workers workers_;
 
     // Per tile.
     uint32_t tx0_ = 0, ty0_ = 0, tx1_ = 0, ty1_ = 0;
@@ -601,15 +647,11 @@ private:
     std::vector<Chunk> chunks_;
 
     // Tier-1 and transform scratch.
-    T1Decoder t1_;
-    std::vector<int32_t> coefficients_;
-    std::vector<uint8_t> blockData_;
-    std::vector<uint32_t> segmentLengths_;
-    std::vector<uint32_t> segmentPasses_;
+    TileScratch scratch_;                                 // the decoding thread's
+    std::vector<std::unique_ptr<TileScratch>> helpers_;   // the other threads', by worker
+    std::vector<BlockPlace> places_;                      // the tile's code-blocks, for threads
     std::vector<SampleBuffer<int32_t>> ints_;
     std::vector<SampleBuffer<float>> floats_;
-    std::vector<int32_t> intScratch_;
-    std::vector<float> floatScratch_;
 };
 
 Result TileDecoder::ReadTileHeaders(const TilePart* parts, size_t partCount) {
@@ -1197,6 +1239,11 @@ Result TileDecoder::Progress() {
 Result TileDecoder::DecodeBlocks() {
     ints_.resize(comps_.size());
     floats_.resize(comps_.size());
+    // With threads the code-blocks are listed first and decoded together below: each is decoded
+    // from its own data into its own samples, in any order.
+    const bool listed = workers_.threads != nullptr;
+    places_.clear();
+    uint64_t coded = 0;  // the samples of the listed code-blocks that have data
     for (size_t c = 0; c < comps_.size(); c++) {
         TileComp& tc = comps_[c];
         const Resolution& top = tc.res[tc.decoded - 1];
@@ -1241,57 +1288,121 @@ Result TileDecoder::DecodeBlocks() {
                     const uint32_t blocks = pb.cw * pb.ch;
                     for (uint32_t i = 0; i < blocks; i++) {
                         const CodeBlock& block = blocks_[pb.firstBlock + i];
-                        const int w = block.x1 - block.x0;
-                        const int hgt = block.y1 - block.y0;
-                        const size_t x = size_t(block.x0 - band.x0) + offsetX;
-                        const size_t y = size_t(block.y0 - band.y0) + offsetY;
-                        if (block.segmentCount == 0 || block.corrupted) {
-                            if (!exact) continue;
-                            // Both zero kinds are all-zero bytes.
-                            const size_t bytes = size_t(w) * (tc.style.reversible ? sizeof(int32_t) : sizeof(float));
-                            for (int j = 0; j < hgt; j++) {
-                                if (tc.style.reversible) std::memset(ints_[c].Data() + (y + j) * stride + x, 0, bytes);
-                                else std::memset(floats_[c].Data() + (y + j) * stride + x, 0, bytes);
-                            }
-                            continue;
-                        }
-                        blockData_.resize(size_t(block.length) + 2);
-                        size_t at = 0;
-                        for (int32_t ch = block.chunkHead; ch >= 0; ch = chunks_[ch].next) {
-                            std::memcpy(blockData_.data() + at, body_.data() + chunks_[ch].offset, chunks_[ch].length);
-                            at += chunks_[ch].length;
-                        }
-                        segmentLengths_.clear();
-                        segmentPasses_.clear();
-                        int32_t s = block.segmentHead;
-                        for (uint32_t n = 0; n < block.segmentCount && s >= 0; n++, s = segments_[s].next) {
-                            segmentLengths_.push_back(segments_[s].length);
-                            segmentPasses_.push_back(segments_[s].passes);
-                        }
-                        CodeBlockJob job;
-                        job.data = blockData_.data();
-                        job.segmentLengths = segmentLengths_.data();
-                        job.segmentPasses = segmentPasses_.data();
-                        job.segments = static_cast<int>(segmentLengths_.size());
-                        job.width = w;
-                        job.height = hgt;
-                        job.orientation = band.orientation;
-                        job.bitplanes = block.bitplanes;
-                        job.roiShift = tc.roiShift;
-                        job.style = tc.style.style;
-                        coefficients_.resize(size_t(w) * hgt);
-                        if (!t1_.Decode(job, coefficients_.data())) return Result::Corrupt;
-                        const int32_t* in = coefficients_.data();
-                        for (int j = 0; j < hgt; j++, in += w) {
-                            if (tc.style.reversible) Dequantize53(in, ints_[c].Data() + (y + j) * stride + x, size_t(w));
-                            else Dequantize97(in, floats_[c].Data() + (y + j) * stride + x, size_t(w), step);
+                        const bool data = block.segmentCount != 0 && !block.corrupted;
+                        if (!data && !exact) continue;
+                        const BlockPlace place{pb.firstBlock + i,
+                                               static_cast<uint32_t>(c),
+                                               size_t(block.x0 - band.x0) + offsetX,
+                                               size_t(block.y0 - band.y0) + offsetY,
+                                               stride,
+                                               band.orientation,
+                                               step,
+                                               exact};
+                        if (listed) {
+                            places_.push_back(place);
+                            if (data) coded += uint64_t(block.x1 - block.x0) * uint64_t(block.y1 - block.y0);
+                        } else if (!DecodeBlock(place, scratch_)) {
+                            return Result::Corrupt;
                         }
                     }
                 }
             }
         }
     }
-    return Result::Ok;
+    if (places_.empty()) return Result::Ok;
+    Threads& threads = *workers_.threads;
+    threads.Start(static_cast<unsigned>(std::min<uint64_t>(coded / kThreadSamples, threads.Workers())));
+    std::atomic<bool> failed{false};
+    threads.Run(workers_.worker, places_.size(), [&](unsigned worker, size_t index) {
+        if (!DecodeBlock(places_[index], ScratchOf(worker))) failed.store(true, std::memory_order_relaxed);
+    });
+    return failed.load(std::memory_order_relaxed) ? Result::Corrupt : Result::Ok;
+}
+
+// One code-block into its samples: tier-1, then dequantization; zeros where it has no data.
+// False when it has too many bit-planes to represent.
+bool TileDecoder::DecodeBlock(const BlockPlace& place, TileScratch& scratch) {
+    const TileComp& tc = comps_[place.comp];
+    const CodeBlock& block = blocks_[place.block];
+    const int w = block.x1 - block.x0;
+    const int hgt = block.y1 - block.y0;
+    const size_t stride = place.stride;
+    const bool reversible = tc.style.reversible;
+    int32_t* const ints = reversible ? ints_[place.comp].Data() + place.y * stride + place.x : nullptr;
+    float* const floats = reversible ? nullptr : floats_[place.comp].Data() + place.y * stride + place.x;
+    if (block.segmentCount == 0 || block.corrupted) {
+        if (!place.clear) return true;
+        // Both zero kinds are all-zero bytes.
+        const size_t bytes = size_t(w) * (reversible ? sizeof(int32_t) : sizeof(float));
+        for (int j = 0; j < hgt; j++) {
+            if (reversible) std::memset(ints + j * stride, 0, bytes);
+            else std::memset(floats + j * stride, 0, bytes);
+        }
+        return true;
+    }
+    scratch.blockData.resize(size_t(block.length) + 2);
+    size_t at = 0;
+    for (int32_t ch = block.chunkHead; ch >= 0; ch = chunks_[ch].next) {
+        std::memcpy(scratch.blockData.data() + at, body_.data() + chunks_[ch].offset, chunks_[ch].length);
+        at += chunks_[ch].length;
+    }
+    scratch.segmentLengths.clear();
+    scratch.segmentPasses.clear();
+    int32_t s = block.segmentHead;
+    for (uint32_t n = 0; n < block.segmentCount && s >= 0; n++, s = segments_[s].next) {
+        scratch.segmentLengths.push_back(segments_[s].length);
+        scratch.segmentPasses.push_back(segments_[s].passes);
+    }
+    CodeBlockJob job;
+    job.data = scratch.blockData.data();
+    job.segmentLengths = scratch.segmentLengths.data();
+    job.segmentPasses = scratch.segmentPasses.data();
+    job.segments = static_cast<int>(scratch.segmentLengths.size());
+    job.width = w;
+    job.height = hgt;
+    job.orientation = place.orientation;
+    job.bitplanes = block.bitplanes;
+    job.roiShift = tc.roiShift;
+    job.style = tc.style.style;
+    scratch.coefficients.resize(size_t(w) * hgt);
+    if (!scratch.t1.Decode(job, scratch.coefficients.data())) return false;
+    const int32_t* in = scratch.coefficients.data();
+    for (int j = 0; j < hgt; j++, in += w) {
+        if (reversible) Dequantize53(in, ints + j * stride, size_t(w));
+        else Dequantize97(in, floats + j * stride, size_t(w), place.step);
+    }
+    return true;
+}
+
+// One resolution step of component `c`'s inverse wavelet transform on the threads: the
+// horizontal pass in parts of Workers::partLines rows, then the vertical pass in parts of as
+// many columns (Inverse53Rows).
+void TileDecoder::InverseOnThreads(size_t c, const Resolution& res, const Resolution& low) {
+    const TileComp& tc = comps_[c];
+    const Resolution& top = tc.res[tc.decoded - 1];
+    const size_t stride = top.x1 - top.x0;
+    const uint32_t width = res.x1 - res.x0, height = res.y1 - res.y0;
+    const uint32_t lowWidth = low.x1 - low.x0, lowHeight = low.y1 - low.y0;
+    const bool xOdd = (res.x0 & 1) != 0, yOdd = (res.y0 & 1) != 0;
+    const bool reversible = tc.style.reversible;
+    int32_t* const ints = reversible ? ints_[c].Data() : nullptr;
+    float* const floats = reversible ? nullptr : floats_[c].Data();
+    Threads& threads = *workers_.threads;
+    const uint32_t lines = workers_.partLines;
+    threads.Run(workers_.worker, (size_t(height) + lines - 1) / lines, [&](unsigned worker, size_t part) {
+        const uint32_t first = static_cast<uint32_t>(part) * lines;
+        const uint32_t end = static_cast<uint32_t>(std::min<uint64_t>(height, uint64_t(first) + lines));
+        TileScratch& scratch = ScratchOf(worker);
+        if (reversible) Inverse53Rows(ints, stride, width, lowWidth, xOdd, first, end, scratch.intLanes);
+        else Inverse97Rows(floats, stride, width, lowWidth, xOdd, first, end, scratch.floatLanes);
+    });
+    threads.Run(workers_.worker, (size_t(width) + lines - 1) / lines, [&](unsigned worker, size_t part) {
+        const uint32_t first = static_cast<uint32_t>(part) * lines;
+        const uint32_t end = static_cast<uint32_t>(std::min<uint64_t>(width, uint64_t(first) + lines));
+        TileScratch& scratch = ScratchOf(worker);
+        if (reversible) Inverse53Columns(ints, stride, height, lowHeight, yOdd, first, end, scratch.intLanes);
+        else Inverse97Columns(floats, stride, height, lowHeight, yOdd, first, end, scratch.floatLanes);
+    });
 }
 
 void TileDecoder::Transform(TileSink& sink) {
@@ -1303,12 +1414,15 @@ void TileDecoder::Transform(TileSink& sink) {
         for (int r = 1; r < tc.decoded; r++) {
             const Resolution& res = tc.res[r];
             const Resolution& low = tc.res[r - 1];
-            if (tc.style.reversible) {
-                Inverse53(ints_[c].Data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
-                          (res.x0 & 1) != 0, (res.y0 & 1) != 0, intScratch_);
+            const uint32_t width = res.x1 - res.x0, height = res.y1 - res.y0;
+            if (width > 0 && height > 0 && uint64_t(width) * height >= workers_.splitSamples && Threaded()) {
+                InverseOnThreads(c, res, low);
+            } else if (tc.style.reversible) {
+                Inverse53(ints_[c].Data(), stride, width, height, low.x1 - low.x0, low.y1 - low.y0, (res.x0 & 1) != 0,
+                          (res.y0 & 1) != 0, scratch_.intLanes);
             } else {
-                Inverse97(floats_[c].Data(), stride, res.x1 - res.x0, res.y1 - res.y0, low.x1 - low.x0, low.y1 - low.y0,
-                          (res.x0 & 1) != 0, (res.y0 & 1) != 0, floatScratch_);
+                Inverse97(floats_[c].Data(), stride, width, height, low.x1 - low.x0, low.y1 - low.y0, (res.x0 & 1) != 0,
+                          (res.y0 & 1) != 0, scratch_.floatLanes);
             }
         }
     }
@@ -1322,8 +1436,21 @@ void TileDecoder::Transform(TileSink& sink) {
         }
         if (same) {
             const size_t count = size_t(a.x1 - a.x0) * (a.y1 - a.y0);
-            if (comps_[0].style.reversible) InverseRct(ints_[0].Data(), ints_[1].Data(), ints_[2].Data(), count);
-            else InverseIct(floats_[0].Data(), floats_[1].Data(), floats_[2].Data(), count);
+            const bool reversible = comps_[0].style.reversible;
+            // Every sample on its own: any split gives the same samples.
+            const auto part = [&](size_t first, size_t samples) {
+                if (reversible) InverseRct(ints_[0].Data() + first, ints_[1].Data() + first, ints_[2].Data() + first, samples);
+                else InverseIct(floats_[0].Data() + first, floats_[1].Data() + first, floats_[2].Data() + first, samples);
+            };
+            if (count >= workers_.splitSamples && Threaded()) {
+                const size_t samples = size_t(workers_.partLines) * 1024;  // a multiple of 8, InverseRct's step
+                workers_.threads->Run(workers_.worker, (count + samples - 1) / samples, [&](unsigned, size_t index) {
+                    const size_t first = index * samples;
+                    part(first, std::min(samples, count - first));
+                });
+            } else {
+                part(0, count);
+            }
         }
     }
     std::vector<TileComponent> out(n);
@@ -1401,7 +1528,8 @@ Result ReadMainHeader(const uint8_t* data, size_t size, CodestreamInfo& info) {
     return Result::Ok;
 }
 
-Result DecodeCodestream(const uint8_t* data, size_t size, int reduce, uint64_t maxPixels, TileSink& sink) {
+Result DecodeCodestream(const uint8_t* data, size_t size, int reduce, uint64_t maxPixels, TileSink& sink,
+                        Workers workers) {
     Header h;
     Result r = ParseMainHeader(data, size, h);
     if (r != Result::Ok) return r;
@@ -1427,7 +1555,7 @@ Result DecodeCodestream(const uint8_t* data, size_t size, int reduce, uint64_t m
     std::vector<TilePart> grouped(parts.size());
     std::vector<uint32_t> fill(start.begin(), start.end() - 1);
     for (const TilePart& part : parts) grouped[fill[part.tile]++] = part;
-    TileDecoder decoder(data, h, info.reduce);
+    TileDecoder decoder(data, h, info.reduce, workers);
     for (uint32_t t = 0; t < tiles; t++) {
         if (start[t] == start[t + 1]) continue;  // a tile without data stays zero, as in OpenJPEG
         r = decoder.Decode(t, grouped.data() + start[t], start[t + 1] - start[t], sink);

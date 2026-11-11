@@ -119,7 +119,8 @@ private:
 
 // A file written in pieces, bytes already written set again in place (WriteAt), that appears under
 // its name only when Commit succeeds: as WriteAll, a temporary file beside it, renamed. Without a
-// Commit (or when it fails) the temporary file is removed.
+// Commit (or when it fails) the temporary file is removed. A file whose name is known only later
+// (an image made on a thread, named in page order) is closed with Close and named with CommitAs.
 class StagedFile {
 public:
     StagedFile() = default;
@@ -131,13 +132,19 @@ public:
     bool Write(std::string_view content);
     bool WriteAt(uint64_t offset, std::string_view content);
     bool Commit();
-
-private:
+    // Ends the writing and keeps the temporary file, closed, for CommitAs. False (and the file
+    // removed) when it cannot be closed.
+    bool Close();
+    // Commit under `path` instead of Open's path (in the same directory); after Close too.
+    bool CommitAs(const std::string& path);
+    // Removes the temporary file, as the destructor does.
     void Discard();
 
+private:
     std::string path_;
     std::string temp_;
-    intptr_t handle_ = -1;  // a file descriptor, or a Windows HANDLE
+    intptr_t handle_ = -1;  // a file descriptor, or a Windows HANDLE, while the file is open
+    bool staged_ = false;   // the temporary file exists
 };
 
 // The standard streams as bytes: no text-mode translation and no stdio buffer. A write is one

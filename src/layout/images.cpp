@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/images.h"
 
+#include "common/batch.h"
 #include "common/file.h"
 #include "common/minmax.h"
 #include "image/image.h"
+#include "layout/page_pool.h"
 #include "pdf/content_lexer.h"
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -18,6 +23,12 @@ constexpr uint32_t kMinPixels = 24;        // ... and so are images this narrow 
 constexpr float kBackgroundShare = 0.9f;   // an image filling the page behind text is its background
 constexpr float kSamePlace = 2.0f;         // points: a logo comes back at the same place
 constexpr uint32_t kMaxImagesPerPage = 512; // placements written per page; more are skipped
+
+// When the images of a document are made on threads. A thread is not free (its start, and the
+// first touch of its buffers), so the images must be worth it: a thread for every
+// kImageThreadPixels pixels of the images to write, as long as there are images left for them.
+// A count given with --workers starts its threads at once.
+constexpr uint64_t kImageThreadPixels = uint64_t(1) << 18;
 
 float Area(const ImageBox& b) { return (b.x1 - b.x0) * (b.y1 - b.y0); }
 
@@ -37,56 +48,89 @@ const char* Reason(Image::Status status) {
     return "unknown";
 }
 
-// The file a PNG is made into while it is encoded (Image::Sink): named p<page>-<n>.png when the
-// encoder opens it (the image directory made then, once), staged beside that name and renamed
-// into place by Commit, so that no image-sized copy of the file is held.
+// The image directory, made when the first file is to be written: once, by whichever thread
+// comes first.
+class ImageDirectory {
+public:
+    explicit ImageDirectory(const std::string& directory) : directory_(directory), prefix_(directory) {
+        if (!prefix_.empty() && prefix_.back() != '/') prefix_.push_back('/');
+    }
+
+    // True when the directory is there.
+    bool Ensure() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_ && !failed_) {
+            ready_ = File::EnsureDirectory(directory_);
+            failed_ = !ready_;
+        }
+        return ready_;
+    }
+    // It could not be made.
+    bool Failed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return failed_;
+    }
+    // As before the first Ensure, for a pass over the images that is made again; with `remove`
+    // the directory, which that pass made, goes when it is empty.
+    void Forget(bool remove) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (ready_ && remove) File::RemoveEmptyDirectory(directory_);
+        ready_ = failed_ = false;
+    }
+    // The path of the file `name` in it.
+    std::string Path(std::string_view name) const {
+        std::string path = prefix_;
+        path += name;
+        return path;
+    }
+
+private:
+    const std::string& directory_;
+    std::string prefix_;
+    std::mutex mutex_;
+    bool ready_ = false;
+    bool failed_ = false;
+};
+
+// Every image is made under this name (File::StagedFile puts a suffix of its own after it) and
+// renamed to p<page>-<n>.<ext> once the images before it are counted.
+constexpr std::string_view kStagedName = "image";
+
+// One image file in the making: encoded, on any thread, into a temporary file in the image
+// directory, which PlaceImages names in page order.
+struct ImageJob {
+    uint32_t page = 0;  // pages[page].images[image]
+    uint32_t image = 0;
+    const char* failure = nullptr;  // once encoded: why there is no file
+    const char* extension = "png";
+    bool maskDropped = false;
+    File::StagedFile file;  // once encoded: closed, without its name
+};
+
+// The file a PNG is made into while it is encoded (Image::Sink), opened when the encoder has
+// its first byte (the image directory made then), so that no image-sized copy of the file is held.
 class ImageFile final : public Image::Sink {
 public:
-    ImageFile(const ImageOutput& output, bool& directoryReady, bool& directoryFailed)
-        : output_(output), directoryReady_(directoryReady), directoryFailed_(directoryFailed) {}
+    ImageFile(ImageDirectory& directory, File::StagedFile& file) : directory_(directory), file_(file) {}
 
-    // The next image's place: its page and its number there.
-    void Prepare(uint32_t page, int number) {
-        page_ = page;
-        number_ = number;
-        name_.clear();
-    }
-
-    bool Open(const char* extension) override {
-        name_ = "p" + std::to_string(page_) + "-" + std::to_string(number_) + "." + extension;
-        if (!directoryReady_ && !directoryFailed_) {
-            directoryReady_ = File::EnsureDirectory(output_.directory);
-            directoryFailed_ = !directoryReady_;
-        }
-        if (directoryFailed_) return false;
-        std::string path = output_.directory;
-        if (!path.empty() && path.back() != '/') path.push_back('/');
-        path += name_;
-        return file_.Open(path);
-    }
+    bool Open(const char*) override { return directory_.Ensure() && file_.Open(directory_.Path(kStagedName)); }
     bool Append(const uint8_t* data, size_t size) override {
         return file_.Write(std::string_view(reinterpret_cast<const char*>(data), size));
     }
     bool Patch(uint64_t offset, const uint8_t* data, size_t size) override {
         return file_.WriteAt(offset, std::string_view(reinterpret_cast<const char*>(data), size));
     }
-    bool Commit() { return file_.Commit(); }
-    const std::string& Name() const { return name_; }
 
 private:
-    const ImageOutput& output_;
-    bool& directoryReady_;
-    bool& directoryFailed_;
-    uint32_t page_ = 0;
-    int number_ = 0;
-    std::string name_;
-    File::StagedFile file_;
+    ImageDirectory& directory_;
+    File::StagedFile& file_;
 };
 
 Image::Status Encode(const Document& document, const PageData& page, const ImageBox& image, Image::Encoded& out,
-                     Image::Sink* sink) {
+                     Image::Sink* sink, Image::Parallel parallel) {
     if (!image.xobject.IsNull()) {
-        return Image::EncodeXObject(document, image.xobject, image.resources, out, Image::kDefaultMaxPixels, sink);
+        return Image::EncodeXObject(document, image.xobject, image.resources, out, Image::kDefaultMaxPixels, sink,
+                                    parallel);
     }
     // An inline image: its source, BI to EI, read again.
     ContentLexer lexer(std::string_view(page.inlineImages).substr(image.inlineData, image.inlineLength));
@@ -94,7 +138,71 @@ Image::Status Encode(const Document& document, const PageData& page, const Image
     std::vector<PdfValue> operands;
     if (!lexer.Next(op, operands) || op != "BI" || operands.empty()) return Image::Status::Corrupt;
     return Image::EncodeInline(document, operands.back(), lexer.InlineImageData(), image.resources, out,
-                               Image::kDefaultMaxPixels, sink);
+                               Image::kDefaultMaxPixels, sink, parallel);
+}
+
+// Makes the file of `job` (its page and image set), without its name: a PNG goes into the file
+// while it is made; a JPEG or JPEG 2000 passed through is written whole. `encoded` is the
+// calling thread's buffer.
+void EncodeJob(const Document& document, const std::vector<PageData>& pages, ImageDirectory& directory,
+               Image::Encoded& encoded, Image::Parallel parallel, ImageJob& job) {
+    const PageData& page = pages[job.page];
+    ImageFile sink(directory, job.file);
+    const Image::Status status = Encode(document, page, page.images[job.image], encoded, &sink, parallel);
+    job.failure = nullptr;
+    if (status == Image::Status::WriteFailed && directory.Failed()) {
+        job.failure = "the image directory cannot be created";
+    } else if (status != Image::Status::Ok) {
+        job.failure = Reason(status);
+    } else if (encoded.streamed) {
+        if (!job.file.Close()) job.failure = "the file cannot be written";
+    } else if (!directory.Ensure()) {
+        job.failure = "the image directory cannot be created";
+    } else if (!job.file.Open(directory.Path(kStagedName)) || !job.file.Write(encoded.bytes) || !job.file.Close()) {
+        job.failure = "the file cannot be written";
+    }
+    if (job.failure) job.file.Discard();
+    job.extension = encoded.extension;
+    job.maskDropped = encoded.maskDropped;
+}
+
+// The images PlaceImages writes, in the order it writes them: the first placement of every
+// image that is not skipped. Returns their pixels.
+uint64_t ListJobs(const std::vector<PageData>& pages, std::vector<std::pair<uint32_t, uint32_t>>& list) {
+    std::unordered_set<uint64_t> seen;
+    uint64_t pixels = 0;
+    for (uint32_t p = 0; p < pages.size(); ++p) {
+        const PageData& page = pages[p];
+        for (uint32_t i = 0; i < page.images.size(); ++i) {
+            const ImageBox& image = page.images[i];
+            if (image.state == ImageState::Skipped || !seen.insert(image.identity).second) continue;
+            list.emplace_back(p, i);
+            pixels += uint64_t(image.width) * image.height;
+        }
+    }
+    return pixels;
+}
+
+// The files of `jobs` made on the threads of `pool`, the document shared between them
+// (Document::BeginShared). False when the document cannot be shared, or says that what the
+// threads read might depend on their order: nothing is left of the pass then, and the caller
+// makes the files one after another.
+bool EncodeShared(const Document& document, const std::vector<PageData>& pages, const ImageOutput& output,
+                  ImageDirectory& directory, PagePool& pool, ImageJob* jobs, size_t count) {
+    File::FileInfo before;
+    const bool existed = File::StatusOf(output.directory, before);
+    if (!document.BeginShared()) return false;
+    {
+        std::vector<Image::Encoded> encoded(pool.Workers());
+        pool.Run(count, [&](unsigned worker, size_t index) {
+            if (!document.SharedIntact()) return;  // made again by the caller
+            EncodeJob(document, pages, directory, encoded[worker], Image::Parallel{&pool, worker}, jobs[index]);
+        });
+    }
+    if (document.EndShared()) return true;
+    for (size_t index = 0; index < count; ++index) jobs[index].file.Discard();
+    directory.Forget(!existed);
+    return false;
 }
 
 void SetName(PageData& page, ImageBox& image, ImageState state, std::string_view name) {
@@ -243,16 +351,65 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
             }
     }
 
+    // Threads: the conversion's pool, or a pool of this pass (a document of one page has none),
+    // when the images are worth a thread or a thread count was asked for.
+    const Document& document = *output.document;
+    ImageDirectory directory(output.directory);
+    PagePool* pool = nullptr;
+    std::unique_ptr<PagePool> own;
+    std::unique_ptr<ImageJob[]> jobs;  // the files made on threads, in page order
+    if (output.pageWorkers != 1) {
+        const bool asked = output.pageWorkers != 0;
+        uint64_t pixels = 0;  // of every image kept: no fewer than the files have
+        bool any = false;
+        for (const PageData& page : pages) {
+            for (const ImageBox& image : page.images) {
+                if (image.state == ImageState::Skipped) continue;
+                any = true;
+                pixels += uint64_t(image.width) * image.height;
+            }
+        }
+        if (any && (asked || pixels >= kImageThreadPixels)) {
+            std::vector<std::pair<uint32_t, uint32_t>> list;
+            pixels = ListJobs(pages, list);
+            if (asked || pixels >= kImageThreadPixels) {
+                pool = output.pool;
+                if (!pool) {
+                    const unsigned workers = asked ? Batch::WorkerCount(output.pageWorkers, SIZE_MAX)
+                                                   : std::min(Batch::UsableCpus(), kDefaultPageWorkers);
+                    if (workers > 1) {
+                        own.reset(new PagePool(workers));
+                        pool = own.get();
+                    }
+                }
+            }
+            if (pool) {
+                // Threads for whole images here; an image starts more for its own parts (image.h).
+                const uint64_t threads = asked ? pool->Workers() - 1
+                                               : std::min<uint64_t>(list.size() - 1, pixels / kImageThreadPixels);
+                pool->Start(static_cast<unsigned>(std::min<uint64_t>(threads, pool->Workers() - 1)));
+                if (list.size() >= 2 && pool->Started() > 0) {
+                    jobs.reset(new ImageJob[list.size()]);
+                    for (size_t k = 0; k < list.size(); ++k) {
+                        jobs[k].page = list[k].first;
+                        jobs[k].image = list[k].second;
+                    }
+                    if (!EncodeShared(document, pages, output, directory, *pool, jobs.get(), list.size())) jobs.reset();
+                }
+            }
+        }
+    }
+
     // Files: one per distinct image, named after the page that first shows it.
     struct Written {
         uint32_t page;
         uint32_t image;
     };
     std::unordered_map<uint64_t, Written> files;
-    bool directoryReady = false, directoryFailed = false;
     Image::Encoded encoded;
-    ImageFile file(output, directoryReady, directoryFailed);
-    std::string name, path;
+    ImageJob single;  // the file in the making, when they are made one after another
+    size_t next = 0;  // in `jobs`
+    std::string name;
     for (uint32_t p = 0; p < n; ++p) {
         PageData& page = pages[p];
         int count = 0;
@@ -269,38 +426,24 @@ void PlaceImages(std::vector<PageData>& pages, const ImageOutput& output, Conver
                 SetName(page, image, written.state, from.ImageName(written));
                 continue;
             }
-            // A PNG goes into its file while it is made; a JPEG or JPEG 2000 passed through is
-            // written whole.
-            file.Prepare(page.number, count + 1);
-            const Image::Status status = Encode(*output.document, page, image, encoded, &file);
-            const char* failure = nullptr;
-            if (status == Image::Status::WriteFailed && directoryFailed) {
-                failure = "the image directory cannot be created";
-            } else if (status != Image::Status::Ok) {
-                failure = Reason(status);
-            } else if (encoded.streamed) {
-                name = file.Name();
-                if (!file.Commit()) failure = "the file cannot be written";
+            ImageJob* job = &single;
+            if (jobs) {
+                job = &jobs[next++];
             } else {
-                if (!directoryReady && !directoryFailed) {
-                    directoryReady = File::EnsureDirectory(output.directory);
-                    directoryFailed = !directoryReady;
-                }
-                name = "p" + std::to_string(page.number) + "-" + std::to_string(count + 1) + "." + encoded.extension;
-                path = output.directory;
-                if (!path.empty() && path.back() != '/') path.push_back('/');
-                path += name;
-                if (directoryFailed)
-                    failure = "the image directory cannot be created";
-                else if (!File::WriteAll(path, encoded.bytes))
-                    failure = "the file cannot be written";
+                single.page = p;
+                single.image = i;
+                EncodeJob(document, pages, directory, encoded, Image::Parallel{pool, 0}, single);
             }
-            if (failure) {
+            if (!job->failure) {
+                name = "p" + std::to_string(page.number) + "-" + std::to_string(count + 1) + "." + job->extension;
+                if (!job->file.CommitAs(directory.Path(name))) job->failure = "the file cannot be written";
+            }
+            if (job->failure) {
                 report.imagesSkipped++;
-                SetName(page, image, ImageState::Failed, failure);
+                SetName(page, image, ImageState::Failed, job->failure);
             } else {
                 report.images++;
-                if (encoded.maskDropped) report.imagesMaskDropped++;
+                if (job->maskDropped) report.imagesMaskDropped++;
                 count++;
                 SetName(page, image, ImageState::Written, output.linkPrefix + name);
             }

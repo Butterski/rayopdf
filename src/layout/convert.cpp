@@ -192,6 +192,8 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     images.document = &document;
     images.directory = options.imageDirectory;
     images.linkPrefix = options.imageLinkPrefix;
+    images.pool = pool.get();
+    images.pageWorkers = options.pageWorkers;
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,

@@ -276,98 +276,113 @@ uint32_t ScatterRows(const V*, int32_t, uint32_t, uint32_t, T*, size_t) {
 
 // ---------------------------------------------------------------------------- 2-D
 
+// Room for two buffers of `lines` lane vectors each, the first returned: padded so that every
+// lane vector starts 16-byte aligned.
 template <typename T>
-void Inverse2D(T* data, size_t stride, uint32_t width, uint32_t height, uint32_t lowWidth, uint32_t lowHeight, bool xOdd,
-               bool yOdd, std::vector<T>& scratch) {
-    using V = typename LanesOf<T>::Type;
-    if (width == 0 || height == 0) return;
-    const size_t lines = std::max(width, height);
-    // Two buffers of eight lanes a sample, padded so that every lane vector starts 16-byte
-    // aligned.
+typename LanesOf<T>::Type* LaneBuffers(std::vector<T>& scratch, size_t lines) {
     if (scratch.size() < lines * 16 + 4) scratch.resize(lines * 16 + 4);
     T* base = scratch.data();
     while (reinterpret_cast<uintptr_t>(base) % 16 != 0) base++;
-    V* buf = reinterpret_cast<V*>(base);
-    V* buf2 = buf + lines;
-    alignas(16) T lane[8];
+    return reinterpret_cast<typename LanesOf<T>::Type*>(base);
+}
 
-    // Rows, eight at a time: gather sample i of each row into lane vector i, lift, scatter back
-    // interleaved.
-    {
-        const int32_t sn = static_cast<int32_t>(lowWidth);
-        const int32_t dn = static_cast<int32_t>(width - lowWidth);
-        const uint32_t lowStart = xOdd ? 1 : 0;
-        for (uint32_t y0 = 0; y0 < height; y0 += 8) {
-            const uint32_t rows = std::min<uint32_t>(8, height - y0);
-            T* first = data + y0 * stride;
-            uint32_t i = 0;
-            if (rows == 8) i = GatherRows(first, stride, width, buf);
-            for (; i < width; i++) {
-                for (uint32_t k = 0; k < 8; k++) lane[k] = k < rows ? first[k * stride + i] : T(0);
-                buf[i] = Load(lane);
-            }
-            Lift(buf, buf + sn, sn, dn, xOdd);
-            // Output position p takes lane vector p / 2 of the low half when p has the low
-            // parity, of the high half otherwise.
-            uint32_t p = 0;
-            if (rows == 8) p = ScatterRows(buf, sn, lowStart, width, first, stride);
-            for (; p < width; p++) {
-                Store(lane, (p & 1) == lowStart ? buf[p >> 1] : buf[sn + (p >> 1)]);
-                for (uint32_t k = 0; k < rows; k++) first[k * stride + p] = lane[k];
-            }
+// Rows [first, end), eight at a time from `first`: gather sample i of each row into lane vector
+// i, lift, scatter back interleaved.
+template <typename T>
+void InverseRows(T* data, size_t stride, uint32_t width, uint32_t lowWidth, bool xOdd, uint32_t first, uint32_t end,
+                 std::vector<T>& scratch) {
+    using V = typename LanesOf<T>::Type;
+    V* buf = LaneBuffers(scratch, width);
+    alignas(16) T lane[8];
+    const int32_t sn = static_cast<int32_t>(lowWidth);
+    const int32_t dn = static_cast<int32_t>(width - lowWidth);
+    const uint32_t lowStart = xOdd ? 1 : 0;
+    for (uint32_t y0 = first; y0 < end; y0 += 8) {
+        const uint32_t rows = std::min<uint32_t>(8, end - y0);
+        T* top = data + y0 * stride;
+        uint32_t i = 0;
+        if (rows == 8) i = GatherRows(top, stride, width, buf);
+        for (; i < width; i++) {
+            for (uint32_t k = 0; k < 8; k++) lane[k] = k < rows ? top[k * stride + i] : T(0);
+            buf[i] = Load(lane);
+        }
+        Lift(buf, buf + sn, sn, dn, xOdd);
+        // Output position p takes lane vector p / 2 of the low half when p has the low
+        // parity, of the high half otherwise.
+        uint32_t p = 0;
+        if (rows == 8) p = ScatterRows(buf, sn, lowStart, width, top, stride);
+        for (; p < width; p++) {
+            Store(lane, (p & 1) == lowStart ? buf[p >> 1] : buf[sn + (p >> 1)]);
+            for (uint32_t k = 0; k < rows; k++) top[k * stride + p] = lane[k];
         }
     }
-    // Columns, sixteen (one cache line of floats) or eight at a time: each row's eight samples
-    // are one lane vector.
-    {
-        const int32_t sn = static_cast<int32_t>(lowHeight);
-        const int32_t dn = static_cast<int32_t>(height - lowHeight);
-        const uint32_t lowStart = yOdd ? 1 : 0;
-        const uint32_t highStart = yOdd ? 0 : 1;
-        // Lane vector i goes to row lowStart + 2i (low) or highStart + 2(i - sn) (high).
-        auto rowOf = [&](uint32_t i) { return int32_t(i) < sn ? lowStart + 2 * i : highStart + 2 * (i - uint32_t(sn)); };
-        uint32_t x0 = 0;
-        for (; x0 + 16 <= width; x0 += 16) {
-            for (uint32_t y = 0; y < height; y++) {
+}
+
+// Columns [first, end), sixteen (one cache line of floats) or eight at a time from `first`: each
+// row's eight samples are one lane vector.
+template <typename T>
+void InverseColumns(T* data, size_t stride, uint32_t height, uint32_t lowHeight, bool yOdd, uint32_t first, uint32_t end,
+                    std::vector<T>& scratch) {
+    using V = typename LanesOf<T>::Type;
+    V* buf = LaneBuffers(scratch, height);
+    V* buf2 = buf + height;
+    alignas(16) T lane[8];
+    const int32_t sn = static_cast<int32_t>(lowHeight);
+    const int32_t dn = static_cast<int32_t>(height - lowHeight);
+    const uint32_t lowStart = yOdd ? 1 : 0;
+    const uint32_t highStart = yOdd ? 0 : 1;
+    // Lane vector i goes to row lowStart + 2i (low) or highStart + 2(i - sn) (high).
+    auto rowOf = [&](uint32_t i) { return int32_t(i) < sn ? lowStart + 2 * i : highStart + 2 * (i - uint32_t(sn)); };
+    uint32_t x0 = first;
+    for (; x0 + 16 <= end; x0 += 16) {
+        for (uint32_t y = 0; y < height; y++) {
 #if defined(__SSE2__)
-                if (y + 16 < height) {
-                    _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0), _MM_HINT_T0);
-                    _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0 + 15), _MM_HINT_T0);
-                }
-#endif
-                buf[y] = Load(data + y * stride + x0);
-                buf2[y] = Load(data + y * stride + x0 + 8);
+            if (y + 16 < height) {
+                _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0), _MM_HINT_T0);
+                _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0 + 15), _MM_HINT_T0);
             }
-            Lift(buf, buf + sn, sn, dn, yOdd);
-            Lift(buf2, buf2 + sn, sn, dn, yOdd);
-            for (uint32_t i = 0; i < height; i++) {
-                T* row = data + rowOf(i) * stride + x0;
-                Store(row, buf[i]);
-                Store(row + 8, buf2[i]);
+#endif
+            buf[y] = Load(data + y * stride + x0);
+            buf2[y] = Load(data + y * stride + x0 + 8);
+        }
+        Lift(buf, buf + sn, sn, dn, yOdd);
+        Lift(buf2, buf2 + sn, sn, dn, yOdd);
+        for (uint32_t i = 0; i < height; i++) {
+            T* row = data + rowOf(i) * stride + x0;
+            Store(row, buf[i]);
+            Store(row + 8, buf2[i]);
+        }
+    }
+    for (; x0 < end; x0 += 8) {
+        const uint32_t columns = std::min<uint32_t>(8, end - x0);
+        if (columns == 8) {
+            for (uint32_t y = 0; y < height; y++) buf[y] = Load(data + y * stride + x0);
+        } else {
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t k = 0; k < 8; k++) lane[k] = k < columns ? data[y * stride + x0 + k] : T(0);
+                buf[y] = Load(lane);
             }
         }
-        for (; x0 < width; x0 += 8) {
-            const uint32_t columns = std::min<uint32_t>(8, width - x0);
+        Lift(buf, buf + sn, sn, dn, yOdd);
+        for (uint32_t i = 0; i < height; i++) {
+            const uint32_t y = rowOf(i);
             if (columns == 8) {
-                for (uint32_t y = 0; y < height; y++) buf[y] = Load(data + y * stride + x0);
+                Store(data + y * stride + x0, buf[i]);
             } else {
-                for (uint32_t y = 0; y < height; y++) {
-                    for (uint32_t k = 0; k < 8; k++) lane[k] = k < columns ? data[y * stride + x0 + k] : T(0);
-                    buf[y] = Load(lane);
-                }
-            }
-            Lift(buf, buf + sn, sn, dn, yOdd);
-            for (uint32_t i = 0; i < height; i++) {
-                const uint32_t y = rowOf(i);
-                if (columns == 8) {
-                    Store(data + y * stride + x0, buf[i]);
-                } else {
-                    Store(lane, buf[i]);
-                    std::memcpy(data + y * stride + x0, lane, columns * sizeof(T));
-                }
+                Store(lane, buf[i]);
+                std::memcpy(data + y * stride + x0, lane, columns * sizeof(T));
             }
         }
     }
+}
+
+template <typename T>
+void Inverse2D(T* data, size_t stride, uint32_t width, uint32_t height, uint32_t lowWidth, uint32_t lowHeight, bool xOdd,
+               bool yOdd, std::vector<T>& scratch) {
+    if (width == 0 || height == 0) return;
+    LaneBuffers(scratch, std::max(width, height));  // sized once for both passes
+    InverseRows(data, stride, width, lowWidth, xOdd, 0, height, scratch);
+    InverseColumns(data, stride, height, lowHeight, yOdd, 0, width, scratch);
 }
 
 } // namespace
@@ -380,6 +395,26 @@ void Inverse53(int32_t* data, size_t stride, uint32_t width, uint32_t height, ui
 void Inverse97(float* data, size_t stride, uint32_t width, uint32_t height, uint32_t lowWidth, uint32_t lowHeight,
                bool xOdd, bool yOdd, std::vector<float>& scratch) {
     Inverse2D(data, stride, width, height, lowWidth, lowHeight, xOdd, yOdd, scratch);
+}
+
+void Inverse53Rows(int32_t* data, size_t stride, uint32_t width, uint32_t lowWidth, bool xOdd, uint32_t first,
+                   uint32_t end, std::vector<int32_t>& scratch) {
+    InverseRows(data, stride, width, lowWidth, xOdd, first, end, scratch);
+}
+
+void Inverse53Columns(int32_t* data, size_t stride, uint32_t height, uint32_t lowHeight, bool yOdd, uint32_t first,
+                      uint32_t end, std::vector<int32_t>& scratch) {
+    InverseColumns(data, stride, height, lowHeight, yOdd, first, end, scratch);
+}
+
+void Inverse97Rows(float* data, size_t stride, uint32_t width, uint32_t lowWidth, bool xOdd, uint32_t first,
+                   uint32_t end, std::vector<float>& scratch) {
+    InverseRows(data, stride, width, lowWidth, xOdd, first, end, scratch);
+}
+
+void Inverse97Columns(float* data, size_t stride, uint32_t height, uint32_t lowHeight, bool yOdd, uint32_t first,
+                      uint32_t end, std::vector<float>& scratch) {
+    InverseColumns(data, stride, height, lowHeight, yOdd, first, end, scratch);
 }
 
 void InverseRct(int32_t* c0, int32_t* c1, int32_t* c2, size_t count) {

@@ -5,6 +5,7 @@ namespace RayoPdf::Layout {
 
 PagePool::PagePool(unsigned workers) : workers_(workers < 2 ? 2 : workers) {
     threads_.reserve(workers_ - 1);
+    rounds_.reserve(4);
 }
 
 PagePool::~PagePool() {
@@ -18,52 +19,60 @@ PagePool::~PagePool() {
 
 void PagePool::Start(unsigned threads) {
     if (threads > workers_ - 1) threads = workers_ - 1;
-    if (threads <= threads_.size()) return;
-    // Under the lock a new thread cannot miss the round that is running (it serves the rounds
-    // after `seen`), and the round waits for it.
+    if (threads <= started_.load(std::memory_order_relaxed)) return;
+    // A new thread looks for open rounds under the lock, so it joins the rounds that run.
     std::lock_guard<std::mutex> lock(mutex_);
-    const uint64_t seen = active_ ? round_ - 1 : round_;
     while (threads_.size() < threads) {
         const unsigned worker = static_cast<unsigned>(threads_.size()) + 1;
-        if (active_) busy_++;
-        threads_.emplace_back(&PagePool::Serve, this, worker, seen);
+        threads_.emplace_back(&PagePool::Serve, this, worker);
     }
+    started_.store(static_cast<unsigned>(threads_.size()), std::memory_order_relaxed);
 }
 
-void PagePool::Run(size_t count, void (*run)(void*, unsigned, size_t), void* context) {
+void PagePool::Run(unsigned caller, size_t count, void (*run)(void*, unsigned, size_t), void* context) {
     if (count == 0) return;
+    Round round{run, context, count};
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        run_ = run;
-        context_ = context;
-        count_ = count;
-        next_.store(0, std::memory_order_relaxed);
-        busy_ = static_cast<unsigned>(threads_.size());
-        active_ = true;
-        round_++;
+        rounds_.push_back(&round);
     }
     start_.notify_all();
-    Take(0);
-    // The pool's threads may still run their last index (and read the round) until busy_ is 0.
+    Take(round, caller);
+    // Closed to new helpers; those inside may still run their last index (and read the round).
     std::unique_lock<std::mutex> lock(mutex_);
-    done_.wait(lock, [this] { return busy_ == 0; });
-    active_ = false;
+    for (size_t i = rounds_.size(); i-- > 0;) {
+        if (rounds_[i] == &round) {
+            rounds_.erase(rounds_.begin() + static_cast<ptrdiff_t>(i));
+            break;
+        }
+    }
+    done_.wait(lock, [&round] { return round.helpers == 0; });
 }
 
-void PagePool::Take(unsigned worker) {
-    for (size_t index; (index = next_.fetch_add(1, std::memory_order_relaxed)) < count_;) run_(context_, worker, index);
+void PagePool::Take(Round& round, unsigned worker) {
+    for (size_t index; (index = round.next.fetch_add(1, std::memory_order_relaxed)) < round.count;) {
+        round.run(round.context, worker, index);
+    }
 }
 
-void PagePool::Serve(unsigned worker, uint64_t seen) {
+PagePool::Round* PagePool::Open() const {
+    for (Round* round : rounds_) {
+        if (round->next.load(std::memory_order_relaxed) < round->count) return round;
+    }
+    return nullptr;
+}
+
+void PagePool::Serve(unsigned worker) {
     std::unique_lock<std::mutex> lock(mutex_);
     while (true) {
-        start_.wait(lock, [&] { return closing_ || round_ != seen; });
+        Round* round = nullptr;
+        start_.wait(lock, [&] { return closing_ || (round = Open()) != nullptr; });
         if (closing_) return;
-        seen = round_;
+        round->helpers++;
         lock.unlock();
-        Take(worker);
+        Take(*round, worker);
         lock.lock();
-        if (--busy_ == 0) done_.notify_one();
+        if (--round->helpers == 0) done_.notify_all();
     }
 }
 

@@ -7,6 +7,7 @@
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "common/file.h"
 #include "layout/convert.h"
 #include "layout/page_pool.h"
 #include "pdf/document.h"
@@ -348,6 +349,98 @@ void TestWorkerCounts() {
     }
 }
 
+// Seven pages of images: one of each page's own (two of them past 2^18 pixels), a photo first
+// drawn on page 1 (after its own image) and again on pages 3 and 5, an icon too small to keep and
+// an image of an unknown filter. Each written image's pixels differ from the others'.
+std::string ImagePages() {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pagesNum = b.Reserve();
+    const auto pixels = [](uint32_t width, uint32_t height, int seed) {
+        std::string data(size_t(width) * height, '\0');
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                data[size_t(y) * width + x] = static_cast<char>((x * 7 + y * 13 + x * y / 5 + uint32_t(seed) * 31) & 0xFF);
+            }
+        }
+        return data;
+    };
+    const std::string gray = "/Type /XObject /Subtype /Image /ColorSpace /DeviceGray /BitsPerComponent 8";
+    const int photo = b.AddFlateStream(gray + " /Width 120 /Height 90", pixels(120, 90, 0));
+    const int icon = b.AddStream(gray + " /Width 10 /Height 10", std::string(100, '\x20'));
+    const int unknown = b.AddStream("/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceGray "
+                                    "/BitsPerComponent 1 /Filter /FooDecode",
+                                    std::string(64, '\x01'));
+    std::string kids;
+    for (int i = 1; i <= 7; ++i) {
+        const uint32_t width = i == 2 || i == 6 ? 640 : 60 + 20 * static_cast<uint32_t>(i);
+        const uint32_t height = i == 2 || i == 6 ? 480 : 50 + 10 * static_cast<uint32_t>(i);
+        const int own = b.AddFlateStream(gray + " /Width " + std::to_string(width) + " /Height " + std::to_string(height),
+                                         pixels(width, height, i));
+        std::string content = "BT /F1 12 Tf 72 740 Td (Page " + std::to_string(i) + " of images.) Tj ET\n"
+                              "q 200 0 0 150 72 500 cm /Own Do Q\nq 10 0 0 10 400 700 cm /Ic Do Q\n"
+                              "q 100 0 0 100 300 300 cm /Jb Do Q\n";
+        if (i % 2 == 1) content += "q 240 0 0 180 " + std::to_string(40 + 30 * i) + " 250 cm /Ph Do Q\n";
+        content += "BT /F1 12 Tf 72 100 Td (End of page " + std::to_string(i) + ".) Tj ET";
+        const int stream = b.AddFlateStream("", content);
+        const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pagesNum) +
+                               " 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype "
+                               "/Type1 /BaseFont /Helvetica >> >> /XObject << /Own " + std::to_string(own) +
+                               " 0 R /Ph " + std::to_string(photo) + " 0 R /Ic " + std::to_string(icon) + " 0 R /Jb " +
+                               std::to_string(unknown) + " 0 R >> >> /Contents " + std::to_string(stream) + " 0 R >>");
+        kids += std::to_string(page) + " 0 R ";
+    }
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pagesNum) + " 0 R >>");
+    b.Set(pagesNum, "<< /Type /Pages /Kids [" + kids + "] /Count 7 >>");
+    return b.Build(catalog);
+}
+
+// Images made on the page threads: the same files (names and bytes), Markdown and counters for
+// 1, 2 and 4 page workers and the automatic count; no temporary file left.
+void TestImageWorkers() {
+    const std::string pdf = ImagePages();
+    std::string expected;
+    Layout::ConvertReport expectedReport;
+    std::vector<std::string> expectedFiles;  // name, then bytes
+    for (const unsigned workers : {1u, 2u, 4u, 0u}) {
+        const auto doc = OpenOk(pdf, 1638);
+        std::string directory;
+        RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-pages-", directory), 1638);
+        Layout::ConvertOptions options;
+        options.pageWorkers = workers;
+        options.imageDirectory = directory + "/images";
+        std::string markdown;
+        Layout::ConvertReport report;
+        Layout::Convert(*doc, options, markdown, report);
+        std::vector<File::DirectoryEntry> entries;
+        RAYOPDF_CHECK(File::ListDirectory(options.imageDirectory, entries), 1638);
+        std::vector<std::string> files;
+        for (int page = 1; page <= 7; ++page) {  // in name order
+            for (int n = 1; n <= 2; ++n) {
+                const std::string name = "p" + std::to_string(page) + "-" + std::to_string(n) + ".png";
+                File::InputFile input;
+                if (input.Open(options.imageDirectory + "/" + name, 1u << 22) != File::ReadStatus::Ok) continue;
+                files.push_back(name);
+                files.emplace_back(input.Bytes());
+            }
+        }
+        RAYOPDF_CHECK(files.size() == 2 * entries.size(), 1638);  // nothing but the images
+        for (const File::DirectoryEntry& entry : entries) File::RemoveFile(options.imageDirectory + "/" + entry.name);
+        RAYOPDF_CHECK(File::RemoveEmptyDirectory(options.imageDirectory) && File::RemoveEmptyDirectory(directory), 1638);
+        if (workers == 1) {
+            expected = markdown;
+            expectedReport = report;
+            expectedFiles = files;
+            RAYOPDF_CHECK(report.images == 8 && files.size() == 16 && files[2] == "p1-2.png", 1639);
+            continue;
+        }
+        RAYOPDF_CHECK(markdown == expected && SameReport(report, expectedReport) && report.images == expectedReport.images &&
+                          report.imagesSkipped == expectedReport.imagesSkipped &&
+                          report.imagesMaskDropped == expectedReport.imagesMaskDropped && files == expectedFiles,
+                      1639);
+    }
+}
+
 // The pool: each index of a round run once, on worker numbers below Workers(), worker 0 being the
 // calling thread; rounds one after another, many of them.
 void TestPagePool() {
@@ -407,6 +500,7 @@ int main() {
     TestSharedWithReader();
     TestSharedFonts();
     TestWorkerCounts();
+    TestImageWorkers();
     TestPagePool();
     TestPagePoolStart();
     std::puts("layout pages tests passed");

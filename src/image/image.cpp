@@ -553,6 +553,8 @@ struct Source {
     std::string_view inlineData;
     // The data before its image filter when already read (a DCT image's JPEG), else empty.
     std::string_view encoded;
+    // The conversion's threads for this image's work (image.h), or none.
+    Parallel parallel;
 
     // Entry `full`, or for an inline image its abbreviation `brief`.
     const PdfValue& Entry(std::string_view full, std::string_view brief) const {
@@ -1401,6 +1403,8 @@ Status DecodeJpxSamples(const Source& src, const SampleRequest& req, bool spaceG
     options.maxPixels = std::min<uint64_t>(req.maxPixels, Document::kDefaultStreamLimit / 4);
     options.ignorePalette = spaceGiven && space.family == Family::Indexed;
     options.pdfComponents = spaceGiven ? space.components : 0;
+    options.threads = src.parallel.threads;
+    options.worker = src.parallel.worker;
     if (req.inDataAlpha && !src.inlineImage) {
         const int64_t inData = src.doc.Get(src.dict, "SMaskInData").Int(0);
         options.smaskInData = inData == 1 || inData == 2 ? static_cast<int>(inData) : 0;
@@ -1619,7 +1623,7 @@ MaskKind ReadMask(const Source& src, uint64_t maxPixels, ImageRows& mask, bool& 
     if (src.inlineImage) return MaskKind::None;  // inline images have neither (ISO 32000-1 Table 93)
     const PdfValue& smask = src.doc.Get(src.dict, "SMask");
     if (smask.IsStream()) {
-        const Source maskSrc{src.doc, smask, src.resources, false, {}, {}};
+        const Source maskSrc{src.doc, smask, src.resources, false, {}, {}, src.parallel};
         SampleRequest req;
         req.maxPixels = maxPixels;
         req.softMask = true;
@@ -1632,7 +1636,7 @@ MaskKind ReadMask(const Source& src, uint64_t maxPixels, ImageRows& mask, bool& 
     }
     const PdfValue& stencil = src.doc.Get(src.dict, "Mask");
     if (stencil.IsStream()) {
-        const Source maskSrc{src.doc, stencil, src.resources, false, {}, {}};
+        const Source maskSrc{src.doc, stencil, src.resources, false, {}, {}, src.parallel};
         decoded = DecodeStencil(maskSrc, maxPixels, mask) == Status::Ok;
         return MaskKind::Stencil;
     }
@@ -2063,19 +2067,19 @@ Status Gray(const Source& src, uint32_t maxSide, uint64_t maxPixels, GrayImage& 
 } // namespace
 
 Status EncodeXObject(const Document& document, const PdfValue& image, const PdfValue& resources, Encoded& out,
-                     uint64_t maxPixels, Sink* sink) {
+                     uint64_t maxPixels, Sink* sink, Parallel parallel) {
     out = Encoded();
     const PdfValue& stream = document.Resolve(image);
     if (!stream.IsStream()) return Status::Corrupt;
-    const Source src{document, stream, document.Resolve(resources), false, {}, {}};
+    const Source src{document, stream, document.Resolve(resources), false, {}, {}, parallel};
     return Encode(src, out, maxPixels, sink);
 }
 
 Status EncodeInline(const Document& document, const PdfValue& dictionary, std::string_view data,
-                    const PdfValue& resources, Encoded& out, uint64_t maxPixels, Sink* sink) {
+                    const PdfValue& resources, Encoded& out, uint64_t maxPixels, Sink* sink, Parallel parallel) {
     out = Encoded();
     if (!dictionary.IsDict()) return Status::Corrupt;
-    const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
+    const Source src{document, dictionary, document.Resolve(resources), true, data, {}, parallel};
     return Encode(src, out, maxPixels, sink);
 }
 
@@ -2084,7 +2088,7 @@ Status GrayXObject(const Document& document, const PdfValue& image, const PdfVal
     out = GrayImage();
     const PdfValue& stream = document.Resolve(image);
     if (!stream.IsStream()) return Status::Corrupt;
-    const Source src{document, stream, document.Resolve(resources), false, {}, {}};
+    const Source src{document, stream, document.Resolve(resources), false, {}, {}, {}};
     return Gray(src, maxSide, maxPixels, out);
 }
 
@@ -2092,7 +2096,7 @@ Status GrayInline(const Document& document, const PdfValue& dictionary, std::str
                   const PdfValue& resources, GrayImage& out, uint32_t maxSide, uint64_t maxPixels) {
     out = GrayImage();
     if (!dictionary.IsDict()) return Status::Corrupt;
-    const Source src{document, dictionary, document.Resolve(resources), true, data, {}};
+    const Source src{document, dictionary, document.Resolve(resources), true, data, {}, {}};
     return Gray(src, maxSide, maxPixels, out);
 }
 

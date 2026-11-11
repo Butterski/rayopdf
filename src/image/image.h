@@ -15,8 +15,13 @@
 // JPEG or JPEG 2000 image the decoders cannot read is written as stored (.jpg, .jp2).
 //
 // Every decode is bounded: at most `maxPixels` pixels per image and the document's stream limits.
+//
+// One image's work may be split over the threads of the conversion (Parallel): the parts of it
+// that do not depend on each other run on them (JPEG 2000 code-blocks and wavelet lines), each
+// writing its own part of the result, so the file's bytes are those of one thread.
 #pragma once
 
+#include "common/threads.h"
 #include "pdf/document.h"
 
 #include <cstddef>
@@ -66,17 +71,24 @@ struct Encoded {
 
 constexpr uint64_t kDefaultMaxPixels = uint64_t(1) << 28;
 
+// The conversion's threads for one image's work, or none: `worker` is the calling thread's
+// number among them (Threads::Run). The image's parts start the threads they are worth.
+struct Parallel {
+    Threads* threads = nullptr;
+    unsigned worker = 0;
+};
+
 // An image XObject (`image`, a stream, resolved or a reference). `resources` (the resources that
 // named it; may be null) resolves named colour spaces. With a `sink`, a PNG is made into it.
 Status EncodeXObject(const Document& document, const PdfValue& image, const PdfValue& resources, Encoded& out,
-                     uint64_t maxPixels = kDefaultMaxPixels, Sink* sink = nullptr);
+                     uint64_t maxPixels = kDefaultMaxPixels, Sink* sink = nullptr, Parallel parallel = Parallel());
 
 // An inline image: its dictionary as the content lexer returns it (abbreviated keys and values
 // allowed: /W /H /BPC /CS /D /F /DP /IM /I, /G /RGB /CMYK /I for the colour spaces, /AHx /A85 /LZW
 // /Fl /RL /CCF /DCT for the filters) and the bytes between ID and EI.
 Status EncodeInline(const Document& document, const PdfValue& dictionary, std::string_view data,
                     const PdfValue& resources, Encoded& out, uint64_t maxPixels = kDefaultMaxPixels,
-                    Sink* sink = nullptr);
+                    Sink* sink = nullptr, Parallel parallel = Parallel());
 
 // An image as 8-bit gray pixels, for OCR: decoded like a PNG of EncodeXObject (colour space,
 // /Decode), then the luminance (77 R + 150 G + 29 B) / 256 of each pixel composited on white with

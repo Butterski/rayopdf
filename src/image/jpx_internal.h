@@ -4,6 +4,7 @@
 // component transforms (jpx_dwt.cpp).
 #pragma once
 
+#include "common/threads.h"
 #include "image/jpx.h"
 
 #include <cstddef>
@@ -65,6 +66,20 @@ void Inverse53(int32_t* data, size_t stride, uint32_t width, uint32_t height, ui
                uint32_t lowHeight, bool xOdd, bool yOdd, std::vector<int32_t>& scratch);
 void Inverse97(float* data, size_t stride, uint32_t width, uint32_t height, uint32_t lowWidth,
                uint32_t lowHeight, bool xOdd, bool yOdd, std::vector<float>& scratch);
+
+// The two passes of Inverse53 and Inverse97 over a part of the region each, for threads: first
+// the horizontal pass on rows [first, end), `first` a multiple of 8; then, when every row is
+// done, the vertical pass on columns [first, end), `first` a multiple of 16. Parts that do not
+// overlap touch no sample of each other, and all of them together do what the whole transform
+// does, sample for sample. Each thread has its own `scratch`.
+void Inverse53Rows(int32_t* data, size_t stride, uint32_t width, uint32_t lowWidth, bool xOdd, uint32_t first,
+                   uint32_t end, std::vector<int32_t>& scratch);
+void Inverse53Columns(int32_t* data, size_t stride, uint32_t height, uint32_t lowHeight, bool yOdd, uint32_t first,
+                      uint32_t end, std::vector<int32_t>& scratch);
+void Inverse97Rows(float* data, size_t stride, uint32_t width, uint32_t lowWidth, bool xOdd, uint32_t first,
+                   uint32_t end, std::vector<float>& scratch);
+void Inverse97Columns(float* data, size_t stride, uint32_t height, uint32_t lowHeight, bool yOdd, uint32_t first,
+                      uint32_t end, std::vector<float>& scratch);
 
 // Inverse reversible and irreversible component transforms on three equal-size planes.
 void InverseRct(int32_t* c0, int32_t* c1, int32_t* c2, size_t count);
@@ -150,11 +165,23 @@ public:
     virtual void Tile(const TileComponent* components, int count) = 0;
 };
 
+// The threads a decode may use, with the calling thread's number among them, and what is split
+// over them (Options::threads, worker, splitSamples, partLines).
+struct Workers {
+    Threads* threads = nullptr;
+    unsigned worker = 0;
+    uint64_t splitSamples = uint64_t(1) << 17;
+    uint32_t partLines = 64;
+};
+
 // Reads the main header only.
 Result ReadMainHeader(const uint8_t* data, size_t size, CodestreamInfo& info);
 
 // Decodes the codestream tile by tile into `sink`. `reduce` is clamped to the main header's
-// fewest levels; `maxPixels` bounds the image at the decoded resolution.
-Result DecodeCodestream(const uint8_t* data, size_t size, int reduce, uint64_t maxPixels, TileSink& sink);
+// fewest levels; `maxPixels` bounds the image at the decoded resolution. With `workers`, a
+// tile's code-blocks, wavelet lines and component transform run on its threads: each part
+// writes its own samples, so the result is that of one thread.
+Result DecodeCodestream(const uint8_t* data, size_t size, int reduce, uint64_t maxPixels, TileSink& sink,
+                        Workers workers = Workers());
 
 } // namespace RayoPdf::Image::Jpx::Internal

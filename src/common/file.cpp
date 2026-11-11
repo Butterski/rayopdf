@@ -189,9 +189,12 @@ bool WriteAll(const std::string& path, std::string_view content) {
 StagedFile::~StagedFile() { Discard(); }
 
 void StagedFile::Discard() {
-    if (handle_ == -1) return;
-    CloseHandle(reinterpret_cast<HANDLE>(handle_));
-    handle_ = -1;
+    if (handle_ != -1) {
+        CloseHandle(reinterpret_cast<HANDLE>(handle_));
+        handle_ = -1;
+    }
+    if (!staged_) return;
+    staged_ = false;
     std::wstring temp;
     if (Widen(temp_, temp)) DeleteFileW(temp.c_str());
 }
@@ -213,6 +216,7 @@ bool StagedFile::Open(const std::string& path) {
             return false;
         }
         handle_ = reinterpret_cast<intptr_t>(file);
+        staged_ = true;
         path_ = path;
         temp_ = temp;
         return true;
@@ -238,13 +242,27 @@ bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
     return SetFilePointerEx(file, zero, nullptr, FILE_END) && ok;
 }
 
-bool StagedFile::Commit() {
+bool StagedFile::Commit() { return CommitAs(path_); }
+
+bool StagedFile::Close() {
     if (handle_ == -1) return false;
-    bool ok = CloseHandle(reinterpret_cast<HANDLE>(handle_)) != 0;
+    const bool ok = CloseHandle(reinterpret_cast<HANDLE>(handle_)) != 0;
     handle_ = -1;
+    if (!ok) Discard();
+    return ok;
+}
+
+bool StagedFile::CommitAs(const std::string& path) {
+    if (!staged_) return false;
+    bool ok = true;
+    if (handle_ != -1) {
+        ok = CloseHandle(reinterpret_cast<HANDLE>(handle_)) != 0;
+        handle_ = -1;
+    }
+    staged_ = false;
     std::wstring temp, target;
-    if (!Widen(temp_, temp) || !Widen(path_, target)) return false;
-    if (ok && MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+    if (!Widen(temp_, temp)) return false;
+    if (ok && Widen(path, target) && MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
     DeleteFileW(temp.c_str());
     return false;
 }
@@ -575,9 +593,12 @@ bool WriteAll(const std::string& path, std::string_view content) {
 StagedFile::~StagedFile() { Discard(); }
 
 void StagedFile::Discard() {
-    if (handle_ == -1) return;
-    close(static_cast<int>(handle_));
-    handle_ = -1;
+    if (handle_ != -1) {
+        close(static_cast<int>(handle_));
+        handle_ = -1;
+    }
+    if (!staged_) return;
+    staged_ = false;
     unlink(temp_.c_str());
 }
 
@@ -588,6 +609,7 @@ bool StagedFile::Open(const std::string& path) {
     const int fd = CreateTemporary(path, temp);
     if (fd < 0) return false;
     handle_ = fd;
+    staged_ = true;
     path_ = path;
     temp_ = temp;
     return true;
@@ -610,12 +632,25 @@ bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
     return true;
 }
 
-bool StagedFile::Commit() {
+bool StagedFile::Commit() { return CommitAs(path_); }
+
+bool StagedFile::Close() {
     if (handle_ == -1) return false;
-    const int fd = static_cast<int>(handle_);
+    const bool ok = close(static_cast<int>(handle_)) == 0;
     handle_ = -1;
-    const bool ok = close(fd) == 0;
-    if (ok && rename(temp_.c_str(), path_.c_str()) == 0) return true;
+    if (!ok) Discard();
+    return ok;
+}
+
+bool StagedFile::CommitAs(const std::string& path) {
+    if (!staged_) return false;
+    bool ok = true;
+    if (handle_ != -1) {
+        ok = close(static_cast<int>(handle_)) == 0;
+        handle_ = -1;
+    }
+    staged_ = false;
+    if (ok && rename(temp_.c_str(), path.c_str()) == 0) return true;
     unlink(temp_.c_str());
     return false;
 }

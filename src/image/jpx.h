@@ -36,7 +36,14 @@
 // pixels at the decoded resolution; a tile's code-blocks and precincts at most twice its samples
 // at full resolution and 4 Mi each). Work is bounded by the image size and the data size:
 // packets are read until the data ends, a code-block has at most 128 segments, no recursion.
+//
+// With Options::threads the independent parts of a decode run on the conversion's threads: the
+// code-blocks of a tile (tier-1), the lines of each wavelet pass, the component transform and
+// the rows written to the image. Every part writes samples of its own and reads none that
+// another writes meanwhile, so the samples are those of one thread.
 #pragma once
+
+#include "common/threads.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +93,16 @@ struct Options {
     // The components of the PDF /ColorSpace (0 without one): the colour channels Decode keeps,
     // the next one being the opacity channel with SMaskInData and no channel definitions.
     int pdfComponents = 0;
+    // The conversion's threads (common/threads.h) with the calling thread's number among them;
+    // null: the calling thread alone.
+    Threads* threads = nullptr;
+    unsigned worker = 0;
+    // What is split while threads run: a wavelet pass, a component transform or a tile's rows of
+    // at least `splitSamples` samples, into parts of `partLines` lines (a multiple of 16; the
+    // component transform: 1024 samples a line). A part then takes 0.05 to 0.2 ms, many times
+    // what handing it to a thread costs. The tests lower both to split their small images.
+    uint64_t splitSamples = uint64_t(1) << 17;
+    uint32_t partLines = 64;
 };
 
 struct Image {

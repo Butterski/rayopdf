@@ -392,17 +392,18 @@ public:
     bool Bytes() const { return fast_; }
 
     // With Bytes(): writes `width` pixels of image row `y` from x = `x` from row j of the tile's
-    // components, converted straight to bytes.
-    void TileRow(const TileComponent* components, uint32_t j, uint32_t x, uint32_t y, uint32_t width) {
+    // components, converted straight to bytes. `bytes` is the calling thread's buffer.
+    void TileRow(const TileComponent* components, uint32_t j, uint32_t x, uint32_t y, uint32_t width,
+                 std::vector<uint8_t>& bytes) const {
         const size_t n = m_.channels.size();
         uint8_t* out = reinterpret_cast<uint8_t*>(&image_.samples[0]) + (size_t(y) * image_.width + x) * n;
         if (n == 1) {
             components[m_.channels[0].component].RowBytes(j, width, out);
             return;
         }
-        bytes_.resize(n * width);
-        for (size_t k = 0; k < n; k++) components[m_.channels[k].component].RowBytes(j, width, bytes_.data() + k * width);
-        const uint8_t* b = bytes_.data();
+        bytes.resize(n * width);
+        for (size_t k = 0; k < n; k++) components[m_.channels[k].component].RowBytes(j, width, bytes.data() + k * width);
+        const uint8_t* b = bytes.data();
         if (n == 3) {
             for (uint32_t i = 0; i < width; i++, out += 3) {
                 out[0] = b[i];
@@ -418,7 +419,7 @@ public:
 
     // Writes `width` pixels of image row `y` from x = `x`, sample i of component c at
     // region.samples[c][i] (the row's start already applied).
-    void Row(const int32_t* const* rows, uint32_t x, uint32_t y, uint32_t width) {
+    void Row(const int32_t* const* rows, uint32_t x, uint32_t y, uint32_t width) const {
         const size_t n = m_.channels.size();
         const size_t bytes = m_.bits / 8;
         uint8_t* out = reinterpret_cast<uint8_t*>(&image_.samples[0]) + (size_t(y) * image_.width + x) * n * bytes;
@@ -478,13 +479,14 @@ private:
     const Mapping& m_;
     Image& image_;
     bool fast_ = false;
-    std::vector<uint8_t> bytes_;  // TileRow's channels, a row each
 };
 
-// Writes each tile straight into the image: every component at full size.
+// Writes each tile straight into the image: every component at full size. With threads the rows
+// of a tile are written in parts: a row reads its own samples and writes its own pixels.
 class DirectSink : public TileSink {
 public:
-    DirectSink(PixelWriter& writer, Image& image) : writer_(writer), image_(image) {}
+    DirectSink(const PixelWriter& writer, Image& image, Internal::Workers workers)
+        : writer_(writer), image_(image), workers_(workers), scratch_(workers.threads ? workers.threads->Workers() : 1) {}
 
     Result Begin(const CodestreamInfo& info) override {
         ox_ = info.components[0].x0;
@@ -503,25 +505,43 @@ public:
         for (int c = 1; c < count; c++) {
             if (components[c].width < width || components[c].height < height) return;
         }
-        if (writer_.Bytes()) {
-            for (uint32_t j = 0; j < height; j++) writer_.TileRow(components, j, x, y + j, width);
-            return;
-        }
-        // Each image row: the components' samples converted into one row buffer each.
-        rowBuffer_.resize(size_t(count) * width);
-        const int32_t* rows[Internal::kMaxComponents];
-        for (int c = 0; c < count; c++) rows[c] = rowBuffer_.data() + size_t(c) * width;
-        for (uint32_t j = 0; j < height; j++) {
-            for (int c = 0; c < count; c++) components[c].Row(j, width, rowBuffer_.data() + size_t(c) * width);
-            writer_.Row(rows, x, y + j, width);
+        const auto rows = [&](unsigned worker, uint32_t from, uint32_t to) {
+            Scratch& scratch = scratch_[workers_.threads ? worker : 0];
+            if (writer_.Bytes()) {
+                for (uint32_t j = from; j < to; j++) writer_.TileRow(components, j, x, y + j, width, scratch.bytes);
+                return;
+            }
+            // Each image row: the components' samples converted into one row buffer each.
+            scratch.samples.resize(size_t(count) * width);
+            const int32_t* pointers[Internal::kMaxComponents];
+            for (int c = 0; c < count; c++) pointers[c] = scratch.samples.data() + size_t(c) * width;
+            for (uint32_t j = from; j < to; j++) {
+                for (int c = 0; c < count; c++) components[c].Row(j, width, scratch.samples.data() + size_t(c) * width);
+                writer_.Row(pointers, x, y + j, width);
+            }
+        };
+        if (workers_.threads && workers_.threads->Started() > 0 && uint64_t(width) * height >= workers_.splitSamples) {
+            const uint32_t lines = workers_.partLines;
+            workers_.threads->Run(workers_.worker, (size_t(height) + lines - 1) / lines, [&](unsigned worker, size_t part) {
+                const uint32_t from = static_cast<uint32_t>(part) * lines;
+                rows(worker, from, static_cast<uint32_t>(std::min<uint64_t>(height, uint64_t(from) + lines)));
+            });
+        } else {
+            rows(workers_.worker, 0, height);
         }
     }
 
 private:
-    PixelWriter& writer_;
+    struct Scratch {
+        std::vector<uint8_t> bytes;     // TileRow's channels, a row each
+        std::vector<int32_t> samples;   // the components' samples of one row
+    };
+
+    const PixelWriter& writer_;
     Image& image_;
+    Internal::Workers workers_;
     uint32_t ox_ = 0, oy_ = 0;
-    std::vector<int32_t> rowBuffer_;
+    std::vector<Scratch> scratch_;  // by worker
 };
 
 // Collects the components as planes.
@@ -567,6 +587,16 @@ private:
 
 uint32_t CeilShift(uint32_t v, int r) { return static_cast<uint32_t>((uint64_t(v) + (uint64_t(1) << r) - 1) >> r); }
 
+// The threads and the grain `options` asks for (parts of whole multiples of 16 lines).
+Internal::Workers WorkersOf(const Options& options) {
+    Internal::Workers workers;
+    workers.threads = options.threads;
+    workers.worker = options.worker;
+    workers.splitSamples = options.splitSamples;
+    workers.partLines = std::max<uint32_t>(16, options.partLines & ~uint32_t(15));
+    return workers;
+}
+
 } // namespace
 
 Result ReadInfo(const uint8_t* data, size_t size, Info& info) {
@@ -607,7 +637,7 @@ Result DecodeComponents(const uint8_t* data, size_t size, const Options& options
     if (r != Result::Ok) return r;
     FillInfo(data, jp2, isJp2, csInfo, info);
     PlaneSink sink(components);
-    r = Internal::DecodeCodestream(cs, jp2.codestreamSize, options.reduce, options.maxPixels, sink);
+    r = Internal::DecodeCodestream(cs, jp2.codestreamSize, options.reduce, options.maxPixels, sink, WorkersOf(options));
     if (r != Result::Ok) components.clear();
     return r;
 }
@@ -642,18 +672,19 @@ Result Decode(const uint8_t* data, size_t size, const Options& options, Image& i
     if (jp2.paletteColumns > 0 && options.ignorePalette) image.colour = Colour::Unspecified;
     const size_t bytes = size_t(image.width) * image.height * size_t(image.channels) * size_t(m.bits / 8);
     image.samples.assign(bytes, '\0');
-    PixelWriter writer(jp2, m, image);
+    const PixelWriter writer(jp2, m, image);
+    const Internal::Workers workers = WorkersOf(options);
     bool full = true;
     for (const ComponentInfo& ci : csInfo.components) full = full && ci.dx == 1 && ci.dy == 1;
     if (full) {
-        DirectSink sink(writer, image);
-        r = Internal::DecodeCodestream(cs, jp2.codestreamSize, reduce, options.maxPixels, sink);
+        DirectSink sink(writer, image, workers);
+        r = Internal::DecodeCodestream(cs, jp2.codestreamSize, reduce, options.maxPixels, sink, workers);
     } else {
         // Subsampled components: decode the planes, then repeat each sample over the image
         // pixels whose reference grid position it covers.
         std::vector<Component> planes;
         PlaneSink sink(planes);
-        r = Internal::DecodeCodestream(cs, jp2.codestreamSize, reduce, options.maxPixels, sink);
+        r = Internal::DecodeCodestream(cs, jp2.codestreamSize, reduce, options.maxPixels, sink, workers);
         if (r == Result::Ok) {
             const uint32_t ox = CeilShift(csInfo.x0, reduce);
             const uint32_t oy = CeilShift(csInfo.y0, reduce);
