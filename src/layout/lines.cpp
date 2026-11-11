@@ -945,10 +945,21 @@ Marker ParseMarker(std::string_view t, uint32_t& value) {
 
 void LineText(const PageData& page, const Line& line, std::string& out, uint32_t skip) {
     out.clear();
-    for (uint32_t k = skip; k < line.count; ++k) {
+    // Glyphs whose texts follow each other in the page text, with no word break between them
+    // (most of a word), are appended as one piece: the same bytes as glyph by glyph.
+    const size_t textSize = page.text.size();
+    uint32_t k = skip;
+    while (k < line.count) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (k > skip && (g.flags & kGlyphSpaceBefore)) out.push_back(' ');
-        out.append(page.GlyphText(g));
+        const std::string_view first = page.GlyphText(g);
+        size_t end = size_t(g.text) + first.size();
+        for (++k; k < line.count; ++k) {
+            const Glyph& n = page.glyphs[page.lineGlyphs[line.first + k]];
+            if ((n.flags & kGlyphSpaceBefore) || n.text != end || textSize - end < n.textLength) break;
+            end += n.textLength;
+        }
+        out.append(first.data(), end - g.text);
     }
 }
 

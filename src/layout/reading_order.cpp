@@ -28,37 +28,45 @@ size_t SpaceAt(const std::string& text, size_t i) {
 }
 
 // The repetition key of a header or footer line (§5.2): ASCII lowercased, digit runs and lowercase
-// roman-numeral words as '#', white space collapsed.
+// roman-numeral words as '#', white space collapsed. Written in place: a key is never longer than
+// its text.
 void RunningKey(const std::string& text, std::string& key) {
-    key.clear();
+    const auto roman = [](char c) {
+        return c == 'i' || c == 'v' || c == 'x' || c == 'l' || c == 'c' || c == 'I' || c == 'V' || c == 'X' ||
+               c == 'L' || c == 'C';
+    };
+    key.resize(text.size());
+    char* const out = &key[0];
+    size_t n = 0;
     size_t i = 0;
     bool space = false;
     while (i < text.size()) {
         const char c = text[i];
-        if (const size_t n = SpaceAt(text, i)) {
-            space = !key.empty();
-            i += n;
+        if (const size_t s = SpaceAt(text, i)) {
+            space = n > 0;
+            i += s;
             continue;
         }
-        if (space) key.push_back(' '), space = false;
+        if (space) out[n++] = ' ', space = false;
         if (c >= '0' && c <= '9') {
             while (i < text.size() && text[i] >= '0' && text[i] <= '9') ++i;
-            key.push_back('#');
+            out[n++] = '#';
             continue;
         }
         // A word of roman numerals only.
-        if ((key.empty() || key.back() == ' ') && (c == 'i' || c == 'v' || c == 'x' || c == 'I' || c == 'V' || c == 'X')) {
+        if ((n == 0 || out[n - 1] == ' ') && (c == 'i' || c == 'v' || c == 'x' || c == 'I' || c == 'V' || c == 'X')) {
             size_t j = i;
-            while (j < text.size() && std::string_view("ivxlcIVXLC").find(text[j]) != std::string_view::npos) ++j;
+            while (j < text.size() && roman(text[j])) ++j;
             if (j - i <= 6 && (j == text.size() || text[j] == ' ')) {
-                key.push_back('#');
+                out[n++] = '#';
                 i = j;
                 continue;
             }
         }
-        key.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+        out[n++] = c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
         ++i;
     }
+    key.resize(n);
 }
 
 // A page number line: "#", "- # -", "page #", "# of #", "# / #", "[#]" ...
@@ -127,15 +135,22 @@ bool HasFolio(const std::string& key, const std::string& text) {
 }
 
 // Publication metadata in a running head or foot: a URL, a DOI, a copyright or licence notice, a
-// download stamp, an ISSN. ASCII case is folded; the copyright sign is matched as UTF-8.
+// download stamp, an ISSN. ASCII case is folded; the copyright sign is matched as UTF-8. One pass:
+// the words are tried where the text has their first character.
 bool IsMetadata(const std::string& text) {
-    static const char* const kWords[] = {"http", "www.", "doi", "copyright", "issn", "downloaded", "rights reserved",
-                                         "license", "licence", "\xC2\xA9"};
-    std::string lower(text.size(), ' ');
-    for (size_t i = 0; i < text.size(); ++i)
-        lower[i] = text[i] >= 'A' && text[i] <= 'Z' ? static_cast<char>(text[i] - 'A' + 'a') : text[i];
-    for (const char* word : kWords)
-        if (lower.find(word) != std::string::npos) return true;
+    static constexpr std::string_view kWords[] = {"http",    "www.",    "doi",     "copyright", "issn", "downloaded",
+                                                  "rights reserved", "license", "licence", "\xC2\xA9"};
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = lower(text[i]);
+        if (c != 'h' && c != 'w' && c != 'd' && c != 'c' && c != 'i' && c != 'r' && c != 'l' && c != '\xC2') continue;
+        for (const std::string_view word : kWords) {
+            if (word[0] != c || word.size() > text.size() - i) continue;
+            size_t j = 1;
+            while (j < word.size() && lower(text[i + j]) == word[j]) ++j;
+            if (j == word.size()) return true;
+        }
+    }
     return false;
 }
 
