@@ -298,6 +298,42 @@ void TestFigureText() {
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 869);
 }
 
+// Figure regions from marks whose cells touch only at their corners: eight marks set corner to
+// corner on a diagonal are one cluster that weighs enough; the same eight with one empty cell
+// between the fourth and the fifth are two that do not. Six hundred long slanted strokes far
+// from them (no marks, no curves) cover so many cells over each other that the cells are counted
+// instead of painted: the regions stay the same.
+void TestFigureCorners() {
+    const auto build = [](bool crowded) {
+        PageData page = NewPage();
+        // A mark over the 3 x 3 cells (cx, cy) to (cx + 2, cy + 2) of the page's 4-point grid.
+        const auto mark = [&](int cx, int cy) {
+            Shape s;
+            s.x0 = 4.0f * float(cx) + 0.5f, s.x1 = 4.0f * float(cx + 2) + 3.5f;
+            s.y0 = 4.0f * float(cy) + 0.5f, s.y1 = 4.0f * float(cy + 2) + 3.5f;
+            s.kind = ShapeKind::Other, s.stroked = true, s.segments = 3;
+            page.shapes.push_back(s);
+        };
+        for (int k = 0; k < 8; ++k) mark(20 + 3 * k, 20 + 3 * k);
+        for (int k = 0; k < 8; ++k) mark(60 + 3 * k + (k >= 4), 20 + 3 * k + (k >= 4));
+        for (int k = 0; k < 600 && crowded; ++k) {
+            Shape s;
+            s.x0 = 300, s.x1 = 500, s.y0 = 400, s.y1 = 700;
+            s.kind = ShapeKind::Line, s.stroked = true, s.segments = 1;
+            page.shapes.push_back(s);
+        }
+        return page;
+    };
+    const PageData sparse = build(false), crowded = build(true);
+    std::vector<FigureRegion> regions, counted;
+    FigureRegions(sparse, regions);
+    RAYOPDF_CHECK(regions.size() == 1 && regions[0].x0 == 80.5f && regions[0].y0 == 80.5f && regions[0].x1 == 175.5f &&
+                      regions[0].y1 == 175.5f,
+                  879);
+    FigureRegions(crowded, counted);
+    RAYOPDF_CHECK(counted.size() == 1 && std::memcmp(&counted[0], &regions[0], sizeof(FigureRegion)) == 0, 880);
+}
+
 // A box of rulings with text in its cells drawn inside a plot (a legend) is part of the figure;
 // the same box alone is a table.
 void TestLatticeInFigure() {
@@ -1225,6 +1261,7 @@ int main(int argc, char** argv) {
     TestHeaderRule();
     TestBorderless();
     TestFigureText();
+    TestFigureCorners();
     TestLatticeInFigure();
     TestLatticeRulingPastTop();
     TestLatticeTwoLineRow();

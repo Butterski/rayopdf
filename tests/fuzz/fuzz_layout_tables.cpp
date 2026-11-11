@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// libFuzzer target: table detection (layout/tables.h) and the table writers. The input is decoded
-// into up to three pages of glyphs and rulings (positions on a coarse grid so that rows, columns
-// and rulings line up often, plus raw floats including NaN and infinities), then the stages after
-// interpretation run on them: lines, running-line removal, DetectTables page after page with its
-// continuation, reading order, semantics and the Markdown writer (GFM and HTML tables).
+// libFuzzer target: table detection (layout/tables.h), figure regions (layout/figures.h) and the
+// table writers. The input is decoded into up to three pages of glyphs, rulings, drawn shapes and
+// image boxes (positions on a coarse grid so that rows, columns and rulings line up often, plus raw
+// floats including NaN and infinities), then the stages after interpretation run on them: lines,
+// running-line removal, DetectTables page after page with its continuation, figure text, reading
+// order, semantics and the Markdown writer (GFM and HTML tables).
 #include "layout/convert.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
@@ -61,12 +62,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         pages[p].width = 612;
         pages[p].height = 792;
     }
-    static const char kChars[] = "Aa1.-|*  xyz09%$:()";
+    static const char kChars[] = "Aa1.-|*  xyz09%$:()Fig";  // "Fig" starts a caption (MarkFigureText)
     size_t page = 0;
     while (!in.Empty()) {
         const uint8_t op = in.Byte();
         PageData& pd = pages[page];
-        switch (op % 6) {
+        switch (op % 7) {
         case 0: {  // a word of glyphs
             float x = in.Coord();
             const float y = in.Coord();
@@ -109,6 +110,24 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             for (int r = 0; r < rows; ++r)
                 for (int c = 0; c < cols && pd.glyphs.size() < 4096; ++c)
                     AddGlyph(pd, kChars[in.Byte() % (sizeof kChars - 1)], x + float(c) * cw + 3, y - float(r + 1) * rh + 3, 9, 0);
+            break;
+        }
+        case 5: {  // a drawn shape (a figure's stroke, curve or mark), or a placed image
+            const uint8_t kind = in.Byte();
+            const float x0 = in.Coord(), y0 = in.Coord(), x1 = in.Coord(), y1 = in.Coord();
+            if (kind & 0x80) {
+                ImageBox im;
+                im.x0 = x0, im.y0 = y0, im.x1 = x1, im.y1 = y1;
+                if (pd.images.size() < 256) pd.images.push_back(im);
+                break;
+            }
+            Shape s;
+            s.x0 = x0, s.y0 = y0, s.x1 = x1, s.y1 = y1;
+            s.kind = static_cast<ShapeKind>(kind % 3);
+            s.stroked = true, s.curved = (kind & 4) != 0;
+            s.segments = static_cast<uint16_t>(1 + in.Byte() % 64);
+            const int copies = 1 + (kind >> 3) % 8 * 32;  // up to 225 at once: overlapping strokes
+            for (int k = 0; k < copies && pd.shapes.size() < 8192; ++k) pd.shapes.push_back(s);
             break;
         }
         default:  // the next page

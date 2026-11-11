@@ -28,6 +28,8 @@ constexpr float kReach = 2.0f;          // ems around a region its labels stand 
 
 struct Stroke {
     float x0, y0, x1, y1;
+    int32_t a, b, c, d;  // the grid cells it lies over: columns a to b, rows c to d
+    int32_t cluster;
     bool mark;   // no larger than kMark
     bool curve;  // larger both ways, of kCurveSegments segments or more
 };
@@ -37,12 +39,19 @@ struct Cluster {
     int weight = 0;
 };
 
+// Covered cells x0 to x1 of a grid row, and the run it joins (union-find over runs).
+struct Run {
+    int32_t x0, x1, parent, cluster;
+};
+
 // The working storage of FigureRegions, kept by the thread.
 struct FigureScratch {
     std::vector<Stroke> strokes;
-    std::vector<int32_t> cover;   // (ny + 1) x (nx + 1): strokes over each cell, then its cluster + 1
-    std::vector<int32_t> text;    // (ny + 1) x (nx + 1): centres of text lines up to each cell (summed)
-    std::vector<int32_t> stack;
+    std::vector<uint64_t> covered;  // ny rows of `words` words: the cells under a stroke
+    std::vector<int32_t> cover;     // (ny + 1) x (nx + 1): strokes over each cell (corner counts summed)
+    std::vector<int32_t> text;      // (ny + 1) x (nx + 1): centres of text lines up to each cell (summed)
+    std::vector<Run> runs;          // row by row, left to right
+    std::vector<uint32_t> rowRuns;  // ny + 1: the first run of each row
     std::vector<Cluster> clusters;
 };
 
@@ -50,6 +59,39 @@ struct FigureScratch {
 struct FigureMarks {
     std::vector<FigureRegion> regions;
 };
+
+// The index of the lowest set bit of m (m != 0).
+int LowestBit(uint64_t m) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctzll(m);
+#else
+    int n = 0;
+    for (; !(m & 1); m >>= 1) n++;
+    return n;
+#endif
+}
+
+// The first cell at or after x of the row (`words` words) that is covered (`set`) or not; the
+// row's end (64 x words) when there is none.
+int NextCell(const uint64_t* row, int words, int x, bool set) {
+    int w = x >> 6;
+    if (w >= words) return words * 64;
+    uint64_t v = (set ? row[w] : ~row[w]) & (~uint64_t(0) << (x & 63));
+    while (v == 0) {
+        if (++w >= words) return words * 64;
+        v = set ? row[w] : ~row[w];
+    }
+    return w * 64 + LowestBit(v);
+}
+
+int32_t FindRun(std::vector<Run>& runs, int32_t i) {
+    while (runs[static_cast<size_t>(i)].parent != i) {
+        Run& r = runs[static_cast<size_t>(i)];
+        r.parent = runs[static_cast<size_t>(r.parent)].parent;
+        i = r.parent;
+    }
+    return i;
+}
 
 // The share of the box under upright lines of text whose centre lies in it.
 float TextShare(const PageData& page, float x0, float y0, float x1, float y1) {
@@ -62,6 +104,158 @@ float TextShare(const PageData& page, float x0, float y0, float x1, float y1) {
     }
     const double box = double(x1 - x0) * double(y1 - y0);
     return box > 0 ? float(area / box) : 1.0f;
+}
+
+// The clusters of the strokes (scratch.strokes, two at least) on the page's grid into
+// scratch.clusters (empty when called): cells under strokes that touch (corners too), each with
+// its marks' and text-free curves' weight. A curve is weighed only where its cluster's marks do not
+// weigh enough on their own.
+void WeighClusters(const PageData& page, FigureScratch& scratch) {
+    const float width = page.width, height = page.height;
+    std::vector<Stroke>& strokes = scratch.strokes;
+    // The grid covers the cells the strokes touch, aligned with a page-wide grid of the same cells
+    // (a stroke's cells and the clusters are those of the whole page; text outside counts for none).
+    const float cell = Fmax(kCell, Fmax(width, height) / float(kMaxSide));
+    const int pageX = std::min(kMaxSide, static_cast<int>(width / cell) + 1);
+    const int pageY = std::min(kMaxSide, static_cast<int>(height / cell) + 1);
+    const auto pageColumn = [&](float x) { return std::min(pageX - 1, std::max(0, static_cast<int>(x / cell))); };
+    const auto pageRow = [&](float y) { return std::min(pageY - 1, std::max(0, static_cast<int>(y / cell))); };
+    int c0 = pageX, c1 = 0, r0 = pageY, r1 = 0;
+    for (Stroke& s : strokes) {
+        s.a = pageColumn(s.x0), s.b = pageColumn(s.x1), s.c = pageRow(s.y0), s.d = pageRow(s.y1);
+        c0 = std::min(c0, s.a), c1 = std::max(c1, s.b);
+        r0 = std::min(r0, s.c), r1 = std::max(r1, s.d);
+    }
+    const int nx = c1 - c0 + 1, ny = r1 - r0 + 1;
+    const int stride = nx + 1;
+    const size_t cells = static_cast<size_t>(stride) * static_cast<size_t>(ny + 1);
+    for (Stroke& s : strokes) s.a -= c0, s.b -= c0, s.c -= r0, s.d -= r0;
+
+    // The cells under a stroke, a bit each: painted stroke by stroke, or, when the strokes overlap
+    // so much that painting costs more than a pass over the grid, from strokes over each cell
+    // (corner counts summed along rows and columns).
+    const int words = (nx + 63) / 64;
+    std::vector<uint64_t>& covered = scratch.covered;
+    covered.assign(static_cast<size_t>(ny) * static_cast<size_t>(words), 0);
+    size_t paint = 0;
+    for (const Stroke& s : strokes) paint += static_cast<size_t>(s.d - s.c + 1) * static_cast<size_t>((s.b >> 6) - (s.a >> 6) + 1);
+    if (paint <= cells) {
+        for (const Stroke& s : strokes) {
+            const int wa = s.a >> 6, wb = s.b >> 6;
+            const uint64_t first = ~uint64_t(0) << (s.a & 63), last = ~uint64_t(0) >> (63 - (s.b & 63));
+            for (int y = s.c; y <= s.d; ++y) {
+                uint64_t* row = covered.data() + static_cast<size_t>(y) * static_cast<size_t>(words);
+                if (wa == wb) {
+                    row[wa] |= first & last;
+                    continue;
+                }
+                row[wa] |= first;
+                for (int w = wa + 1; w < wb; ++w) row[w] = ~uint64_t(0);
+                row[wb] |= last;
+            }
+        }
+    } else {
+        std::vector<int32_t>& cover = scratch.cover;
+        cover.assign(cells, 0);
+        for (const Stroke& s : strokes) {
+            const int a = s.a, b = s.b + 1, c = s.c, d = s.d + 1;
+            cover[static_cast<size_t>(c * stride + a)]++;
+            cover[static_cast<size_t>(c * stride + b)]--;
+            cover[static_cast<size_t>(d * stride + a)]--;
+            cover[static_cast<size_t>(d * stride + b)]++;
+        }
+        for (int y = 0; y <= ny; ++y)
+            for (int x = 1; x <= nx; ++x) cover[static_cast<size_t>(y * stride + x)] += cover[static_cast<size_t>(y * stride + x - 1)];
+        for (int y = 1; y <= ny; ++y)
+            for (int x = 0; x <= nx; ++x) cover[static_cast<size_t>(y * stride + x)] += cover[static_cast<size_t>((y - 1) * stride + x)];
+        for (int y = 0; y < ny; ++y)
+            for (int x = 0; x < nx; ++x)
+                if (cover[static_cast<size_t>(y * stride + x)] > 0)
+                    covered[static_cast<size_t>(y) * static_cast<size_t>(words) + static_cast<size_t>(x >> 6)] |= uint64_t(1) << (x & 63);
+    }
+
+    // Clusters: covered cells that touch (corners too). Each row's covered cells are runs; a run
+    // joins the runs of the row above that reach its cells or their corners. Clusters are numbered
+    // in the order of their first cell (row by row, left to right).
+    std::vector<Run>& runs = scratch.runs;
+    std::vector<uint32_t>& rowRuns = scratch.rowRuns;
+    runs.clear();
+    rowRuns.resize(static_cast<size_t>(ny) + 1);
+    for (int y = 0; y < ny; ++y) {
+        rowRuns[static_cast<size_t>(y)] = static_cast<uint32_t>(runs.size());
+        const uint64_t* row = covered.data() + static_cast<size_t>(y) * static_cast<size_t>(words);
+        for (int x = NextCell(row, words, 0, true); x < nx;) {
+            const int end = NextCell(row, words, x, false);
+            const int32_t id = static_cast<int32_t>(runs.size());
+            runs.push_back(Run{x, end - 1, id, -1});
+            x = end < nx ? NextCell(row, words, end, true) : nx;
+        }
+        if (y == 0) continue;
+        // Two pointers over the row above's runs and this row's, both left to right.
+        size_t i = rowRuns[static_cast<size_t>(y) - 1], j = rowRuns[static_cast<size_t>(y)];
+        const size_t aboveEnd = rowRuns[static_cast<size_t>(y)];
+        while (i < aboveEnd && j < runs.size()) {
+            const Run p = runs[i], q = runs[j];
+            if (p.x1 + 1 >= q.x0 && q.x1 + 1 >= p.x0) {
+                const int32_t ra = FindRun(runs, static_cast<int32_t>(i)), rb = FindRun(runs, static_cast<int32_t>(j));
+                if (ra != rb) runs[static_cast<size_t>(std::max(ra, rb))].parent = std::min(ra, rb);
+            }
+            if (p.x1 < q.x1) ++i;
+            else ++j;
+        }
+    }
+    rowRuns[static_cast<size_t>(ny)] = static_cast<uint32_t>(runs.size());
+    std::vector<Cluster>& clusters = scratch.clusters;
+    for (size_t i = 0; i < runs.size(); ++i) {
+        Run& root = runs[static_cast<size_t>(FindRun(runs, static_cast<int32_t>(i)))];
+        if (root.cluster < 0) {
+            root.cluster = static_cast<int32_t>(clusters.size());
+            clusters.emplace_back();
+        }
+        runs[i].cluster = root.cluster;
+    }
+    // Each stroke's cluster: that of the run holding its first cell. Marks weigh first.
+    bool curves = false;
+    for (Stroke& s : strokes) {
+        const auto first = runs.begin() + rowRuns[static_cast<size_t>(s.c)], last = runs.begin() + rowRuns[static_cast<size_t>(s.c) + 1];
+        const auto at = std::upper_bound(first, last, s.a, [](int32_t x, const Run& r) { return x < r.x0; }) - 1;
+        s.cluster = at->cluster;
+        Cluster& c = clusters[static_cast<size_t>(s.cluster)];
+        c.x0 = Fmin(c.x0, s.x0), c.y0 = Fmin(c.y0, s.y0), c.x1 = Fmax(c.x1, s.x1), c.y1 = Fmax(c.y1, s.y1);
+        if (s.mark) c.weight += 1;
+        curves = curves || s.curve;
+    }
+    if (curves) {
+        // Centres of upright text lines up to each cell: text[(y + 1) * stride + x + 1] counts those
+        // in cells [0, x] x [0, y]; built only when a curve is weighed.
+        std::vector<int32_t>& text = scratch.text;
+        bool built = false;
+        for (const Stroke& s : strokes) {
+            if (!s.curve || clusters[static_cast<size_t>(s.cluster)].weight >= kMinWeight) continue;
+            if (!built) {
+                built = true;
+                text.assign(cells, 0);
+                for (const Line& l : page.lines) {
+                    if (l.dir != 0 || l.chars == 0 || (l.flags & kLineTableAnchor)) continue;
+                    const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2;
+                    if (!(cx >= 0 && cx <= width && cy >= 0 && cy <= height)) continue;
+                    const int x = pageColumn(cx), y = pageRow(cy);
+                    if (x < c0 || x > c1 || y < r0 || y > r1) continue;
+                    text[static_cast<size_t>((y - r0 + 1) * stride + x - c0 + 1)]++;
+                }
+                for (int y = 1; y <= ny; ++y)
+                    for (int x = 1; x <= nx; ++x)
+                        text[static_cast<size_t>(y * stride + x)] += text[static_cast<size_t>(y * stride + x - 1)] +
+                                                                     text[static_cast<size_t>((y - 1) * stride + x)] -
+                                                                     text[static_cast<size_t>((y - 1) * stride + x - 1)];
+            }
+            const int a = s.a, b = s.b + 1, c = s.c, d = s.d + 1;
+            if (text[static_cast<size_t>(d * stride + b)] - text[static_cast<size_t>(c * stride + b)] -
+                    text[static_cast<size_t>(d * stride + a)] + text[static_cast<size_t>(c * stride + a)] ==
+                0)
+                clusters[static_cast<size_t>(s.cluster)].weight += kCurveWeight;
+        }
+    }
 }
 
 } // namespace
@@ -84,112 +278,18 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
         // A long thin stroke along an axis is a rule (one line, or the pieces of a dashed one).
         if (shorter <= kSlant && longer > kTick) continue;
         const bool mark = longer <= kMark, curve = shorter > kMark && s.segments >= kCurveSegments;
-        strokes.push_back(Stroke{x0, y0, x1, y1, mark, curve});
+        strokes.push_back(Stroke{x0, y0, x1, y1, 0, 0, 0, 0, 0, mark, curve});
         if (potential < kMinWeight) potential += mark ? 1 : curve ? kCurveWeight : 0;
     }
     bool pictures = false;
     for (const ImageBox& im : page.images) pictures = pictures || (im.x1 - im.x0 >= kMinSide && im.y1 - im.y0 >= kMinSide);
-    // No region without a picture or strokes that could weigh enough (the grid below costs a pass
-    // over the page per stage).
+    // No region without a picture or strokes that could weigh enough.
     if ((strokes.size() < 2 || potential < kMinWeight) && !pictures) return;
 
-    // The grid covers the cells the strokes touch, aligned with a page-wide grid of the same cells
-    // (a stroke's cells and the clusters are those of the whole page; text outside counts for none).
-    const float cell = Fmax(kCell, Fmax(width, height) / float(kMaxSide));
-    const int pageX = std::min(kMaxSide, static_cast<int>(width / cell) + 1);
-    const int pageY = std::min(kMaxSide, static_cast<int>(height / cell) + 1);
-    const auto pageColumn = [&](float x) { return std::min(pageX - 1, std::max(0, static_cast<int>(x / cell))); };
-    const auto pageRow = [&](float y) { return std::min(pageY - 1, std::max(0, static_cast<int>(y / cell))); };
-    int c0 = pageX, c1 = 0, r0 = pageY, r1 = 0;
-    for (const Stroke& s : strokes) {
-        c0 = std::min(c0, pageColumn(s.x0)), c1 = std::max(c1, pageColumn(s.x1));
-        r0 = std::min(r0, pageRow(s.y0)), r1 = std::max(r1, pageRow(s.y1));
-    }
-    if (strokes.empty()) c0 = c1 = r0 = r1 = 0;
-    const int nx = c1 - c0 + 1, ny = r1 - r0 + 1;
-    const int stride = nx + 1;
-    const auto column = [&](float x) { return pageColumn(x) - c0; };
-    const auto row = [&](float y) { return pageRow(y) - r0; };
-    const size_t cells = static_cast<size_t>(stride) * static_cast<size_t>(ny + 1);
-
-    // Strokes over each cell: corner counts, summed along rows and columns.
-    std::vector<int32_t>& cover = scratch.cover;
-    cover.assign(cells, 0);
-    for (const Stroke& s : strokes) {
-        const int a = column(s.x0), b = column(s.x1) + 1, c = row(s.y0), d = row(s.y1) + 1;
-        cover[static_cast<size_t>(c * stride + a)]++;
-        cover[static_cast<size_t>(c * stride + b)]--;
-        cover[static_cast<size_t>(d * stride + a)]--;
-        cover[static_cast<size_t>(d * stride + b)]++;
-    }
-    for (int y = 0; y <= ny; ++y)
-        for (int x = 1; x <= nx; ++x) cover[static_cast<size_t>(y * stride + x)] += cover[static_cast<size_t>(y * stride + x - 1)];
-    for (int y = 1; y <= ny; ++y)
-        for (int x = 0; x <= nx; ++x) cover[static_cast<size_t>(y * stride + x)] += cover[static_cast<size_t>((y - 1) * stride + x)];
-
-    // Centres of upright text lines up to each cell: text[(y + 1) * stride + x + 1] counts those in
-    // cells [0, x] x [0, y].
-    std::vector<int32_t>& text = scratch.text;
-    text.assign(cells, 0);
-    for (const Line& l : page.lines) {
-        if (l.dir != 0 || l.chars == 0 || (l.flags & kLineTableAnchor)) continue;
-        const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2;
-        if (!(cx >= 0 && cx <= width && cy >= 0 && cy <= height)) continue;
-        const int x = pageColumn(cx), y = pageRow(cy);
-        if (x < c0 || x > c1 || y < r0 || y > r1) continue;
-        text[static_cast<size_t>((y - r0 + 1) * stride + x - c0 + 1)]++;
-    }
-    for (int y = 1; y <= ny; ++y)
-        for (int x = 1; x <= nx; ++x)
-            text[static_cast<size_t>(y * stride + x)] += text[static_cast<size_t>(y * stride + x - 1)] +
-                                                         text[static_cast<size_t>((y - 1) * stride + x)] -
-                                                         text[static_cast<size_t>((y - 1) * stride + x - 1)];
-    const auto textFree = [&](const Stroke& s) {
-        const int a = column(s.x0), b = column(s.x1) + 1, c = row(s.y0), d = row(s.y1) + 1;
-        return text[static_cast<size_t>(d * stride + b)] - text[static_cast<size_t>(c * stride + b)] -
-                   text[static_cast<size_t>(d * stride + a)] + text[static_cast<size_t>(c * stride + a)] == 0;
-    };
-
-    // Clusters: covered cells that touch (corners too). A covered cell becomes its cluster + 1, an
-    // uncovered one stays 0.
-    std::vector<int32_t>& stack = scratch.stack;
+    // Clusters only where the strokes could weigh enough.
     std::vector<Cluster>& clusters = scratch.clusters;
     clusters.clear();
-    for (int y = 0; y < ny; ++y)
-        for (int x = 0; x < nx; ++x) cover[static_cast<size_t>(y * stride + x)] = cover[static_cast<size_t>(y * stride + x)] > 0 ? -1 : 0;
-    for (int y = 0; y < ny; ++y) {
-        for (int x = 0; x < nx; ++x) {
-            if (cover[static_cast<size_t>(y * stride + x)] != -1) continue;
-            clusters.emplace_back();
-            const int32_t id = static_cast<int32_t>(clusters.size());
-            stack.clear();
-            stack.push_back(y * stride + x);
-            cover[static_cast<size_t>(y * stride + x)] = id;
-            while (!stack.empty()) {
-                const int at = stack.back();
-                stack.pop_back();
-                const int cy = at / stride, cx = at % stride;
-                for (int dy = -1; dy <= 1; ++dy) {
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        const int qx = cx + dx, qy = cy + dy;
-                        if (qx < 0 || qx >= nx || qy < 0 || qy >= ny) continue;
-                        const size_t q = static_cast<size_t>(qy * stride + qx);
-                        if (cover[q] != -1) continue;
-                        cover[q] = id;
-                        stack.push_back(static_cast<int32_t>(q));
-                    }
-                }
-            }
-        }
-    }
-    for (const Stroke& s : strokes) {
-        const int32_t id = cover[static_cast<size_t>(row(s.y0) * stride + column(s.x0))];
-        if (id <= 0) continue;
-        Cluster& c = clusters[static_cast<size_t>(id - 1)];
-        c.x0 = Fmin(c.x0, s.x0), c.y0 = Fmin(c.y0, s.y0), c.x1 = Fmax(c.x1, s.x1), c.y1 = Fmax(c.y1, s.y1);
-        if (s.mark) c.weight += 1;
-        else if (s.curve && textFree(s)) c.weight += kCurveWeight;
-    }
+    if (potential >= kMinWeight) WeighClusters(page, scratch);
     int tests = 0;
     const auto add = [&](float x0, float y0, float x1, float y1) {
         if (x1 - x0 < kMinSide || y1 - y0 < kMinSide || (x1 - x0) * (y1 - y0) > kMaxPage * pageArea) return true;
