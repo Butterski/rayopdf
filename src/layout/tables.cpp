@@ -317,6 +317,27 @@ bool EmailAddress(std::string_view t) {
     return word && tld >= 2;
 }
 
+// An equation number: a label in parentheses of letters, digits and dots with a digit in it
+// ("(3)", "(2.4a)", "(A.1)").
+bool EquationNumber(std::string_view t) {
+    if (t.size() < 3 || t.size() > 10 || t.front() != '(' || t.back() != ')') return false;
+    bool digit = false;
+    for (size_t k = 1; k + 1 < t.size(); ++k) {
+        const char c = t[k];
+        digit = digit || (c >= '0' && c <= '9');
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c == '.' && k > 1))) return false;
+    }
+    return digit;
+}
+
+// Text with a relation sign: = < > or ≠ ≡ ≤ ≥ ≈ ∼ (U+2260 U+2261 U+2264 U+2265 U+2248 U+223C).
+bool Relation(std::string_view t) {
+    for (const std::string_view s : {"=", "<", ">", "\xE2\x89\xA0", "\xE2\x89\xA1", "\xE2\x89\xA4", "\xE2\x89\xA5",
+                                     "\xE2\x89\x88", "\xE2\x88\xBC"})
+        if (t.find(s) != std::string_view::npos) return true;
+    return false;
+}
+
 int Bits(uint64_t m) {
     int n = 0;
     for (; m; m &= m - 1) n++;
@@ -1119,6 +1140,33 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     for (size_t r = rowBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k)
             mask[r - rowBegin] |= uint64_t(1) << columns[k - base];
+    // An equation array set in a grid: the last column of every line empty or an equation number
+    // ("(3)", "(2.4a)"), two numbered lines at least, most of them with a relation sign before the
+    // number. Displayed formulas, no table.
+    {
+        // The last column first (a word starting with "(" at most per line), then the relations.
+        size_t numbered = 0, related = 0;
+        bool equations = true;
+        std::string text;
+        for (size_t r = rowBegin; r < rowEnd && equations; ++r) {
+            bool number = false;
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && equations; ++k) {
+                if (columns[k - base] != cols - 1) continue;
+                const TWord& w = words_[rowWords[k]];
+                equations = !number && FirstByte(w) == '(' && EquationNumber(WordText(w, text));
+                number = true;
+            }
+            numbered += number;
+        }
+        for (size_t r = rowBegin; r < rowEnd && equations && numbered >= 2; ++r) {
+            if (!(mask[r - rowBegin] >> (cols - 1) & 1)) continue;
+            bool relation = false;
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !relation; ++k)
+                relation = columns[k - base] != cols - 1 && Relation(WordText(words_[rowWords[k]], text));
+            related += relation;
+        }
+        if (equations && related >= 2 && 2 * related >= numbered) return;
+    }
     // Lines closer than a line pitch are cells of one row set to the middle at different heights.
     const auto offset = [&](size_t r) {
         return rows[r - 1].base - rows[r].base < 0.85f * Fmax(rows[r - 1].size, rows[r].size);

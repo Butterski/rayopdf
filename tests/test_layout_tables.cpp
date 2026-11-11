@@ -1241,6 +1241,30 @@ void TestTimingBoxes() {
     RAYOPDF_CHECK(report.tables == 0 && Count(md, "CTS") == 2 && Count(md, "ACK") == 2, 885);
 }
 
+// An equation array between paragraphs, each line numbered at the right margin: displayed
+// formulas, no table; each number follows its line.
+void TestEquationArray() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float y = AddProse(page, 72, 450, 740, 3);
+    const char* const lines[][2] = {{"1 + 1 = 2e + 3f", "(3)"},
+                                    {"1 + 3d = 2e + 2g", "(4)"},
+                                    {"3b + 3d = 2e + 2g", "(5)"},
+                                    {"1 + 2c = 3f + 2g", "(6)"},
+                                    {"3b + 2c = 1 + 2g", "(7)"}};
+    for (int r = 0; r < 5; ++r) {
+        y -= 16;
+        AddText(page, lines[r][0], 200, y);
+        AddText(page, lines[r][1], 500, y);
+    }
+    AddProse(page, 72, 450, y - 24, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("equation array", md);
+    const size_t first = md.find("1 + 1 = 2e + 3f"), number = md.find("(3)"), second = md.find("1 + 3d = 2e + 2g");
+    RAYOPDF_CHECK(report.tables == 0 && first < number && number < second && second != std::string::npos, 886);
+}
+
 // Pieces of tall brackets around aligned figures: a matrix in display math, not a table.
 void TestBracketMatrix() {
     std::vector<PageData> pages{NewPage()};
@@ -1425,6 +1449,7 @@ int main(int argc, char** argv) {
     TestDiagramGrids();
     TestSparseLattice();
     TestTimingBoxes();
+    TestEquationArray();
     TestBracketMatrix();
     TestWordBox();
     std::puts("test_layout_tables: ok");
