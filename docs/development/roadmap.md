@@ -254,14 +254,15 @@ corpus.
 
 ### Status (2026-11-11)
 
-0.1.0 is not tagged. (c) speed holds at 0.0.13 (2,138 pages/s warm, 0.911 ms fresh:
-[v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); the
+0.1.0 is not tagged. (c) speed held at 0.0.13 (2,138 pages/s warm, 0.911 ms fresh:
+[v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); 0.0.14 is within 1.2 % of 0.0.12's
+instructions on odl and is timed again in the release check. The
 [release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
-met, to be repeated on the code that is released. (a) quality and (b) tables are open on READoc
-arXiv, measured with `--math=latex` (D6): `table_teds` 0.528 (best text-layer tool 0.685, docling
-0.656) and `seg_kt` 0.967 (0.976); `text_eds` 0.865 (0.826) and `head_teds` 0.692 (0.515) are met
-since 0.0.13. The numbers are in the latest records, listed in the
-[benchmark index](../benchmarks/README.md).
+met, to be repeated on the code that is released. (a) quality and (b) tables are open on one key,
+READoc arXiv `table_teds` (measured with `--math=latex`, D6): 0.604 at 0.0.14, against the best
+text-layer tool's 0.685 and docling's 0.656. `text_eds` 0.878 (0.826), `head_teds` 0.693 (0.515)
+and `seg_kt` 0.981 (0.976) are met ([v0.0.14](../benchmarks/v0.0.14-2026-11-11.md)). The numbers
+are in the latest records, listed in the [benchmark index](../benchmarks/README.md).
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
   campaign covered 22 fuzz targets; `fuzz_layout_math` (0.0.11) has had 2 × 5 min so far.

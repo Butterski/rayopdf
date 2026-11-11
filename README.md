@@ -7,7 +7,7 @@
 **PDF to Markdown in about a millisecond a page, from a single small executable.**<br>
 No Python. No JVM. No models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
-<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.0.13" src="https://img.shields.io/badge/version-0.0.13-informational?style=for-the-badge"></a>
+<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.0.14" src="https://img.shields.io/badge/version-0.0.14-informational?style=for-the-badge"></a>
 <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=for-the-badge"></a>
 
 <a href="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml/badge.svg"></a>
@@ -23,7 +23,7 @@ No Python. No JVM. No models to download. The reverse of [RayoMD](https://github
 </div>
 
 > [!TIP]
-> **New in 0.0.13:** headings, tables and text order on scientific papers (READoc arXiv headings 0.473 → 0.688, now above every tool), and a document's images decoded and written on its threads. 0.0.12 cut a quarter to a third of the work on every kind of document and reads a document's pages on up to four threads.
+> **New in 0.0.14:** text order and tables on scientific papers (READoc arXiv segment order 0.967 → 0.981, tables 0.528 → 0.604) and round 5's speed cost won back. 0.0.13 brought headings on papers above every tool and images decoded on a document's threads.
 
 RayoPDF reads a PDF and writes GitHub Flavored Markdown, in its own C++17 code: a small
 command-line tool for Linux and Windows that starts, converts and exits in the time other tools
@@ -32,12 +32,12 @@ PDFs from Markdown.
 
 ## Status
 
-Version 0.0.13: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.0.14: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
 are read by the optional OCR add-on; math is written as Unicode text, or as LaTeX with
-`--math=latex`. 0.1.0 waits for the last items of its [release bar](docs/development/roadmap.md#goal-and-release-bar):
-table structure and segment order on arXiv papers.
+`--math=latex`. 0.1.0 waits for the last item of its [release bar](docs/development/roadmap.md#goal-and-release-bar):
+table structure on arXiv papers.
 
 ## Highlights
 
@@ -168,17 +168,17 @@ The same tools on public benchmarks and on a synthetic corpus with exact ground 
 | Benchmark | RayoPDF | Best other text-layer tool | docling |
 |---|---:|---:|---:|
 | opendataloader-bench, 200 pages: overall | **0.896** | 0.885 | 0.884 |
-| – text (NID) / tables (TEDS) / headings (MHS) | **0.918** / **0.884** / **0.839** | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 |
+| – text (NID) / tables (TEDS) / headings (MHS) | **0.918** / **0.886** / **0.839** | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 |
 | Synthetic corpus, 11 PDF producers: Markdown constructs (F1) | **0.951** | 0.628 | 0.560 |
-| olmOCR-bench: multi-column / tables / headers and footers (pass rate) | **0.708** / **0.623** / 0.732 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** |
+| olmOCR-bench: multi-column / tables / headers and footers (pass rate) | **0.709** / **0.620** / 0.734 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** |
 | olmOCR-bench: arXiv math, with `--math=latex` | **0.720** | 0.538 | 0.000 |
 | READoc GitHub, 150 documents: text / headings | **0.941** / **0.881** | 0.874 / 0.778 | 0.908 / 0.471 |
-| READoc arXiv, 150 papers: text / headings / tables | 0.754 / **0.688** / 0.511 | 0.826 / 0.515 / **0.685** | **0.841** / 0.403 / 0.656 |
-| READoc arXiv with `--math=latex`: text / inline math | **0.865** / **0.653** | 0.826 / 0.369 | 0.841 / 0.001 |
+| READoc arXiv, 150 papers, with `--math=latex`: text / headings / tables / order | **0.878** / **0.693** / 0.604 / 0.981 | 0.826 / 0.515 / **0.685** / 0.976 | 0.841 / 0.403 / 0.656 / **0.984** |
+| READoc arXiv with `--math=latex`: inline math | **0.654** | 0.369 | 0.001 |
 | Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.919** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) |
 
 "Text-layer tools" are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse and edgeparse;
-docling is the machine-learning reference. RayoPDF 0.0.13, core alone unless the OCR add-on is named;
+docling is the machine-learning reference. RayoPDF 0.0.14, core alone unless the OCR add-on is named;
 the READoc sets and one producer of the synthetic corpus are holdouts, scored once per version and
 never inspected. Every table, per suite and per tool: [benchmark records](docs/benchmarks/README.md).
 
@@ -311,15 +311,15 @@ printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-
 
 - **Not a renderer.** RayoPDF recovers text and structure; it does not rasterise pages, and a
   figure made of vector drawings is not turned into an image.
-- **Scientific papers** are the weakest kind of document today: on arXiv papers tables and
-  text order score below the best tools (the quality table above).
+- **Tables in scientific papers** score below the best tools on arXiv papers (the quality table
+  above).
 - **Math** is rebuilt from glyph positions, not recognised from pixels: formulas in scanned pages
   stay text.
 - **Scans need the add-on**, and OCR takes seconds a page, not milliseconds. Hebrew is not read
   yet; Arabic and Kannada are rough.
 - **Encrypted PDFs** need the password (`--password`); certificate encryption is not supported.
-- **Tables with spanning cells** are written as HTML tables inside the Markdown; everything else
-  is GFM.
+- **Tables with cells spanning rows** (or columns below the header) are written as HTML tables
+  inside the Markdown; everything else is GFM.
 - **Memory** grows with the largest JPEG or JPEG 2000 image of a document when images are
   written, and with the input file, which is mapped.
 

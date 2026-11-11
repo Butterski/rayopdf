@@ -820,6 +820,43 @@ its page-thread and image work gain on documents of several pages and on images.
 The release bar (c) still holds: 2,138 pages/s against 2,000 and 0.911 ms against 1 ms. The warm
 p95 grew 0.699 -> 0.826 ms; it is not traced yet and goes into the next round's plan.
 
+## Sixth round: round 5's cost won back (2026-11-11)
+
+Base 0.0.13 (code `4774c53`). Round 5's quality work cost odl 7.1 % more user instructions than
+0.0.12 (`--batch --workers=1`, images off; +2.3 % with the figure regions of 6239f1a, +6.5 % with
+the table landing 81dd833). A callgrind comparison of `9aecd77` and `4774c53` put almost all of
+it in `FigureRegions` (odl 15.6 -> 48.9 M instructions, SafeDocs 12.0 -> 68.4 M): a flood fill that
+visited eight neighbours of every covered cell of a 4-point grid, and a grid of text-line centres
+rebuilt on every call. Round 6's quality steps (footnote placement, title block, tables in labelled
+sections, rows from verticals drawn row by row) then added their own costs, profiled and cut the
+same way. Every step byte-identical (full G-bytes, 6,331 comparisons), gated by `gate.sh warm`.
+
+|Commit|Change|Effect|
+|---|---|---|
+|`f6d2ca3`|Figure regions: covered cells a bit each, painted per stroke (filled from corner counts when strokes overlap so much that painting costs more), each row's runs joined to the touching runs above by union-find, clusters numbered as the flood fill numbered them; no clustering where the strokes cannot weigh enough; the text grid only when a curve must be weighed|odl -5.7 %, SafeDocs -4.0 %; `FigureRegions` 48.9 -> 2.2 M on odl; warm odl-183 -24.0 %|
+|`ffa7114`|A page's stroke clusters found once; a curve weighed against each text line's centre when that is cheaper than the grid|odl -0.3 %, tables -0.3 %, mc -0.2 %|
+|`ba48624`|Inflate: a dynamic block's code lengths counted as they are read, so the table builder does not count them again|with `09d8278`: warm -0.28 % on average, syn-pdfua -1.1 %|
+|`09d8278`|Outline matching keys written in place, not a byte at a time (`MatchKey` was 8.2 M on SafeDocs)|see `ba48624`|
+|`96fa732`, `d01c1f6`, `c09d8ef`|The e-mail test only for words with an at sign (a flag of the word's character facts); a candidate title's first line read once; a lattice's rows split by its verticals only when a vertical piece ends inside the grid; the title block's abstract found from blocks' first lines before any whole block text is read|together: tables -0.27, syn6 -0.45, odl -0.12 points; warm -0.15 % on average|
+
+User instructions against 0.0.12 (`instr.sh`, `--batch --workers=1`): odl +7.11 % at 0.0.13 ->
++1.16 %, SafeDocs +5.61 -> +1.30 %, olmOCR `tables` +5.79 -> +2.39 %, `multi_column` +6.64 ->
++2.41 %, `arxiv_math` +2.82 -> +1.25 %, syn6 +3.84 -> +2.51 %, heavy10 +2.80 -> +0.33 %.
+
+- **Left:** `multi_column` keeps the Type 3 pixel-font em of bcc4bee (779 small glyph procedures
+  decoded, 14 M instructions; a shortcut would change the decode counts that `--report` and the
+  decode budget see); syn6 keeps the outline-title check; odl keeps `PlaceNotes` (1.1 M) and the
+  figure-caption scan (0.4 M).
+- **Fuzz findings fixed (`52244c2`):** a ToUnicode `bfrange` with a 70-unit destination wrote
+  65,536 entries of 211 bytes (13.8 MB from 340 input bytes) and walked them on the slow repair
+  path: a budget of 2^14 UTF-16 units per map for multi-code-point range destinations. A cmap
+  inversion read 2^20 codes from each of eight subtables listed twice: one shared budget, a
+  subtable read once, the walk stopped when every glyph has its code, format 4 read by segment.
+  The largest real map in every corpus held 622 bytes of such text; output unchanged.
+
+Wall-clock timings were not taken: the machine ran agents and harness runs throughout the
+round; the release check times the candidate on a quiet machine.
+
 ## Open candidates (measured, not done)
 
 - **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults
