@@ -242,24 +242,26 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-10)
+### Status (2026-11-11)
 
-0.1.0 is not tagged. (c) speed is met since 0.0.12 (2,215 pages/s warm, 0.885 ms fresh:
-[v0.0.12](../benchmarks/v0.0.12-2026-11-10.md)); the
+0.1.0 is not tagged. (c) speed holds at 0.0.13 (2,138 pages/s warm, 0.911 ms fresh:
+[v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); the
 [release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
-met, to be repeated on the code that is released; (a) quality and (b) tables are open on READoc
-arXiv (`text_eds`, `head_teds`, `table_teds`, `seg_kt`). The numbers are in the latest records,
-listed in the [benchmark index](../benchmarks/README.md).
+met, to be repeated on the code that is released. (a) quality and (b) tables are open on READoc
+arXiv: `table_teds` 0.511 (best text-layer tool 0.685, docling 0.656), `seg_kt` 0.965 (0.976), and
+`text_eds` 0.754 in the default mode (0.826; 0.865 with `--math=latex`); `head_teds` is met since
+0.0.13 (0.688 against 0.515). The numbers are in the latest records, listed in the
+[benchmark index](../benchmarks/README.md).
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
   campaign covered 22 fuzz targets; `fuzz_layout_math` (0.0.11) has had 2 × 5 min so far.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M3 Layout:** open: olmOCR `headers_footers`, `long_tiny_text` without the add-on, synthetic
   `xelatex-2col` NID ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M4 Semantics:** open: holdout construct F1, READoc arXiv `head_teds`
-  ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
+- **M4 Semantics:** open: holdout construct F1 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md));
+  READoc arXiv `head_teds` met ([v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)).
 - **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
-  ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
+  ([v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M7 Product:** front ends, Windows build, packaging and the speed bar done
   ([v0.0.12](../benchmarks/v0.0.12-2026-11-10.md), [performance.md](performance.md)); the rest of

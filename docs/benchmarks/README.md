@@ -11,8 +11,8 @@ against the baselines; each version record compares RayoPDF with them.
 | [baselines-2026-11-05.md](baselines-2026-11-05.md) | The competitors on every suite, the census; the reference for every gate |
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
 | [baselines-readoc-dev-2026-11-10.md](baselines-readoc-dev-2026-11-10.md) | The READoc development split (`readoc-dev`): RayoPDF and the competitors on 300 READoc documents outside the holdout, beside their holdout scores |
-| [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | The latest version: speed and the comparison with other tools; output byte-identical to 0.0.11 |
-| [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) and [v0.0.10-2026-11-09.md](v0.0.10-2026-11-09.md) | The latest quality numbers: 0.0.10 on every suite, 0.0.11 the optional LaTeX math |
+| [v0.0.13-2026-11-11.md](v0.0.13-2026-11-11.md) | The latest version on every suite, core and bundle, both math modes, the holdouts once; speed against 0.0.12 |
+| [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | The comparison of speed with other tools |
 | [release-check-2026-11-09.md](release-check-2026-11-09.md) | 0.0.10 (and the 0.0.11 update) against the 0.1.0 release bar |
 
 ## History
@@ -33,6 +33,7 @@ Each version record links its predecessor.
 | 0.0.10 | 2026-11-09 | [v0.0.10-2026-11-09.md](v0.0.10-2026-11-09.md) | OCR scripts and rotation, performance rounds 2 and 3, a quality round |
 | 0.0.11 | 2026-11-09 | [v0.0.11-2026-11-09.md](v0.0.11-2026-11-09.md) | Optional LaTeX math (`--math=latex`) |
 | 0.0.12 | 2026-11-10 | [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | Performance round 4: 2,215 pages/s warm, 0.885 ms fresh, pages on threads; output byte-identical to 0.0.11 |
+| 0.0.13 | 2026-11-11 | [v0.0.13-2026-11-11.md](v0.0.13-2026-11-11.md) | Quality round 5 on scientific papers (READoc arXiv headings 0.473 → 0.688), the READoc development split, images on page threads |
 
 ## Naming
 

@@ -775,6 +775,51 @@ scanned documents, `--bench`). Static binary 3,515,432 -> 3,315,776 bytes, relea
   links, odl 192 +0.37 % (+1.7 % with `--math=latex`); the bullet-mark index built eagerly, odl 141
   +0.5 %.
 
+## Fifth round: a document's work on its threads (2026-11-10)
+
+Base 0.0.12 (`2290bb7`). Round 5 was mostly about quality on scientific papers (the record
+[v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); its performance work moved more of a document onto the
+page threads, kept the output byte-identical, and was gated as in round 4 (instructions, G-bytes,
+the workers matrix at 2, 4 and 8, ThreadSanitizer and ASan sweeps, fuzzing).
+
+|Commit|Change|Effect|
+|---|---|---|
+|`df1665e`|`--convert` never takes the conversion apart: no pool join, no destructors after the output is written|the segment after the writer 4.1 / 10.6 ms -> 2.5 ms over 27 multi-page documents (one / default threads)|
+|`5aa52a6`|each page's OCR route measured on the thread that interpreted it|instructions +0.11 % at most (odl 107)|
+|`99f0928`|the outline and the structure tree read as a job beside the pages' lines (the document still read by one thread at a time, in the serial order)|tagged documents: structure off the critical path|
+|`1687644`|`fuzz_layout_pages`: converts with several page threads and compares Markdown and report with one thread|1,203 s, 10,473 runs, clean|
+|`8c2c2a6`|a shared section whose parses another order would have stopped at the nesting limit is undone and read in order (found while writing the fuzz target)|test 1605-1609, 1624-1629|
+|`1afe0d2`|`--bench` with `--batch`'s allocator settings and input buffer|the bench loop measures what `--batch` does|
+|`9ccd4b5`|`--convert` grows its heap 8 MiB of address space at a time (`M_TOP_PAD`)|the largest test document with threads: `mprotect` 151 -> 8, `brk` 25 -> 6, `futex` 296 -> 105|
+|`9aecd77`|a document's images decoded and encoded on its page threads (staged files named in page order); JPEG 2000 code-blocks, wavelet, component transform and tile rows on the threads|80 JPEG 2000 documents with images written: 45.3 s on one thread, 19.6 s on four (2.3x); one-thread instructions -0.05 to -0.24 %|
+|`4774c53`|`src/hot.ld` regenerated over the round's code (712 sections; the round had renamed the page pool's functions)|output identical|
+
+- **Rejected:** `--serve` with `--batch`'s allocator settings: wall within noise over 1,000
+  SafeDocs documents, but 180 MiB more kept at the end of the session.
+- **Open:** thread start chained off the calling thread (about 1 ms of 147 over the 27 documents);
+  PNG deflate as a pipeline across threads; JPEG 2000 tiles in parallel; the image thresholds
+  (`kImageThreadPixels`, `kThreadSamples`, the split size) are not tuned by measurement; the fuzz
+  targets decode JPEG 2000 on one thread only (the core test covers the threaded path).
+
+### Results (0.0.12 against round 5's final tree)
+
+CPU 3, the two static builds interleaved, 2026-11-11 with the machine otherwise idle; methods as in
+round 4. Round 5's quality rules (headings, tables, text on scientific papers) cost a little time;
+its page-thread and image work gain on documents of several pages and on images.
+
+|Measure|0.0.12|Round 5|
+|---|---|---|
+|odl warm, pages/s (median, p95 ms/page)|2,201 (0.372, 0.699)|2,138 (0.368, 0.826)|
+|odl fresh process, ms a document (12 rotated rounds, paired)|0.890|0.911 (+2.5 %)|
+|odl fresh, page faults median / p95|150 / 264|153 / 254|
+|`--batch --workers=1` over odl, task-clock|94.2 ms|99.7 ms|
+|27 documents of 4 to 39 pages, four cores: one thread / default threads|205.1 (2026-11-10) / 147.3 ms|213.4 / 147.1 ms|
+|a JPEG 2000 page with its image written (`--bench`, one CPU)|126.0 ms|108.8 ms|
+|80 JPEG 2000 documents with images written, fresh, four cores (loaded machine)|45.3 s one thread|19.6 s default threads|
+
+The release bar (c) still holds: 2,138 pages/s against 2,000 and 0.911 ms against 1 ms. The warm
+p95 grew 0.699 -> 0.826 ms; it is not traced yet and goes into the next round's plan.
+
 ## Open candidates (measured, not done)
 
 - **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults

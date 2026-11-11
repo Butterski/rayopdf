@@ -1,15 +1,207 @@
+<a id="readme-top"></a>
+
+<div align="center">
+
 # RayoPDF
 
-PDF to Markdown, the reverse of [RayoMD](https://github.com/Butterski/rayomd).
+**PDF to Markdown in about a millisecond a page, from a single small executable.**<br>
+No Python. No JVM. No models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
+
+<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.0.13" src="https://img.shields.io/badge/version-0.0.13-informational?style=for-the-badge"></a>
+<a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=for-the-badge"></a>
+
+<a href="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml/badge.svg"></a>
+<a href="https://github.com/Butterski/rayopdf/actions/workflows/hygiene.yml"><img alt="Repository Hygiene" src="https://github.com/Butterski/rayopdf/actions/workflows/hygiene.yml/badge.svg"></a>
+<img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white">
+<img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2ea44f">
+
+[Quick start](#quick-start) ·
+[Benchmarks](#performance) ·
+[Usage](#usage) ·
+[Documentation](#documentation)
+
+</div>
+
+> [!TIP]
+> **New in 0.0.13:** headings, tables and text order on scientific papers (READoc arXiv headings 0.473 → 0.688, now above every tool), and a document's images decoded and written on its threads. 0.0.12 cut a quarter to a third of the work on every kind of document and reads a document's pages on up to four threads.
+
+RayoPDF reads a PDF and writes GitHub Flavored Markdown, in its own C++17 code: a small
+command-line tool for Linux and Windows that starts, converts and exits in the time other tools
+take to load. It is the reverse of [RayoMD](https://github.com/Butterski/rayomd), which writes
+PDFs from Markdown.
 
 ## Status
 
-Version 0.0.12: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.0.13: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included; tagged PDFs are read through their structure tree. Scanned pages and text inside images
 are read by the optional OCR add-on; math is written as Unicode text, or as LaTeX with
-`--math=latex`.
-The [roadmap](docs/development/roadmap.md) lists what comes next.
+`--math=latex`. 0.1.0 waits for the last items of its [release bar](docs/development/roadmap.md#goal-and-release-bar):
+table structure and segment order on arXiv papers.
+
+## Highlights
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### Fast
+A one-page PDF in under **1 ms**, start to exit; over 2,000 pages a second in a running
+process; a long document's pages on up to four threads.
+
+</td>
+<td width="33%" valign="top">
+
+### Small
+A **1.6 MB** download: one static executable for Linux or Windows. No runtime, no model
+files, 2 to 15 MiB of memory for most documents.
+
+</td>
+<td width="33%" valign="top">
+
+### Structured
+Headings, lists, tables, code, quotes, links, footnotes and images rebuilt from the page's
+geometry; tagged PDFs read through their **structure tree**.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Math
+Formulas as Unicode text, or rebuilt as **LaTeX** (`--math=latex`): fractions, roots, sums,
+matrices.
+
+</td>
+<td valign="top">
+
+### Scans
+An optional **OCR add-on** reads pages without text, sideways scans and text inside images, in
+Latin, CJK and six more scripts.
+
+</td>
+<td valign="top">
+
+### Careful
+Every parser is **fuzzed**, every limit fails closed, and text that could not be read is marked
+in the output, never dropped silently.
+
+</td>
+</tr>
+</table>
+
+## Quick start
+
+<details open>
+<summary><b>Build from source</b> (release archives start with 0.1.0)</summary>
+
+The compilers live in a Docker image; nothing is installed on the host. Requirements: Linux,
+Docker and Python 3.10 or newer.
+
+```sh
+python3 tools/dev.py image                    # the build image, once
+python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable
+python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
+./build/static/rayopdf --convert input.pdf output.md
+```
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the other configurations, the tests and the OCR add-on's
+build.
+
+</details>
+
+| Package | Size, 0.0.10 | For |
+|---|---:|---|
+| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,592 KB | Linux: one static executable, no dependency |
+| `rayopdf-<version>-windows-x64.zip` | 1,455 KB | Windows: `rayopdf.exe` |
+| `rayopdf-ocr-<version>-<platform>` | 35 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
+| `rayopdf-ocr-scripts-<version>-<platform>` | 21 MB | Optional: Cyrillic, Korean, Arabic, Devanagari, Tamil, Kannada for the add-on |
+
+## Performance
+
+Measured on 2026-11-10 on an AMD Ryzen 5 PRO 4650GE, every tool in its own Docker image
+without network. A one-shot conversion is a fresh process, start to exit.
+
+### Against other tools
+
+Each tool converts one page of text and tables (document 183 of
+[opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench), its
+median page) through its own command line, as a fresh process on one pinned core; the median of
+3 to 40 runs.
+
+```mermaid
+%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2ea44f"}}}}%%
+xychart-beta
+    title "One page to Markdown, in ms (lower is better)"
+    x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown", "PyMuPDF", "docling"]
+    y-axis "Milliseconds" 0 --> 9500
+    bar [0.94, 16.9, 27.1, 45.2, 1074, 1236, 4749, 9490]
+```
+
+| Tool | Version | One page | A 33-page report | Peak memory | Writes |
+|---|---|---:|---:|---:|---|
+| **RayoPDF** | 0.0.12 | **0.94 ms** | **11.8 ms** | **8 MiB** | Markdown |
+| pdftotext | Poppler 25.03 | 17 ms (18×) | 46 ms (3.9×) | 18 MiB | plain text |
+| liteparse | 2.18.0 | 27 ms (29×) | 138 ms (12×) | 33 MiB | Markdown |
+| edgeparse | 0.3.2 | 45 ms (48×) | 306 ms (26×) | 27 MiB | Markdown |
+| opendataloader | 2.5.19 | 1,074 ms (1,143×) | 3,705 ms (314×) | 250 MiB | Markdown |
+| markitdown | 0.1.9 | 1,236 ms (1,315×) | 3,143 ms (266×) | 104 MiB | Markdown |
+| PyMuPDF | 2.1, layout on | 4,749 ms (5,052×) | 70,092 ms (5,940×) | 346 MiB | Markdown |
+| docling | 2.147.0, no OCR | 9,490 ms (10,096×) | 93,052 ms (7,886×) | 1,905 MiB | Markdown |
+
+On four cores RayoPDF reads the report's pages on threads and takes 8.8 ms; the others take
+38 ms to 42 s. In a running process (`--batch`, `--serve --json`) a page takes **0.37 ms** (median of
+the benchmark's 200 pages; 2,215 pages a second on one core).
+
+> [!NOTE]
+> This compares the time to a finished file, not identical output: the tools differ in what they
+> recover (the quality table below). A fresh process pays each tool's start: the Python tools
+> import their packages and models, opendataloader starts a JVM; inside one running process
+> edgeparse takes about 5 ms a page and PyMuPDF and docling about 2 s. Commands, versions and the
+> four-core figures: [the record of 0.0.12](docs/benchmarks/v0.0.12-2026-11-10.md).
+
+### Quality
+
+The same tools on public benchmarks and on a synthetic corpus with exact ground truth
+([how it is measured](docs/development/evaluation.md)); higher is better.
+
+| Benchmark | RayoPDF | Best other text-layer tool | docling |
+|---|---:|---:|---:|
+| opendataloader-bench, 200 pages: overall | **0.896** | 0.885 | 0.884 |
+| – text (NID) / tables (TEDS) / headings (MHS) | **0.918** / **0.884** / **0.839** | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 |
+| Synthetic corpus, 11 PDF producers: Markdown constructs (F1) | **0.951** | 0.628 | 0.560 |
+| olmOCR-bench: multi-column / tables / headers and footers (pass rate) | **0.708** / **0.623** / 0.732 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** |
+| olmOCR-bench: arXiv math, with `--math=latex` | **0.720** | 0.538 | 0.000 |
+| READoc GitHub, 150 documents: text / headings | **0.941** / **0.881** | 0.874 / 0.778 | 0.908 / 0.471 |
+| READoc arXiv, 150 papers: text / headings / tables | 0.754 / **0.688** / 0.511 | 0.826 / 0.515 / **0.685** | **0.841** / 0.403 / 0.656 |
+| READoc arXiv with `--math=latex`: text / inline math | **0.865** / **0.653** | 0.826 / 0.369 | 0.841 / 0.001 |
+| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.919** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) |
+
+"Text-layer tools" are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse and edgeparse;
+docling is the machine-learning reference. RayoPDF 0.0.13, core alone unless the OCR add-on is named;
+the READoc sets and one producer of the synthetic corpus are holdouts, scored once per version and
+never inspected. Every table, per suite and per tool: [benchmark records](docs/benchmarks/README.md).
+
+### Release by release
+
+The 200 one-page PDFs of opendataloader-bench without images, one pinned core: pages a second in
+one running process, and the median time of a fresh process per document (an empty static
+program takes 0.22 ms in the same timer).
+
+| Version | Warm, pages/s | Fresh process, one page | What changed |
+|---|---:|---:|---|
+| 0.0.7 | about 1,050 | 1.72 ms | the first complete converter |
+| 0.0.8 | about 1,500 | 1.50 ms | numbers and glyph names read in one pass, fast paths for ASCII text |
+| 0.0.10 | 1,560 | 1.22 ms | content lexer, line building, lazy font programs |
+| 0.0.12 | **2,215** | **0.89 ms** | lexer loop inline, glyph placement, inflate, fonts, tables, hot code ordered, page threads |
+| 0.0.13 | 2,138 | 0.91 ms | headings, tables and text on papers (they cost 3 %), images on page threads |
+
+Every speed change is profiled, kept only if a pinned A/B shows it faster, and leaves the output
+byte for byte the same on the whole corpus. [`performance.md`](docs/development/performance.md)
+has the method, every step, and what was tried and rejected; `tools/bench.py` reruns the
+measurements.
+
+<p align="right"><a href="#readme-top">back to top ↑</a></p>
 
 ## Usage
 
@@ -112,78 +304,46 @@ printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-
   '{"id":2,"input":"b.pdf"}' | rayopdf --serve --json
 ```
 
-## Building
+<p align="right"><a href="#readme-top">back to top ↑</a></p>
 
-The compilers live in a Docker image (`docker/build.Dockerfile`); nothing is installed on the
-host. Requirements: Linux, Docker and Python 3.10 or newer.
+## Boundaries
 
-```sh
-python3 tools/dev.py image                    # build rayopdf-build:2 once (with MinGW-w64 and Wine)
-python3 tools/dev.py build                    # build/release/rayopdf
-python3 tools/dev.py test --config asan       # core tests and the CLI verifier under ASan + UBSan
-python3 tools/dev.py test --config tsan       # the same under ThreadSanitizer
-python3 tools/dev.py build --config static    # a fully static build/static/rayopdf
-python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
-python3 tools/dev.py image --name ocr         # rayopdf-ocr:1: ncnn, ONNX Runtime, the models, Tesseract
-python3 tools/dev.py test --config ocr        # the static core plus the add-on build/ocr/addon/rayopdf-ocr
-python3 tools/dev.py test --config ocr-windows # rayopdf-ocr.exe, tested under Wine
-python3 tools/package.py --ocr                # release archives and SHA256SUMS in build/dist/
-```
-
-The core is C++17 with no third-party library: `src/crypt` (Standard security handler),
-`src/pdf` (objects, filters, page tree, RayoMD source recovery), `src/text` (fonts to Unicode,
-glyph outlines), `src/raster`, `src/layout` (interpretation, reading order, Markdown, OCR routing),
-`src/image` (JPEG, JPEG 2000, JBIG2, CCITT, PNG), `src/common` (files, threads, the batch record,
-the serve and OCR protocols) and `src/cli`. The OCR add-on (`src/ocr`) links ncnn and is never
-linked into `rayopdf`. The release archives `rayopdf-VERSION-linux-x64-static.tar.gz` and
-`rayopdf-VERSION-windows-x64.zip` hold the binary, this README's usage part, LICENSE, NOTICE,
-VERSION and `third_party/licenses/`; `rayopdf-ocr-VERSION-…` hold the add-on and its models and
-unpack into the same folder. `tools/package.py` makes them byte for byte reproducible.
+- **Not a renderer.** RayoPDF recovers text and structure; it does not rasterise pages, and a
+  figure made of vector drawings is not turned into an image.
+- **Scientific papers** are the weakest kind of document today: on arXiv papers tables and
+  text order score below the best tools (the quality table above).
+- **Math** is rebuilt from glyph positions, not recognised from pixels: formulas in scanned pages
+  stay text.
+- **Scans need the add-on**, and OCR takes seconds a page, not milliseconds. Hebrew is not read
+  yet; Arabic and Kannada are rough.
+- **Encrypted PDFs** need the password (`--password`); certificate encryption is not supported.
+- **Tables with spanning cells** are written as HTML tables inside the Markdown; everything else
+  is GFM.
+- **Memory** grows with the largest JPEG or JPEG 2000 image of a document when images are
+  written, and with the input file, which is mapped.
 
 ## Documentation
 
-| Document | Contents |
+| Topic | Where |
 |---|---|
-| [Landscape](docs/research/landscape.md), [Algorithms](docs/research/algorithms.md), [OCR and ML](docs/research/ocr-ml.md), [Speed](docs/research/speed.md) | Research notes: converters, benchmarks, PDF internals, OCR engines, speed engineering |
-| [Evaluation contract](docs/development/evaluation.md) | Suites, metrics, competitors, speed and census method |
-| [Roadmap](docs/development/roadmap.md) | Decisions, milestones, exit gates and the 0.1.0 release bar |
-| [Performance](docs/development/performance.md) | Performance campaign method, results and rejected attempts |
-| [OCR engine](docs/development/ocr-engine.md), [OCR protocol](docs/development/ocr-protocol.md) | The OCR add-on: measurements, build and pipe protocol |
-| [OCR/ML decision](docs/development/ocr_ml_decision.md) | The M8 measurements and the decision |
-| [Benchmark records](docs/benchmarks/README.md) | Baselines, the record of each version, the release check |
+| Decisions, milestones and the release bar | [Roadmap](docs/development/roadmap.md) |
+| Suites, metrics, competitors, how to rerun the evaluation | [Evaluation](docs/development/evaluation.md) |
+| Every version on the harness, baselines, release checks | [Benchmark records](docs/benchmarks/README.md) |
+| Speed: method, steps, rejected attempts | [Performance](docs/development/performance.md) |
+| The OCR add-on: engine, build, pipe protocol, decision | [OCR engine](docs/development/ocr-engine.md), [protocol](docs/development/ocr-protocol.md), [decision](docs/development/ocr_ml_decision.md) |
+| Research notes | [Landscape](docs/research/landscape.md), [algorithms](docs/research/algorithms.md), [OCR and ML](docs/research/ocr-ml.md), [speed](docs/research/speed.md) |
+| Reporting a vulnerability | [SECURITY.md](SECURITY.md) |
 
-## Running the evaluation
+## Contributing
 
-Requirements: Linux, Docker, Python 3.10 or newer, and at least 25 GB of free disk. Every
-third-party tool runs inside the images built from `eval/docker/`; nothing is installed on the
-host. Outputs go to `benchmark-output/eval/`.
-
-```sh
-python3 tools/eval.py all
-```
-
-`all` runs these steps in order; each can also be run alone:
-
-```sh
-python3 tools/eval.py images                      # build the Docker images
-python3 tools/eval.py fetch                       # download the public benchmarks
-python3 tools/eval.py corpus                      # render the synthetic corpus
-python3 tools/eval.py corpus --suite scanned      # image-only PDFs rendered from the corpus
-python3 tools/eval.py corpus --suite multiscript  # image-only pages in 9 scripts, for OCR
-python3 tools/eval.py score --selftest            # check the construct scorer
-python3 tools/eval.py convert --tool T --suite S  # T: pdftotext, markitdown, pymupdf, opendataloader,
-                                                  #    liteparse, edgeparse, docling, docling-ocr,
-                                                  #    tesseract, cli
-                                                  # S: synthetic, odl, olmocr, readoc, scanned,
-                                                  #    olmocr-scans, multiscript
-python3 tools/eval.py score --suite S
-python3 tools/eval.py speed --tool T
-python3 tools/eval.py census
-python3 tools/eval.py report                      # benchmark-output/eval/report.md
-```
-
-`python3 tools/eval.py all --resume` continues an interrupted run.
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test, fuzz and measure, and
+[AGENTS.md](AGENTS.md) holds the rules in short form. The core stays its own code with no runtime
+dependency; a change to the output comes with its scores on the evaluation harness, a change to
+the speed with before and after measurements and identical output; benchmark claims stay dated
+and scoped; builds, PDFs and corpora stay out of the repository.
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+<p align="right"><a href="#readme-top">back to top ↑</a></p>
