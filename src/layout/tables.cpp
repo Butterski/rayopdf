@@ -1410,7 +1410,9 @@ void Detector::SplitRowsByLines(Grid& g) const {
 // Columns of a lattice drawn without rules between them (a rule only around a group of columns
 // under a header label): whitespace an em wide inside a grid column, through the text of every row
 // below the first (three rows at least), with text on both sides of it in two thirds of those rows,
-// parts the column. A word across the new boundary (the group's label) spans it.
+// parts the column. A word across the new boundary (the group's label) spans it; the boundary
+// moves within the whitespace to a stretch half an em wide clear of the first row's words when
+// there is one (labels of neighbouring columns set closer than their columns).
 void Detector::SplitColumnsByText(Grid& g) const {
     const int rows = g.Rows(), cols = g.Cols();
     if (rows < 4) return;
@@ -1438,21 +1440,38 @@ void Detector::SplitColumnsByText(Grid& g) const {
             if (locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) located.push_back(Located{it->x0, it->x1, it->size, r, c});
         }
     }
+    std::vector<Ink> head;  // the first row's words in the column, left to right
     for (int c = 0; c < cols; ++c) {
         ink.clear();
+        head.clear();
         float size = 0;
         for (size_t i = 0; i < located.size() && ink.size() < 4096; ++i) {
             const Located& w = located[i];
-            if (w.c != c || w.r == 0) continue;
+            if (w.c != c) continue;
+            if (w.r == 0) {
+                if (head.size() < 4096) head.push_back(Ink{w.x0, w.x1, 0});
+                continue;
+            }
             ink.push_back(Ink{w.x0, w.x1, w.r});
             size = Fmax(size, w.size);
         }
         std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
+        std::sort(head.begin(), head.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
         const float minGap = Fmax(4.0f, size);
         float reach = -INFINITY;
         for (size_t i = 0; i < ink.size(); ++i) {
             if (i > 0 && ink[i].a - reach >= minGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
-                const float x = (reach + ink[i].a) / 2;
+                float x = (reach + ink[i].a) / 2;
+                // The widest stretch of the gap between two words of the first row that both reach
+                // into it.
+                bool crossed = false;
+                float at = -INFINITY, best = 0, bestX = x;
+                for (const Ink& h : head) {
+                    crossed = crossed || (h.a < x - 0.5f && h.b > x + 0.5f);
+                    if (at > reach && h.a < ink[i].a && h.a - at > best) best = h.a - at, bestX = (at + h.a) / 2;
+                    at = Fmax(at, h.b);
+                }
+                if (crossed && best >= 0.5f * size) x = bestX;
                 std::fill(left.begin(), left.end(), 0), std::fill(right.begin(), right.end(), 0), std::fill(any.begin(), any.end(), 0);
                 for (const Ink& k : ink) {
                     any[static_cast<size_t>(k.row)] = 1;

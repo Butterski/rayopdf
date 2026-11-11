@@ -711,6 +711,28 @@ void TestLatticeSubColumns() {
                   589);
 }
 
+// The same lattice with a label over each part, the labels set closer than the parts' text: the
+// boundary moves into the space between the labels, and each label heads its own column.
+void TestLatticeSubColumnLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 668.0f, 652.0f, 636.0f}) HLine(page, 72, 300, y);
+    for (float x : {72.0f, 150.0f, 300.0f}) VLine(page, x, 636, 700);
+    AddText(page, "Domain", 76, 688);
+    AddText(page, "Prior A", 154, 688);
+    AddText(page, "Prior B", 196, 688);
+    const char* const names[] = {"Alpha", "Beta", "Gamma"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 672 - 16.0f * float(r);
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(12 + r), 154, y);
+        AddText(page, "0." + std::to_string(51 + r), 230, y);
+    }
+    const std::string md = Run(pages);
+    Show("lattice sub-column labels", md);
+    RAYOPDF_CHECK(Contains(md, "| Domain | Prior A | Prior B |\n| --- | --- | --- |\n| Alpha | 12 | 0.51 |"), 874);
+}
+
 // A box drawn around the body row alone, the header row right above it.
 void TestHeaderAboveBox() {
     std::vector<PageData> pages{NewPage()};
@@ -1159,6 +1181,7 @@ int main(int argc, char** argv) {
     TestSpanningHeaderLabel();
     TestStackedLatticeRows();
     TestLatticeSubColumns();
+    TestLatticeSubColumnLabels();
     TestHeaderAboveBox();
     TestSectionLabels();
     TestPairsHeaderAndContents();
