@@ -99,13 +99,13 @@ struct TablePart {
     const std::string* cellText = nullptr;  // GFM: the inline Markdown of each cell, one line each
 };
 
-// D6: a table with a cell spanning rows, or columns below its header rows, is written as HTML; any
-// other as a GFM pipe table.
+// D6: a table is written as HTML when a body cell with text spans rows, or spans columns under a
+// header of several rows; any other as a GFM pipe table.
 bool TableNeedsHtml(const PageData& page, const Table& table);
 
 // A GFM pipe table: the first row of the first part is the header row; header rows of a later
-// part that repeat the first part's are dropped. `|` in cells is escaped; a header label spanning
-// columns is written in each of them.
+// part that repeat the first part's are dropped. `|` in cells is escaped; a cell spanning columns
+// is written in each of them, a cell spanning rows in its first row (the rows below it empty).
 void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out);
 
 // An HTML <table> with <th> header rows, colspan and rowspan, and HTML-escaped plain cell text

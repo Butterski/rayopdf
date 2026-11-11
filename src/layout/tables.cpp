@@ -3503,15 +3503,20 @@ bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockL
 }
 
 bool TableNeedsHtml(const PageData& page, const Table& table) {
-    // Labels over sub-columns in the header rows (cells spanning columns, not rows) fit a pipe
-    // table: the label stands in each column it spans. So does a cell of a body row spanning
-    // columns (a section's name across the table) under a header of one row; under a header of
-    // several rows a pipe table, whose header is one row, would lose the levels as well.
+    // A pipe table writes a spanning cell's text in the first row it spans and, across columns, in
+    // each column it spans. That fits labels over sub-columns in the header rows; a header label
+    // spanning down beside the sub-labels under its neighbours, which stands in the first header
+    // row with the cell below it empty; and a cell of a body row spanning columns (a section's
+    // name across the table) under a header of one row. A cell without text spans nothing a
+    // reader would miss. HTML keeps what a pipe table would lose: a body cell spanning rows (the
+    // label's grouping of the rows) and a body cell spanning columns under a header of several
+    // rows (the header's levels go too).
     const uint16_t header = std::max<uint16_t>(1, table.headerRows);
     bool bodySpan = false;
     for (uint32_t i = 0; i < table.cellCount; ++i) {
         const TableCell& c = page.tableCells[table.firstCell + i];
-        if (c.rowSpan > 1) return true;
+        if (c.count == 0) continue;
+        if (c.rowSpan > 1 && c.row >= header) return true;
         bodySpan = bodySpan || (c.colSpan > 1 && c.row >= header);
     }
     return bodySpan && table.headerRows >= 2;

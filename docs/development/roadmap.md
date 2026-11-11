@@ -136,16 +136,23 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 ### D6 Output dialect
 
 - GitHub Flavored Markdown.
-- Tables are GFM pipe tables, or HTML when a cell spans rows, a cell below a header of several
-  rows spans columns, or a cell holds several paragraphs. A label over several columns is repeated
-  in each of them in a pipe table: a header label (measured 2026-11-11: READoc-dev arXiv table TEDS
-  +0.037, odl TEDS +0.0014, olmOCR table tests -3 of 1020; header cells spanning rows as pipe
-  tables too: odl TEDS -0.006), and a body cell under a header of one row (measured 2026-11-11 on
-  the landing code: READoc-dev arXiv table TEDS with `--math=latex` 0.6740 → 0.6857, default mode
-  0.6751 → 0.6871; odl TEDS 0.8967 → 0.8952; olmOCR table tests 632 → 632 of 1020, −1 with
-  `--math=latex`; synthetic TEDS unchanged). Kept as HTML after measuring: body cells spanning rows
-  in the first column (arXiv +0.007, odl TEDS −0.007), header cells spanning down into the row
-  under them (arXiv +0.023, olmOCR table tests −3), every span as pipe (arXiv 0.7175, olmOCR −6).
+- Tables are GFM pipe tables, or HTML when a body cell with text spans rows, a body cell with
+  text below a header of several rows spans columns, or a cell holds several paragraphs. A label
+  over several columns is repeated in each of them in a pipe table: a header label (measured
+  2026-11-11: READoc-dev arXiv table TEDS +0.037, odl TEDS +0.0014, olmOCR table tests -3 of
+  1020), and a body cell under a header of one row (measured 2026-11-11 on the landing code:
+  READoc-dev arXiv table TEDS with `--math=latex` 0.6740 → 0.6857, default mode 0.6751 → 0.6871;
+  odl TEDS 0.8967 → 0.8952; olmOCR table tests 632 → 632 of 1020, −1 with `--math=latex`;
+  synthetic TEDS unchanged). A header label spanning down into the next header row stands in the
+  first of them, the cell under it empty, and a cell without text needs no HTML for its span
+  (decided 2026-11-11 against 0.0.15: READoc arXiv table TEDS with `--math=latex` on the
+  validation split 0.5593 → 0.5744, READoc-dev 0.6860 → 0.7096; olmOCR table tests 636 of 1020
+  unchanged; synthetic unchanged; odl TEDS 0.8956 → 0.8887, −0.0069, beyond the gate's tolerance,
+  above docling's 0.879, and accepted). Kept as HTML after measuring: body cells spanning rows in
+  the first column (arXiv +0.007, odl TEDS −0.007), every span as pipe (READoc-dev arXiv 0.7176,
+  odl TEDS 0.8819, below 0.884) and every span as pipe except body cells spanning rows in a table
+  of two columns (validation arXiv 0.5835, olmOCR table tests 636 → 632, odl TEDS 0.8887): that
+  exception fits one odl document, not a kind of table.
 - Text is escaped only where it would otherwise change the structure. `*` and `_` are escaped only
   where CommonMark could read them as emphasis delimiters: a run that can open, or could close a
   `*` or `_` written raw before it in the block, or stands beside a non-ASCII character or at the

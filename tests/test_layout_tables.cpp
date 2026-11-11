@@ -177,6 +177,55 @@ void TestLatticeSpans() {
     }
 }
 
+// Cells spanning rows in a lattice of three columns: "Method" spans the two header rows; a pipe
+// table writes it in the first, the cell below it empty. "Group A" spanning the first two body
+// rows needs HTML; an empty cell spanning them does not.
+void TestLatticeRowSpans() {
+    for (int variant = 0; variant < 3; ++variant) {
+        const bool bodySpan = variant > 0, empty = variant == 2;
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        // Rules: none across the first column at y = 700 ("Method" spans the header rows), nor at
+        // y = 660 with a body span.
+        for (float y : {720.0f, 680.0f, 640.0f, 620.0f}) HLine(page, 72, 440, y);
+        HLine(page, bodySpan ? 200 : 72, 440, 660);
+        HLine(page, 200, 440, 700);
+        VLine(page, 72, 620, 720);
+        VLine(page, 200, 620, 720);
+        VLine(page, 440, 620, 720);
+        VLine(page, 320, 620, 700);
+        AddText(page, "Method", 76, 696);
+        AddText(page, "Results", 204, 706);
+        AddText(page, "Mean", 204, 686);
+        AddText(page, "Max", 324, 686);
+        if (!empty) AddText(page, "Group A", 76, bodySpan ? 656 : 666);
+        AddText(page, "12", 204, 666);
+        AddText(page, "56", 204, 646);
+        AddText(page, "Gamma", 76, 626);
+        AddText(page, "90", 204, 626);
+        AddText(page, "34", 324, 666);
+        AddText(page, "78", 324, 646);
+        AddText(page, "11", 324, 626);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("lattice row spans", md);
+        RAYOPDF_CHECK(report.tables == 1, 1716);
+        if (!bodySpan) {
+            RAYOPDF_CHECK(Contains(md, "| Method | Results | Results |\n| --- | --- | --- |\n|  | Mean | Max |\n"
+                                       "| Group A | 12 | 34 |\n|  | 56 | 78 |\n| Gamma | 90 | 11 |"),
+                          1717);
+        } else if (!empty) {
+            RAYOPDF_CHECK(Contains(md, "<th rowspan=\"2\">Method</th>") && Contains(md, "<td rowspan=\"2\">Group A</td><td>12</td>") &&
+                              !Contains(md, "| --- |"),
+                          1718);
+        } else {
+            RAYOPDF_CHECK(Contains(md, "| Method | Results | Results |\n| --- | --- | --- |\n|  | Mean | Max |\n"
+                                       "|  | 12 | 34 |\n|  | 56 | 78 |\n| Gamma | 90 | 11 |"),
+                          1719);
+        }
+    }
+}
+
 // A full lattice without spans: a GFM pipe table; a `|` in a cell is escaped.
 void TestLatticeGfm() {
     std::vector<PageData> pages{NewPage()};
@@ -2015,6 +2064,7 @@ void TestWordBox() {
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--dump") == 0) return Dump(argv[2], argc >= 4 ? std::atoi(argv[3]) : 0);
     TestLatticeSpans();
+    TestLatticeRowSpans();
     TestLatticeGfm();
     TestCellEmphasisEscapes();
     TestBooktabs();
