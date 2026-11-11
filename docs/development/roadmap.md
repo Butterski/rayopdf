@@ -145,7 +145,9 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `--math=latex` (decided 2026-11-09) writes formulas as `$…$` / `$$…$$` LaTeX rebuilt from glyph
   geometry (an equation number after a display as `(n)`); the default stays Unicode and its output
   byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
-  `inline_eds`) are measured with `--math=latex`, everything else in the default mode.
+  `inline_eds`) and every key of READoc arXiv (decided 2026-11-11: that suite's ground truth is
+  LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
+  else in the default mode. 0.1.0 waits until every key is met (decided 2026-11-11).
 
 ### D7 Command line
 
@@ -252,9 +254,9 @@ corpus.
 [v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); the
 [release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
 met, to be repeated on the code that is released. (a) quality and (b) tables are open on READoc
-arXiv: `table_teds` 0.511 (best text-layer tool 0.685, docling 0.656), `seg_kt` 0.965 (0.976), and
-`text_eds` 0.754 in the default mode (0.826; 0.865 with `--math=latex`); `head_teds` is met since
-0.0.13 (0.688 against 0.515). The numbers are in the latest records, listed in the
+arXiv, measured with `--math=latex` (D6): `table_teds` 0.528 (best text-layer tool 0.685, docling
+0.656) and `seg_kt` 0.967 (0.976); `text_eds` 0.865 (0.826) and `head_teds` 0.692 (0.515) are met
+since 0.0.13. The numbers are in the latest records, listed in the
 [benchmark index](../benchmarks/README.md).
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
