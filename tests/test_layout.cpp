@@ -820,6 +820,31 @@ void TestAffiliationNotes() {
     RAYOPDF_CHECK(affiliation != std::string::npos && abstract != std::string::npos && affiliation < abstract, 708);
 }
 
+void TestTitleNotes() {
+    // An author's raised mark answered by a note at the page bottom: the note is front matter,
+    // written with its mark under the title block before the abstract; the body's note stays a
+    // footnote at the end, numbered 1.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "A Title of the Paper", 72, 740, 16);
+    float x = AddText(pages[0], "Ann Author", 72, 712, 10);
+    AddText(pages[0], "1", x, 716, 6);
+    AddText(pages[0], "Abstract", 72, 684, 12, kGlyphBold);
+    x = AddText(pages[0], "A claim of the paper needs a source.", 72, 664, 10);
+    AddText(pages[0], "2", x, 668, 6);
+    for (int i = 0; i < 30; ++i) AddText(pages[0], "Body text of the paper that runs long enough to fill a line", 72, 640.0f - 14 * i, 10);
+    x = AddText(pages[0], "1", 72, 104, 5);
+    AddText(pages[0], "University of Alpha, ann@alpha.edu", x, 100, 8);
+    x = AddText(pages[0], "2", 72, 94, 5);
+    AddText(pages[0], "Doe, On Footnotes, 2021.", x, 90, 8);
+    const std::string md = Run(pages);
+    Show("title notes", md);
+    const size_t note = md.find("<sup>1</sup>University of Alpha"), abstract = md.find("Abstract");
+    RAYOPDF_CHECK(note != std::string::npos && note < abstract && Contains(md, "Ann Author<sup>1</sup>"), 442);
+    RAYOPDF_CHECK(Contains(md, "source.[^1]") && Contains(md, "\n\n[^1]: Doe, On Footnotes, 2021.\n") &&
+                      !Contains(md, "[^2]"),
+                  443);
+}
+
 void TestFigureObstacle() {
     // A figure on the left with its caption under it, a column of text on the right whose
     // paragraph gap lies beside the figure: the column is read whole, not cut at the gap.
@@ -1466,6 +1491,7 @@ int main() {
     TestHeadingCues();
     TestQuoteBarsAndHeadings();
     TestAffiliationNotes();
+    TestTitleNotes();
     TestFigureObstacle();
     TestNumberedListing();
     TestMathIsNoHeading();

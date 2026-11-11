@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -1203,6 +1204,83 @@ void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& block
     std::rotate(blocks.begin() + static_cast<std::ptrdiff_t>(abstract), blocks.begin() + static_cast<std::ptrdiff_t>(start),
                 blocks.end());
 }
+
+constexpr uint64_t kMaxTitleGlyphs = uint64_t(1) << 16;  // glyphs of the title block searched for note marks
+
+// Notes referenced from the title block (an author's affiliation or address, "Corresponding
+// author", a \thanks of the title) are front matter, not footnotes of the text: their definitions
+// are written as paragraphs under the title block, before the abstract (or the first heading),
+// each with its mark first, and their marks stay raised text. The title block is the document's
+// first blocks up to that point, all on its first page. The other notes are numbered anew in
+// their order. `blocks` and `lines` hold the body only; `notes` index `noteLines`.
+void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines,
+                std::vector<Block>& notes, const std::vector<BlockLine>& noteLines, std::vector<NoteRef>& refs) {
+    if (notes.empty() || refs.empty() || blocks.size() < 2 || blocks[0].count == 0) return;
+    const uint32_t page = lines[blocks[0].first].page;
+    std::string line;
+    size_t abstract = 0;
+    for (size_t i = 1; i < blocks.size() && i <= kTitleBlocks; ++i) {
+        const Block& b = blocks[i];
+        if (b.count == 0 || lines[b.first].page != page) return;
+        const BlockLine& bl = lines[b.first];
+        LineText(pages[bl.page], pages[bl.page].lines[bl.line], line, bl.skip);
+        if (b.kind == BlockKind::Heading || StartsFolded(line, "abstract")) {
+            abstract = i;
+            break;
+        }
+    }
+    if (abstract == 0) return;
+    // The note numbers whose marks stand in the title block.
+    std::vector<uint32_t> moved;
+    uint64_t budget = kMaxTitleGlyphs;
+    for (size_t i = 0; i < abstract; ++i) {
+        for (uint32_t l = blocks[i].first; l < blocks[i].first + blocks[i].count; ++l) {
+            const PageData& pg = pages[lines[l].page];
+            const Line& tl = pg.lines[lines[l].line];
+            if (tl.count > budget) return;
+            budget -= tl.count;
+            for (uint32_t k = 0; k < tl.count; ++k) {
+                const uint32_t glyph = pg.lineGlyphs[tl.first + k];
+                const auto it = std::lower_bound(refs.begin(), refs.end(), std::make_pair(lines[l].page, glyph),
+                                                 [](const NoteRef& n, const std::pair<uint32_t, uint32_t>& g) {
+                                                     return n.page != g.first ? n.page < g.first : n.glyph < g.second;
+                                                 });
+                if (it != refs.end() && it->page == lines[l].page && it->glyph == glyph) moved.push_back(it->number);
+            }
+        }
+    }
+    if (moved.empty()) return;
+    std::sort(moved.begin(), moved.end());
+    moved.erase(std::unique(moved.begin(), moved.end()), moved.end());
+    const auto isMoved = [&](uint32_t number) { return std::binary_search(moved.begin(), moved.end(), number); };
+    // Their definitions become paragraphs before blocks[abstract], in note order, marks kept.
+    std::vector<Block> front;
+    std::vector<BlockLine> frontLines;
+    const uint32_t to = blocks[abstract].first;
+    for (const Block& note : notes) {
+        if (!isMoved(note.number)) continue;
+        Block b;
+        b.kind = BlockKind::Paragraph;
+        b.size = note.size;
+        b.first = to + static_cast<uint32_t>(frontLines.size());
+        b.count = note.count;
+        for (uint32_t l = note.first; l < note.first + note.count; ++l) frontLines.push_back(noteLines[l]);
+        frontLines[b.first - to].skip = 0;
+        front.push_back(b);
+    }
+    if (front.empty()) return;
+    lines.insert(lines.begin() + to, frontLines.begin(), frontLines.end());
+    for (size_t i = abstract; i < blocks.size(); ++i) blocks[i].first += static_cast<uint32_t>(frontLines.size());
+    blocks.insert(blocks.begin() + static_cast<std::ptrdiff_t>(abstract), front.begin(), front.end());
+    notes.erase(std::remove_if(notes.begin(), notes.end(), [&](const Block& n) { return isMoved(n.number); }), notes.end());
+    refs.erase(std::remove_if(refs.begin(), refs.end(), [&](const NoteRef& r) { return isMoved(r.number); }), refs.end());
+    // The rest numbered 1, 2, … in their order.
+    const auto renumber = [&](uint32_t number) {
+        return number - static_cast<uint32_t>(std::lower_bound(moved.begin(), moved.end(), number) - moved.begin());
+    };
+    for (Block& note : notes) note.number = renumber(note.number);
+    for (NoteRef& ref : refs) ref.number = renumber(ref.number);
+}
 } // namespace
 
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
@@ -2375,6 +2453,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             floating.push_back(0);
         }
     }
+    TitleNotes(pages, blocks, lines, notes, noteLines, out.noteRefs);
     MoveAddresses(pages, blocks, lines);
     const uint32_t base = static_cast<uint32_t>(lines.size());
     lines.insert(lines.end(), noteLines.begin(), noteLines.end());

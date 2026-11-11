@@ -9,7 +9,8 @@
 // a note starts with a marker (a superscript, or an enumerator in a smaller size or ending in a
 // back link) that matches a superscript reference earlier on its page, or anywhere before for
 // endnotes at the end of the document; notes are numbered in document order and written after
-// the last block.
+// the last block. A note referenced from the title block (an author's affiliation) is front
+// matter instead, written with its mark under the title block.
 #pragma once
 
 #include "layout/page.h"
