@@ -1467,6 +1467,11 @@ void Detector::SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& re
             if (it->b >= g.y0 - kSnap && it->a <= g.y1 + kSnap) ends.push_back(Piece{k, it->a, it->b});
     }
     if (ends.size() < 4) return;
+    // A row parts only at a piece's lower end inside it, minPiece clear of its edges: with none
+    // inside the grid, no row parts.
+    bool inside = false;
+    for (const Piece& p : ends) inside = inside || (p.a >= g.ys.back() + minPiece && p.a < g.ys.front() - minPiece);
+    if (!inside) return;
     starts = ends;
     std::sort(ends.begin(), ends.end(), [](const Piece& p, const Piece& q) { return p.k != q.k ? p.k < q.k : p.a < q.a; });
     std::sort(starts.begin(), starts.end(), [](const Piece& p, const Piece& q) { return p.k != q.k ? p.k < q.k : p.b < q.b; });
