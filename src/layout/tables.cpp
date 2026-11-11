@@ -156,16 +156,22 @@ void CollectEdges(const PageData& page, uint8_t dir, std::vector<Edge>& h, std::
         }
     }
     // Filled areas (cell and row backgrounds): their sides. An area inside another (the shading of
-    // each line of text inside a shaded cell) marks no cell boundary.
+    // each line of text inside a shaded cell) marks no cell boundary, and neither do two that cross
+    // (each overlaps the other well inside, neither holds the other): backgrounds of a table's cells
+    // tile it, the layers of a drawing overlap.
     const bool nesting = areas.size() <= 2048;
+    const auto holds = [](const Ruling* o, const Ruling* r) {
+        return o->x0 <= r->x0 + 0.5f && o->x1 >= r->x1 - 0.5f && o->y0 <= r->y0 + 0.5f && o->y1 >= r->y1 - 0.5f;
+    };
     for (const Ruling& ar : areas) {
         const Ruling* r = &ar;
         bool inner = false;
         for (size_t k = 0; nesting && k < areas.size() && !inner; ++k) {
             const Ruling* o = &areas[k];
             if (o == r) continue;
-            inner = o->x0 <= r->x0 + 0.5f && o->x1 >= r->x1 - 0.5f && o->y0 <= r->y0 + 0.5f && o->y1 >= r->y1 - 0.5f &&
-                    (o->x1 - o->x0) * (o->y1 - o->y0) > 1.2f * (r->x1 - r->x0) * (r->y1 - r->y0);
+            inner = holds(o, r) && (o->x1 - o->x0) * (o->y1 - o->y0) > 1.2f * (r->x1 - r->x0) * (r->y1 - r->y0);
+            inner = inner || (Fmin(r->x1, o->x1) - Fmax(r->x0, o->x0) > kSnap && Fmin(r->y1, o->y1) - Fmax(r->y0, o->y0) > kSnap &&
+                              !holds(o, r) && !holds(r, o));
         }
         if (inner) continue;
         h.push_back(Edge{r->y0, r->x0, r->x1, -1, true});
@@ -1597,13 +1603,15 @@ void Detector::SplitRowsByLines(Grid& g) const {
 
 // Columns of a lattice drawn without rules between them (a rule only around a group of columns
 // under a header label): whitespace an em wide inside a grid column, through the text of every row
-// below the first (three rows at least), with text on both sides of it in two thirds of those rows,
-// parts the column. A word across the new boundary (the group's label) spans it; the boundary
-// moves within the whitespace to a stretch half an em wide clear of the first row's words when
-// there is one (labels of neighbouring columns set closer than their columns).
+// below the first (three rows at least; through five, as narrow as two word spaces), with text on
+// both sides of it in two thirds of those rows, parts the column; under two rows, whitespace two
+// ems wide with text on both sides in both. A word across the new boundary (the group's label)
+// spans it; the boundary moves within the whitespace to a stretch half an em wide clear of the
+// first row's words when there is one (labels of neighbouring columns set closer than their
+// columns).
 void Detector::SplitColumnsByText(Grid& g) const {
     const int rows = g.Rows(), cols = g.Cols();
-    if (rows < 4) return;
+    if (rows < 3) return;
     std::vector<float> xs{g.xs.front()};
     std::vector<int> parent;  // per new column: the old column it lies in
     std::vector<int> oldBoundary{0};  // per new boundary: the old boundary, or -1 for a new one
@@ -1645,7 +1653,10 @@ void Detector::SplitColumnsByText(Grid& g) const {
         }
         std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
         std::sort(head.begin(), head.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
-        const float minGap = Fmax(4.0f, size);
+        // Through six rows or more, whitespace as narrow as two word spaces (0.4 em at least)
+        // parts columns too (tables of many columns set close).
+        const float minGap = rows >= 6 ? Fmax(2.5f, Fmin(size, Fmax(0.4f, 2 * wordSpace_) * size))
+                                       : rows >= 4 ? Fmax(4.0f, size) : Fmax(8.0f, 2 * size);
         float reach = -INFINITY;
         for (size_t i = 0; i < ink.size(); ++i) {
             if (i > 0 && ink[i].a - reach >= minGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
@@ -1667,7 +1678,7 @@ void Detector::SplitColumnsByText(Grid& g) const {
                 }
                 int filled = 0, both = 0;
                 for (int r = 1; r < rows; ++r) filled += any[static_cast<size_t>(r)], both += left[static_cast<size_t>(r)] && right[static_cast<size_t>(r)];
-                if (filled >= 3 && 3 * both >= 2 * filled) {
+                if (rows >= 4 ? filled >= 3 && 3 * both >= 2 * filled : filled == 2 && both == 2) {
                     xs.push_back(x);
                     parent.push_back(c);
                     oldBoundary.push_back(-1);
@@ -1854,8 +1865,8 @@ void Detector::Lattices() {
                     const size_t p = static_cast<size_t>(rootList[a]), q = static_cast<size_t>(rootList[b]);
                     const float gapX = Fmax(bx0[p], bx0[q]) - Fmin(bx1[p], bx1[q]);
                     const float gapY = Fmax(by0[p], by0[q]) - Fmin(by1[p], by1[q]);
-                    const float spanX = Fmin(bx1[p] - bx0[p], bx1[q] - bx0[q]);
-                    const float spanY = Fmin(by1[p] - by0[p], by1[q] - by0[q]);
+                    const float spanX = Fmax(bx1[p] - bx0[p], bx1[q] - bx0[q]);
+                    const float spanY = Fmax(by1[p] - by0[p], by1[q] - by0[q]);
                     // Side by side with rows in common, or stacked with columns in common.
                     const bool beside = gapX <= kNear && gapX > -kNear && -gapY >= 0.5f * spanY;
                     const bool stacked = gapY <= kNear && gapY > -kNear && -gapX >= 0.5f * spanX;
@@ -1974,12 +1985,23 @@ void Detector::Lattices() {
         if (!column && drawn && cols >= 2) HeaderAbove(g);
         if (!column && (cols < 2 || g.Rows() < 2 || wholeRows * 2 > g.Rows())) continue;
         bool figure = false;
-        // A grid drawn inside a figure region (the boxes of a diagram or a legend) is part of the
-        // figure.
+        // A grid drawn inside a figure region (the boxes of a diagram or a legend), or inside regions
+        // side by side that each span its height (the bars of a chart found as several drawings),
+        // is part of the figure.
         bool drawing = false;
-        for (const Ruling& f : Figures())
-            drawing = drawing || (g.x0 >= f.x0 - 2 * bodySize_ && g.x1 <= f.x1 + 2 * bodySize_ &&
-                                  g.y0 >= f.y0 - 2 * bodySize_ && g.y1 <= f.y1 + 2 * bodySize_);
+        {
+            const std::vector<Ruling>& regions = Figures();
+            const float near = 2 * bodySize_;
+            float reach = g.x0;  // the grid is covered from its left side to here
+            bool grown = true;
+            for (size_t pass = 0; grown && pass < regions.size(); ++pass) {
+                grown = false;
+                for (const Ruling& f : regions)
+                    if (g.y0 >= f.y0 - near && g.y1 <= f.y1 + near && f.x0 - near <= reach && f.x1 + near > reach)
+                        reach = f.x1 + near, grown = true;
+            }
+            drawing = reach >= g.x1;
+        }
         if (drawing || !Validate(g, column, &figure)) {
             // A chart's gridlines or a diagram's boxes: their lines are no rules of a table either.
             for (size_t m = 0; m < comp.hCount && (figure || drawing); ++m) hUsed[comp.h[m]] = 1;
@@ -2435,14 +2457,20 @@ void Detector::RuleStacks() {
                 return open ? n >= 2 && 2 * n >= end - begin : n >= 1;
             };
             const auto code = [&]() {
-                // Mostly monospace: aligned code, not a table; mostly math symbols and italic
+                // Mostly monospace: aligned code, not a table, unless most lines that start in the
+                // first column start with a word in proportional type (labels of rows whose values
+                // are code: a table of commands or parameters). Mostly math symbols and italic
                 // letters: a fraction bar over displayed math.
-                size_t mono = 0, math = 0, all = 0;
+                size_t mono = 0, math = 0, all = 0, labelled = 0, starts = 0;
                 for (size_t q = begin; q < end; ++q) {
                     mono += rows[q].mono, all += rows[q].count;
                     for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) math += MathWord(words_[rowWords[k]]);
+                    const TWord& first = words_[rowWords[rows[q].first]];
+                    if (gaps.empty() || ColumnOf(gaps, (first.x0 + first.x1) / 2) != 0) continue;
+                    starts++;
+                    labelled += !first.mono;
                 }
-                return 2 * mono > all || 10 * math >= 4 * all;
+                return (2 * mono > all && (starts == 0 || 3 * labelled < 2 * starts)) || 10 * math >= 4 * all;
             };
             // A single rule closes nothing: its table needs three rows at least.
             if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&

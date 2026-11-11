@@ -1393,6 +1393,120 @@ void TestCellNumbersLatex() {
     RAYOPDF_CHECK(Contains(md, "The error is $308\\pm6$ in all runs."), 891);
 }
 
+// A ruled table a few points right of a chart's filled background, beside it on the page but much
+// shorter: no grid with the chart (the chart's legend no column of it), a table of its own.
+void TestLatticeBesideChart() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    page.rulings.push_back(Ruling{60, 560, 296, 700, kRulingFill});
+    AddText(page, "Series A", 100, 636);
+    AddText(page, "Series B", 100, 620);
+    for (float y : {648.0f, 632.0f, 616.0f, 600.0f}) HLine(page, 300, 460, y);
+    for (float x : {300.0f, 380.0f, 460.0f}) VLine(page, x, 600, 648);
+    const char* const cells[] = {"Label", "Value", "alpha", "0.51", "beta", "0.52"};
+    for (int k = 0; k < 6; ++k) AddText(page, cells[k], k % 2 ? 384.0f : 304.0f, 636 - 16.0f * float(k / 2));
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("lattice beside a chart", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Label | Value |\n| --- | --- |\n| alpha | 0.51 |\n| beta | 0.52 |"), 892);
+}
+
+// Filled areas that cross each other (the backgrounds of a figure's two panels) mark no cells;
+// areas that tile the same place are the cells of a table.
+void TestCrossingAreas() {
+    for (const bool crossing : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        page.rulings.push_back(Ruling{100, 560, 300, 680, kRulingFill});
+        page.rulings.push_back(Ruling{crossing ? 280.0f : 300.0f, 560, 480, 680, kRulingFill});
+        HLine(page, 100, 480, 620);
+        AddText(page, "alpha one", 110, 650);
+        AddText(page, "beta two", 320, 650);
+        AddText(page, "gamma", 110, 590);
+        AddText(page, "delta", 320, 590);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(crossing ? "crossing areas" : "tiling areas", md);
+        RAYOPDF_CHECK(crossing ? report.tables == 0 && Contains(md, "alpha one") : report.tables == 1, 893);
+    }
+}
+
+// A ruled table with one vertical rule, after its first column, over two body rows: the other
+// columns come from the wide whitespace between them.
+void TestRuledColumnTwoRows() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {712.0f, 698.0f, 668.0f}) HLine(page, 72, 400, y);
+    // The vertical rule drawn piece by piece (a header piece, a piece per body row).
+    VLine(page, 140, 699, 711);
+    VLine(page, 140, 684, 697);
+    VLine(page, 140, 669, 680);
+    const char* const cells[3][4] = {{"Setting", "Clash", "Bond", "Twist"}, {"MD", "1.000", "1.000", "0.518"},
+                                     {"NE", "0.990", "1.000", "0.294"}};
+    const float bases[3] = {702, 686, 674};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c) AddText(page, cells[r][c], c == 0 ? 76.0f : 160.0f + 80.0f * float(c - 1), bases[r]);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("ruled column, two rows", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Setting | Clash | Bond | Twist |\n| --- | --- | --- | --- |\n"
+                                                     "| MD | 1.000 | 1.000 | 0.518 |\n| NE | 0.990 | 1.000 | 0.294 |"),
+                  894);
+}
+
+// A grid across two figure regions side by side, each as tall as the grid (the bars of a chart
+// found as two drawings): part of the figure.
+void TestLatticeAcrossFigures() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {600.0f, 584.0f, 568.0f, 552.0f}) HLine(page, 160, 390, y);
+    for (float x : {160.0f, 275.0f, 390.0f}) VLine(page, x, 552, 600);
+    const char* const cells[] = {"Label", "Value", "alpha", "0.51", "beta", "0.52"};
+    for (int k = 0; k < 6; ++k) AddText(page, cells[k], k % 2 ? 279.0f : 164.0f, 588 - 16.0f * float(k / 2));
+    for (const float x0 : {150.0f, 282.0f}) {
+        Shape s;
+        s.x0 = x0, s.x1 = x0 + 120, s.y0 = 520, s.y1 = 640;
+        s.kind = ShapeKind::Other, s.stroked = true, s.curved = true, s.segments = 40;
+        page.shapes.push_back(s);
+        for (int k = 0; k < 10; ++k) {
+            Shape tick;
+            tick.x0 = tick.x1 = x0 + 5 + 12.0f * float(k), tick.y0 = 522, tick.y1 = 525;
+            tick.kind = ShapeKind::Line, tick.stroked = true, tick.segments = 1;
+            page.shapes.push_back(tick);
+        }
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("lattice across figures", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "alpha"), 895);
+}
+
+// Booktabs whose last column is code (monospace parameters, wrapped) beside labels in proportional
+// type: a table, not a code block.
+void TestCodeColumnTable() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {712.0f, 698.0f, 626.0f}) HLine(page, 72, 460, y);
+    AddText(page, "Model", 76, 702);
+    AddText(page, "Name", 160, 702);
+    AddText(page, "Parameters", 240, 702);
+    const char* const rows[3][4] = {{"1-NN", "IBk", "-K 1 -W 0 -A", "LinearNNSearch -A"},
+                                    {"3-NN", "IBk", "-K 3 -W 0 -A", "EuclideanDistance -R"},
+                                    {"Tree", "J48", "-C 0.25 -M 2", nullptr}};
+    float base = 686;
+    for (const auto& row : rows) {
+        AddText(page, row[0], 76, base);
+        AddText(page, row[1], 160, base);
+        AddText(page, row[2], 240, base, 10, kGlyphMonospace);
+        if (row[3]) AddText(page, row[3], 240, base -= 12, 10, kGlyphMonospace);
+        base -= 14;
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("code column table", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Model | Name | Parameters |\n| --- | --- | --- |\n| 1-NN | IBk |"), 896);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1564,6 +1678,11 @@ int main(int argc, char** argv) {
     TestLatticeRowsByVerticals();
     TestLatticeSections();
     TestCellNumbersLatex();
+    TestLatticeBesideChart();
+    TestCrossingAreas();
+    TestRuledColumnTwoRows();
+    TestLatticeAcrossFigures();
+    TestCodeColumnTable();
     TestWordBox();
     std::puts("test_layout_tables: ok");
     return 0;
