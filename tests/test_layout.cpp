@@ -76,6 +76,31 @@ void Show(const char* name, const std::string& md) {
     if (std::getenv("RAYOPDF_TEST_VERBOSE")) std::fprintf(stderr, "--- %s\n%s", name, md.c_str());
 }
 
+// A line's glyph texts appended by runs: a glyph whose text is out of page-text order, or runs past
+// its end, starts a new run, and the bytes equal the glyph-by-glyph texts.
+void TestGlyphTextRuns() {
+    PageData page = NewPage(1);
+    page.text = "abcdef";
+    const uint32_t offsets[] = {2, 0, 4, 5};
+    const uint16_t lengths[] = {2, 2, 1, 4};  // the last follows "e" but runs past the text: "f"
+    for (uint32_t i = 0; i < 4; ++i) {
+        Glyph g;
+        g.text = offsets[i];
+        g.textLength = lengths[i];
+        page.glyphs.push_back(g);
+        page.lineGlyphs.push_back(i);
+    }
+    Line line;
+    line.count = 4;
+    std::string text;
+    AppendGlyphTexts(page, line, 0, 4, text);
+    RAYOPDF_CHECK(text == "cdabef", 448);
+    std::vector<std::string> runs;
+    ForGlyphTextRuns(page, line, 0, 4, [&](std::string_view run) { runs.emplace_back(run); });
+    RAYOPDF_CHECK(runs.size() == 4 && runs[0] == "cd" && runs[1] == "ab" && runs[2] == "e" && runs[3] == "f",
+                  449);
+}
+
 void TestWordGaps() {
     std::vector<PageData> pages{NewPage(1)};
     // "Hello" and "world" with a gap and no space glyph; kerning-sized gaps inside words.
@@ -1557,6 +1582,7 @@ int main() {
     TestWrappedListingLine();
     TestVerbatimEnumerators();
     TestInlineStyles();
+    TestGlyphTextRuns();
     TestAlertAndListings();
     TestLinksMathAndNumbering();
     TestQuotesTasksAndFormulas();
