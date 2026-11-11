@@ -14,7 +14,6 @@
 
 namespace RayoPdf::Layout {
 namespace {
-
 // The length of a space character at text[i] (a space, a tab, a no-break space, U+2000..U+200A,
 // U+202F or U+3000), else 0.
 size_t SpaceAt(const std::string& text, size_t i) {
@@ -740,6 +739,8 @@ constexpr uint32_t kEdgeMaxChars = 150;
 constexpr int kEdgeMaxRows = 6;
 constexpr float kNumberBand = 0.16f;
 constexpr uint32_t kRunningTitleChars = 100;
+// The longest row an /Artifact mark alone makes furniture.
+constexpr uint32_t kMarkedRowChars = 60;
 
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
     std::vector<uint32_t> lines;
@@ -768,6 +769,15 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         textLeft = INFINITY, textRight = -INFINITY;
         for (uint32_t i : lines) textLeft = Fmin(textLeft, page.lines[i].u0), textRight = Fmax(textRight, page.lines[i].u1);
     }
+    // Text the producer marked as an artifact (ISO 32000-1 §14.8.2.2: not authored content) is
+    // furniture at the edge of a page whose text is mostly content: artifacts under a quarter of its
+    // characters (some producers mark a cover page's every line, or a block of prose, as one).
+    uint64_t allChars = 0, artifactChars = 0;
+    for (uint32_t i : lines) {
+        allChars += page.lines[i].chars;
+        if (page.lines[i].flags & kLineArtifact) artifactChars += page.lines[i].chars;
+    }
+    const bool artifactsTell = artifactChars * 4 < allChars;
     // The text's own line spacing: the median gap from a line to the next line below it in its
     // column. A header or footer is set apart by more than that, so double-spaced text keeps its
     // first and last lines.
@@ -813,7 +823,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             float rowLeft = INFINITY, rowRight = -INFINITY;
             uint32_t chars = 0;
             float largest = 0;
-            bool superscript = false, bold = true, mono = true, anyMono = false;
+            bool superscript = false, bold = true, mono = true, anyMono = false, artifact = true;
             for (size_t k = 0; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
                 // On the edge line's baseline, or beside it on an offset one (a folio set a little
@@ -830,6 +840,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 bold = bold && (l.flags & kLineAllBold);
                 mono = mono && (l.flags & kLineAllMono);
                 anyMono = anyMono || (l.flags & kLineAllMono);
+                artifact = artifact && (l.flags & kLineArtifact);
                 superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
                 // A row starting with a list marker or enumerator ("5. The last note") is content.
                 uint32_t end = 1, value = 0;
@@ -932,9 +943,13 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool closeNumber = number && !superscript && largest <= 1.3f * body && gap >= closeGap &&
                                      (std::fabs((rowLeft + rowRight) - (textLeft + textRight)) <= 4 * body ||
                                       rowRight >= textRight - body);
-            const bool apart = (!sparse || (strong && metadata)) && (!weakPending || strong) &&
-                               ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
-                                ((closeFolio || closeNumber) && row < 2));
+            // A short row the producer marked as an artifact, within kNumberBand and at most twice
+            // the body size (not a display heading), whatever its gap. A head or a foot is a few
+            // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
+            const bool marked = artifactsTell && artifact && numberBand && largest <= 2 * body && chars <= kMarkedRowChars;
+            const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
+                                          ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
+                                           ((closeFolio || closeNumber) && row < 2)));
             // A short row in the running band overlapping the row inside it waits with that row:
             // pieces of one head on offset baselines. Its block must still end in a strong row.
             const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;

@@ -327,6 +327,35 @@ void AddBody(PageData& page, int count, float top, float size) {
                 size);
 }
 
+// Marks the glyphs from `from` on as drawn inside /Artifact marked content.
+void MarkArtifact(PageData& page, size_t from) {
+    for (size_t i = from; i < page.glyphs.size(); ++i) page.glyphs[i].flags |= kGlyphArtifact;
+}
+
+// A head the producer marked as an artifact goes even set close above the text in the body face;
+// the same line unmarked stays, and so does every line of a page whose text is all artifacts, and a
+// marked row longer than a head (a disclaimer sentence).
+void TestArtifactRows() {
+    const auto build = [](const char* head, bool marked, bool all) {
+        std::vector<PageData> pages{NewPage()};
+        AddText(pages[0], head, 72, 718, 10);
+        if (marked) MarkArtifact(pages[0], 0);
+        const size_t body = pages[0].glyphs.size();
+        AddBody(pages[0], 30, 700, 10);
+        if (all) MarkArtifact(pages[0], body);
+        return Run(pages);
+    };
+    const char* head = "Food Act 2001 - 14.12.2017";
+    const std::string md = build(head, true, false);
+    RAYOPDF_CHECK(Find(md, "Food Act") == std::string::npos && Find(md, "Body line 0 of") != std::string::npos, 787);
+    RAYOPDF_CHECK(Find(build(head, false, false), "Food Act") != std::string::npos, 788);
+    RAYOPDF_CHECK(Find(build(head, true, true), "Food Act") != std::string::npos, 789);
+    RAYOPDF_CHECK(Find(build("This project has been funded with the support of the European Commission and its partners.", true,
+                             false),
+                       "funded with the support") != std::string::npos,
+                  1855);
+}
+
 // A right-aligned name over a URL at the head of a page: the name row carries evidence of its own
 // (set off the text's edge) and goes with the metadata row under it. Two rows of small print at
 // the foot, set apart but with no metadata, stay: a caption or a note.
@@ -479,6 +508,7 @@ int main() {
     TestWideLeading();
     TestParagraphAroundFloat();
     TestAddressesAtEnd();
+    TestArtifactRows();
     TestNameOverUrl();
     TestDeepFolioHead();
     TestStampedFoot();
