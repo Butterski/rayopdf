@@ -857,6 +857,28 @@ User instructions against 0.0.12 (`instr.sh`, `--batch --workers=1`): odl +7.11 
 Wall-clock timings were not taken: the machine ran agents and harness runs throughout the
 round; the release check times the candidate on a quiet machine.
 
+## Seventh round: furniture and table landings won back (2026-11-11)
+
+Base `43211fc`. Round 7's quality work (tables 54a9282, 598ba44, 49972c1; page furniture ac9f628, ae1fe94,
+43211fc) left user instructions against 0.0.12 (`instr.sh`, `--batch --workers=1`, images off) at odl +1.30 %,
+SafeDocs +1.68 %, olmOCR `tables` +2.87 %, `multi_column` +2.43 %, syn6 +2.68 %, `arxiv_math` +1.27 %. Profiles
+put about 2 % of every group in the furniture test of each page's edge rows (a row's text, its repetition key and a
+search for metadata words, for every candidate row), and up to 3.4 % in line texts built by one string append per
+glyph.
+
+|Commit|Change|Effect|
+|---|---|---|
+|`fa16417`|A line's text appended a run at a time where its glyphs' texts follow each other in the page text; running keys written in place; metadata words found in one pass|syn6 -1.5 %, odl -0.4 %, `multi_column` -0.35 %, `tables` -0.4 %, SafeDocs -0.6 % (callgrind)|
+|`1746d8c`|Body size key counted, not sorted; edge-row key by byte classes, metadata by first letter; the separator test of reading order over wide lines only; filled-area nesting only between areas whose x ranges meet; table word facts by a byte class table|`tables` -0.6 %, SafeDocs -0.4 %, odl -0.3 %, `multi_column` -0.3 %|
+|`e3f7df3`|Cross-layout lines scanned over a packed copy; row, word and first-word texts appended by runs|`multi_column` -0.35 %, `tables` -0.35 %|
+
+User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`): odl +0.39 %, SafeDocs +0.30 %,
+`tables` +1.52 %, `multi_column` +1.34 %, syn6 +0.74 %, `arxiv_math` +0.86 %, heavy10 -0.56 %.
+
+- **Rejected:** a ToUnicode lookup bounded by code distances (maps of subset fonts have gaps: no gain); runs under
+  an empty clip taken off the SSE2 box path (odl places many glyphs under empty clips: +0.3 %).
+- Wall-clock timings were not taken: the machine ran agents throughout the round.
+
 ## Open candidates (measured, not done)
 
 - **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults
