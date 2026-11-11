@@ -319,6 +319,111 @@ void TestAddressesAtEnd() {
     RAYOPDF_CHECK(Find(mixed, "A paper of the field") < Find(mixed, "Department of"), 785);
 }
 
+// Body lines of `size` points from `top` down, `count` of them, 1.2 em apart, from x = 72.
+void AddBody(PageData& page, int count, float top, float size) {
+    for (int i = 0; i < count; ++i)
+        AddText(page, "Body line " + std::to_string(i) + " of the running text goes on here.", 72, top - 1.2f * size * i,
+                size);
+}
+
+// A right-aligned name over a URL at the head of a page: the name row carries evidence of its own
+// (set off the text's edge) and goes with the metadata row under it. Two rows of small print at
+// the foot, set apart but with no metadata, stay: a caption or a note.
+void TestNameOverUrl() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Jonathan Example", 480, 740, 10);
+    AddText(pages[0], "http://cap.example.edu/profiles/Jonathan_Example/", 330, 728, 10);
+    AddBody(pages[0], 40, 705, 8);
+    AddText(pages[0], "A remark set in small print below the text,", 72, 70, 7);
+    AddText(pages[0], "continued on a second line.", 72, 62, 7);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Jonathan Example") == std::string::npos && Find(md, "cap.example.edu") == std::string::npos &&
+                      Find(md, "Body line 0 of") != std::string::npos,
+                  790);
+    RAYOPDF_CHECK(Find(md, "A remark set in small print") != std::string::npos && Find(md, "second line") != std::string::npos,
+                  791);
+}
+
+// A running head of a folio and a title set 14.5 % down a page with wide margins is removed; a
+// single line there ("Chapter 2", which opens a chapter) stays.
+void TestDeepFolioHead() {
+    const auto build = [](bool folio) {
+        std::vector<PageData> pages{NewPage()};
+        pages[0].height = 842;
+        if (folio) {
+            AddText(pages[0], "164", 106, 720, 9);
+            AddText(pages[0], "Adam A. Zych", 270, 720, 9);
+        } else {
+            AddText(pages[0], "Chapter 2", 106, 720, 9);
+        }
+        AddBody(pages[0], 12, 691, 9);
+        return Run(pages);
+    };
+    const std::string md = build(true);
+    RAYOPDF_CHECK(Find(md, "Zych") == std::string::npos && Find(md, "Body line 0 of") != std::string::npos, 792);
+    RAYOPDF_CHECK(Find(build(false), "Chapter 2") != std::string::npos, 793);
+}
+
+// A foot row spread across the text, under which download stamps reach far into the left margin:
+// the row's spread is measured against the text between the running bands, so it goes too.
+void TestStampedFoot() {
+    std::vector<PageData> pages{NewPage()};
+    AddBody(pages[0], 50, 720, 8);
+    AddText(pages[0], "Optical Engineering", 72, 40, 8);
+    AddText(pages[0], "090901-22", 290, 40, 8);
+    AddText(pages[0], "September 2013/Vol. 52(9)", 440, 40, 8);
+    AddText(pages[0], "Downloaded From: https://www.example.org/journals/x on 13 Jun 2021", 10, 20, 7);
+    AddText(pages[0], "Terms of Use: https://www.example.org/terms-of-use", 10, 12, 7);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "090901-22") == std::string::npos && Find(md, "Downloaded From") == std::string::npos &&
+                      Find(md, "Body line 49 of") != std::string::npos,
+                  794);
+}
+
+// A line opening with a literal '#' (a comment of a listing) is no folio: at the head of a page,
+// set apart, it stays.
+void TestHashIsNoFolio() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "# create the train and valid datasets", 72, 735, 10);
+    AddBody(pages[0], 30, 700, 10);
+    RAYOPDF_CHECK(Find(Run(pages), "create the train") != std::string::npos, 795);
+}
+
+// A footnote whose marker is followed by a no-break space is still a footnote: under a removed
+// page number it stays, though it holds a URL.
+void TestNoBreakFootnote() {
+    std::vector<PageData> pages{NewPage()};
+    AddBody(pages[0], 40, 720, 10);
+    AddText(pages[0], "15\xC2\xA0https://www.example.gov/content/5524", 72, 60, 8);
+    AddText(pages[0], "17", 300, 48, 10);
+    RAYOPDF_CHECK(Find(Run(pages), "example.gov/content/5524") != std::string::npos, 796);
+}
+
+// "Página 6 / 12" set in bold (no running title) is a page number.
+void TestPageWords() {
+    std::vector<PageData> pages{NewPage()};
+    AddBody(pages[0], 40, 720, 10);
+    const size_t from = pages[0].glyphs.size();
+    AddText(pages[0], "P\xC3\xA1gina 6 / 12", 480, 50, 10);
+    for (size_t i = from; i < pages[0].glyphs.size(); ++i) pages[0].glyphs[i].flags |= kGlyphBold;
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "gina 6") == std::string::npos && Find(md, "Body line 39 of") != std::string::npos, 797);
+}
+
+// A journal masthead of five rows of small print over the text goes as one block.
+void TestFiveRowMasthead() {
+    std::vector<PageData> pages{NewPage()};
+    const char* rows[] = {"Supplemental material to this article can be found at:", "http://journal.example.org/content/suppl/1",
+                          "0026-895X/11/7906-1044-1052$25.00", "MOLECULAR EXAMPLES Vol. 79, No. 6",
+                          "Mol Examples 79:1044-1052, 2011 Printed in U.S.A."};
+    for (int i = 0; i < 5; ++i) AddText(pages[0], rows[i], 72, 770 - 8.0f * i, 6);
+    AddBody(pages[0], 40, 700, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Supplemental material") == std::string::npos && Find(md, "MOLECULAR EXAMPLES") == std::string::npos &&
+                      Find(md, "Printed in") == std::string::npos && Find(md, "Body line 0 of") != std::string::npos,
+                  798);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -333,6 +438,13 @@ int main() {
     TestWideLeading();
     TestParagraphAroundFloat();
     TestAddressesAtEnd();
+    TestNameOverUrl();
+    TestDeepFolioHead();
+    TestStampedFoot();
+    TestHashIsNoFolio();
+    TestNoBreakFootnote();
+    TestPageWords();
+    TestFiveRowMasthead();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

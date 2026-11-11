@@ -9,10 +9,24 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace RayoPdf::Layout {
 namespace {
+
+// The length of a space character at text[i] (a space, a tab, a no-break space, U+2000..U+200A,
+// U+202F or U+3000), else 0.
+size_t SpaceAt(const std::string& text, size_t i) {
+    const unsigned char c = static_cast<unsigned char>(text[i]);
+    if (c == ' ' || c == '\t') return 1;
+    if (c == 0xC2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) == 0xA0) return 2;
+    if (i + 2 >= text.size()) return 0;
+    const unsigned char c1 = static_cast<unsigned char>(text[i + 1]), c2 = static_cast<unsigned char>(text[i + 2]);
+    if (c == 0xE2 && c1 == 0x80 && (c2 <= 0x8A || c2 == 0xAF)) return 3;
+    if (c == 0xE3 && c1 == 0x80 && c2 == 0x80) return 3;
+    return 0;
+}
 
 // The repetition key of a header or footer line (§5.2): ASCII lowercased, digit runs and lowercase
 // roman-numeral words as '#', white space collapsed.
@@ -22,9 +36,9 @@ void RunningKey(const std::string& text, std::string& key) {
     bool space = false;
     while (i < text.size()) {
         const char c = text[i];
-        if (c == ' ') {
+        if (const size_t n = SpaceAt(text, i)) {
             space = !key.empty();
-            ++i;
+            i += n;
             continue;
         }
         if (space) key.push_back(' '), space = false;
@@ -63,6 +77,22 @@ bool IsPageNumberKey(const std::string& key) {
             i += 4;
             continue;
         }
+        // The word for page, its abbreviations and the "of" of other languages ("Página 6 de 12",
+        // "Seite 3 von 9", "Strona 2 z 5").
+        static constexpr std::string_view kWords[] = {"p\xC3\xA1gina", "pagina", "seite", "strona", "strana", "pag.",
+                                                      "s.", "de", "von", "sur", "z"};
+        size_t word = 0;
+        for (const std::string_view w : kWords) {
+            const size_t end = i + w.size();
+            if (key.compare(i, w.size(), w) == 0 && (end == key.size() || key[end] == ' ' || key[end] == '#')) {
+                word = w.size();
+                break;
+            }
+        }
+        if (word > 0) {
+            i += word;
+            continue;
+        }
         if (key.compare(i, 2, "of") == 0) {
             i += 2;
             continue;
@@ -86,14 +116,15 @@ bool IsPageNumberKey(const std::string& key) {
 }
 
 // A folio at either end of a running head or foot: "38 Chapter title", "Journal title 39". A
-// leading number must have two digits or be roman, since "3 Methods" is a numbered heading.
+// leading number must have two digits or be roman, since "3 Methods" is a numbered heading. A
+// literal '#' in the text ("# a comment") is no number.
 bool HasFolio(const std::string& key, const std::string& text) {
-    if (key.size() < 3) return false;
-    if (key.compare(key.size() - 2, 2, " #") == 0) return true;
+    if (key.size() < 3 || text.empty()) return false;
+    if (key.compare(key.size() - 2, 2, " #") == 0) return text.back() != '#';
     if (key.compare(0, 2, "# ") != 0) return false;
     size_t digits = 0;
     while (digits < text.size() && text[digits] >= '0' && text[digits] <= '9') ++digits;
-    return digits != 1;
+    return digits >= 2 || (digits == 0 && text[0] != '#');
 }
 
 // Publication metadata in a running head or foot: a URL, a DOI, a copyright or licence notice, a
@@ -704,7 +735,9 @@ struct Orderer {
 constexpr float kMarginBand = 0.06f;
 constexpr uint32_t kEdgeMinLines = 3;
 constexpr uint32_t kEdgeMaxChars = 150;
-constexpr int kEdgeMaxRows = 4;
+// Rows of one block at an edge: a journal's masthead (supplement note and URL, ISSN line,
+// journal and volume, copyright, citation) runs to six.
+constexpr int kEdgeMaxRows = 6;
 constexpr float kNumberBand = 0.16f;
 constexpr uint32_t kRunningTitleChars = 100;
 
@@ -719,9 +752,22 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
     });
     const float h = page.height;
-    // The horizontal extent of the page's text, against which a row's spread is measured.
+    // The horizontal extent of the page's text, against which a row's spread is measured: that of
+    // the lines between the running bands, so that a download stamp reaching into the margin does
+    // not widen it (all lines when fewer than kEdgeMinLines lie there).
     float textLeft = INFINITY, textRight = -INFINITY;
-    for (uint32_t i : lines) textLeft = Fmin(textLeft, page.lines[i].u0), textRight = Fmax(textRight, page.lines[i].u1);
+    uint32_t inside = 0;
+    for (uint32_t i : lines) {
+        const Line& l = page.lines[i];
+        const float c = (l.vb + l.vt) / 2;
+        if (c <= h * kRunningBand || c >= h * (1 - kRunningBand)) continue;
+        textLeft = Fmin(textLeft, l.u0), textRight = Fmax(textRight, l.u1);
+        inside++;
+    }
+    if (inside < kEdgeMinLines) {
+        textLeft = INFINITY, textRight = -INFINITY;
+        for (uint32_t i : lines) textLeft = Fmin(textLeft, page.lines[i].u0), textRight = Fmax(textRight, page.lines[i].u1);
+    }
     // The text's own line spacing: the median gap from a line to the next line below it in its
     // column. A header or footer is set apart by more than that, so double-spaced text keeps its
     // first and last lines.
@@ -754,9 +800,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     for (int side = 0; side < 2; ++side) {
         // Rows set close together at the edge (a two- or three-line journal or licence block)
         // are taken together when each carries furniture evidence and the innermost is set
-        // apart: `pending` rows wait for that.
+        // apart: `pending` rows wait for that. A block holding a row of weaker evidence only (a
+        // name set off the text's edge over a URL, a folio row) must end in a strong row.
         size_t start = side == 0 ? first : last;
         int pending = 0;
+        bool weakPending = false;
         for (int row = 0; row < kEdgeMaxRows && last - first > 1; ++row) {
             const Line& edge = page.lines[lines[side == 0 ? first : last - 1]];
             // The row: lines on the edge line's baseline.
@@ -826,7 +874,10 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 }
                 RunningKey(text, key);
                 number = count == 1 && IsPageNumberKey(key);
-                folio = band && !bold && HasFolio(key, text);
+                // A folio may sit as deep as a lone page number when it is a piece of its own
+                // beside the title ("164   Adam A. Zych" on a page with wide margins); a line of
+                // a listing never is one.
+                folio = (band || (count >= 2 && !mono)) && !bold && HasFolio(key, text);
                 metadata = band && IsMetadata(text);
                 // A foot row that starts with a number or a reference mark is a footnote.
                 note = band && side == 1 && (key.compare(0, 2, "# ") == 0 || key.compare(0, 3, "#. ") == 0 ||
@@ -837,10 +888,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // A body-size row above a heading is the document's first paragraph, set high on a page
             // with narrow margins: a header must be smaller than the body to be told from it.
             const bool beforeHeading = side == 0 && nextSize >= 1.12f * body && largest > 0.95f * body;
-            // Furniture evidence inside the running band: pieces spread across the text width
-            // ("Journal 12(3) ... Author et al."), a folio at an end of the row ("38 Chapter
-            // title"), or print smaller than the body. Figures between the row and the text count
-            // as content: a caption or credit under a figure is not set apart.
+            // Furniture evidence inside the running band (for a folio row, down to kNumberBand):
+            // pieces spread across the text width ("Journal 12(3) ... Author et al."), a folio at an
+            // end of the row ("38 Chapter title"), or print smaller than the body. Figures between
+            // the row and the text count as content: a caption or credit under a figure is not set
+            // apart.
             float figureGap = gap;
             for (const ImageBox& image : page.images) {
                 if ((image.x1 - image.x0) * (image.y1 - image.y0) < 0.01f * page.width * h) continue;
@@ -854,11 +906,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // and not bold: a running title, which body text and its first lines never are.
             const bool offset = flushLeft && count == 1 && !bold && rowLeft > textLeft + 4 * body &&
                                 chars <= kRunningTitleChars;
-            const bool evidence = band && (spread || (!note && (folio || offset || (largest <= 0.9f * body && !mono))));
+            const bool evidence = (band || folio) && (spread || (!note && (folio || offset || (largest <= 0.9f * body && !mono))));
             const bool qualifies = gap >= minGap && !superscript && chars <= kEdgeMaxChars &&
                                    ((number && largest <= 1.3f * body) ||
                                     (margin && largest <= 1.02f * body && !beforeHeading) ||
-                                    (band && evidence && figureGap >= minGap && largest <= 1.35f * body));
+                                    (evidence && figureGap >= minGap && largest <= 1.35f * body));
             // Publication metadata (a URL, a DOI, a copyright or licence line, a download stamp,
             // an ISSN), a row spread across the text, or small print in the head band: furniture
             // even above a figure or a heading. Small print at the foot is a footnote or a caption.
@@ -867,9 +919,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // Metadata in the outer margin needs only half an em of space: a copyright line set
             // just under the last line of text.
             const bool closeMetadata = strong && metadata && margin && gap >= Fmax(0.5f * body, 1.5f * spacing);
-            const bool apart = (!sparse || (strong && metadata)) &&
+            const bool apart = (!sparse || (strong && metadata)) && (!weakPending || strong) &&
                                ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata);
-            if (!apart && !(strong && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
+            if (!apart && !((strong || evidence) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
                 // The block does not end set apart: the pending rows stay.
                 if (side == 0)
                     first = start;
@@ -883,6 +935,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 last -= count;
             if (!apart) {
                 pending++;
+                weakPending = weakPending || !strong;
                 continue;
             }
             for (size_t k = side == 0 ? start : last; k < (side == 0 ? first : start); ++k) {
@@ -890,6 +943,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 removed++;
             }
             pending = 0;
+            weakPending = false;
             start = side == 0 ? first : last;
         }
         if (pending > 0) {
