@@ -22,6 +22,9 @@ RayoPDF 0.1.0 ships when all of the following hold on the harness of `docs/devel
   at least docling's local numbers. "Text-layer tools" are pdftotext, markitdown, pymupdf,
   opendataloader, liteparse and edgeparse; docling is the ML reference.
 - **(b) Tables.** TEDS is at least docling's, or the table-ML branch of the M8 gate is taken.
+  READoc arXiv `table_teds` is held to docling's number alone, not to (a)'s best text-layer tool
+  (decided 2026-11-11, when the holdout stood at 0.602 against pymupdf's 0.685 and docling's
+  0.656).
 - **(c) Speed.** The fresh-process median is at most 1 ms per page on odl with one pinned core, and
   warm throughput is at least 2,000 pages/s on one core. The fresh-process figure is taken with a
   native timer (as RayoMD's `fresh.sh` does), because the harness's Python `subprocess` timing adds
@@ -283,11 +286,11 @@ corpus.
 [v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); 0.0.14 is within 1.2 % of 0.0.12's
 instructions on odl and is timed again in the release check. The
 [release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
-met, to be repeated on the code that is released. (a) quality and (b) tables are open on one key,
-READoc arXiv `table_teds` (measured with `--math=latex`, D6): 0.604 at 0.0.14, against the best
-text-layer tool's 0.685 and docling's 0.656. `text_eds` 0.878 (0.826), `head_teds` 0.693 (0.515)
-and `seg_kt` 0.981 (0.976) are met ([v0.0.14](../benchmarks/v0.0.14-2026-11-11.md)). The numbers
-are in the latest records, listed in the [benchmark index](../benchmarks/README.md).
+met, to be repeated on the code that is released. (a) and (b) are open on one key, READoc arXiv
+`table_teds` (measured with `--math=latex`, D6; held to docling's number, (b)): 0.602 at master
+a285266 against docling's 0.656. `text_eds` 0.880 (best text-layer tool 0.826), `head_teds` 0.693
+(0.515) and `seg_kt` 0.981 (0.976) are met. The numbers are in the latest records, listed in the
+[benchmark index](../benchmarks/README.md).
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
   campaign covered 22 fuzz targets; `fuzz_layout_math` (0.0.11) has had 2 × 5 min so far.
