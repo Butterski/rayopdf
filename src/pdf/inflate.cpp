@@ -216,12 +216,18 @@ RAYOPDF_HOT_INLINE void ForUsedSymbols(const uint8_t* lengths, unsigned count, U
 // the codes bit-reversed (an index). The codes of one length up to the root go into the first
 // 2^length entries, which are then doubled for the next length, so that every root entry is
 // written once and the copies go 16 bytes at a time. The longer codes follow, those under one root
-// prefix one after another, each prefix's subtable after the last one's.
+// prefix one after another, each prefix's subtable after the last one's. `known`, when given,
+// holds the number of symbols of each length (its entry 0 is not read), counted as the lengths
+// were read; else they are counted here.
 template <typename EntryOf>
 size_t BuildTable(const uint8_t* lengths, unsigned count, unsigned root, uint32_t* table, size_t tableSize,
-                  bool incompleteAllowed, bool allowEmpty, const EntryOf& entryOf) {
+                  bool incompleteAllowed, bool allowEmpty, const EntryOf& entryOf, const unsigned* known = nullptr) {
     unsigned counts[16] = {};
-    ForUsedSymbols(lengths, count, [&](unsigned symbol) { counts[lengths[symbol]]++; });
+    if (known) {
+        for (unsigned bits = 1; bits <= 15; bits++) counts[bits] = known[bits];
+    } else {
+        ForUsedSymbols(lengths, count, [&](unsigned symbol) { counts[lengths[symbol]]++; });
+    }
     counts[0] = 0;
     int left = 1;
     unsigned codes = 0;
@@ -613,6 +619,9 @@ private:
         }
         uint8_t lengths[286 + 30];
         const unsigned total = litlenCount + distanceCount;
+        // The literal/length and the distance code's symbols of each length, counted as they are
+        // read (BuildTable then counts nothing); zeros go uncounted.
+        unsigned counts[2][16] = {};
         // A refill leaves enough bits for at least a code and its extra bits (7 + 7). Whether the
         // bits taken passed the end of the input is asked after the last code, and before a code
         // found corrupt: the answers asking before every code would give, as that only grows.
@@ -622,6 +631,7 @@ private:
             const unsigned symbol = Value(entry);
             if (symbol < 16) {
                 Bits(TakenBits(entry));
+                counts[index >= litlenCount][symbol]++;
                 lengths[index++] = static_cast<uint8_t>(symbol);
                 continue;
             }
@@ -632,15 +642,21 @@ private:
                 return Within() ? Step::Corrupt : Step::Truncated;
             }
             Bits(TakenBits(entry) + extraBits);
-            std::memset(lengths + index, symbol == 16 ? lengths[index - 1] : 0, repeat);
+            const uint8_t value = symbol == 16 ? lengths[index - 1] : 0;
+            if (value != 0) {
+                const unsigned literal = index < litlenCount ? std::min(repeat, litlenCount - index) : 0;
+                counts[0][value] += literal;
+                counts[1][value] += repeat - literal;
+            }
+            std::memset(lengths + index, value, repeat);
             index += repeat;
         }
         if (!Within()) return Step::Truncated;
         if (lengths[256] == 0) return Step::Corrupt;
         const size_t litlenEntries = BuildTable(lengths, litlenCount, kLitLenRoot, dynamic_, kLitLenTableSize, true,
-                                                false, kLitLenEntries);
+                                                false, kLitLenEntries, counts[0]);
         if (litlenEntries == 0 || !BuildTable(lengths + litlenCount, distanceCount, kDistRoot, dynamic_ + litlenEntries,
-                                              kDistTableSize, true, true, kDistanceEntries)) {
+                                              kDistTableSize, true, true, kDistanceEntries, counts[1])) {
             return Step::Corrupt;
         }
         litlen_ = dynamic_;
