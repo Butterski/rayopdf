@@ -3504,13 +3504,17 @@ bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockL
 
 bool TableNeedsHtml(const PageData& page, const Table& table) {
     // Labels over sub-columns in the header rows (cells spanning columns, not rows) fit a pipe
-    // table: the label stands in each column it spans.
+    // table: the label stands in each column it spans. So does a cell of a body row spanning
+    // columns (a section's name across the table) under a header of one row; under a header of
+    // several rows a pipe table, whose header is one row, would lose the levels as well.
     const uint16_t header = std::max<uint16_t>(1, table.headerRows);
+    bool bodySpan = false;
     for (uint32_t i = 0; i < table.cellCount; ++i) {
         const TableCell& c = page.tableCells[table.firstCell + i];
-        if (c.rowSpan > 1 || (c.colSpan > 1 && c.row >= header)) return true;
+        if (c.rowSpan > 1) return true;
+        bodySpan = bodySpan || (c.colSpan > 1 && c.row >= header);
     }
-    return false;
+    return bodySpan && table.headerRows >= 2;
 }
 
 void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {

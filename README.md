@@ -318,8 +318,8 @@ printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-
 - **Scans need the add-on**, and OCR takes seconds a page, not milliseconds. Hebrew is not read
   yet; Arabic and Kannada are rough.
 - **Encrypted PDFs** need the password (`--password`); certificate encryption is not supported.
-- **Tables with cells spanning rows** (or columns below the header) are written as HTML tables
-  inside the Markdown; everything else is GFM.
+- **Tables with cells spanning rows** (or columns below a header of several rows) are written as
+  HTML tables inside the Markdown; everything else is GFM, a cell spanning columns repeated in each.
 - **Memory** grows with the largest JPEG or JPEG 2000 image of a document when images are
   written, and with the input file, which is mapped.
 

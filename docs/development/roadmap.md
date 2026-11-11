@@ -133,11 +133,16 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 ### D6 Output dialect
 
 - GitHub Flavored Markdown.
-- Tables are GFM pipe tables, or HTML when a cell spans rows, a cell below the header rows spans
-  columns, or a cell holds several paragraphs. A header label over several columns is repeated in
-  each of them in a pipe table (measured 2026-11-11: READoc-dev arXiv table TEDS +0.037, odl
-  TEDS +0.0014, olmOCR table tests -3 of 1020; header cells spanning rows as pipe tables too: odl
-  TEDS -0.006).
+- Tables are GFM pipe tables, or HTML when a cell spans rows, a cell below a header of several
+  rows spans columns, or a cell holds several paragraphs. A label over several columns is repeated
+  in each of them in a pipe table: a header label (measured 2026-11-11: READoc-dev arXiv table TEDS
+  +0.037, odl TEDS +0.0014, olmOCR table tests -3 of 1020; header cells spanning rows as pipe
+  tables too: odl TEDS -0.006), and a body cell under a header of one row (measured 2026-11-11 on
+  the landing code: READoc-dev arXiv table TEDS with `--math=latex` 0.6740 → 0.6857, default mode
+  0.6751 → 0.6871; odl TEDS 0.8967 → 0.8952; olmOCR table tests 632 → 632 of 1020, −1 with
+  `--math=latex`; synthetic TEDS unchanged). Kept as HTML after measuring: body cells spanning rows
+  in the first column (arXiv +0.007, odl TEDS −0.007), header cells spanning down into the row
+  under them (arXiv +0.023, olmOCR table tests −3), every span as pipe (arXiv 0.7175, olmOCR −6).
 - Footnotes are `[^n]`. A note's definition follows the block that references it; notes printed
   on the last page (a one-page document's, endnotes) stay at the end. GFM renders either the same
   (decided 2026-11-11: READoc-dev arXiv `seg_kt` with `--math=latex` 0.9713 → 0.9839, `text_eds`

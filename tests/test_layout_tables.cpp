@@ -119,36 +119,56 @@ float AddProse(PageData& page, float x0, float width, float y, int lines, float 
     return y;
 }
 
-// A 3 x 3 lattice with a header cell spanning the last two columns and a body cell spanning them
-// too: HTML. Without the body span, a pipe table with the header label in both columns.
+// A 3 x 3 lattice with a header cell spanning the last two columns: a pipe table with the header
+// label in both columns; with a body cell spanning them too, that cell's text stands in both. Under
+// a header of two rows (an empty corner, sub-labels under "Results") the body span needs HTML.
 void TestLatticeSpans() {
-    for (const bool bodySpan : {true, false}) {
+    for (int variant = 0; variant < 3; ++variant) {
+        const bool bodySpan = variant > 0, levels = variant == 2;
         std::vector<PageData> pages{NewPage()};
         PageData& page = pages[0];
-        AddText(page, "Intro text before the table.", 72, 720);
+        AddText(page, "Intro text before the table.", 72, 740);
         const float xs[] = {72, 200, 320, 440};
-        const float ys[] = {700, 680, 660, 640};
-        for (float y : ys) HLine(page, 72, 440, y);
-        VLine(page, 72, 640, 700);
-        VLine(page, 200, 640, 700);
-        VLine(page, 320, bodySpan ? 660 : 640, 680);  // missing in the header row: "Results" spans two columns
-        VLine(page, 440, 640, 700);
-        AddText(page, "Name", xs[0] + 4, 686);
-        AddText(page, "Results", xs[1] + 4, 686);
+        const float top = levels ? 720 : 700;
+        const float ys[] = {720, 700, 680, 660, 640, 620};
+        for (float y : ys)
+            if (y <= top) HLine(page, 72, 440, y);
+        VLine(page, 72, 620, top);
+        VLine(page, 200, 620, top);
+        // x = 320: missing in the header row ("Results" spans two columns), and in Beta's row with a
+        // body span; under a header of two rows the sub-labels under "Results" have it.
+        VLine(page, 320, 660, 680);
+        if (!bodySpan) VLine(page, 320, 640, 660);
+        VLine(page, 320, 620, 640);
+        if (levels) VLine(page, 320, 680, 700);
+        VLine(page, 440, 620, top);
+        if (levels) {
+            AddText(page, "Results", xs[1] + 4, 706);
+            AddText(page, "Mean", xs[1] + 4, 686);
+            AddText(page, "Max", xs[2] + 4, 686);
+        } else {
+            AddText(page, "Name", xs[0] + 4, 686);
+            AddText(page, "Results", xs[1] + 4, 686);
+        }
         AddText(page, "Alpha", xs[0] + 4, 666);
         AddText(page, "12", xs[1] + 4, 666);
         AddText(page, "34", xs[2] + 4, 666);
         AddText(page, "Beta", xs[0] + 4, 646);
         AddText(page, "56", xs[1] + 4, 646);
         if (!bodySpan) AddText(page, "78", xs[2] + 4, 646);
-        AddText(page, "Text after the table.", 72, 620);
+        AddText(page, "Gamma", xs[0] + 4, 626);
+        AddText(page, "90", xs[1] + 4, 626);
+        AddText(page, "11", xs[2] + 4, 626);
+        AddText(page, "Text after the table.", 72, 600);
         ConvertReport report;
         const std::string md = Run(pages, &report);
         Show("lattice spans", md);
         RAYOPDF_CHECK(report.tables == 1, 550);
         RAYOPDF_CHECK(Count(md, "Alpha") == 1, 554);
-        if (!bodySpan) {
-            RAYOPDF_CHECK(Contains(md, "| Name | Results | Results |\n| --- | --- | --- |\n| Alpha | 12 | 34 |\n| Beta | 56 | 78 |"), 887);
+        if (!levels) {
+            RAYOPDF_CHECK(Contains(md, std::string("| Name | Results | Results |\n| --- | --- | --- |\n| Alpha | 12 | 34 |\n| Beta | 56 | ") +
+                                           (bodySpan ? "56" : "78") + " |\n| Gamma | 90 | 11 |"),
+                          887);
             continue;
         }
         RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Results</th>") && Contains(md, "<td colspan=\"2\">56</td>"), 551);

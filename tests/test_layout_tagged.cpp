@@ -129,7 +129,7 @@ void Tables() {
     RAYOPDF_CHECK(report.structure == StructureUse::Used && report.tables == 1, 908);
     RAYOPDF_CHECK(Has(md, "| Name | Value |\n| --- | --- |\n| Alpha | 12 |\n| Beta | 34 |"), 909);
     md = Run(TableDocument(true), report);
-    RAYOPDF_CHECK(Has(md, "<table>") && Has(md, "colspan=\"2\"") && Has(md, "Both columns"), 910);
+    RAYOPDF_CHECK(Has(md, "| Name | Value |\n| --- | --- |\n| Alpha | 12 |\n| Both columns | Both columns |"), 910);
 }
 
 // Two columns side by side: the tree reads the right one first (rule 1 holds: they do not overlap
