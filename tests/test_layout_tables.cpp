@@ -1769,6 +1769,91 @@ void TestHeaderLinesAtRowPitch() {
     }
 }
 
+// Rows between booktabs rules whose labels are set smaller than the figures (labels in small
+// capitals, or symbols with subscripts that set their line's size): one table of every row.
+void TestSmallerLabelRows() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 714);
+    AddText(page, "Model", 76, 700);
+    AddText(page, "Error", 220, 700);
+    AddText(page, "Rate", 300, 700);
+    HLine(page, 72, 400, 694);
+    const char* const names[] = {"Base", "LADDER NETWORK", "AUXILIARY MODEL", "Skip"};
+    float y = 682;
+    for (int r = 0; r < 4; ++r, y -= 12) {
+        AddText(page, names[r], 76, y, r == 1 || r == 2 ? 8 : 10);
+        AddText(page, std::to_string(2 + r) + ".10", 220, y);
+        AddText(page, std::to_string(4 + r) + ".60", 300, y);
+        if (r == 1) HLine(page, 72, 400, y - 4);
+    }
+    HLine(page, 72, 400, y + 6);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("smaller label rows", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Model | Error | Rate |\n| --- | --- | --- |\n| Base | 2.10 | 4.60 |\n"
+                                                     "| LADDER NETWORK | 3.10 | 5.60 |\n| AUXILIARY MODEL | 4.10 | 6.60 |\n"
+                                                     "| Skip | 5.10 | 7.60 |"),
+                  1710);
+}
+
+// A table ruled under its header and at its bottom, with no top rule: the header lines right above
+// the first rule are its header (a label over two columns stands over a rule of their width); the
+// caption above them, running across the columns, stays text.
+void TestHeaderAboveRules() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "Table 2: the scores of each method over all of the runs we made", 72, 740);
+    AddText(page, "Scores", 222, 716);
+    HLine(page, 210, 330, 711);
+    AddText(page, "Method", 76, 700);
+    AddText(page, "Avg", 220, 700);
+    AddText(page, "Std", 300, 700);
+    HLine(page, 72, 400, 694);
+    const char* const names[] = {"Alpha", "Beta", "Gamma"};
+    float y = 682;
+    for (int r = 0; r < 3; ++r, y -= 12) {
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(2 + r) + ".10", 220, y);
+        AddText(page, std::to_string(4 + r) + ".60", 300, y);
+    }
+    HLine(page, 72, 400, y + 6);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("header above rules", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Table 2: the scores") &&
+                      Contains(md, "|  | Scores | Scores |\n| --- | --- | --- |\n| Method | Avg | Std |\n| Alpha | 2.10 | 4.60 |"),
+                  1711);
+}
+
+// A boxed table whose columns of figures stand closer than two word spaces, under labels wider
+// than the figures, each starting where its column's figures start: a column each.
+void TestCloseNumberColumns() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 460, 760, 4);  // word spaces of half an em
+    const float size = 8, step = 12 + 6;  // figures 12 wide, 6 apart (0.75 em: 1.5 word spaces)
+    const float x0 = 130;
+    const char* const labels[] = {"bike", "bird", "boat", "cats"};  // 16 wide, 2 apart
+    for (int c = 0; c < 4; ++c) AddText(page, labels[c], x0 + step * float(c), 700, size);
+    float y = 688;
+    for (int r = 0; r < 6; ++r, y -= 10) {
+        AddText(page, "M" + std::to_string(r), 76, y, size);
+        for (int c = 0; c < 4; ++c) AddText(page, std::to_string(r + c) + ".5", x0 + step * float(c), y, size);
+    }
+    const float bottom = y + 6, right = x0 + step * 4 + 6;
+    HLine(page, 72, right, 710);
+    HLine(page, 72, right, 696);
+    HLine(page, 72, right, bottom);
+    VLine(page, 72, bottom, 710);
+    VLine(page, 120, bottom, 710);
+    VLine(page, right, bottom, 710);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("close number columns", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "|  | bike | bird | boat | cats |") && Contains(md, "| M1 | 1.5 | 2.5 | 3.5 | 4.5 |"), 1712);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1957,6 +2042,9 @@ int main(int argc, char** argv) {
     TestGridMostlyInFigure();
     TestProseRiverUnderRule();
     TestHeaderLinesAtRowPitch();
+    TestSmallerLabelRows();
+    TestHeaderAboveRules();
+    TestCloseNumberColumns();
     std::puts("test_layout_tables: ok");
     return 0;
 }

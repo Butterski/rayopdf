@@ -561,6 +561,8 @@ private:
     bool HeaderAtColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
                          const std::vector<uint8_t>& label, const Row& header, std::vector<Gap>& gaps);
     uint64_t LineColumns(const Row& r, const std::vector<uint32_t>& rowWords, const Grid& g) const;
+    // A word of row r, not in monospace, of the size `em` (SizeFits' tolerance).
+    bool WordOfSize(const Row& r, const std::vector<uint32_t>& rowWords, float em) const;
     float LabelAbove(const Grid& g);
     void LatticeHeader(Grid& g) const;
     void RowsBelow(Grid& g);
@@ -1776,14 +1778,17 @@ void Detector::SplitColumnsByText(Grid& g) const {
     struct Ink {
         float a, b;
         int row;
+        bool number;
     };
     std::vector<Ink> ink;
     std::vector<uint8_t> left(static_cast<size_t>(rows)), right(static_cast<size_t>(rows)), any(static_cast<size_t>(rows));
+    std::vector<const Ink*> nearLeft(static_cast<size_t>(rows)), nearRight(static_cast<size_t>(rows));
     // The words in the grid's band with their cells, in words_' order: Find is a function of the
     // point alone, and g stays as it is until the end.
     struct Located {
         float x0, x1, size;
         int r, c;
+        bool number;
     };
     std::vector<Located> located;
     {
@@ -1791,7 +1796,7 @@ void Detector::SplitColumnsByText(Grid& g) const {
         auto it = std::lower_bound(words_.begin(), words_.end(), g.y1 + 20, [](const TWord& w, float y) { return w.base > y; });
         for (; it != words_.end() && it->base >= g.y0 - 20; ++it) {
             int r = 0, c = 0;
-            if (locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) located.push_back(Located{it->x0, it->x1, it->size, r, c});
+            if (locate.Find((it->x0 + it->x1) / 2, (it->y0 + it->y1) / 2, r, c)) located.push_back(Located{it->x0, it->x1, it->size, r, c, Numeric(Chars(*it))});
         }
     }
     std::vector<Ink> head;  // the first row's words in the column, left to right
@@ -1803,10 +1808,10 @@ void Detector::SplitColumnsByText(Grid& g) const {
             const Located& w = located[i];
             if (w.c != c) continue;
             if (w.r == 0) {
-                if (head.size() < 4096) head.push_back(Ink{w.x0, w.x1, 0});
+                if (head.size() < 4096) head.push_back(Ink{w.x0, w.x1, 0, w.number});
                 continue;
             }
-            ink.push_back(Ink{w.x0, w.x1, w.r});
+            ink.push_back(Ink{w.x0, w.x1, w.r, w.number});
             size = Fmax(size, w.size);
         }
         std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
@@ -1815,9 +1820,13 @@ void Detector::SplitColumnsByText(Grid& g) const {
         // parts columns too (tables of many columns set close).
         const float minGap = rows >= 6 ? Fmax(2.5f, Fmin(size, Fmax(0.4f, 2 * wordSpace_) * size))
                                        : rows >= 4 ? Fmax(4.0f, size) : Fmax(8.0f, 2 * size);
+        // Through six rows or more, whitespace a quarter wider than a word space parts columns of
+        // numbers: every row below the first has a number on both sides of it, next to it.
+        const float numberGap = rows >= 6 ? Fmin(minGap, Fmax(1.5f, 1.25f * wordSpace_ * size)) : minGap;
         float reach = -INFINITY;
         for (size_t i = 0; i < ink.size(); ++i) {
-            if (i > 0 && ink[i].a - reach >= minGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
+            if (i > 0 && ink[i].a - reach >= numberGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
+                const bool narrow = ink[i].a - reach < minGap;
                 float x = (reach + ink[i].a) / 2;
                 // The widest stretch of the gap between two words of the first row that both reach
                 // into it.
@@ -1828,15 +1837,38 @@ void Detector::SplitColumnsByText(Grid& g) const {
                     if (at > reach && h.a < ink[i].a && h.a - at > best) best = h.a - at, bestX = (at + h.a) / 2;
                     at = Fmax(at, h.b);
                 }
-                if (crossed && best >= 0.5f * size) x = bestX;
-                std::fill(left.begin(), left.end(), 0), std::fill(right.begin(), right.end(), 0), std::fill(any.begin(), any.end(), 0);
-                for (const Ink& k : ink) {
-                    any[static_cast<size_t>(k.row)] = 1;
-                    (k.b < x ? left : right)[static_cast<size_t>(k.row)] = 1;
+                if (crossed && best >= 0.5f * size) {
+                    x = bestX;
+                } else if (crossed) {
+                    // Labels set a word space apart, each where its column's text starts: the
+                    // boundary goes between the label that starts at the column on the right and
+                    // the one before it.
+                    float end = -INFINITY;
+                    for (const Ink& h : head) {
+                        if (std::fabs(h.a - ink[i].a) <= 0.3f * size && h.a - end >= 1.0f && end > reach - size) {
+                            x = (end + h.a) / 2;
+                            break;
+                        }
+                        end = Fmax(end, h.b);
+                    }
                 }
-                int filled = 0, both = 0;
-                for (int r = 1; r < rows; ++r) filled += any[static_cast<size_t>(r)], both += left[static_cast<size_t>(r)] && right[static_cast<size_t>(r)];
-                if (rows >= 4 ? filled >= 3 && 3 * both >= 2 * filled : filled == 2 && both == 2) {
+                std::fill(left.begin(), left.end(), 0), std::fill(right.begin(), right.end(), 0), std::fill(any.begin(), any.end(), 0);
+                std::fill(nearLeft.begin(), nearLeft.end(), nullptr), std::fill(nearRight.begin(), nearRight.end(), nullptr);
+                for (const Ink& k : ink) {
+                    const size_t r = static_cast<size_t>(k.row);
+                    any[r] = 1;
+                    (k.b < x ? left : right)[r] = 1;
+                    if (k.b < x && (!nearLeft[r] || k.b > nearLeft[r]->b)) nearLeft[r] = &k;
+                    if (k.b >= x && (!nearRight[r] || k.a < nearRight[r]->a)) nearRight[r] = &k;
+                }
+                int filled = 0, both = 0, numbers = 0;
+                for (int r = 1; r < rows; ++r) {
+                    const size_t q = static_cast<size_t>(r);
+                    filled += any[q], both += left[q] && right[q];
+                    numbers += nearLeft[q] && nearRight[q] && nearLeft[q]->number && nearRight[q]->number;
+                }
+                if (narrow ? numbers == rows - 1
+                           : rows >= 4 ? filled >= 3 && 3 * both >= 2 * filled : filled == 2 && both == 2) {
                     xs.push_back(x);
                     parent.push_back(c);
                     oldBoundary.push_back(-1);
@@ -1921,6 +1953,14 @@ uint64_t Detector::LineColumns(const Row& r, const std::vector<uint32_t>& rowWor
         mask |= uint64_t(1) << std::min(std::max(c, 0), 63);
     }
     return mask;
+}
+
+bool Detector::WordOfSize(const Row& r, const std::vector<uint32_t>& rowWords, float em) const {
+    for (uint32_t k = r.first; k < r.first + r.count; ++k) {
+        const TWord& w = words_[rowWords[k]];
+        if (!w.mono && std::fabs(w.size - em) <= 0.15f * em) return true;
+    }
+    return false;
 }
 
 // Rows set right below a lattice without rules of their own (the last rows of a table whose
@@ -2442,6 +2482,8 @@ void Detector::RuleStacks() {
             stacks.push_back(Stack{e.a, e.b, {e.pos}, !e.area});
         }
     }
+    // Wider stacks first: a table's rules before the \cmidrule under one of its header labels.
+    std::stable_sort(stacks.begin(), stacks.end(), [](const Stack& p, const Stack& q) { return p.b - p.a > q.b - q.a; });
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
     std::vector<Gap> gaps, trial;
@@ -2472,12 +2514,20 @@ void Detector::RuleStacks() {
                     if (s.ys[j] - s.ys[j + 1] > 2 * em) break;
                 } else {
                     // Rows of one size, evenly set: a heading or a paragraph gap inside means the
-                    // band is no table body.
+                    // band is no table body. A row with words of that size among smaller ones (a
+                    // label of subscripts, in small capitals) is of that size too; when the first
+                    // row's prose is smaller than its largest words, the band may be of their size.
+                    const auto evenAt = [&](float size) {
+                        for (size_t q = 1; q < rows.size(); ++q)
+                            if (!((SizeFits(rows[q], size) || (SizeFits(rows[q - 1], size) && SubLine(rows[q - 1], rows[q])) ||
+                                   WordOfSize(rows[q], rowWords, size)) &&
+                                  rows[q - 1].bottom - rows[q].top < 1.6f * size))
+                                return false;
+                        return true;
+                    };
                     em = TextSize(rows[0]);
-                    bool even = true;
-                    for (size_t q = 1; q < rows.size() && even; ++q)
-                        even = (SizeFits(rows[q], em) || (SizeFits(rows[q - 1], em) && SubLine(rows[q - 1], rows[q]))) &&
-                               rows[q - 1].bottom - rows[q].top < 1.6f * em;
+                    bool even = evenAt(em);
+                    if (!even && rows[0].size > 1.15f * em && evenAt(rows[0].size)) em = rows[0].size, even = true;
                     if (!even) break;
                     if (Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) {
                         tabularEnd = j + 1;
@@ -2504,10 +2554,14 @@ void Detector::RuleStacks() {
             const bool single = i == j;
             bool open = j - i <= 1;
             float yhi = top, ylo = bottom;
+            // No rule of the stack close above the run's first rule: that rule may be the one under
+            // the header, with no top rule; the header lines above it are looked for below.
+            const bool headless = !single && (i == 0 || s.ys[i - 1] > top + 6 * em);
             {
                 const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
                 ylo = open ? Fmax(below, bottom - 80 * em) : bottom;
                 if (single) yhi = Fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
+                if (headless) yhi = top + 5 * em;
             }
             BuildRows(xa, xb, ylo, yhi, rows, rowWords);
             label.assign(rows.size(), 0);
@@ -2665,6 +2719,52 @@ void Detector::RuleStacks() {
                 } else if (rows[end - 1].base < top) {
                     for (size_t r = begin; r < end && rows[r].base > top; ++r) header++;
                     if (header > 3) header = 0;
+                }
+                // Header lines above a headless run's first rule (no top rule: the first rule is the
+                // one under the header) of three rows at least (two rows boxed by rules are as often
+                // a diagram's): up to three lines, each within an em of the rule or of the
+                // line under it, set no larger than the body's text, without a number, filling two
+                // columns at least (the lowest line half of them); a label across a column gap needs
+                // a drawn rule narrower than the table under it (a \cmidrule under a label over
+                // columns: it fills the columns of the rule). Text that runs across the columns (a
+                // caption, a paragraph) is no header.
+                if (headless && !open && begin == coreBegin && end - begin >= 3) {
+                    float largest = 0;  // the body's largest text
+                    for (size_t q = begin; q < end; ++q) largest = Fmax(largest, TextSize(rows[q]));
+                    size_t lifted = 0;
+                    for (size_t q = begin; q-- > 0 && lifted < 3;) {
+                        const Row& r = rows[q];
+                        const float under = lifted == 0 ? top : rows[q + 1].top;
+                        if (!(r.base > top) || r.bottom - under > em || TextSize(r) > 1.15f * largest || numbers(q)) break;
+                        uint64_t filled = 0;
+                        bool crossing = false;
+                        for (uint32_t k = r.first; k < r.first + r.count && !crossing;) {
+                            // A label: words a word space apart.
+                            const float a = words_[rowWords[k]].x0;
+                            float b = words_[rowWords[k]].x1;
+                            for (++k; k < r.first + r.count; ++k) {
+                                const TWord& w = words_[rowWords[k]];
+                                if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) break;
+                                b = Fmax(b, w.x1);
+                            }
+                            // A rule under the label: it fills the columns the rule spans.
+                            const Edge* rule = nullptr;
+                            auto e = std::lower_bound(h_.begin(), h_.end(), under - 1, [](const Edge& p, float y) { return p.pos < y; });
+                            for (; e != h_.end() && e->pos < r.bottom + 1 && !rule; ++e)
+                                if (!e->area && e->b - e->a < 0.9f * (xb - xa) && e->a <= a + 0.5f * em && e->b >= b - 0.5f * em) rule = &*e;
+                            if (rule) {
+                                const int from = ColumnOf(gaps, rule->a + 1), to = ColumnOf(gaps, rule->b - 1);
+                                for (int c = from; c <= to && c < 64; ++c) filled |= uint64_t(1) << c;
+                                continue;
+                            }
+                            filled |= uint64_t(1) << std::min(ColumnOf(gaps, (a + b) / 2), 63);
+                            for (const Gap& gap : gaps) crossing = crossing || (a < gap.a && b > gap.b);
+                        }
+                        const int count = Bits(filled);
+                        if (crossing || count < 2 || (lifted == 0 && 2 * count < static_cast<int>(gaps.size()) + 1)) break;
+                        ++lifted;
+                    }
+                    if (lifted > 0) begin -= lifted, header = static_cast<uint16_t>(lifted);
                 }
                 if (header == end - begin) header = 0;
                 // No rule under the header (a top and a bottom rule only): the leading rows without
