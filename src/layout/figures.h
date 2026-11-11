@@ -30,4 +30,8 @@ struct FigureRegion {
 // The figure regions of `page` (its shapes, images and lines as they are when called).
 void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions);
 
+// Flags kLineFigure on the upright lines of text standing in a figure region or within two ems of
+// it: a figure's own text (tick labels, legends, axis titles, the labels of a diagram).
+void MarkFigureText(PageData& page);
+
 } // namespace RayoPdf::Layout

@@ -163,6 +163,7 @@ enum : uint16_t {
     // A display formula's lines merged into one (--math=latex only, layout/math.h): its glyphs are
     // those of the formula's lines in reading order; it makes a block of its own.
     kLineFormula = 1u << 11,
+    kLineFigure = 1u << 12,   // stands in or beside a figure region (layout/figures.h): a figure's own text
 };
 constexpr uint16_t kLineAnchor = kLineTableAnchor | kLineImage;  // lines with no glyphs
 

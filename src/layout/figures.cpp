@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -23,6 +24,7 @@ constexpr float kMinSide = 30.0f;       // a region is at least this wide and th
 constexpr float kMaxText = 0.35f;       // the share of a region under lines of text, at most
 constexpr float kMaxPage = 0.5f;        // a stroke or an image over more of the page is its background
 constexpr int kMaxTests = 256;          // candidate regions measured against the text per page
+constexpr float kReach = 2.0f;          // ems around a region its labels stand in (ticks, axis titles)
 
 struct Stroke {
     float x0, y0, x1, y1;
@@ -42,6 +44,11 @@ struct FigureScratch {
     std::vector<int32_t> text;    // (ny + 1) x (nx + 1): centres of text lines up to each cell (summed)
     std::vector<int32_t> stack;
     std::vector<Cluster> clusters;
+};
+
+// The regions MarkFigureText works with, kept by the thread.
+struct FigureMarks {
+    std::vector<FigureRegion> regions;
 };
 
 // The share of the box under upright lines of text whose centre lies in it.
@@ -67,6 +74,7 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
     FigureScratch& scratch = PerThread<FigureScratch>();
     std::vector<Stroke>& strokes = scratch.strokes;
     strokes.clear();
+    int potential = 0;  // the weight all strokes could give, at most
     for (const Shape& s : page.shapes) {
         if (s.kind == ShapeKind::Rect) continue;
         const float x0 = Fmax(s.x0, 0.0f), y0 = Fmax(s.y0, 0.0f), x1 = Fmin(s.x1, width), y1 = Fmin(s.y1, height);
@@ -75,18 +83,33 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
         const float longer = Fmax(w, h), shorter = Fmin(w, h);
         // A long thin stroke along an axis is a rule (one line, or the pieces of a dashed one).
         if (shorter <= kSlant && longer > kTick) continue;
-        strokes.push_back(Stroke{x0, y0, x1, y1, longer <= kMark, shorter > kMark && s.segments >= kCurveSegments});
+        const bool mark = longer <= kMark, curve = shorter > kMark && s.segments >= kCurveSegments;
+        strokes.push_back(Stroke{x0, y0, x1, y1, mark, curve});
+        if (potential < kMinWeight) potential += mark ? 1 : curve ? kCurveWeight : 0;
     }
     bool pictures = false;
     for (const ImageBox& im : page.images) pictures = pictures || (im.x1 - im.x0 >= kMinSide && im.y1 - im.y0 >= kMinSide);
-    if (strokes.size() < 2 && !pictures) return;
+    // No region without a picture or strokes that could weigh enough (the grid below costs a pass
+    // over the page per stage).
+    if ((strokes.size() < 2 || potential < kMinWeight) && !pictures) return;
 
+    // The grid covers the cells the strokes touch, aligned with a page-wide grid of the same cells
+    // (a stroke's cells and the clusters are those of the whole page; text outside counts for none).
     const float cell = Fmax(kCell, Fmax(width, height) / float(kMaxSide));
-    const int nx = std::min(kMaxSide, static_cast<int>(width / cell) + 1);
-    const int ny = std::min(kMaxSide, static_cast<int>(height / cell) + 1);
+    const int pageX = std::min(kMaxSide, static_cast<int>(width / cell) + 1);
+    const int pageY = std::min(kMaxSide, static_cast<int>(height / cell) + 1);
+    const auto pageColumn = [&](float x) { return std::min(pageX - 1, std::max(0, static_cast<int>(x / cell))); };
+    const auto pageRow = [&](float y) { return std::min(pageY - 1, std::max(0, static_cast<int>(y / cell))); };
+    int c0 = pageX, c1 = 0, r0 = pageY, r1 = 0;
+    for (const Stroke& s : strokes) {
+        c0 = std::min(c0, pageColumn(s.x0)), c1 = std::max(c1, pageColumn(s.x1));
+        r0 = std::min(r0, pageRow(s.y0)), r1 = std::max(r1, pageRow(s.y1));
+    }
+    if (strokes.empty()) c0 = c1 = r0 = r1 = 0;
+    const int nx = c1 - c0 + 1, ny = r1 - r0 + 1;
     const int stride = nx + 1;
-    const auto column = [&](float x) { return std::min(nx - 1, std::max(0, static_cast<int>(x / cell))); };
-    const auto row = [&](float y) { return std::min(ny - 1, std::max(0, static_cast<int>(y / cell))); };
+    const auto column = [&](float x) { return pageColumn(x) - c0; };
+    const auto row = [&](float y) { return pageRow(y) - r0; };
     const size_t cells = static_cast<size_t>(stride) * static_cast<size_t>(ny + 1);
 
     // Strokes over each cell: corner counts, summed along rows and columns.
@@ -112,7 +135,9 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
         if (l.dir != 0 || l.chars == 0 || (l.flags & kLineTableAnchor)) continue;
         const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2;
         if (!(cx >= 0 && cx <= width && cy >= 0 && cy <= height)) continue;
-        text[static_cast<size_t>((row(cy) + 1) * stride + column(cx) + 1)]++;
+        const int x = pageColumn(cx), y = pageRow(cy);
+        if (x < c0 || x > c1 || y < r0 || y > r1) continue;
+        text[static_cast<size_t>((y - r0 + 1) * stride + x - c0 + 1)]++;
     }
     for (int y = 1; y <= ny; ++y)
         for (int x = 1; x <= nx; ++x)
@@ -181,6 +206,34 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
         if (bounded && std::isfinite(im.x0) && std::isfinite(im.y0) && std::isfinite(im.x1) && std::isfinite(im.y1))
             bounded = add(Fmax(im.x0, 0.0f), Fmax(im.y0, 0.0f), Fmin(im.x1, width), Fmin(im.y1, height));
     if (!bounded) regions.clear();
+}
+
+void MarkFigureText(PageData& page) {
+    // Only a page with a figure's caption ("Figure 3", "Fig. 2", "FIG. 1") is searched: its text
+    // matters where it stands among prose, and the search costs a pass over the drawing's cells.
+    bool captioned = false;
+    for (size_t i = 0; i < page.lines.size() && !captioned; ++i) {
+        const Line& l = page.lines[i];
+        if (l.dir != 0 || l.count < 3) continue;
+        captioned = true;
+        for (uint32_t k = 0; k < 3 && captioned; ++k) {
+            const std::string_view t = page.GlyphText(page.glyphs[page.lineGlyphs[l.first + k]]);
+            captioned = t.size() == 1 && (t[0] | 0x20) == "fig"[k];
+        }
+    }
+    if (!captioned) return;
+    std::vector<FigureRegion>& regions = PerThread<FigureMarks>().regions;
+    FigureRegions(page, regions);
+    if (regions.empty()) return;
+    for (Line& l : page.lines) {
+        if (l.dir != 0 || l.chars == 0 || (l.flags & (kLineRemoved | kLineAnchor | kLineTableCell))) continue;
+        const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2, reach = kReach * l.size;
+        for (const FigureRegion& r : regions)
+            if (cx >= r.x0 - reach && cx <= r.x1 + reach && cy >= r.y0 - reach && cy <= r.y1 + reach) {
+                l.flags |= kLineFigure;
+                break;
+            }
+    }
 }
 
 } // namespace RayoPdf::Layout

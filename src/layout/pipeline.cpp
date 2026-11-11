@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/pipeline.h"
 
+#include "layout/figures.h"
 #include "layout/lines.h"
 #include "layout/markdown_writer.h"
 #include "layout/page_pool.h"
@@ -38,6 +39,7 @@ int LayOutPages(std::vector<PageData>& pages, PagePool& pool, MathMode math) {
         total += restored[p];
     }
     pool.Run(count, [&](unsigned, size_t p) {
+        MarkFigureText(pages[p]);
         OrderLines(pages[p]);
         SplitRunInHeadings(pages[p]);
         if (math == MathMode::Latex) MarkDisplayFormulas(pages[p]);
@@ -91,6 +93,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
             tagged.LayOut(pages, static_cast<uint32_t>(p));
         } else if (!parallel) {
             report.headerFooterLines -= DetectTables(page, continuation);
+            MarkFigureText(page);
             OrderLines(page);
             SplitRunInHeadings(page);
             if (math == MathMode::Latex) MarkDisplayFormulas(page);

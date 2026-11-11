@@ -122,6 +122,17 @@ bool IsCaption(std::string_view t) {
     return false;
 }
 
+// A float's caption: a caption whose label and number no lowercase word follows ("Table 1 shows
+// …" opens a sentence of the body).
+bool IsFloatCaption(std::string_view t) {
+    if (!IsCaption(t)) return false;
+    size_t i = t.find(' ');  // after the label word
+    while (i < t.size() && t[i] == ' ') ++i;
+    while (i < t.size() && t[i] != ' ') ++i;  // the number
+    while (i < t.size() && t[i] == ' ') ++i;
+    return i >= t.size() || t[i] < 'a' || t[i] > 'z';
+}
+
 // A GitHub alert's title: one alert word alone ("Note", "WARNING", "Tip:"), in any letter case.
 uint8_t AlertOf(std::string_view t) {
     if (!t.empty() && t.back() == ':') t.remove_suffix(1);
@@ -824,6 +835,8 @@ bool EndsInBackLink(const PageData& page, const Line& line) {
 constexpr size_t kMaxNoteRefs = 1u << 14;
 constexpr size_t kNoteScan = 64;  // references of one key looked at per note
 constexpr uint64_t kBottomChecks = uint64_t(1) << 22;  // line comparisons AtBottom may make per document
+constexpr size_t kMaxFloatRun = 8;  // floats (captions, tables, images) a paragraph runs on around
+constexpr float kProseWidth = 15.0f;  // ems a column of prose is wide at least
 
 // A page footnote sits below the text of its column: no line under it that it overlaps along the
 // baseline is set larger, except in the page's last row (a running footer or page number left on
@@ -1987,6 +2000,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     std::vector<BlockLine> noteLines;
     uint64_t ruleBudget = kRuleChecks;
     uint8_t alert = 0;  // the alert whose title was the last block
+    // Per block in `blocks`: the info of its last line (UINT32_MAX for a comment), and whether it
+    // is a float (a caption, a table, an image) that a paragraph may run on around.
+    std::vector<uint32_t> blockLast;
+    std::vector<uint8_t> floating;
+    std::string capText;
     size_t r = 0;
     for (uint32_t p = 0; p <= pages.size(); ++p) {
         // Blocks of pages before p.
@@ -2076,26 +2094,65 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 itemDepth = -1;
             }
             if (!block.listParagraph && block.quote < indentQuote[r]) block.quote = indentQuote[r];
+            // A figure's own text: every line of it in or beside a figure region.
+            bool figureText = block.kind != BlockKind::Heading && block.kind != BlockKind::Code;
+            for (uint32_t i = b.first; i < b.first + b.count && figureText; ++i)
+                figureText = (infos[i].flags & kLineFigure) != 0;
 
             // Continuation across columns and pages (§6.2): the previous paragraph ends without
-            // terminal punctuation and this one starts in lowercase.
-            if (block.kind == BlockKind::Paragraph && !block.listParagraph && !blocks.empty() &&
-                !(first.flags & (kLineTable | kLineFormula))) {
-                Block& prev = blocks.back();
+            // terminal punctuation and this one starts in lowercase. Floats set between the two
+            // parts (a caption, a table, an image, a figure's own text, at the foot of a column or
+            // the top of the next) move after the joined paragraph, where its source put them;
+            // around floats the paragraph may go on below them in the same column.
+            if (block.kind == BlockKind::Paragraph && !block.listParagraph && !blocks.empty() && !figureText &&
+                first.startsLower && !(first.flags & (kLineTable | kLineFormula))) {
+                size_t target = blocks.size() - 1;
+                const auto floats = [&](size_t f) {
+                    if (floating[f] == 2) {
+                        const BlockLine& bl = lines[blocks[f].first];
+                        LineText(pages[bl.page], pages[bl.page].lines[bl.line], capText);
+                        floating[f] = IsFloatCaption(capText) ? 1 : 0;
+                    }
+                    return floating[f] == 1;
+                };
+                while (target > 0 && floats(target) && blocks.size() - target <= kMaxFloatRun) --target;
+                const bool around = target + 1 < blocks.size();
+                // Around floats both parts are prose: the line before the break runs as wide as the
+                // widest line after it, a column's width (a label of a figure, a lone equation
+                // number ends no prose).
+                const auto prose = [&](const Info* last, const RawBlock& next) {
+                    float wide = 0;
+                    for (uint32_t i = next.first; i < next.first + next.count; ++i)
+                        wide = Fmax(wide, infos[i].u1 - infos[i].u0);
+                    return wide >= kProseWidth * em && last->u1 - last->u0 >= 0.85f * wide;
+                };
+                Block& prev = blocks[target];
                 const BlockLine& pl = lines[prev.first + prev.count - 1];
-                const Info* prevLast = nullptr;
-                // Find the Info of the previous block's last line: it is the one just before b.first
-                // unless a comment or footnotes intervened.
-                uint32_t before = b.first;
-                while (before > 0 && infos[before - 1].note != 0) --before;
-                if (before > 0) prevLast = &infos[before - 1];
-                if ((prev.kind == BlockKind::Paragraph || prev.kind == BlockKind::ListItem) && prevLast &&
-                    prevLast->page == pl.page && prevLast->line == pl.line && !prevLast->endsTerminal &&
+                const Info* prevLast = blockLast[target] != UINT32_MAX ? &infos[blockLast[target]] : nullptr;
+                if (!floats(target) && (prev.kind == BlockKind::Paragraph || prev.kind == BlockKind::ListItem) &&
+                    prevLast && prevLast->page == pl.page && prevLast->line == pl.line && !prevLast->endsTerminal &&
                     !(prevLast->flags & kLineFormula) &&
                     first.startsLower && std::fabs(prevLast->size - first.size) <= 0.1f * em &&
                     prev.quote == block.quote && block.alert == 0 &&
-                    (prevLast->page != first.page || first.baseline > prevLast->baseline)) {
-                    prev.count += block.count;
+                    (around ? prose(prevLast, b) && first.page <= prevLast->page + 1 &&
+                                  blocks[target + 1].first == prev.first + prev.count &&
+                                  (prevLast->page != first.page || first.baseline > prevLast->baseline ||
+                                   (first.u0 < prevLast->u1 && prevLast->u0 < first.u1))
+                            : prevLast->page != first.page || first.baseline > prevLast->baseline)) {
+                    size_t joined = target;
+                    if (around) {
+                        // The floats go before the paragraph's lines.
+                        const uint32_t floatsFirst = prev.first + prev.count, moved = floatsFirst - prev.first;
+                        std::rotate(lines.begin() + prev.first, lines.begin() + floatsFirst, lines.begin() + block.first);
+                        for (size_t f = target + 1; f < blocks.size(); ++f) blocks[f].first -= moved;
+                        prev.first = block.first - moved;
+                        std::rotate(blocks.begin() + target, blocks.begin() + target + 1, blocks.end());
+                        std::rotate(blockLast.begin() + target, blockLast.begin() + target + 1, blockLast.end());
+                        std::rotate(floating.begin() + target, floating.begin() + target + 1, floating.end());
+                        joined = blocks.size() - 1;
+                    }
+                    blocks[joined].count += block.count;
+                    blockLast[joined] = b.first + b.count - 1;
                     ++r;
                     continue;
                 }
@@ -2120,7 +2177,14 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 ++r;
                 continue;
             }
+            // A float: an image, a table, a caption, or a figure's own text (every line of it in or
+            // beside a figure region). Whether a paragraph is a caption is read when a paragraph
+            // after it may run on around it (2: not read yet).
+            uint8_t isFloat = block.kind == BlockKind::Image || block.kind == BlockKind::Table || figureText ? 1 : 0;
+            if (!isFloat && block.kind == BlockKind::Paragraph) isFloat = 2;
             blocks.push_back(block);
+            blockLast.push_back(b.first + b.count - 1);
+            floating.push_back(isFloat);
             ++r;
         }
         if (p == pages.size()) break;
@@ -2136,6 +2200,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             c.number = static_cast<uint32_t>(page.number);
             c.first = static_cast<uint32_t>(lines.size());
             blocks.push_back(c);
+            blockLast.push_back(UINT32_MAX);
+            floating.push_back(0);
         }
     }
     const uint32_t base = static_cast<uint32_t>(lines.size());

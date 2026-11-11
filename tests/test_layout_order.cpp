@@ -253,6 +253,34 @@ void TestWideLeading() {
     RAYOPDF_CHECK(Find(spaced, "ends\n\nBlock 1 starts") != std::string::npos && Find(spaced, "ends\n\nBlock 2 starts") != std::string::npos, 779);
 }
 
+// A paragraph broken by a figure set into its column runs on below the figure's caption in
+// lowercase: one paragraph again, the caption before it. A body paragraph that names a table
+// ("Table 1 shows …") is no float: the text around it stays apart.
+void TestParagraphAroundFloat() {
+    const auto build = [](const char* between) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        const char* before[] = {"The opening paragraph of the section starts with words that fill a whole line of",
+                                "the column and goes on with more words in the same manner over the full width of",
+                                "the column until the text breaks off in the middle of a sentence near the figure"};
+        for (int i = 0; i < 3; ++i) AddText(page, before[i], 72, 700.0f - 12 * i, 10);
+        ImageBox figure;
+        figure.x0 = 150, figure.x1 = 450, figure.y0 = 470, figure.y1 = 640;
+        page.images.push_back(figure);
+        AddText(page, between, 72, 440, 9);
+        const char* after[] = {"and the sentence goes on below the figure with words that fill the line of text again",
+                               "until the paragraph ends."};
+        for (int i = 0; i < 2; ++i) AddText(page, after[i], 72, 400.0f - 12 * i, 10);
+        return Run(pages);
+    };
+    const std::string md = build("Figure 1: A drawing of the setup.");
+    const size_t caption = Find(md, "Figure 1: A drawing"), start = Find(md, "The opening paragraph");
+    RAYOPDF_CHECK(Find(md, "near the figure and the sentence goes on below") != std::string::npos, 780);
+    RAYOPDF_CHECK(caption != std::string::npos && caption < start, 781);
+    const std::string body = build("Table 1 shows the setup.");
+    RAYOPDF_CHECK(Find(body, "near the figure\n\nTable 1 shows") != std::string::npos, 782);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -265,6 +293,7 @@ int main() {
     TestOffsetRows();
     TestEquationNumbers();
     TestWideLeading();
+    TestParagraphAroundFloat();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
