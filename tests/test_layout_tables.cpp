@@ -395,11 +395,12 @@ void TestLatticeTwoLineRow() {
     RAYOPDF_CHECK(Contains(md, "| Ratio | Car | Foot |\n| --- | --- | --- |\n| Node ratio | 0.52 | 0.54 |\n| Edge ratio | 0.64 | 0.65 |"), 878);
 }
 
-// Authors set in columns, each name over its affiliation and its e-mail address: no table.
+// Authors set in columns, each name over its affiliation and its e-mail address (one with a
+// footnote mark): no table.
 void TestAuthorBlock() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
-    const char* const cards[2][4] = {{"Ann Lee", "Department of Physics", "Oxford, UK", "ann.lee@ox.ac.uk"},
+    const char* const cards[2][4] = {{"Ann Lee", "Department of Physics", "Oxford, UK", "ann.lee@ox.ac.uk\xE2\x88\x97"},
                                      {"Bo Chen", "Computing Division", "Berkeley, CA, USA", "bchen@lbl.gov"}};
     for (int c = 0; c < 2; ++c)
         for (int r = 0; r < 4; ++r) AddText(page, cards[c][r], c == 0 ? 100.0f : 330.0f, 700 - 12.0f * float(r));
@@ -428,6 +429,53 @@ void TestRuledSectionsNoHeader() {
     Show("ruled sections", md);
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Optics |  |\n| --- | --- |\n| Period | 4.0 cm |\n| Field | 0.67 T |"), 880);
     RAYOPDF_CHECK(Contains(md, "| Power | 2.8 GW |\n| Beam |  |\n| Energy | 46 MeV |"), 881);
+}
+
+// Regression statistics side by side in a ruled table ("(df=101;sig@0.000)"): an at sign between
+// numbers is no e-mail address, the table stays.
+void TestAtSignInCells() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 450, 740, 2);
+    for (float y : {712.0f, 694.0f, 628.0f}) HLine(page, 72, 450, y);
+    const char* const rows[][3] = {{"Factor", "Model I", "Model II"},
+                                   {"Price", "-0.005", "0.420"},
+                                   {"Points", "0.001", "0.002"},
+                                   {"Customers", "1.002", "0.616"},
+                                   {"Fit", "(df=101;sig@0.000)", "(df=99;sig@0.001)"}};
+    for (int r = 0; r < 5; ++r) {
+        const float y = r == 0 ? 700.0f : 682 - 14.0f * float(r - 1);
+        for (int c = 0; c < 3; ++c) AddText(page, rows[r][c], 76 + 130.0f * float(c), y);
+    }
+    AddProse(page, 72, 450, 600, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("at sign in cells", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Fit | (df=101;sig@0.000) | (df=99;sig@0.001) |"), 882);
+}
+
+// A tall header between the top and the second rule, four lines of wrapped labels without a
+// number: the header of the table, not rows of a section.
+void TestTallHeader() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 450, 760, 2);
+    for (float y : {732.0f, 680.0f, 614.0f}) HLine(page, 72, 450, y);
+    const char* const head[][3] = {{"Group", "Participants", "Participants"},
+                                   {"", "with no", "with a"},
+                                   {"", "suicide", "suicide"},
+                                   {"", "attempt", "attempt"}};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 3; ++c)
+            if (*head[r][c]) AddText(page, head[r][c], 76 + 130.0f * float(c), 720 - 11.0f * float(r));
+    const char* const body[][3] = {{"F0", "1", "0"}, {"F1", "17", "12"}, {"F2", "1", "0"}, {"F3", "106", "31"}};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, body[r][c], 76 + 130.0f * float(c), 668 - 14.0f * float(r));
+    AddProse(page, 72, 450, 590, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("tall header", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| --- | --- | --- |\n| F0 | 1 | 0 |"), 883);
 }
 
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
@@ -1302,6 +1350,8 @@ int main(int argc, char** argv) {
     TestLatticeTwoLineRow();
     TestAuthorBlock();
     TestRuledSectionsNoHeader();
+    TestAtSignInCells();
+    TestTallHeader();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();

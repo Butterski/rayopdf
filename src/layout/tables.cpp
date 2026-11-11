@@ -288,12 +288,33 @@ bool PageNumber(std::string_view t) {
     return (digits && t.size() <= 4) || roman;
 }
 
-// An e-mail address: text, an at sign, then text with a dot in it.
+// An e-mail address: a name of letters, digits and . _ + - (braces and commas for a group of
+// names), an at sign, then a domain of letters, digits, dots and hyphens that ends in a dot and two
+// letters at least; a footnote mark (*, a symbol such as ∗ or †) and one closing punctuation mark
+// may follow.
 bool EmailAddress(std::string_view t) {
+    while (!t.empty() && (static_cast<unsigned char>(t.back()) >= 0x80 || t.back() == '*')) t.remove_suffix(1);
+    if (!t.empty() && (t.back() == ',' || t.back() == ';' || t.back() == '.' || t.back() == ')')) t.remove_suffix(1);
     const size_t at = t.find('@');
     if (at == 0 || at == std::string_view::npos) return false;
-    const size_t dot = t.find('.', at + 2);
-    return dot != std::string_view::npos && dot + 1 < t.size();
+    const auto alnum = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); };
+    for (size_t k = 0; k < at; ++k)
+        if (!alnum(t[k]) && std::string_view("._+-{},").find(t[k]) == std::string_view::npos) return false;
+    size_t tld = 0;     // characters after the domain's last dot
+    bool word = false;  // a dot came and all characters after the last one are letters
+    for (size_t k = at + 1; k < t.size(); ++k) {
+        const char c = t[k];
+        if (c == '.') {
+            if (k == at + 1) return false;
+            tld = 0, word = true;
+        } else if (alnum(c) || c == '-') {
+            tld++;
+            word = word && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+        } else {
+            return false;
+        }
+    }
+    return word && tld >= 2;
 }
 
 int Bits(uint64_t m) {
@@ -2215,22 +2236,26 @@ void Detector::RuleStacks() {
                 !FigureText(rows, rowWords, begin, end, em)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
                 // above it when they are few and rows follow below it. More than three lines above
-                // the rule are rows of a section, not a header.
+                // the second rule, most of them holding a number, are rows of a section, not a
+                // header (a tall header of wrapped labels stays one).
+                const auto numbers = [&](size_t q) {
+                    for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
+                        if (Numeric(Chars(words_[rowWords[k]]))) return true;
+                    return false;
+                };
                 uint16_t header = 0;
                 if (!single) {
-                    for (size_t r = begin; r < end && rows[r].base > s.ys[i + 1]; ++r) header++;
+                    size_t numbered = 0;
+                    for (size_t r = begin; r < end && rows[r].base > s.ys[i + 1]; ++r) header++, numbered += numbers(r);
+                    if (header > 3 && 2 * numbered > header) header = 0;
                 } else if (rows[end - 1].base < top) {
                     for (size_t r = begin; r < end && rows[r].base > top; ++r) header++;
+                    if (header > 3) header = 0;
                 }
-                if (header > 3 || header == end - begin) header = 0;
+                if (header == end - begin) header = 0;
                 // No rule under the header (a top and a bottom rule only): the leading rows without
                 // a number, three at most, over three rows or more that start with one.
                 if (header == 0) {
-                    const auto numbers = [&](size_t q) {
-                        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
-                            if (Numeric(Chars(words_[rowWords[k]]))) return true;
-                        return false;
-                    };
                     size_t lead = 0;
                     while (lead < 3 && begin + lead < end && !numbers(begin + lead)) ++lead;
                     if (lead > 0 && begin + lead + 3 <= end && numbers(begin + lead)) header = static_cast<uint16_t>(lead);
