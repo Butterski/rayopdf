@@ -886,10 +886,15 @@ void Interpreter::Paint(bool fill, bool stroke) {
             const double scale = std::sqrt(std::fabs(gs_.ctm.a * gs_.ctm.d - gs_.ctm.b * gs_.ctm.c));
             const double half = stroke ? Fmax(gs_.lineWidth * scale, 0.1) / 2 : 0;
             const uint8_t flags = static_cast<uint8_t>((stroke ? kRulingStroke : 0) | (fill ? kRulingFill : 0));
+            // A piece under half a point both ways (a plot's dot or marker stroke) is no rule of a
+            // table and no bar of a formula: it does not count against the page's rulings, which a
+            // plot of many points would otherwise fill before the rules of a table after it.
             const auto add = [&](double x0, double y0, double x1, double y1) {
                 Box b{x0 - half, y0 - half, x1 + half, y1 + half};
                 b = Intersect(b, gs_.clip);
-                if (!(b.x1 >= b.x0 && b.y1 >= b.y0) || page_.rulings.size() >= kMaxRulingsPerPage) return;
+                if (!(b.x1 >= b.x0 && b.y1 >= b.y0) || (b.x1 - b.x0 < 0.5 && b.y1 - b.y0 < 0.5) ||
+                    page_.rulings.size() >= kMaxRulingsPerPage)
+                    return;
                 page_.rulings.push_back(Ruling{float(b.x0), float(b.y0), float(b.x1), float(b.y1), flags});
             };
             for (const PathPiece& p : pieces_) {

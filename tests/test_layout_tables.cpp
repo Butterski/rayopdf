@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout/tables: lattice, partially ruled and borderless tables on pages built
 // glyph by glyph, the false tables that must not appear (prose in two columns, lists), a table
-// between columns of text, and hostile rulings. Exit codes 550-599.
+// between columns of text, and hostile rulings. Exit codes 550-599, 850-899 and 1700-1749.
 //
 // `test_layout_tables --dump FILE.pdf [PAGE]` prints the rulings and tables found on the pages of
 // a PDF (a development aid).
 #include "check.h"
+#include "pdf_builder.h"
 
 #include "common/file.h"
 #include "common/utf8.h"
@@ -1119,7 +1120,9 @@ void TestWideHeaderLabels() {
 }
 
 // A top and a bottom rule only, labels over groups of columns: the rows without numbers above the
-// figures are the header, and the figures' own columns part the body.
+// figures are the header, and the figures' own columns part the body. "Instruction", centred over
+// the gap between two columns that the line below fills both, spans them: the header keeps its two
+// lines as rows.
 void TestRuledGroupHeader() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
@@ -1138,7 +1141,9 @@ void TestRuledGroupHeader() {
     HLine(page, 72, 400, 640);
     const std::string md = Run(pages);
     Show("ruled group header", md);
-    RAYOPDF_CHECK(Contains(md, "| --- | --- | --- | --- |\n| Samples | 52K | 2.91M | 126K |"), 853);
+    RAYOPDF_CHECK(Contains(md, "|  | Instruction | Instruction |  |\n| --- | --- | --- | --- |\n| Properties | Alpaca | Orca | Math |\n"
+                               "| Samples | 52K | 2.91M | 126K |"),
+                  853);
 }
 
 // The last rows of a ruled table set below its last rule, keeping its columns, belong to it.
@@ -1507,6 +1512,155 @@ void TestCodeColumnTable() {
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Model | Name | Parameters |\n| --- | --- | --- |\n| 1-NN | IBk |"), 896);
 }
 
+// Booktabs whose first header line holds one label centred over the gap between two columns that
+// the third line fills ("Test" over "clean" and "other"), and a label set between the two lines
+// ("Model", centred on the header's height): two header rows, the label spanning its columns.
+void TestHeaderMiddleLevels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 712);
+    AddText(page, "Test", 248, 700);
+    AddText(page, "Model", 76, 696);
+    AddText(page, "LM", 160, 696);
+    AddText(page, "clean", 220, 690);
+    AddText(page, "other", 272, 690);
+    HLine(page, 72, 400, 684);
+    const char* const names[] = {"Alpha", "Beta", "Gamma"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 672 - 14.0f * float(r);
+        AddText(page, names[r], 76, y);
+        AddText(page, "-", 160, y);
+        AddText(page, std::to_string(2 + r) + ".10", 220, y);
+        AddText(page, std::to_string(4 + r) + ".60", 272, y);
+    }
+    HLine(page, 72, 400, 634);
+    const std::string md = Run(pages);
+    Show("header middle levels", md);
+    RAYOPDF_CHECK(Contains(md, "| Model | LM | Test | Test |\n| --- | --- | --- | --- |\n|  |  | clean | other |\n"
+                               "| Alpha | - | 2.10 | 4.60 |"),
+                  1700);
+}
+
+// A rule under a header label narrower than the table (\cmidrule): the header lines stay rows,
+// the label over the rule spans all the columns under it, and a label wider than its column,
+// reaching past the middle of the gap beside it, keeps to its column (the gap moves clear of it).
+void TestCmidruleHeader() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 400, 712);
+    AddText(page, "Instruction", 175, 700);
+    HLine(page, 160, 300, 695);
+    AddText(page, "Name", 76, 686);
+    AddText(page, "Alpaca", 160, 686);
+    AddText(page, "Performances", 198, 686);
+    AddText(page, "B", 290, 686);
+    HLine(page, 72, 400, 680);
+    const char* const names[] = {"Alpha", "Beta", "Gamma"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 668 - 14.0f * float(r);
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(10 + r), 165, y);
+        AddText(page, std::to_string(2 + r) + ".10", 225, y);
+        AddText(page, std::to_string(4 + r) + ".60", 290, y);
+    }
+    HLine(page, 72, 400, 626);
+    const std::string md = Run(pages);
+    Show("cmidrule header", md);
+    RAYOPDF_CHECK(Contains(md, "|  | Instruction | Instruction | Instruction |\n| --- | --- | --- | --- |\n"
+                               "| Name | Alpaca | Performances | B |\n| Alpha | 10 | 2.10 | 4.60 |"),
+                  1701);
+}
+
+// Lattices of the same columns that touch, the rows between them taken as rows below the upper
+// one: one table.
+void TestTouchingStripes() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f, 642.4f, 622.4f, 602.4f}) HLine(page, 72, 372, y);
+    for (float x : {72.0f, 172.0f, 272.0f, 372.0f}) VLine(page, x, 660, 700), VLine(page, x, 602.4f, 642.4f);
+    const char* const cells[5][3] = {{"Cambodia", "7.5%", "1,272"}, {"Indonesia", "9.4%", "9,651"}, {"Lao PDR", "4.0%", "265"},
+                                     {"Malaysia", "18.6%", "1,454"}, {"Myanmar", "2.7%", "2,250"}};
+    const float bases[] = {686, 666, 646, 628.4f, 608.4f};
+    for (int r = 0; r < 5; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, cells[r][c], 76 + 100.0f * float(c), bases[r]);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("touching stripes", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Indonesia | 9.4% | 9,651 |\n| Lao PDR | 4.0% | 265 |\n"
+                                                     "| Malaysia | 18.6% | 1,454 |"),
+                  1702);
+}
+
+// A header row whose labels, a word space apart, start where the columns of a borderless table
+// start: its first row, a label to each column.
+void TestHeaderAtColumns() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    float x = 74;
+    for (const char* word : {"Saccharometer", "DI", "Water", "Glucose", "Solution", "Yeast", "Suspension"}) {
+        if (std::strcmp(word, "Glucose") == 0) x = 210;
+        if (std::strcmp(word, "Yeast") == 0) x = 306;
+        x = AddText(page, word, x, 706, 12, kGlyphBold) + 2.6f;
+    }
+    const char* const cells[3][4] = {{"2", "24 ml", "0 ml", "4 ml"}, {"3", "12 ml", "12 ml", "4 ml"}, {"4", "4 ml", "12 ml", "12 ml"}};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 690 - 17.0f * float(r);
+        AddText(page, cells[r][0], 74, y, 12);
+        AddText(page, cells[r][1], 154.6f, y, 12);
+        AddText(page, cells[r][2], 210, y, 12);
+        AddText(page, cells[r][3], 306, y, 12);
+    }
+    const std::string md = Run(pages);
+    Show("header at columns", md);
+    RAYOPDF_CHECK(Contains(md, "| Saccharometer | DI Water | Glucose Solution | Yeast Suspension |\n| --- | --- | --- | --- |\n"
+                               "| 2 | 24 ml | 0 ml | 4 ml |"),
+                  1703);
+}
+
+// A title set between the top rules of a table, over rows of two columns: its first row.
+void TestTitleBand() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 620.0f}) HLine(page, 56, 228, y);
+    AddText(page, "Fish species on IUCN Red List", 60, 690, 8);
+    const char* const rows[4][2] = {{"Potosi Pupfish", "Cyprinodon alvarezi"}, {"La Palma Pupfish", "Cyprinodon longidorsalis"},
+                                    {"Butterfly Splitfin", "Ameca splendens"}, {"Golden Skiffia", "Skiffia francesae"}};
+    for (int r = 0; r < 4; ++r) {
+        AddText(page, rows[r][0], 60, 672 - 14.0f * float(r), 8);
+        AddText(page, rows[r][1], 140, 672 - 14.0f * float(r), 8);
+    }
+    const std::string md = Run(pages);
+    Show("title band", md);
+    RAYOPDF_CHECK(Contains(md, "| Fish species on IUCN Red List |  |\n| --- | --- |\n| Potosi Pupfish | Cyprinodon alvarezi |"), 1704);
+}
+
+// Dots drawn by the tens of thousands (a plot's points) are no rulings: the rule of a table drawn
+// after them is recorded.
+void TestDotsNotRulings() {
+    std::string content = "0.1 w\n";
+    for (int k = 0; k < 70000; ++k) {
+        const int x = 100 + k % 400, y = 300 + (k / 400) % 400;
+        content += std::to_string(x) + " " + std::to_string(y) + " m " + std::to_string(x) + ".2 " + std::to_string(y) + " l S\n";
+    }
+    content += "1 w 72 200 m 400 200 l S";
+    Test::PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int stream = b.AddFlateStream("", content);
+    const int pageObject = b.Add("<< /Type /Page /Parent " + std::to_string(pages) + " 0 R /MediaBox [0 0 612 792] /Contents " +
+                                 std::to_string(stream) + " 0 R >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) + " 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(pageObject) + " 0 R] /Count 1 >>");
+    const std::string pdf = b.Build(catalog);
+    std::unique_ptr<Document> doc;
+    RAYOPDF_CHECK(Document::Open(pdf, "", doc) == OpenStatus::Ok, 1705);
+    Text::FontCache fonts(*doc);
+    PageData page;
+    PageStats stats;
+    InterpretPage(*doc, fonts, 0, false, page, stats);
+    RAYOPDF_CHECK(page.rulings.size() == 1 && page.rulings[0].x0 < 72 && page.rulings[0].x1 > 400, 1705);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1684,6 +1838,12 @@ int main(int argc, char** argv) {
     TestLatticeAcrossFigures();
     TestCodeColumnTable();
     TestWordBox();
+    TestHeaderMiddleLevels();
+    TestCmidruleHeader();
+    TestTouchingStripes();
+    TestHeaderAtColumns();
+    TestTitleBand();
+    TestDotsNotRulings();
     std::puts("test_layout_tables: ok");
     return 0;
 }

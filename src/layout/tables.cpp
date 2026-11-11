@@ -539,9 +539,11 @@ private:
                const std::vector<Gap>& gaps, float em, bool closed = true);
     bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps);
+    // `partial`: rules among the header lines narrower than the table (a label's \cmidrule).
     void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb,
-                  const std::vector<uint8_t>* labels = nullptr, const std::vector<uint8_t>* ruled = nullptr);
+                  const std::vector<uint8_t>* labels = nullptr, const std::vector<uint8_t>* ruled = nullptr,
+                  const std::vector<Edge>* partial = nullptr);
     bool Free(float x0, float y0, float x1, float y1) const;
     // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
@@ -554,6 +556,8 @@ private:
     bool HeaderAbove(Grid& g);
     bool HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
                            const std::vector<uint8_t>& label, const Row& header, float minGap, std::vector<Gap>& gaps);
+    bool HeaderAtColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
+                         const std::vector<uint8_t>& label, const Row& header, std::vector<Gap>& gaps);
     uint64_t LineColumns(const Row& r, const std::vector<uint32_t>& rowWords, const Grid& g) const;
     float LabelAbove(const Grid& g);
     void LatticeHeader(Grid& g) const;
@@ -1111,11 +1115,52 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
 // right edge is the wrapped text of the row above (multi-line cells). Rows flagged in `labels` are
 // labels across the table: each a row of its own, whatever columns its words lie over.
 void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
-                        size_t rowEnd, const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa,
-                        float xb, const std::vector<uint8_t>* labels, const std::vector<uint8_t>* ruled) {
+                        size_t rowEnd, const std::vector<Gap>& bodyGaps, TableKind kind, uint16_t headerRows, float xa,
+                        float xb, const std::vector<uint8_t>* labels, const std::vector<uint8_t>* ruled,
+                        const std::vector<Edge>* partial) {
     if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) return;
-    const int cols = static_cast<int>(gaps.size()) + 1;
+    const int cols = static_cast<int>(bodyGaps.size()) + 1;
     if (rowEnd <= rowBegin || cols < 2 || cols > kMaxTableCols) return;
+    // A header label (words a word space apart) wider than its column's text may reach past the
+    // middle of the gap beside it (labels centred over narrow columns of figures; a label centred
+    // over the gap spans both columns instead): the gap narrows to its widest stretch clear of the
+    // labels of the header lines with such a label, when it has one a point wide.
+    std::vector<Gap> gaps(bodyGaps);
+    {
+        std::vector<Gap> inks;
+        const size_t headerEnd = std::min<size_t>(rowBegin + headerRows, rowEnd);
+        for (Gap& gap : gaps) {
+            const float mid = (gap.a + gap.b) / 2;
+            inks.clear();
+            for (size_t r = rowBegin; r < headerEnd; ++r) {
+                const size_t lineInks = inks.size();
+                bool crossed = false;
+                for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count;) {
+                    float a = words_[rowWords[k]].x0, b = words_[rowWords[k]].x1;
+                    for (++k; k < rows[r].first + rows[r].count; ++k) {
+                        const TWord& w = words_[rowWords[k]];
+                        if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) break;
+                        b = Fmax(b, w.x1);
+                    }
+                    if (b <= gap.a || a >= gap.b) continue;
+                    const float cx = (a + b) / 2;
+                    crossed = crossed || (a < mid && b > mid && (cx < gap.a || cx > gap.b));
+                    inks.push_back(Gap{a, b});
+                }
+                if (!crossed) inks.resize(lineInks);
+            }
+            if (inks.empty()) continue;
+            std::sort(inks.begin(), inks.end(), [](const Gap& p, const Gap& q) { return p.a < q.a; });
+            float at = gap.a, best = 0;
+            Gap clear = gap;
+            for (const Gap& ink : inks) {
+                if (ink.a - at > best) best = ink.a - at, clear = Gap{at, ink.a};
+                at = Fmax(at, ink.b);
+            }
+            if (gap.b - at > best) best = gap.b - at, clear = Gap{at, gap.b};
+            if (best >= 1.0f) gap = clear;
+        }
+    }
     Grid g;
     g.kind = kind;
     float left = INFINITY, right = -INFINITY;
@@ -1151,6 +1196,23 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     for (size_t r = rowBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k)
             mask[r - rowBegin] |= uint64_t(1) << columns[k - base];
+    // Rules among the header lines narrower than the table, over a column boundary at least (a
+    // \cmidrule under a label over columns): a header row ends above each (`cut`), and the words of
+    // the line right above one that lie over it, a label, span the columns under it (`spans`: the
+    // line, the rule).
+    std::vector<uint8_t> cut(n, 0);
+    std::vector<std::pair<size_t, const Edge*>> spans;
+    for (size_t e = 0; partial && e < partial->size() && e < 64; ++e) {
+        const Edge& rule = (*partial)[e];
+        bool across = false;
+        for (int c = 1; c < cols; ++c) across = across || (g.xs[static_cast<size_t>(c)] > rule.a + 1 && g.xs[static_cast<size_t>(c)] < rule.b - 1);
+        for (size_t r = rowBegin + 1; across && r < rowEnd && r < rowBegin + headerRows; ++r)
+            if (rows[r - 1].base > rule.pos && rows[r].base < rule.pos) {
+                cut[r - rowBegin] = 1;
+                spans.emplace_back(r - 1, &rule);
+                break;
+            }
+    }
     // An equation array set in a grid: the last column of every line empty or an equation number
     // ("(3)", "(2.4a)"), two numbered lines at least, most of them with a relation sign before the
     // number. Displayed formulas, no table.
@@ -1246,7 +1308,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                         (!(above[c] >= colLeft[c] + 0.7f * (colRight[c] - colLeft[c])) ||
                          (values && hereFirst[c] && above[c] > -INFINITY && aboveLast[c])))
                         wrapped = false;
-                if (!wrapped) starts.push_back(r);
+                // A header line less than a line below the first line of its row: a cell set to the
+                // middle of a header of two lines ("Model" beside "Test" over "clean other").
+                const size_t top = starts.back();
+                const bool middle = r - rowBegin < headerRows && rows[top].base - rows[r].base < 0.85f * Fmax(rows[top].size, rows[r].size);
+                if (!wrapped && !middle) starts.push_back(r);
                 above.swap(here);
                 aboveFirst.swap(hereFirst);
                 aboveLast.swap(hereLast);
@@ -1255,7 +1321,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     };
     size_t from = rowBegin;
     for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
-        if (!((ruled && (*ruled)[r]) || (labels && ((*labels)[r] || (*labels)[r - 1])))) continue;
+        if (!((ruled && (*ruled)[r]) || cut[r - rowBegin] || (labels && ((*labels)[r] || (*labels)[r - 1])))) continue;
         part(from, r);
         starts.push_back(r);
         from = r;
@@ -1288,18 +1354,35 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         if (lead >= 2 && lead + 2 <= n && 2 * numericRows >= n - lead) headerRows = static_cast<uint16_t>(lead);
     }
     // Header lines above the header rule are one header row (its cells' text wraps, or sits at
-    // different heights), unless a label (a word, or words a word space apart) runs across a
-    // column boundary: then the header has levels (a label over several columns) and keeps its rows.
+    // different heights), unless a partial rule parts them (`spans`), or a label (a word, or words a
+    // word space apart) runs across a column boundary, or stands centred over the gap between two
+    // columns that another header line fills both: then the header has levels (a label over
+    // several columns) and keeps its rows.
     if (headerRows >= 2) {
-        bool levels = false;
-        for (size_t r = rowBegin; r < rowBegin + headerRows && r < rowEnd && !levels; ++r) {
+        bool levels = !spans.empty();
+        const size_t headerEnd = std::min(rowBegin + headerRows, rowEnd);
+        // A label [x0, x1] of line r centred over a gap whose columns another header line fills.
+        const auto centred = [&](size_t r, float x0, float x1) {
+            const float centre = (x0 + x1) / 2;
+            for (size_t gi = 0; gi < gaps.size() && gi + 1 < 64; ++gi) {
+                if (!(centre > gaps[gi].a && centre < gaps[gi].b)) continue;
+                for (size_t q = rowBegin; q < headerEnd; ++q)
+                    if (q != r && (mask[q - rowBegin] >> gi & 3) == 3) return true;
+            }
+            return false;
+        };
+        for (size_t r = rowBegin; r < headerEnd && !levels; ++r) {
             float x0 = 0, x1 = -INFINITY;  // the label so far
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !levels; ++k) {
                 const TWord& w = words_[rowWords[k]];
-                if (!(w.x0 - x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) x0 = w.x0;
+                if (!(w.x0 - x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) {
+                    if (x1 > -INFINITY) levels = centred(r, x0, x1);
+                    x0 = w.x0;
+                }
                 x1 = w.x1;
                 for (const Gap& gap : gaps) levels = levels || (x0 < gap.a && x1 > gap.b);
             }
+            if (!levels && x1 > -INFINITY) levels = centred(r, x0, x1);
         }
         if (!levels) {
             size_t kept = 0;
@@ -1367,13 +1450,35 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             const size_t cell = static_cast<size_t>(group * cols + columns[k - base]);
             if (t.numberish && ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
             if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
-            // The word before it in the row, when only a word space apart: one cell's text.
+            // The word before it in the row, when only a word space apart: one cell's text, unless
+            // the word starts where its column's text starts (labels set a word space apart, each at
+            // its column's left edge).
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
             const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
             for (int c = 1; c < cols; ++c) {
                 const float x = g.xs[static_cast<size_t>(c)];
-                if ((w.x0 < x - 0.5f && w.x1 > x + 0.5f) || (joined && before->x1 < x && w.x0 > x))
+                if ((w.x0 < x - 0.5f && w.x1 > x + 0.5f) ||
+                    (joined && before->x1 < x && w.x0 > x && !(std::fabs(w.x0 - colLeft[static_cast<size_t>(c)]) <= 0.3f * w.size)))
                     g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
+            }
+        }
+        // The label over a partial rule spans the columns under the rule: its words, a word space
+        // apart, and no other words of the line over the rule.
+        for (const auto& [line, rule] : spans) {
+            if (line != r) continue;
+            float right = -INFINITY;
+            bool label = true, any = false;
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && label; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                if (w.x1 < rule->a || w.x0 > rule->b) continue;
+                const float cx = (w.x0 + w.x1) / 2;
+                label = cx >= rule->a && cx <= rule->b && (!any || w.x0 - right < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size));
+                any = true;
+                right = w.x1;
+            }
+            for (int c = 1; c < cols && label && any; ++c) {
+                const float x = g.xs[static_cast<size_t>(c)];
+                if (x > rule->a + 1 && x < rule->b - 1) g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
             }
         }
     }
@@ -2019,11 +2124,11 @@ void Detector::Lattices() {
 }
 
 // Tables shaded on every other row draw boxes around the shaded rows only: lattices with the same
-// columns stacked a row apart, with a row of text between them that keeps their columns, are one
-// table with that row between. Tables in sections, each boxed under its label (a line across the
-// columns, set between double rules), are one too: a line between two lattices that does not part
-// into columns is a label row, and so is the label under a rule of the table's width over the
-// first section.
+// columns stacked a row apart, with a row of text between them that keeps their columns, or
+// touching with nothing between (that row taken as a row below the upper one), are one table.
+// Tables in sections, each boxed under its label (a line across the columns, set between double
+// rules), are one too: a line between two lattices that does not part into columns is a label row,
+// and so is the label under a rule of the table's width over the first section.
 void Detector::JoinStripes() {
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
@@ -2056,17 +2161,22 @@ void Detector::JoinStripes() {
             }
             int filled = 0;
             for (uint64_t m = columns; m; m &= m - 1) filled++;
-            if ((!label && (crossing || filled < 2)) || up.Rows() + down.Rows() + 1 > kMaxTableRows) continue;
+            // No text between and less than half a line apart: the stripes touch (the rows between
+            // went to the upper one as rows below it), and join with no row between.
+            const bool touching = rows.empty() && gapTop - gapBottom <= 0.5f * bodySize_;
+            if ((!label && !touching && (crossing || filled < 2)) || up.Rows() + down.Rows() + 1 > kMaxTableRows) continue;
             const int cols = up.Cols();
             Grid joined;
             joined.kind = TableKind::Lattice;
             joined.xs = up.xs;
             joined.ys = up.ys;
+            if (touching) joined.ys.pop_back();
             joined.ys.insert(joined.ys.end(), down.ys.begin(), down.ys.end());
             joined.vb = up.vb;
-            joined.vb.insert(joined.vb.end(), static_cast<size_t>(cols + 1), 1);  // the row between
+            if (!touching) joined.vb.insert(joined.vb.end(), static_cast<size_t>(cols + 1), 1);  // the row between
             joined.vb.insert(joined.vb.end(), down.vb.begin(), down.vb.end());
             joined.hb = up.hb;
+            if (touching) joined.hb.resize(joined.hb.size() - static_cast<size_t>(cols));
             joined.hb.insert(joined.hb.end(), down.hb.begin(), down.hb.end());
             joined.x0 = Fmin(up.x0, down.x0), joined.x1 = Fmax(up.x1, down.x1);
             joined.y0 = down.y0, joined.y1 = up.y1;
@@ -2075,7 +2185,7 @@ void Detector::JoinStripes() {
             if (label || !up.labelRow.empty() || !down.labelRow.empty()) {
                 joined.labelRow = up.labelRow;
                 joined.labelRow.resize(static_cast<size_t>(up.Rows()), 0);
-                joined.labelRow.push_back(label ? 1 : 0);
+                if (!touching) joined.labelRow.push_back(label ? 1 : 0);
                 joined.labelRow.insert(joined.labelRow.end(), down.labelRow.begin(), down.labelRow.end());
                 joined.labelRow.resize(static_cast<size_t>(joined.Rows()), 0);
             }
@@ -2279,6 +2389,7 @@ void Detector::RuleStacks() {
     std::vector<size_t> labelBands;  // the rule above each label band of the run
     std::vector<uint8_t> label;      // per row of the run: it lies in a label band
     std::vector<uint8_t> ruled;      // per row of the run: a rule of the run lies between it and the row above
+    std::vector<Edge> partial;       // rules among a table's header lines narrower than it
     for (const Stack& s : stacks) {
         if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
@@ -2289,10 +2400,10 @@ void Detector::RuleStacks() {
             // rules); a taller empty band holds something else (a heading out of the rules' width).
             size_t j = i;
             float em = bodySize_;
-            // A band of one line that does not split into columns, right below a tabular band and
-            // above another that keeps its columns, is a label across the table (the name of the
-            // rows that follow it): the run goes on through it. Two such bands on end are the
-            // title of another table.
+            // A band of one line that does not split into columns, right below a tabular band (or
+            // the run's first band: a title row set between the table's top rules) and above another
+            // that keeps its columns, is a label across the table (the name of the rows that follow
+            // it): the run goes on through it. Two such bands on end are the title of another table.
             labelBands.clear();
             size_t tabularEnd = i;  // the rule under the last tabular band
             bool labelled = false;  // the last band with text was a label
@@ -2312,7 +2423,7 @@ void Detector::RuleStacks() {
                     if (Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) {
                         tabularEnd = j + 1;
                         labelled = false;
-                    } else if (rows.size() == 1 && tabularEnd > i && !labelled && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
+                    } else if (rows.size() == 1 && (tabularEnd > i || j == i) && !labelled && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
                         labelBands.push_back(j);
                         labelled = true;
                     } else {
@@ -2503,6 +2614,19 @@ void Detector::RuleStacks() {
                     while (lead < 3 && begin + lead < end && !numbers(begin + lead)) ++lead;
                     if (lead > 0 && begin + lead + 3 <= end && numbers(begin + lead)) header = static_cast<uint16_t>(lead);
                 }
+                // Drawn rules between two header lines narrower than the table (not an underline:
+                // a third of a line below the text above, above the middle of the line below).
+                partial.clear();
+                if (header >= 2) {
+                    const float hi = rows[begin].base, lo = rows[begin + header - 1].base;
+                    auto e = std::lower_bound(h_.begin(), h_.end(), lo, [](const Edge& q, float y) { return q.pos < y; });
+                    for (; e != h_.end() && e->pos < hi && partial.size() < 64; ++e) {
+                        if (e->area || e->a < xa - 1 || e->b > xb + 1 || e->b - e->a > 0.9f * (xb - xa) || e->b - e->a < em) continue;
+                        size_t r = begin + 1;
+                        while (r + 1 < begin + header && rows[r].base > e->pos) ++r;
+                        if (rows[r - 1].base - e->pos >= 0.3f * em && e->pos - rows[r].base >= 0.5f * em) partial.push_back(*e);
+                    }
+                }
                 // A header label over several columns (a unit over its sub-columns) closes the gaps
                 // between them: the body rows, three at least, say where the columns are, and the
                 // label spans them.
@@ -2511,10 +2635,10 @@ void Detector::RuleStacks() {
                 if (header > 0 && end - begin >= header + 3u &&
                     Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial, labels) && trial.size() > gaps.size() &&
                     KeepsGaps(gaps, trial) && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels, &ruled);
+                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial);
                 // Without such a label (or when its rows do not make a grid): the columns of all rows.
                 if (grids_.size() == before && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels, &ruled);
+                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial);
             }
             i = j + 1;
         }
@@ -2793,10 +2917,11 @@ void Detector::Borderless(float gapFactor) {
                 Columns(rows, rowWords, begin - 1, e, xa, xb, keepGap, trial, &label) && KeepsGaps(gaps, trial) &&
                 trial.size() == gaps.size()) {
                 first = begin - 1;
-            } else if (near && HeaderOverColumns(rows, rowWords, begin, e, label, h, minGap, gaps)) {
+            } else if (near && (HeaderOverColumns(rows, rowWords, begin, e, label, h, minGap, gaps) ||
+                                HeaderAtColumns(rows, rowWords, begin, e, label, h, gaps))) {
                 // Labels centred over narrow columns of figures, wider than them: each label (a run of
                 // words a word space apart) heads the column nearest its centre, and the columns part
-                // between labels.
+                // between labels. Or labels starting where the columns start, a word space apart.
                 first = begin - 1;
                 xa = Fmin(xa, h.x0 - 1), xb = Fmax(xb, h.x1 + 1);
             }
@@ -2846,6 +2971,45 @@ bool Detector::HeaderOverColumns(const std::vector<Row>& rows, const std::vector
         left[best] = Fmin(left[best], a), right[best] = Fmax(right[best], b);
     }
     if (labels < 2) return false;
+    for (size_t c = 0; c + 1 < cols; ++c)
+        if (!(right[c] < left[c + 1])) return false;
+    for (size_t c = 0; c + 1 < cols; ++c) gaps[c] = Gap{right[c], left[c + 1]};
+    return true;
+}
+
+// A header row whose labels start where the body's columns start (labels wider than their
+// columns, set a word space apart): a word of it starts within a third of an em of each column's
+// left edge, the first column's included, and none starts left of that; each word belongs to the
+// column whose left edge is the last at or before it, and the gaps move to lie between each
+// column's text and label and the next column's left edge. False, gaps unchanged, when the labels
+// do not line up so.
+bool Detector::HeaderAtColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin,
+                               size_t end, const std::vector<uint8_t>& label, const Row& header, std::vector<Gap>& gaps) {
+    const size_t cols = gaps.size() + 1;
+    if (cols > 64) return false;
+    std::vector<float> left(cols, INFINITY), right(cols, -INFINITY);
+    for (size_t q = begin; q < end; ++q) {
+        if (label[q]) continue;
+        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+            left[c] = Fmin(left[c], w.x0), right[c] = Fmax(right[c], w.x1);
+        }
+    }
+    for (size_t c = 0; c < cols; ++c)
+        if (!(right[c] > left[c])) return false;
+    const float tol = Fmax(1.0f, 0.3f * TextSize(header));
+    uint64_t started = 0;
+    for (uint32_t k = header.first; k < header.first + header.count; ++k) {
+        const TWord& w = words_[rowWords[k]];
+        size_t c = cols;
+        while (c > 0 && left[c - 1] > w.x0 + tol) --c;
+        if (c == 0) return false;
+        --c;
+        if (std::fabs(w.x0 - left[c]) <= tol) started |= uint64_t(1) << c;
+        right[c] = Fmax(right[c], w.x1);
+    }
+    if (started != (cols == 64 ? ~uint64_t(0) : (uint64_t(1) << cols) - 1)) return false;
     for (size_t c = 0; c + 1 < cols; ++c)
         if (!(right[c] < left[c + 1])) return false;
     for (size_t c = 0; c + 1 < cols; ++c) gaps[c] = Gap{right[c], left[c + 1]};

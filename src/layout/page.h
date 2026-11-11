@@ -142,7 +142,8 @@ struct LinkArea {
 
 // A straight axis-aligned piece of a painted path, as painted (a stroke widened by its line width,
 // a filled rectangle as its box, a side of a filled polygon with no thickness): the raw material of
-// table rulings (algorithms §6.7). A stroked rectangle is recorded as its four sides.
+// table rulings (algorithms §6.7). A stroked rectangle is recorded as its four sides; pieces under
+// half a point both ways (dots) are not recorded.
 enum : uint8_t {
     kRulingStroke = 1u << 0,
     kRulingFill = 1u << 1,
