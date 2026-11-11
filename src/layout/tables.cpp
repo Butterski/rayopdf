@@ -288,6 +288,14 @@ bool PageNumber(std::string_view t) {
     return (digits && t.size() <= 4) || roman;
 }
 
+// An e-mail address: text, an at sign, then text with a dot in it.
+bool EmailAddress(std::string_view t) {
+    const size_t at = t.find('@');
+    if (at == 0 || at == std::string_view::npos) return false;
+    const size_t dot = t.find('.', at + 2);
+    return dot != std::string_view::npos && dot + 1 < t.size();
+}
+
 int Bits(uint64_t m) {
     int n = 0;
     for (; m; m &= m - 1) n++;
@@ -1258,8 +1266,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             g.labelRow[static_cast<size_t>(group)] = 1;
             continue;
         }
+        uint64_t emails = 0;  // the columns of the line holding an e-mail address
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
+            // E-mail addresses side by side on a line: the authors' addresses under their names
+            // and affiliations (an author block set in columns), no table.
+            if (EmailAddress(WordText(w, scratch))) emails |= uint64_t(1) << std::min(columns[k - base], 63);
+            if (Bits(emails) >= 2) return;
             // A chart's axis in a cell: no table. Pieces of tall brackets (U+239B-U+23AD): a
             // matrix set in display math.
             float value = 0;

@@ -395,6 +395,21 @@ void TestLatticeTwoLineRow() {
     RAYOPDF_CHECK(Contains(md, "| Ratio | Car | Foot |\n| --- | --- | --- |\n| Node ratio | 0.52 | 0.54 |\n| Edge ratio | 0.64 | 0.65 |"), 878);
 }
 
+// Authors set in columns, each name over its affiliation and its e-mail address: no table.
+void TestAuthorBlock() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const char* const cards[2][4] = {{"Ann Lee", "Department of Physics", "Oxford, UK", "ann.lee@ox.ac.uk"},
+                                     {"Bo Chen", "Computing Division", "Berkeley, CA, USA", "bchen@lbl.gov"}};
+    for (int c = 0; c < 2; ++c)
+        for (int r = 0; r < 4; ++r) AddText(page, cards[c][r], c == 0 ? 100.0f : 330.0f, 700 - 12.0f * float(r));
+    AddProse(page, 72, 450, 640, 4);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("author block", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "ann.lee@ox.ac.uk") && Contains(md, "bchen@lbl.gov"), 879);
+}
+
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
 // text: its words still sort top to bottom (the tie leaves them to std::sort), and it stays a table.
 void TestBorderlessWordOrder() {
@@ -1265,6 +1280,7 @@ int main(int argc, char** argv) {
     TestLatticeInFigure();
     TestLatticeRulingPastTop();
     TestLatticeTwoLineRow();
+    TestAuthorBlock();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();
