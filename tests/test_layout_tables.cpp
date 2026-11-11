@@ -1201,6 +1201,46 @@ void TestDiagramGrids() {
     RAYOPDF_CHECK(report.tables == 0, 857);
 }
 
+// A sparse lattice: the expiries down the first column, the tenors along the first row and one
+// value per row on the anti-diagonal (most cells empty, a word each) is a table, not a diagram.
+void TestSparseLattice() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 740, 2);
+    for (int k = 0; k <= 5; ++k) HLine(page, 72, 372, 700 - 20.0f * float(k)), VLine(page, 72 + 60.0f * float(k), 600, 700);
+    const char* const tenors[] = {"Expiry", "1.0139", "2.0250", "3.0444", "4.0583"};
+    const char* const expiries[] = {"0.5028", "1.0139", "2.0278", "3.0472"};
+    const char* const values[] = {"0.004050", "0.005312", "0.006034", "0.005394"};
+    for (int c = 0; c < 5; ++c) AddText(page, tenors[c], 76 + 60.0f * float(c), 686);
+    for (int r = 0; r < 4; ++r) {
+        AddText(page, expiries[r], 76, 666 - 20.0f * float(r));
+        AddText(page, values[r], 76 + 60.0f * float(4 - r), 666 - 20.0f * float(r), 8);
+    }
+    AddProse(page, 72, 400, 580, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("sparse lattice", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| 0.5028 |  |  |  | 0.004050 |\n| 1.0139 |  |  | 0.005312 |  |"), 884);
+}
+
+// The frames of a timing diagram between rules: labels at two heights in different columns
+// ("CTS" then "ACK" for one station, the same shifted for the next), no table.
+void TestTimingBoxes() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 740, 2);
+    for (float y : {700.0f, 680.0f, 660.0f}) HLine(page, 72, 400, y);
+    AddText(page, "CTS", 80, 686);
+    AddText(page, "ACK", 240, 686);
+    AddText(page, "CTS", 160, 666);
+    AddText(page, "ACK", 320, 666);
+    AddProse(page, 72, 400, 630, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("timing boxes", md);
+    RAYOPDF_CHECK(report.tables == 0 && Count(md, "CTS") == 2 && Count(md, "ACK") == 2, 885);
+}
+
 // Pieces of tall brackets around aligned figures: a matrix in display math, not a table.
 void TestBracketMatrix() {
     std::vector<PageData> pages{NewPage()};
@@ -1383,6 +1423,8 @@ int main(int argc, char** argv) {
     TestMiddleHeaderCell();
     TestHeaderAboveRuledRows();
     TestDiagramGrids();
+    TestSparseLattice();
+    TestTimingBoxes();
     TestBracketMatrix();
     TestWordBox();
     std::puts("test_layout_tables: ok");

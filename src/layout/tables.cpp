@@ -1252,6 +1252,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     }
     const int nrows = static_cast<int>(starts.size());
     if (nrows > kMaxTableRows) return;
+    // Two rows whose text stands in different columns, fewer than half the columns filled in both:
+    // labels of boxes set at two heights (a timing diagram's frames), no table.
+    if (nrows == 2) {
+        uint64_t top = 0, low = 0;
+        for (size_t r = rowBegin; r < rowEnd; ++r) (r < starts[1] ? top : low) |= mask[r - rowBegin];
+        if (2 * Bits(top & low) < cols) return;
+    }
     g.headerRows = 0;
     for (size_t s : starts)
         if (s < rowBegin + headerRows) g.headerRows++;
@@ -1996,12 +2003,24 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
     // A diagram's boxes drawn over a grid (a flowchart, a block diagram, a figure's panels): most
     // cells span others in a short grid or one with a row of a single filled cell (a table with
     // stray rulings keeps two filled cells in every row of many), or most cells are empty and the
-    // rest hold a word each.
+    // rest hold a word each, unless the first row and the first column are filled in full (the
+    // corner aside) and every row and column holds two filled cells (a sparse table: one value per
+    // row, on a diagonal).
     if (!column && g.cells.size() >= 6) {
         size_t spans = 0;
         for (const Span& sp : g.cells) spans += sp.rs > 1 || sp.cs > 1;
         if (2 * spans > g.cells.size() && (g.Rows() < 5 || fullRows < g.Rows())) return drawing();
-        if (!form && 2 * nonEmpty < g.cells.size() && 2 * inside <= 3 * nonEmpty) return drawing();
+        if (!form && 2 * nonEmpty < g.cells.size() && 2 * inside <= 3 * nonEmpty) {
+            bool edges = fullRows == g.Rows() && g.Rows() >= 3 && cols >= 3;
+            std::vector<uint16_t> perCol(static_cast<size_t>(cols), 0);
+            for (size_t c = 0; c < g.cells.size() && edges; ++c) {
+                const Span& sp = g.cells[c];
+                if (filled[c]) perCol[sp.c]++;
+                else edges = (sp.r > 0 && sp.c > 0) || sp.r + sp.c == 0;
+            }
+            for (uint16_t n : perCol) edges = edges && n >= 2;
+            if (!edges) return drawing();
+        }
     }
     std::nth_element(sizes.begin(), sizes.begin() + static_cast<std::ptrdiff_t>(sizes.size() / 2), sizes.end());
     g.size = sizes[sizes.size() / 2];
