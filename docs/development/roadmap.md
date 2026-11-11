@@ -138,7 +138,11 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   each of them in a pipe table (measured 2026-11-11: READoc-dev arXiv table TEDS +0.037, odl
   TEDS +0.0014, olmOCR table tests -3 of 1020; header cells spanning rows as pipe tables too: odl
   TEDS -0.006).
-- Footnotes are `[^n]`.
+- Footnotes are `[^n]`. A note's definition follows the block that references it; notes printed
+  on the last page (a one-page document's, endnotes) stay at the end. GFM renders either the same
+  (decided 2026-11-11: READoc-dev arXiv `seg_kt` with `--math=latex` 0.9713 → 0.9839, `text_eds`
+  +0.0075; synthetic untagged NID and MHS −0.008 on xelatex, xelatex-eisvogel and rayomd-tech,
+  whose fixtures keep the definitions at the end; odl unchanged).
 - Images are written as `![alt](<stem>-images/p<page>-<n>.<ext>)`: DCT streams as `.jpg`, JPX
   streams as `.jp2`, everything else decoded to `.png`.
 - Math is Unicode with `<sup>`/`<sub>`, wrapped in `$…$` only for linear inline math. Optional

@@ -1291,6 +1291,72 @@ void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, 
     for (Block& note : notes) note.number = renumber(note.number);
     for (NoteRef& ref : refs) ref.number = renumber(ref.number);
 }
+
+constexpr uint64_t kMaxNoteGlyphs = uint64_t(1) << 22;  // glyphs of body lines searched for note references
+
+// Footnote definitions stand in the reading flow, where a paper's source has them: each after the
+// body block that holds its reference (the paragraph it annotates, on whatever page that ends) or,
+// when no body block holds it, after the last block that starts on or before the note's page.
+// Notes printed on the last page (every note of a one-page document, endnotes) stay at the end.
+// `blocks` hold the body, `notes` the definitions in reading order, `refs` are sorted by page,
+// then glyph.
+void PlaceNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, const std::vector<BlockLine>& lines,
+                const std::vector<Block>& notes, const std::vector<NoteRef>& refs) {
+    if (notes.empty()) return;
+    // The body block each note number's reference stands in.
+    uint32_t maxNumber = 0;
+    for (const Block& note : notes) maxNumber = std::max(maxNumber, note.number);
+    std::vector<size_t> refBlock(size_t(maxNumber) + 1, SIZE_MAX);
+    uint64_t budget = kMaxNoteGlyphs;
+    for (size_t i = 0; i < blocks.size() && budget > 0; ++i) {
+        for (uint32_t l = blocks[i].first; l < blocks[i].first + blocks[i].count; ++l) {
+            const BlockLine& bl = lines[l];
+            const auto lo = std::lower_bound(refs.begin(), refs.end(), bl.page,
+                                             [](const NoteRef& r, uint32_t p) { return r.page < p; });
+            if (lo == refs.end() || lo->page != bl.page) continue;
+            const auto hi =
+                std::upper_bound(lo, refs.end(), bl.page, [](uint32_t p, const NoteRef& r) { return p < r.page; });
+            const PageData& pg = pages[bl.page];
+            const Line& tl = pg.lines[bl.line];
+            if (tl.count > budget) {
+                budget = 0;
+                break;
+            }
+            budget -= tl.count;
+            for (uint32_t k = 0; k < tl.count; ++k) {
+                const uint32_t glyph = pg.lineGlyphs[tl.first + k];
+                const auto it = std::lower_bound(lo, hi, glyph, [](const NoteRef& r, uint32_t g) { return r.glyph < g; });
+                if (it != hi && it->glyph == glyph && it->number <= maxNumber && refBlock[it->number] == SIZE_MAX)
+                    refBlock[it->number] = i;
+            }
+        }
+    }
+    // before[n]: the body block note n goes before (blocks.size(): the end). The page foot is the
+    // first block from which on every block starts on a later page (a block moved up, an author's
+    // address, does not count); a note with none is on the last page.
+    std::vector<size_t> before(notes.size(), blocks.size());
+    std::vector<uint32_t> from(blocks.size() + 1, UINT32_MAX);
+    for (size_t i = blocks.size(); i-- > 0;)
+        from[i] = blocks[i].count > 0 ? std::min(from[i + 1], lines[blocks[i].first].page) : from[i + 1];
+    size_t n = 0;
+    for (size_t i = 0; i < blocks.size() && n < notes.size(); ++i)
+        while (n < notes.size() && lines[notes[n].first].page < from[i]) before[n++] = i;
+    for (n = 0; n < notes.size(); ++n) {
+        const size_t ref = refBlock[notes[n].number];
+        if (before[n] < blocks.size() && ref != SIZE_MAX) before[n] = ref + 1;
+    }
+    std::vector<uint32_t> order(notes.size());
+    for (uint32_t k = 0; k < order.size(); ++k) order[k] = k;
+    std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return before[a] < before[b]; });
+    std::vector<Block> merged;
+    merged.reserve(blocks.size() + notes.size());
+    size_t k = 0;
+    for (size_t i = 0; i <= blocks.size(); ++i) {
+        while (k < order.size() && before[order[k]] <= i) merged.push_back(notes[order[k++]]);
+        if (i < blocks.size()) merged.push_back(blocks[i]);
+    }
+    blocks.swap(merged);
+}
 } // namespace
 
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
@@ -2467,10 +2533,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     MoveAddresses(pages, blocks, lines);
     const uint32_t base = static_cast<uint32_t>(lines.size());
     lines.insert(lines.end(), noteLines.begin(), noteLines.end());
-    for (Block& note : notes) {
-        note.first += base;
-        blocks.push_back(note);
-    }
+    for (Block& note : notes) note.first += base;
+    PlaceNotes(pages, blocks, lines, notes, out.noteRefs);
 }
 
 } // namespace RayoPdf::Layout

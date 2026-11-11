@@ -869,6 +869,36 @@ void TestTitleNotes() {
     RAYOPDF_CHECK(Contains(titled, "source.[^1]") && Contains(titled, "\n\n[^1]: Doe, On Footnotes, 2021.\n"), 445);
 }
 
+// A note printed at the foot of a page before the last is written after the paragraph that
+// references it, before the paragraph that follows; a note printed on the last page stays at the
+// end.
+void TestNotesInFlow() {
+    std::vector<PageData> pages{NewPage(1), NewPage(2)};
+    for (int i = 0; i < 3; ++i)
+        AddText(pages[0], "Opening text of the paper that runs on long enough to fill a whole line", 72, 700.0f - 14 * i, 10);
+    float x = AddText(pages[0], "and the claim needs a source.", 72, 658, 10);
+    AddText(pages[0], "1", x, 662, 6);
+    for (int i = 0; i < 20; ++i)
+        AddText(pages[0], std::string(i == 0 ? "A later paragraph" : "Text of the later paragraph") + " runs on long enough to fill a whole line",
+                i == 0 ? 87.0f : 72.0f, 644.0f - 14 * i, 10);
+    x = AddText(pages[0], "1", 72, 104, 5);
+    AddText(pages[0], "Doe, On Footnotes, 2021.", x, 100, 8);
+    x = AddText(pages[1], "The second page cites another work.", 72, 700, 10);
+    AddText(pages[1], "2", x, 704, 6);
+    for (int i = 0; i < 20; ++i)
+        AddText(pages[1], std::string(i == 0 ? "The closing paragraph" : "Text of the closing paragraph") + " runs on long enough to fill a line",
+                i == 0 ? 87.0f : 72.0f, 686.0f - 14 * i, 10);
+    x = AddText(pages[1], "2", 72, 104, 5);
+    AddText(pages[1], "Smith, Collected Essays, 2020.", x, 100, 8);
+    const std::string md = Run(pages);
+    Show("notes in flow", md);
+    RAYOPDF_CHECK(Contains(md, "source.[^1]\n\n[^1]: Doe, On Footnotes, 2021.\n\nA later paragraph"), 446);
+    const std::string last = "\n\n[^2]: Smith, Collected Essays, 2020.\n";
+    RAYOPDF_CHECK(md.size() > last.size() && md.compare(md.size() - last.size(), last.size(), last) == 0 &&
+                      Contains(md, "work.[^2]"),
+                  447);
+}
+
 void TestFigureObstacle() {
     // A figure on the left with its caption under it, a column of text on the right whose
     // paragraph gap lies beside the figure: the column is read whole, not cut at the gap.
@@ -1516,6 +1546,7 @@ int main() {
     TestQuoteBarsAndHeadings();
     TestAffiliationNotes();
     TestTitleNotes();
+    TestNotesInFlow();
     TestFigureObstacle();
     TestNumberedListing();
     TestMathIsNoHeading();
