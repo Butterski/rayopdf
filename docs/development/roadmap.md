@@ -143,6 +143,13 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `--math=latex`; synthetic TEDS unchanged). Kept as HTML after measuring: body cells spanning rows
   in the first column (arXiv +0.007, odl TEDS −0.007), header cells spanning down into the row
   under them (arXiv +0.023, olmOCR table tests −3), every span as pipe (arXiv 0.7175, olmOCR −6).
+- Text is escaped only where it would otherwise change the structure. `*` and `_` are escaped only
+  where CommonMark could read them as emphasis delimiters: a run that can open, or could close a
+  `*` or `_` written raw before it in the block, or stands beside a non-ASCII character or at the
+  start of a block; so significance marks (`0.05**`, `***`) stay as they are (measured 2026-11-11:
+  olmOCR table tests 632 → 636 of 1020; the HTML pandoc's CommonMark reader renders is unchanged
+  on odl, synthetic, olmOCR tables and READoc-dev arXiv; under its GFM reader only three
+  documents differ, each a backslash the old escape left inside a `$$` span or an autolink).
 - Footnotes are `[^n]`. A note's definition follows the block that references it; notes printed
   on the last page (a one-page document's, endnotes) stay at the end. GFM renders either the same
   (decided 2026-11-11: READoc-dev arXiv `seg_kt` with `--math=latex` 0.9713 → 0.9839, `text_eds`

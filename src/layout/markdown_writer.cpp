@@ -45,6 +45,13 @@ struct Word {
     uint32_t linkTrim = 0;          // glyphs ending the word that follow its link
 };
 
+// A run of `*` or `_` AppendEscaped wrote escaped: from out_[at], `length` characters (2 x length
+// bytes).
+struct EscapedRun {
+    size_t at;
+    size_t length;
+};
+
 bool IsAsciiAlnum(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 
 RAYOPDF_HOT_INLINE uint32_t FirstOf(std::string_view t) {
@@ -109,6 +116,11 @@ private:
     // `at` is the glyph they apply from (styles that run longer open first, outside).
     void SetStyle(uint8_t target, uint32_t at);
     void AppendEscaped(std::string_view text, bool blockStart);
+    // Unescapes the runs AppendEscaped recorded in out_ from `from` (the block's inline text) that
+    // CommonMark reads as no emphasis delimiter as they are: one that cannot open, and can close
+    // nothing because no `*` or `_` of its kind stands raw before it. Literal stars ("0.05**")
+    // stay as they are.
+    void DropNeedlessEscapes(size_t from);
     // LaTeX mode: the inline formulas of the collected glyphs (mathRun_).
     void FindFormulas();
     // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
@@ -157,6 +169,7 @@ private:
     int depth_ = 0;
     std::string plain_;
     std::string other_;
+    std::vector<EscapedRun> runs_;   // the runs AppendEscaped wrote since the block's inline text began
     // LaTeX mode.
     std::vector<InlineGlyph> inline_;
     std::vector<uint32_t> mathRun_;  // per GlyphRef: the end of the formula starting there, or 0
@@ -582,8 +595,9 @@ constexpr EscapeTable kEscapeLatex(true);
 
 bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 
-// Escapes only what would change the structure (D6): emphasis delimiters, code spans, HTML and
-// autolink openers, entity references, and block markers at the start of the block.
+// Escapes only what would change the structure (D6): emphasis delimiters (with
+// DropNeedlessEscapes), code spans, HTML and autolink openers, entity references, and block
+// markers at the start of the block.
 void Writer::AppendEscaped(std::string_view t, bool blockStart) {
     if (blockStart && !t.empty()) {
         const char c = t[0];
@@ -603,25 +617,30 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
             }
         }
     }
-    // A word of underscores only (a form's blank) is neither left- nor right-flanking between
-    // spaces: it opens or closes no emphasis and needs no escapes.
-    if (!blockStart && t.size() >= 2 && t.find_first_not_of('_') == std::string_view::npos) {
-        out_.append(t);
-        return;
-    }
     for (size_t i = 0; i < t.size(); ++i) {
         const char c = t[i];
         const char prev = i > 0 ? t[i - 1] : ' ';
         const char next = i + 1 < t.size() ? t[i + 1] : ' ';
         switch (c) {
         case '\\':
-        case '*':
         case '`':
             out_.push_back('\\');
             break;
-        case '_':
-            if (!IsAsciiAlnum(prev) || !IsAsciiAlnum(next)) out_.push_back('\\');
-            break;
+        case '*':
+        case '_': {
+            // A run of one of them is written escaped; DropNeedlessEscapes unescapes it where it
+            // can be neither an opener nor a closer. One that starts the block (a list marker, a
+            // thematic break) stays escaped.
+            size_t end = i + 1;
+            while (end < t.size() && t[end] == c) ++end;
+            if (!(blockStart && i == 0)) runs_.push_back(EscapedRun{out_.size(), end - i});
+            for (size_t k = i; k < end; ++k) {
+                out_.push_back('\\');
+                out_.push_back(c);
+            }
+            i = end - 1;
+            continue;
+        }
         case '<':
             if ((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '/' || next == '!' || next == '?')
                 out_.push_back('\\');
@@ -648,6 +667,66 @@ void Writer::AppendEscaped(std::string_view t, bool blockStart) {
         }
         out_.push_back(c);
     }
+}
+
+// A neighbour of a delimiter run by CommonMark's classes (6.2): whitespace, punctuation, other.
+// Only ASCII is classed; any other byte (UTF-8, a line break) is unknown.
+enum class Flank : uint8_t { Space, Punct, Other, Unknown };
+
+Flank FlankClass(char c) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (u == ' ') return Flank::Space;
+    if (u < 0x20 || u >= 0x7F) return Flank::Unknown;
+    return IsAsciiAlnum(c) ? Flank::Other : Flank::Punct;
+}
+
+// Whether a run of `c` (`*` or `_`) between the bytes `before` and `after` stays escaped: when it
+// could open emphasis, or close it after a `c` written raw (`opener`, maybe an opener), and when a
+// neighbour is unknown or the same character (the runs would join).
+bool RunNeedsEscape(char before, char after, char c, bool opener) {
+    const Flank b = FlankClass(before), a = FlankClass(after);
+    if (b == Flank::Unknown || a == Flank::Unknown || before == c || after == c) return true;
+    const bool left = a != Flank::Space && (a != Flank::Punct || b != Flank::Other);
+    const bool right = b != Flank::Space && (b != Flank::Punct || a != Flank::Other);
+    const bool opens = c == '*' ? left : left && (!right || b == Flank::Punct);
+    const bool closes = c == '*' ? right : right && (!left || a == Flank::Punct);
+    return opens || (closes && opener);
+}
+
+void Writer::DropNeedlessEscapes(size_t from) {
+    if (runs_.empty()) return;
+    const size_t n = out_.size();
+    size_t w = from, r = from;  // out_ is compacted in place: written up to w, read from r
+    bool star = false, under = false;  // a raw `*` / `_` before r: written by the writer (emphasis, a formula)
+    for (const EscapedRun& run : runs_) {
+        bool escaped = false;
+        for (; r < run.at; ++r) {
+            const char b = out_[r];
+            if (escaped) {
+                escaped = false;
+            } else if (b == '\\') {
+                escaped = true;
+            } else {
+                star = star || b == '*';
+                under = under || b == '_';
+            }
+            out_[w++] = b;
+        }
+        // The run's bounds are those of the block (whitespace for CommonMark) at its ends.
+        const char c = out_[run.at + 1];
+        const size_t end = run.at + 2 * run.length;
+        const char before = w > from ? out_[w - 1] : ' ';
+        const char after = end < n ? out_[end] : ' ';
+        if (RunNeedsEscape(before, after, c, c == '*' ? star : under)) {
+            for (; r < end; ++r) out_[w++] = out_[r];
+        } else {
+            for (size_t k = 0; k < run.length; ++k) out_[w++] = c;
+            r = end;
+        }
+    }
+    for (; r < n; ++r) out_[w++] = out_[r];
+    out_.resize(w);
+    runs_.clear();
 }
 
 template <bool kLatex>
@@ -832,12 +911,21 @@ bool Writer::PlainHeading(const Block& block) {
         joinNext = true;
     }
     while (!other_.empty() && other_.back() == ' ') other_.pop_back();
+    const size_t from = out_.size();
+    runs_.clear();
     AppendEscaped(other_, false);
+    DropNeedlessEscapes(from);
     return true;
 }
 
 void Writer::Inline(const Block& block, bool styles) {
-    if (math_ == MathMode::Latex ? InlinePlain<true>(block, styles) : InlinePlain<false>(block, styles)) return;
+    const size_t from = out_.size();
+    runs_.clear();
+    if (math_ == MathMode::Latex ? InlinePlain<true>(block, styles) : InlinePlain<false>(block, styles)) {
+        DropNeedlessEscapes(from);
+        return;
+    }
+    runs_.clear();  // InlinePlain's, out_ cut back
     CollectWords(block);
     StyleWords(styles);
     depth_ = 0;
@@ -993,6 +1081,7 @@ void Writer::Inline(const Block& block, bool styles) {
     closeLink();
     // No trailing spaces.
     while (!out_.empty() && out_.back() == ' ') out_.pop_back();
+    DropNeedlessEscapes(from);
 }
 
 void Writer::FindFormulas() {

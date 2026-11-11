@@ -3433,12 +3433,12 @@ void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::
 
 // A cell's Markdown without emphasis that covers the whole cell: a bold header row or first column,
 // an italic total, is the table's styling, not emphasis inside text. Emphasis on part of a cell
-// stays.
+// stays, and so do stars that open or close nothing (written raw: "** x", a space inside them).
 std::string_view CellStyleless(std::string_view t) {
     for (const std::string_view d : {"***", "**", "*"}) {
         if (t.size() <= 2 * d.size() || t.substr(0, d.size()) != d || t.substr(t.size() - d.size()) != d) continue;
         const std::string_view inner = t.substr(d.size(), t.size() - 2 * d.size());
-        bool other = false;
+        bool other = inner.front() == ' ' || inner.back() == ' ';
         for (size_t i = 0; i < inner.size() && !other; ++i) other = inner[i] == '*' && (i == 0 || inner[i - 1] != '\\');
         return other ? t : inner;
     }

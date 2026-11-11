@@ -300,7 +300,32 @@ void TestEscaping() {
     AddText(pages[0], "# not a heading and 2*3 a_b _x_ <b> [1] [x](y)", 72, 700, 10);
     const std::string md = Run(pages);
     Show("escaping", md);
-    RAYOPDF_CHECK(md == "\\# not a heading and 2\\*3 a_b \\_x\\_ \\<b> [1] [x\\](y)\n", 418);
+    RAYOPDF_CHECK(md == "\\# not a heading and 2\\*3 a_b \\_x_ \\<b> [1] [x\\](y)\n", 418);
+}
+
+// Stars and underscores are escaped only where CommonMark could read them as emphasis delimiters:
+// a run that can open, one that could close a delimiter written before it, one beside a
+// non-ASCII or the same character, one that starts a block. The others are written as they are.
+void TestEmphasisEscapes() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "p<0.05** and *** but 3*4 **x y** a_b_ __init__ x\\** \\*x \xC3\xA9** a|**", 72, 700, 10);
+    AddText(pages[0], "** starts a block", 72, 660, 10);
+    const float x = AddText(pages[0], "Bold", 72, 620, 10, kGlyphBold);
+    AddText(pages[0], " then 0.05** and _x and y_", x, 620, 10);
+    AddText(pages[0], "Results***", 72, 560, 20, kGlyphBold);
+    const float item = AddText(pages[0], "\xE2\x80\xA2", 72, 500, 10);
+    AddText(pages[0], "0.05** in an item", item + 8, 500, 10);
+    const std::string md = Run(pages);
+    Show("emphasis escapes", md);
+    // Closers with no opener before them, runs between spaces, `_` inside a word: as they are;
+    // openers, `*` inside a word, a run beside "é": escaped. A backslash before a run is escaped.
+    RAYOPDF_CHECK(Contains(md, "p<0.05** and *** but 3\\*4 \\*\\*x y** a_b_ \\_\\_init__ x\\\\** \\\\\\*x \xC3\xA9\\*\\* a|**\n"),
+                  1900);
+    RAYOPDF_CHECK(Contains(md, "\\*\\* starts a block\n"), 1901);
+    // After a delimiter the writer wrote, a run that can close stays escaped.
+    RAYOPDF_CHECK(Contains(md, "**Bold** then 0.05\\*\\* and \\_x and y_\n"), 1902);
+    RAYOPDF_CHECK(Contains(md, "# Results***\n"), 1903);
+    RAYOPDF_CHECK(Contains(md, "- 0.05** in an item"), 1904);
 }
 
 void TestBlanksAndUrlLinks() {
@@ -1545,6 +1570,7 @@ int main() {
     TestEmptyPage();
     TestLinkAnnotation();
     TestEscaping();
+    TestEmphasisEscapes();
     TestBlanksAndUrlLinks();
     TestSuperscript();
     TestOutlineHeading();

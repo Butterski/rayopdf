@@ -192,6 +192,26 @@ void TestLatticeGfm() {
     RAYOPDF_CHECK(Contains(md, "| Key | Value |\n| --- | --- |\n| a\\|b | 1. |"), 555);
 }
 
+// Stars and underscores in pipe-table cells: a cell's edges are whitespace to CommonMark, so a
+// closing or lone run there is written as it is, an opening one escaped; a run beside an escaped
+// pipe or backslash as well; stars around spaces are no emphasis the table's styling would strip.
+void TestCellEmphasisEscapes() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f, 640.0f, 620.0f, 600.0f}) HLine(page, 72, 300, y);
+    for (float x : {72.0f, 180.0f, 300.0f}) VLine(page, x, 600, 700);
+    const char* const cells[5][2] = {{"Key", "Value"}, {"***", "0.05**"}, {"a|**", "**b"}, {"** x **", "x\\**"}, {"x_", "_x"}};
+    for (int r = 0; r < 5; ++r) {
+        AddText(page, cells[r][0], 76, 686 - 20.0f * float(r));
+        AddText(page, cells[r][1], 184, 686 - 20.0f * float(r));
+    }
+    const std::string md = Run(pages);
+    Show("cell emphasis escapes", md);
+    RAYOPDF_CHECK(Contains(md, "| Key | Value |\n| --- | --- |\n| *** | 0.05** |\n"), 1713);
+    RAYOPDF_CHECK(Contains(md, "| a\\|** | \\*\\*b |\n| ** x ** | x\\\\** |\n"), 1714);
+    RAYOPDF_CHECK(Contains(md, "| x_ | \\_x |"), 1715);
+}
+
 // Booktabs: top, mid and bottom rules only; columns from whitespace; header above the mid rule.
 void TestBooktabs() {
     std::vector<PageData> pages{NewPage()};
@@ -1996,6 +2016,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--dump") == 0) return Dump(argv[2], argc >= 4 ? std::atoi(argv[3]) : 0);
     TestLatticeSpans();
     TestLatticeGfm();
+    TestCellEmphasisEscapes();
     TestBooktabs();
     TestHeaderRule();
     TestBorderless();
