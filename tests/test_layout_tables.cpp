@@ -4,7 +4,7 @@
 // between columns of text, and hostile rulings. Exit codes 550-599, 850-899 and 1700-1749.
 //
 // `test_layout_tables --dump FILE.pdf [PAGE]` prints the rulings and tables found on the pages of
-// a PDF (a development aid).
+// a PDF (a development aid; RAYOPDF_DUMP_LATEX=1 prepares the glyphs as --math=latex does).
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -13,6 +13,7 @@
 #include "layout/figures.h"
 #include "layout/interpreter.h"
 #include "layout/lines.h"
+#include "layout/math.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
 #include "layout/reading_order.h"
@@ -1734,6 +1735,40 @@ void TestProseRiverUnderRule() {
     RAYOPDF_CHECK(report.tables == 0 && Contains(md, "outer loop"), 1708);
 }
 
+// Two header lines between a top and a mid rule: set as far apart as the body's rows (a line of
+// units under the labels, as TeX sets two rows), two header rows; set closer than the body's rows
+// (one cell's text wrapped), one header row.
+void TestHeaderLinesAtRowPitch() {
+    for (const bool apart : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        const float pitch = apart ? 14 : 18, header = apart ? 14 : 11;
+        HLine(page, 72, 400, 714);
+        AddText(page, "Platform", 76, 700);
+        AddText(page, "Execution time", 180, 700);
+        AddText(page, "Current", 300, 700);
+        AddText(page, "(ms)", 180, 700 - header);
+        AddText(page, "(uA)", 300, 700 - header);
+        float y = 700 - header - 6;
+        HLine(page, 72, 400, y);
+        const char* const names[] = {"Alpha", "Beta", "Gamma"};
+        y -= 12;
+        for (int r = 0; r < 3; ++r, y -= pitch) {
+            AddText(page, names[r], 76, y);
+            AddText(page, std::to_string(2 + r) + ".10", 180, y);
+            AddText(page, std::to_string(4 + r) + ".60", 300, y);
+        }
+        HLine(page, 72, 400, y + pitch - 6);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("header lines at row pitch", md);
+        RAYOPDF_CHECK(report.tables == 1 &&
+                          Contains(md, apart ? "| Platform | Execution time | Current |\n| --- | --- | --- |\n|  | (ms) | (uA) |\n| Alpha |"
+                                             : "| Platform | Execution time (ms) | Current (uA) |\n| --- | --- | --- |\n| Alpha |"),
+                      1709);
+    }
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1744,6 +1779,7 @@ int Dump(const char* path, int only) {
     for (int i = 0; i < doc->PageCount(); ++i) {
         PageStats stats;
         InterpretPage(*doc, fonts, i, false, pages[static_cast<size_t>(i)], stats);
+        if (std::getenv("RAYOPDF_DUMP_LATEX")) PrepareMathGlyphs(pages[static_cast<size_t>(i)]);
         BuildLines(pages[static_cast<size_t>(i)]);
     }
     RemoveRunningLines(pages);
@@ -1920,6 +1956,7 @@ int main(int argc, char** argv) {
     TestTickLabelsBesidePlots();
     TestGridMostlyInFigure();
     TestProseRiverUnderRule();
+    TestHeaderLinesAtRowPitch();
     std::puts("test_layout_tables: ok");
     return 0;
 }

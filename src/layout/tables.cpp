@@ -1386,7 +1386,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // different heights), unless a partial rule parts them (`spans`), or a label (a word, or words a
     // word space apart) runs across a column boundary, or stands centred over the gap between two
     // columns that another header line fills both: then the header has levels (a label over
-    // several columns) and keeps its rows.
+    // several columns) and keeps its rows; so does a header whose lines are set as far apart as the
+    // body's rows.
     if (headerRows >= 2) {
         bool levels = !spans.empty();
         const size_t headerEnd = std::min(rowBegin + headerRows, rowEnd);
@@ -1412,6 +1413,29 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 for (const Gap& gap : gaps) levels = levels || (x0 < gap.a && x1 > gap.b);
             }
             if (!levels && x1 > -INFINITY) levels = centred(r, x0, x1);
+        }
+        // Header lines set as far apart as the body's rows (the median pitch of the body rows' first
+        // lines) are rows of their own: a line of units under the labels, as TeX sets two rows. The
+        // lines of one wrapped cell sit closer than rows with padding between them.
+        if (!levels) {
+            std::vector<float> pitches;
+            for (size_t s = 1; s < starts.size() && pitches.size() < 256; ++s)
+                if (starts[s - 1] >= headerEnd) pitches.push_back(rows[starts[s - 1]].base - rows[starts[s]].base);
+            if (!pitches.empty()) {
+                std::nth_element(pitches.begin(), pitches.begin() + static_cast<std::ptrdiff_t>(pitches.size() / 2), pitches.end());
+                const float pitch = pitches[pitches.size() / 2];
+                bool apart = true;
+                for (size_t r = rowBegin + 1; r < headerEnd && apart; ++r) apart = rows[r - 1].base - rows[r].base >= 0.9f * pitch;
+                if (apart) {
+                    size_t kept = 0;
+                    for (size_t s : starts)
+                        if (s >= headerEnd) starts[kept++] = s;
+                    starts.resize(kept);
+                    starts.insert(starts.begin(), headerEnd - rowBegin, 0);
+                    for (size_t r = rowBegin; r < headerEnd; ++r) starts[r - rowBegin] = r;
+                    levels = true;
+                }
+            }
         }
         if (!levels) {
             size_t kept = 0;
