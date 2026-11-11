@@ -712,6 +712,46 @@ void TestRuledSectionLabels() {
     RAYOPDF_CHECK(!Contains(md, "| Values of the correlation") && Contains(md, "Values of the correlation"), 865);
 }
 
+// Booktabs with sections: a body line that is one label (its words a narrow word space apart),
+// centred across the gap between two columns of figures that every other body line leaves open,
+// names the rows under it. Each such line is a label row; the columns come from the other lines,
+// not merged under the label.
+void TestLoneSectionLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 740, 2);
+    HLine(page, 72, 400, 712, 0.8f);
+    HLine(page, 72, 400, 694, 0.5f);
+    HLine(page, 72, 400, 590, 0.8f);
+    AddText(page, "Setting", 76, 700);
+    AddText(page, "N10", 200, 700);
+    AddText(page, "N20", 260, 700);
+    AddText(page, "N50", 320, 700);
+    const char* const names[] = {"Model A", "Model B", "Model C"};
+    for (int s = 0; s < 2; ++s) {
+        const float top = 682 - 48.0f * float(s);
+        float x = 150;
+        for (const char* word : {s == 0 ? "Lower" : "Upper", "bounds", "of", "the", "error"}) x = AddText(page, word, x, top) + 3;
+        for (int r = 0; r < 3; ++r) {
+            const float y = top - 12 - 12.0f * float(r);
+            AddText(page, names[r], 76, y);
+            AddText(page, "0." + std::to_string(11 + r + 30 * s), 200, y);
+            AddText(page, "0." + std::to_string(21 + r + 30 * s), 260, y);
+            AddText(page, "0." + std::to_string(31 + r + 30 * s), 320, y);
+        }
+    }
+    AddProse(page, 72, 400, 560, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("lone section labels", md);
+    RAYOPDF_CHECK(report.tables == 1, 1720);
+    RAYOPDF_CHECK(Contains(md, "| Setting | N10 | N20 | N50 |\n| --- | --- | --- | --- |\n| Lower bounds of the error |  |  |  |\n"
+                               "| Model A | 0.11 | 0.21 | 0.31 |"),
+                  1721);
+    RAYOPDF_CHECK(Contains(md, "| Model C | 0.13 | 0.23 | 0.33 |\n| Upper bounds of the error |  |  |  |\n| Model A | 0.41 | 0.51 | 0.61 |"),
+                  1722);
+}
+
 // A ruled table with a rule around each group of rows: in a group, a line of numbers under a line
 // of numbers is a row of its own (its first cell empty), while a line in smaller type right under
 // a value (a standard error) is that value's second line and keeps the rule stack one table.
@@ -2084,6 +2124,7 @@ int main(int argc, char** argv) {
     TestListNotTable();
     TestAlgorithmBox();
     TestRuledSectionLabels();
+    TestLoneSectionLabels();
     TestRuledRowGroups();
     TestTableAcrossColumns();
     TestHostileRulings();

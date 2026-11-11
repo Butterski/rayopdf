@@ -2515,11 +2515,12 @@ void Detector::RuleStacks() {
     std::stable_sort(stacks.begin(), stacks.end(), [](const Stack& p, const Stack& q) { return p.b - p.a > q.b - q.a; });
     std::vector<Row> rows;
     std::vector<uint32_t> rowWords;
-    std::vector<Gap> gaps, trial;
+    std::vector<Gap> gaps, trial, sectionGaps;
     std::vector<size_t> labelBands;  // the rule above each label band of the run
     std::vector<uint8_t> label;      // per row of the run: it lies in a label band
     std::vector<uint8_t> ruled;      // per row of the run: a rule of the run lies between it and the row above
     std::vector<Edge> partial;       // rules among a table's header lines narrower than it
+    std::vector<uint8_t> sections;   // per row of the run: label rows, and lines tried as section labels
     for (const Stack& s : stacks) {
         if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
@@ -2814,6 +2815,35 @@ void Detector::RuleStacks() {
                         size_t r = begin + 1;
                         while (r + 1 < begin + header && rows[r].base > e->pos) ++r;
                         if (rows[r - 1].base - e->pos >= 0.3f * em && e->pos - rows[r].base >= 0.5f * em) partial.push_back(*e);
+                    }
+                }
+                // Body lines that are one label (words a word space apart) across column gaps every
+                // other body line leaves open name the sections of rows ("Lower bounds of μ" centred
+                // over the columns of figures): each is a label row, the columns come from the
+                // other lines. A label heads rows: never the body's last line.
+                if (header > 0 && end - begin >= header + 4u) {
+                    const size_t body = end - begin - header;
+                    sections.assign(label.begin(), label.end());
+                    size_t lone = 0;
+                    for (size_t q = begin + header; q + 1 < end; ++q) {
+                        if (label[q]) continue;
+                        bool one = true;
+                        for (uint32_t k = rows[q].first + 1; k < rows[q].first + rows[q].count && one; ++k) {
+                            const TWord& w = words_[rowWords[k]];
+                            one = w.x0 - words_[rowWords[k - 1]].x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
+                        }
+                        if (one) sections[q] = 1, lone++;
+                    }
+                    if (lone > 0 && body >= lone + 3 && Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial, labels) &&
+                        Columns(rows, rowWords, begin + header, end, xa, xb, minGap, sectionGaps, &sections) &&
+                        sectionGaps.size() > trial.size() && KeepsGaps(trial, sectionGaps)) {
+                        for (size_t q = begin + header; q + 1 < end; ++q) {
+                            if (!sections[q] || label[q]) continue;
+                            const float a = words_[rowWords[rows[q].first]].x0;
+                            const float b = words_[rowWords[rows[q].first + rows[q].count - 1]].x1;
+                            for (const Gap& gap : sectionGaps) label[q] = label[q] || (a < gap.a && b > gap.b);
+                            if (label[q]) labels = &label;
+                        }
                     }
                 }
                 // A header label over several columns (a unit over its sub-columns) closes the gaps
