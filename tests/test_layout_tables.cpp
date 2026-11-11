@@ -410,6 +410,26 @@ void TestAuthorBlock() {
     RAYOPDF_CHECK(report.tables == 0 && Contains(md, "ann.lee@ox.ac.uk") && Contains(md, "bchen@lbl.gov"), 879);
 }
 
+// Rules between sections of a parameter list, the first section five lines: its lines are rows
+// under the section's name, not a header of five lines.
+void TestRuledSectionsNoHeader() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {712.0f, 644.0f, 600.0f}) HLine(page, 72, 330, y);
+    const char* const lines[][2] = {{"Optics", ""},     {"Period", "4.0 cm"}, {"Field", "0.67 T"}, {"Wavelength", "10.3 um"},
+                                    {"Power", "2.8 GW"}, {"Beam", ""},         {"Energy", "46 MeV"}, {"Charge", "50 pC"}};
+    for (int k = 0; k < 8; ++k) {
+        const float y = (k < 5 ? 700.0f : 696.0f) - 12.0f * float(k);
+        AddText(page, lines[k][0], 76, y);
+        if (*lines[k][1]) AddText(page, lines[k][1], 240, y);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("ruled sections", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Optics |  |\n| --- | --- |\n| Period | 4.0 cm |\n| Field | 0.67 T |"), 880);
+    RAYOPDF_CHECK(Contains(md, "| Power | 2.8 GW |\n| Beam |  |\n| Energy | 46 MeV |"), 881);
+}
+
 // The same table drawn bottom row first, with a cell's word drawn twice at one origin in another
 // text: its words still sort top to bottom (the tie leaves them to std::sort), and it stays a table.
 void TestBorderlessWordOrder() {
@@ -1281,6 +1301,7 @@ int main(int argc, char** argv) {
     TestLatticeRulingPastTop();
     TestLatticeTwoLineRow();
     TestAuthorBlock();
+    TestRuledSectionsNoHeader();
     TestBorderlessWordOrder();
     TestTwoColumnProse();
     TestListNotTable();

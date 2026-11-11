@@ -2214,15 +2214,15 @@ void Detector::RuleStacks() {
                 !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps) &&
                 !FigureText(rows, rowWords, begin, end, em)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
-                // above it when they are few and rows follow below it.
+                // above it when they are few and rows follow below it. More than three lines above
+                // the rule are rows of a section, not a header.
                 uint16_t header = 0;
                 if (!single) {
                     for (size_t r = begin; r < end && rows[r].base > s.ys[i + 1]; ++r) header++;
                 } else if (rows[end - 1].base < top) {
                     for (size_t r = begin; r < end && rows[r].base > top; ++r) header++;
-                    if (header > 3) header = 0;
                 }
-                if (header == end - begin) header = 0;
+                if (header > 3 || header == end - begin) header = 0;
                 // No rule under the header (a top and a bottom rule only): the leading rows without
                 // a number, three at most, over three rows or more that start with one.
                 if (header == 0) {
