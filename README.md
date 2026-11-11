@@ -175,7 +175,7 @@ The same tools on public benchmarks and on a synthetic corpus with exact ground 
 | READoc GitHub, 150 documents: text / headings | **0.941** / **0.881** | 0.874 / 0.778 | 0.908 / 0.471 |
 | READoc arXiv, 150 papers, with `--math=latex`: text / headings / tables / order | **0.878** / **0.693** / 0.604 / 0.981 | 0.826 / 0.515 / **0.685** / 0.976 | 0.841 / 0.403 / 0.656 / **0.984** |
 | READoc arXiv with `--math=latex`: inline math | **0.654** | 0.369 | 0.001 |
-| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.919** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) |
+| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.920** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) |
 
 "Text-layer tools" are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse and edgeparse;
 docling is the machine-learning reference. RayoPDF 0.0.14, core alone unless the OCR add-on is named;
