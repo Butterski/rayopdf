@@ -240,6 +240,12 @@ struct Orderer {
     std::vector<Rule> rules;
     std::vector<uint32_t> scratch;
     std::vector<float> gaps_;
+    // CrossLines' lines in baseline order: what its scan reads of each, and whether it is wide.
+    struct Crossing {
+        float baseline, u0, u1, size;
+        bool wide;
+    };
+    std::vector<Crossing> crossing_;
 
     const Line& L(uint32_t i) const { return page.lines[i]; }
 
@@ -635,16 +641,23 @@ struct Orderer {
         const float wide = Fmin(0.25f * (right - left), 0.6f * median);
         scratch.assign(items.begin(), items.end());
         std::sort(scratch.begin(), scratch.end(), [&](uint32_t a, uint32_t b) { return L(a).baseline > L(b).baseline; });
+        crossing_.resize(scratch.size());
+        for (size_t j = 0; j < scratch.size(); ++j) {
+            const Line& l = L(scratch[j]);
+            crossing_[j] = Crossing{l.baseline, l.u0, l.u1, l.size, !(l.u1 - l.u0 < wide)};
+        }
+        const Crossing* const lines = crossing_.data();
+        const size_t n = crossing_.size();
         size_t from = 0;
-        for (size_t k = 0; k < scratch.size(); ++k) {
-            const Line& lf = L(scratch[k]);
+        for (size_t k = 0; k < n; ++k) {
+            const Crossing& lf = lines[k];
             const float window = 6 * lf.size;
-            while (from < k && L(scratch[from]).baseline - lf.baseline > window) ++from;
+            while (from < k && lines[from].baseline - lf.baseline > window) ++from;
             float minRight = INFINITY, maxLeft = -INFINITY;
-            for (size_t j = from; j < scratch.size(); ++j) {
-                const Line& lg = L(scratch[j]);
+            for (size_t j = from; j < n; ++j) {
+                const Crossing& lg = lines[j];
                 if (lf.baseline - lg.baseline > window) break;
-                if (j == k || lg.u1 - lg.u0 < wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
+                if (j == k || !lg.wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
                 if (std::fabs(lg.baseline - lf.baseline) > window) continue;
                 minRight = Fmin(minRight, lg.u1);
                 maxLeft = Fmax(maxLeft, lg.u0);
@@ -852,7 +865,6 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     const bool flushLeft = atLeft * 2 >= lines.size();
     int removed = 0;
     std::vector<uint32_t> rowLines;
-    std::string piece;
     size_t first = 0, last = lines.size();  // the lines not removed: lines[first, last)
     for (int side = 0; side < 2; ++side) {
         // Rows set close together at the edge (a two- or three-line journal or licence block)
@@ -895,7 +907,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                     ++end;
                 if (end < l.count) {
                     text.clear();
-                    for (uint32_t g = 0; g < end; ++g) text.append(page.GlyphText(page.glyphs[page.lineGlyphs[l.first + g]]));
+                    AppendGlyphTexts(page, l, 0, end, text);
                     superscript = superscript || ParseMarker(text, value) != Marker::None;
                 }
             }
@@ -928,8 +940,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 text.clear();
                 for (uint32_t li : rowLines) {
                     if (!text.empty()) text.push_back(' ');
-                    LineText(page, page.lines[li], piece);
-                    text += piece;
+                    AppendLineText(page, page.lines[li], text);
                 }
                 RunningKey(text, key);
                 number = count == 1 && IsPageNumberKey(key);
@@ -1212,7 +1223,7 @@ void AddObstacles(PageData& page, std::vector<uint32_t>& items) {
 
 void OrderLines(PageData& page) {
     page.order.clear();
-    Orderer orderer{page, page.order, static_cast<uint32_t>(page.lines.size()), {}, {}, {}};
+    Orderer orderer{page, page.order, static_cast<uint32_t>(page.lines.size()), {}, {}, {}, {}};
     orderer.CollectRules();
     std::vector<uint32_t> items;
     const size_t lineCount = page.lines.size();

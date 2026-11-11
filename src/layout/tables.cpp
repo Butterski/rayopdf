@@ -738,7 +738,7 @@ void Detector::SortWords() {
 std::string_view Detector::WordText(const TWord& w, std::string& scratch) const {
     scratch.clear();
     const Line& line = page_.lines[w.line];
-    for (uint32_t k = w.k0; k < w.k1; ++k) scratch.append(page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]]));
+    AppendGlyphTexts(page_, line, w.k0, w.k1, scratch);
     return scratch;
 }
 
@@ -773,8 +773,8 @@ const WordChars& Detector::Chars(const TWord& w) const {
     c.page = scratch_.charsPage;
     const Line& line = page_.lines[w.line];
     uint8_t all = kCharNumber, any = 0;
-    for (uint32_t k = w.k0; k < w.k1; ++k) {
-        for (const char ch : page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]])) {
+    ForGlyphTextRuns(page_, line, w.k0, w.k1, [&](std::string_view text) {
+        for (const char ch : text) {
             const unsigned char u = static_cast<unsigned char>(ch);
             const uint8_t kind = kCharClasses.of[u];
             if (c.size < 3) c.head[c.size] = u;
@@ -783,7 +783,7 @@ const WordChars& Detector::Chars(const TWord& w) const {
             c.letters += (kind >> 1) & 1;
             all &= kind, any |= kind;
         }
-    }
+    });
     c.numberish = (all & kCharNumber) != 0;
     c.at = (any & kCharAt) != 0;
     return c;

@@ -9,6 +9,7 @@
 #include "layout/page.h"
 
 #include <string>
+#include <string_view>
 
 namespace RayoPdf::Layout {
 
@@ -38,6 +39,30 @@ void SplitRunInHeadings(PageData& page);
 
 // The text of a line with word breaks as single spaces, from its glyph `skip` on.
 void LineText(const PageData& page, const Line& line, std::string& out, uint32_t skip = 0);
+// LineText appended to `out`.
+void AppendLineText(const PageData& page, const Line& line, std::string& out, uint32_t skip = 0);
+
+// Calls use(text) with the texts of `line`'s glyphs [k0, k1) in order, a run of glyphs whose texts
+// follow each other in the page text as one piece: the same bytes as glyph by glyph.
+template <class Use>
+void ForGlyphTextRuns(const PageData& page, const Line& line, uint32_t k0, uint32_t k1, Use use) {
+    const size_t textSize = page.text.size();
+    uint32_t k = k0;
+    while (k < k1) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        const std::string_view first = page.GlyphText(g);
+        size_t end = size_t(g.text) + first.size();
+        for (++k; k < k1; ++k) {
+            const Glyph& n = page.glyphs[page.lineGlyphs[line.first + k]];
+            if (n.text != end || textSize - end < n.textLength) break;
+            end += n.textLength;
+        }
+        use(std::string_view(first.data(), end - g.text));
+    }
+}
+
+// Appends the texts of `line`'s glyphs [k0, k1), with no spaces between (ForGlyphTextRuns).
+void AppendGlyphTexts(const PageData& page, const Line& line, uint32_t k0, uint32_t k1, std::string& out);
 
 // A superscript of `line`: a visible glyph smaller than the line's size and raised above its
 // baseline (the writer's <sup>, and footnote references). OCR layers fit a size to every word

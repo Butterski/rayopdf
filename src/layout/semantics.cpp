@@ -466,7 +466,7 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
            !(page.glyphs[page.lineGlyphs[line.first + wordEnd]].flags & kGlyphSpaceBefore))
         ++wordEnd;
     scratch.clear();
-    for (uint32_t k = 0; k < wordEnd; ++k) scratch.append(page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]]));
+    AppendGlyphTexts(page, line, 0, wordEnd, scratch);
     if (wordEnd == line.count && scratch.size() >= 3 && scratch.size() <= 8 && scratch.front() == '(' &&
         scratch.back() == ')' && line.dir == 0 && !(line.flags & kLineRtl)) {
         bool plain = true;
