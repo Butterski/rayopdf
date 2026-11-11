@@ -813,7 +813,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             float rowLeft = INFINITY, rowRight = -INFINITY;
             uint32_t chars = 0;
             float largest = 0;
-            bool superscript = false, bold = true, mono = true;
+            bool superscript = false, bold = true, mono = true, anyMono = false;
             for (size_t k = 0; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
                 // On the edge line's baseline, or beside it on an offset one (a folio set a little
@@ -829,6 +829,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 rowLeft = Fmin(rowLeft, l.u0), rowRight = Fmax(rowRight, l.u1);
                 bold = bold && (l.flags & kLineAllBold);
                 mono = mono && (l.flags & kLineAllMono);
+                anyMono = anyMono || (l.flags & kLineAllMono);
                 superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
                 // A row starting with a list marker or enumerator ("5. The last note") is content.
                 uint32_t end = 1, value = 0;
@@ -919,9 +920,25 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // Metadata in the outer margin needs only half an em of space: a copyright line set
             // just under the last line of text.
             const bool closeMetadata = strong && metadata && margin && gap >= Fmax(0.5f * body, 1.5f * spacing);
+            // A page number or a folio row closer than minGap but set apart by more than the line
+            // spacing plus a quarter em: a folio row of separate pieces (no piece of a listing)
+            // reaching an edge of the text, or a lone page number centred on the text or flush
+            // with its right edge. Lines of a paragraph are no further apart than its spacing.
+            const float closeGap = Fmax(0.5f * body, spacing + 0.25f * body);
+            const bool reachesEdge = rowLeft <= textLeft + 2 * body || rowRight >= textRight - 2 * body;
+            const bool closeFolio = folio && !anyMono && !note && !superscript && largest <= 1.35f * body &&
+                                    (spread || offset || (count >= 2 && reachesEdge)) && gap >= closeGap &&
+                                    figureGap >= closeGap;
+            const bool closeNumber = number && !superscript && largest <= 1.3f * body && gap >= closeGap &&
+                                     (std::fabs((rowLeft + rowRight) - (textLeft + textRight)) <= 4 * body ||
+                                      rowRight >= textRight - body);
             const bool apart = (!sparse || (strong && metadata)) && (!weakPending || strong) &&
-                               ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata);
-            if (!apart && !((strong || evidence) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
+                               ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
+                                ((closeFolio || closeNumber) && row < 2));
+            // A short row in the running band overlapping the row inside it waits with that row:
+            // pieces of one head on offset baselines. Its block must still end in a strong row.
+            const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;
+            if (!apart && !((strong || evidence || overlapping) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
                 // The block does not end set apart: the pending rows stay.
                 if (side == 0)
                     first = start;

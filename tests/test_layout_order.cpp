@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the reading-order stage (src/layout/reading_order.cpp): columns, cuts and page
-// furniture, on pages built glyph by glyph and converted by the whole pipeline. Exit codes 750-799.
+// furniture, on pages built glyph by glyph and converted by the whole pipeline. Exit codes 750-799
+// and 1850-1899.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -424,6 +425,46 @@ void TestFiveRowMasthead() {
                   798);
 }
 
+// A page number or a folio row closer to the text than an em but set apart by more than the line
+// spacing plus a quarter em: a lone number centred on the text, or a folio row of separate pieces
+// reaching the text's edge, goes. A number flush left at that gap, and a folio row at the text's own
+// line spacing, stay.
+void TestCloseFolioRows() {
+    // 55 body lines of 10 points from 720 down to 72 (box bottom 70), 2 points apart; the text runs
+    // from 72 to 302. A row at baseline 55 has its top at 63: 7 points apart.
+    const auto build = [](float x, float y, bool folio) {
+        std::vector<PageData> pages{NewPage()};
+        AddBody(pages[0], 55, 720, 10);
+        if (folio) {
+            AddText(pages[0], "Journal of Testing", 72, y, 10);
+            AddText(pages[0], "39", x, y, 10);
+        } else {
+            AddText(pages[0], "17", x, y, 10);
+        }
+        return Run(pages);
+    };
+    std::string md = build(182, 55, false);
+    RAYOPDF_CHECK(Find(md, "\n17\n") == std::string::npos && Find(md, "Body line 54 of") != std::string::npos, 1850);
+    RAYOPDF_CHECK(Find(build(72, 55, false), "\n17\n") != std::string::npos, 1851);
+    md = build(250, 55, true);
+    RAYOPDF_CHECK(Find(md, "Journal of Testing") == std::string::npos && Find(md, "Body line 54 of") != std::string::npos,
+                  1852);
+    RAYOPDF_CHECK(Find(build(250, 60, true), "Journal of Testing") != std::string::npos, 1853);
+}
+
+// A body-size row at the head of a page overlapping a row of small print under it, set apart from
+// the text, goes with that row.
+void TestOverlappingHeadRow() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Research Article", 72, 745, 10);
+    AddText(pages[0], "Journal of Testing 12(3), 2024", 100, 741, 7);
+    AddBody(pages[0], 40, 705, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Research Article") == std::string::npos && Find(md, "Journal of Testing") == std::string::npos &&
+                      Find(md, "Body line 0 of") != std::string::npos,
+                  1854);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -445,6 +486,8 @@ int main() {
     TestNoBreakFootnote();
     TestPageWords();
     TestFiveRowMasthead();
+    TestCloseFolioRows();
+    TestOverlappingHeadRow();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
