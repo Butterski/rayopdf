@@ -163,12 +163,24 @@ void CollectEdges(const PageData& page, uint8_t dir, std::vector<Edge>& h, std::
     const auto holds = [](const Ruling* o, const Ruling* r) {
         return o->x0 <= r->x0 + 0.5f && o->x1 >= r->x1 - 0.5f && o->y0 <= r->y0 + 0.5f && o->y1 >= r->y1 - 0.5f;
     };
+    // Only an area reaching r's x range (within the half point `holds` allows) can hold r or cross
+    // it: tried in the order of their left edges, the areas starting right of r end the search and
+    // those ending left of it are passed over. Whether any area makes r inner is the same in any
+    // order (the coordinates are finite).
+    std::vector<uint32_t> byLeft;
+    if (nesting) {
+        byLeft.resize(areas.size());
+        for (uint32_t i = 0; i < areas.size(); ++i) byLeft[i] = i;
+        std::sort(byLeft.begin(), byLeft.end(), [&](uint32_t a, uint32_t b) { return areas[a].x0 < areas[b].x0; });
+    }
     for (const Ruling& ar : areas) {
         const Ruling* r = &ar;
+        const float right = r->x1 + 0.5f, left = r->x0 - 0.5f;
         bool inner = false;
-        for (size_t k = 0; nesting && k < areas.size() && !inner; ++k) {
-            const Ruling* o = &areas[k];
-            if (o == r) continue;
+        for (size_t k = 0; k < byLeft.size() && !inner; ++k) {
+            const Ruling* o = &areas[byLeft[k]];
+            if (o->x0 > right) break;
+            if (o == r || o->x1 < left) continue;
             inner = holds(o, r) && (o->x1 - o->x0) * (o->y1 - o->y0) > 1.2f * (r->x1 - r->x0) * (r->y1 - r->y0);
             inner = inner || (Fmin(r->x1, o->x1) - Fmax(r->x0, o->x0) > kSnap && Fmin(r->y1, o->y1) - Fmax(r->y0, o->y0) > kSnap &&
                               !holds(o, r) && !holds(r, o));
@@ -739,24 +751,41 @@ unsigned char Detector::FirstByte(const TWord& w) const {
     return 0;
 }
 
+// Chars' byte classes: a digit, an ASCII letter, a byte of a number (a digit, '.', '-' or a byte of
+// U+2212's UTF-8), an at sign.
+enum : uint8_t { kCharDigit = 1, kCharLetter = 2, kCharNumber = 4, kCharAt = 8 };
+struct CharClasses {
+    uint8_t of[256] = {};
+    constexpr CharClasses() {
+        for (int c = '0'; c <= '9'; ++c) of[c] = kCharDigit | kCharNumber;
+        for (int c = 'a'; c <= 'z'; ++c) of[c] = kCharLetter;
+        for (int c = 'A'; c <= 'Z'; ++c) of[c] = kCharLetter;
+        of['.'] = of['-'] = of[0xE2] = of[0x88] = of[0x92] = kCharNumber;
+        of['@'] = kCharAt;
+    }
+};
+constexpr CharClasses kCharClasses;
+
 const WordChars& Detector::Chars(const TWord& w) const {
     WordChars& c = scratch_.chars[static_cast<size_t>(&w - words_.data())];
     if (c.page == scratch_.charsPage) return c;
     c = WordChars{};
     c.page = scratch_.charsPage;
     const Line& line = page_.lines[w.line];
+    uint8_t all = kCharNumber, any = 0;
     for (uint32_t k = w.k0; k < w.k1; ++k) {
         for (const char ch : page_.GlyphText(page_.glyphs[page_.lineGlyphs[line.first + k]])) {
             const unsigned char u = static_cast<unsigned char>(ch);
+            const uint8_t kind = kCharClasses.of[u];
             if (c.size < 3) c.head[c.size] = u;
             c.size++;
-            const bool digit = ch >= '0' && ch <= '9';
-            if (digit) c.digits++;
-            else if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) c.letters++;
-            c.numberish = c.numberish && (digit || ch == '.' || ch == '-' || u == 0xE2 || u == 0x88 || u == 0x92);
-            c.at = c.at || ch == '@';
+            c.digits += kind & kCharDigit;
+            c.letters += (kind >> 1) & 1;
+            all &= kind, any |= kind;
         }
     }
+    c.numberish = (all & kCharNumber) != 0;
+    c.at = (any & kCharAt) != 0;
     return c;
 }
 

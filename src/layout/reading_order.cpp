@@ -27,6 +27,19 @@ size_t SpaceAt(const std::string& text, size_t i) {
     return 0;
 }
 
+// RunningKey's byte classes: a byte that may start a space (SpaceAt), a digit, a letter that may
+// start a roman numeral word, and every other byte, copied (ASCII lowercased).
+enum : uint8_t { kKeyCopy, kKeySpace, kKeyDigit, kKeyRoman };
+struct KeyClasses {
+    uint8_t of[256] = {};
+    constexpr KeyClasses() {
+        of[' '] = of['\t'] = of[0xC2] = of[0xE2] = of[0xE3] = kKeySpace;
+        for (int c = '0'; c <= '9'; ++c) of[c] = kKeyDigit;
+        of['i'] = of['v'] = of['x'] = of['I'] = of['V'] = of['X'] = kKeyRoman;
+    }
+};
+constexpr KeyClasses kKeyClasses;
+
 // The repetition key of a header or footer line (§5.2): ASCII lowercased, digit runs and lowercase
 // roman-numeral words as '#', white space collapsed. Written in place: a key is never longer than
 // its text.
@@ -42,19 +55,22 @@ void RunningKey(const std::string& text, std::string& key) {
     bool space = false;
     while (i < text.size()) {
         const char c = text[i];
-        if (const size_t s = SpaceAt(text, i)) {
-            space = n > 0;
-            i += s;
-            continue;
+        const uint8_t kind = kKeyClasses.of[static_cast<unsigned char>(c)];
+        if (kind == kKeySpace) {
+            if (const size_t s = SpaceAt(text, i)) {
+                space = n > 0;
+                i += s;
+                continue;
+            }
         }
         if (space) out[n++] = ' ', space = false;
-        if (c >= '0' && c <= '9') {
+        if (kind == kKeyDigit) {
             while (i < text.size() && text[i] >= '0' && text[i] <= '9') ++i;
             out[n++] = '#';
             continue;
         }
         // A word of roman numerals only.
-        if ((n == 0 || out[n - 1] == ' ') && (c == 'i' || c == 'v' || c == 'x' || c == 'I' || c == 'V' || c == 'X')) {
+        if (kind == kKeyRoman && (n == 0 || out[n - 1] == ' ')) {
             size_t j = i;
             while (j < text.size() && roman(text[j])) ++j;
             if (j - i <= 6 && (j == text.size() || text[j] == ' ')) {
@@ -138,18 +154,28 @@ bool HasFolio(const std::string& key, const std::string& text) {
 // download stamp, an ISSN. ASCII case is folded; the copyright sign is matched as UTF-8. One pass:
 // the words are tried where the text has their first character.
 bool IsMetadata(const std::string& text) {
-    static constexpr std::string_view kWords[] = {"http",    "www.",    "doi",     "copyright", "issn", "downloaded",
-                                                  "rights reserved", "license", "licence", "\xC2\xA9"};
     const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    // Whether `word`, whose first character text[i] matches, is at i.
+    const auto at = [&](size_t i, std::string_view word) {
+        if (word.size() > text.size() - i) return false;
+        for (size_t j = 1; j < word.size(); ++j)
+            if (lower(text[i + j]) != word[j]) return false;
+        return true;
+    };
     for (size_t i = 0; i < text.size(); ++i) {
-        const char c = lower(text[i]);
-        if (c != 'h' && c != 'w' && c != 'd' && c != 'c' && c != 'i' && c != 'r' && c != 'l' && c != '\xC2') continue;
-        for (const std::string_view word : kWords) {
-            if (word[0] != c || word.size() > text.size() - i) continue;
-            size_t j = 1;
-            while (j < word.size() && lower(text[i + j]) == word[j]) ++j;
-            if (j == word.size()) return true;
+        bool found = false;
+        switch (lower(text[i])) {
+        case 'h': found = at(i, "http"); break;
+        case 'w': found = at(i, "www."); break;
+        case 'd': found = at(i, "doi") || at(i, "downloaded"); break;
+        case 'c': found = at(i, "copyright"); break;
+        case 'i': found = at(i, "issn"); break;
+        case 'r': found = at(i, "rights reserved"); break;
+        case 'l': found = at(i, "license") || at(i, "licence"); break;
+        case '\xC2': found = at(i, "\xC2\xA9"); break;
+        default: break;
         }
+        if (found) return true;
     }
     return false;
 }
@@ -691,6 +717,10 @@ struct Orderer {
                              [&](uint32_t a, uint32_t b) { return L(a).u1 - L(a).u0 < L(b).u1 - L(b).u0; });
             median = L(*mid).u1 - L(*mid).u0;
         }
+        // The lines wide enough to be crossed, in the order of `items` (scratch is free again).
+        scratch.clear();
+        for (uint32_t g : items)
+            if (!(L(g).u1 - L(g).u0 < wide)) scratch.push_back(g);
         std::vector<uint32_t> separators, rest;
         for (uint32_t f : items) {
             const Line& lf = L(f);
@@ -700,10 +730,10 @@ struct Orderer {
             }
             const float window = 6 * lf.size;
             float minRight = INFINITY, maxLeft = -INFINITY;
-            for (uint32_t g : items) {
+            for (uint32_t g : scratch) {
                 if (g == f) continue;
                 const Line& lg = L(g);
-                if (lg.u1 - lg.u0 < wide || lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
+                if (lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
                 if (std::fabs(lg.baseline - lf.baseline) > window) continue;
                 minRight = Fmin(minRight, lg.u1);
                 maxLeft = Fmax(maxLeft, lg.u0);
@@ -759,6 +789,7 @@ constexpr uint32_t kMarkedRowChars = 60;
 
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
     std::vector<uint32_t> lines;
+    lines.reserve(page.lines.size());
     for (uint32_t i = 0; i < page.lines.size(); ++i) {
         const Line& l = page.lines[i];
         if (l.dir == 0 && l.count > 0 && !(l.flags & kLineRemoved)) lines.push_back(i);
@@ -797,6 +828,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     // column. A header or footer is set apart by more than that, so double-spaced text keeps its
     // first and last lines.
     std::vector<float> gaps;
+    gaps.reserve(lines.size());
     for (size_t k = 0; k + 1 < lines.size(); ++k) {
         const Line& a = page.lines[lines[k]];
         for (size_t j = k + 1; j < lines.size() && j <= k + 8; ++j) {
@@ -1098,20 +1130,34 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
         }
     }
     // The body size (algorithms §6.1: the most common size by characters) for the edge test: the
-    // size key with the most characters, the smallest of equal counts.
+    // size key with the most characters, the smallest of equal counts (whatever order the keys are
+    // weighed in). Keys up to kCountedSizeKeys are counted in place, the rest sorted and summed.
+    constexpr int kCountedSizeKeys = 256;
+    uint64_t keyChars[kCountedSizeKeys] = {};
     std::vector<std::pair<int, uint64_t>> sizeChars;
     for (const PageData& page : pages)
-        for (const Line& line : page.lines)
-            if (line.dir == 0) sizeChars.emplace_back(static_cast<int>(std::lround(line.size * 2)), line.chars);
-    std::sort(sizeChars.begin(), sizeChars.end(),
-              [](const std::pair<int, uint64_t>& a, const std::pair<int, uint64_t>& b) { return a.first < b.first; });
+        for (const Line& line : page.lines) {
+            if (line.dir != 0) continue;
+            const int size = static_cast<int>(std::lround(line.size * 2));
+            if (size >= 0 && size < kCountedSizeKeys)
+                keyChars[size] += line.chars;
+            else
+                sizeChars.emplace_back(size, line.chars);
+        }
     int bodyKey = 0;
     uint64_t bodyCount = 0;
+    const auto weigh = [&](int size, uint64_t chars) {
+        if (chars > bodyCount || (chars == bodyCount && size < bodyKey)) bodyKey = size, bodyCount = chars;
+    };
+    // A key no line has weighs as one of no characters: it never wins, being no smaller than 0.
+    for (int size = 0; size < kCountedSizeKeys; ++size) weigh(size, keyChars[size]);
+    std::sort(sizeChars.begin(), sizeChars.end(),
+              [](const std::pair<int, uint64_t>& a, const std::pair<int, uint64_t>& b) { return a.first < b.first; });
     for (size_t i = 0; i < sizeChars.size();) {
         const int size = sizeChars[i].first;
         uint64_t chars = 0;
         for (; i < sizeChars.size() && sizeChars[i].first == size; ++i) chars += sizeChars[i].second;
-        if (chars > bodyCount || (chars == bodyCount && size < bodyKey)) bodyKey = size, bodyCount = chars;
+        weigh(size, chars);
     }
     for (PageData& page : pages) {
         removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
