@@ -838,10 +838,11 @@ constexpr uint64_t kBottomChecks = uint64_t(1) << 22;  // line comparisons AtBot
 constexpr size_t kMaxFloatRun = 8;  // floats (captions, tables, images) a paragraph runs on around
 constexpr float kProseWidth = 15.0f;  // ems a column of prose is wide at least
 
-// A page footnote sits below the text of its column: no line under it that it overlaps along the
-// baseline is set larger, except in the page's last row (a running footer or page number left on
-// a single page). Superscript-marked lines higher up are author affiliations or table notes, and
-// stay where they are. Fails closed (no note) once `budget` runs out.
+// A page footnote sits below the text of its column: in the lower half of the page's text, and no
+// line under it that it overlaps along the baseline is set larger, except in the page's last row
+// (a running footer or page number left on a single page). Superscript-marked lines higher up are
+// author affiliations (set in the title block at the size of the text below them) or table notes,
+// and stay where they are. Fails closed (no note) once `budget` runs out.
 bool AtBottom(const std::vector<Info>& infos, uint32_t begin, uint32_t end, uint32_t at, uint64_t& budget) {
     const Info& note = infos[at];
     if (2 * uint64_t(end - begin) > budget) return false;
@@ -849,9 +850,13 @@ bool AtBottom(const std::vector<Info>& infos, uint32_t begin, uint32_t end, uint
     const auto under = [&](const Info& o) {
         return o.dir == note.dir && o.baseline < note.baseline && o.chars > 0 && o.u0 < note.u1 && o.u1 > note.u0;
     };
-    float lowest = INFINITY;
-    for (uint32_t j = begin; j < end; ++j)
+    float lowest = INFINITY, top = -INFINITY, bottom = INFINITY;
+    for (uint32_t j = begin; j < end; ++j) {
         if (under(infos[j])) lowest = Fmin(lowest, infos[j].baseline);
+        if (infos[j].dir == note.dir && infos[j].chars > 0)
+            top = Fmax(top, infos[j].baseline), bottom = Fmin(bottom, infos[j].baseline);
+    }
+    if (note.baseline > (top + bottom) / 2) return false;
     for (uint32_t j = begin; j < end; ++j) {
         const Info& o = infos[j];
         if (under(o) && o.size > 1.1f * note.size && o.baseline > lowest + 0.5f * o.size) return false;
@@ -1016,8 +1021,15 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
                     if (samePage) {
                         if (bottom < 0) bottom = AtBottom(infos, pageBegin, pageEnd, i, budget) ? 1 : 0;
                         samePage = bottom == 1;
+                        // A raised mark that starts a line higher up on the reference's page answers
+                        // it (an affiliation, a table's note): the mark is no note's.
+                        if (!samePage && !enumerated) {
+                            refs[r].used = true;
+                            break;
+                        }
                     }
-                    const bool endnote = enumerated && ref.page < in.page && endnoteContext;
+                    // A mark in larger print (an author list's) refers to no endnote.
+                    const bool endnote = enumerated && ref.page < in.page && endnoteContext && ref.size <= 1.05f * body;
                     if (samePage || endnote) {
                         match = r;
                         break;
@@ -1544,14 +1556,21 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
         // Captions are set apart like headings but title no section; display math set large (an
-        // integral sign, a fraction's numerator), a figure set large ("20%↑") and an author list
+        // integral sign, a fraction's numerator), a figure set large ("20%↑"), an author list
         // (names with raised affiliation marks: after a word of two letters or more, not after a
-        // symbol as in "L²(Rᵈ)") title nothing either.
+        // symbol as in "L²(Rᵈ)") and an affiliation (its raised mark first, "¹University of …")
+        // title nothing either.
         const auto caption = [&]() {
             const PageData& page = pages[first.page];
             LineText(page, page.lines[first.line], line);
             if (IsCaption(line)) return true;
             text = line;
+            {
+                const Line& l = page.lines[first.line];
+                if (l.count >= 2 && IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l) &&
+                    !IsSuperscript(page.glyphs[page.lineGlyphs[l.first + l.count - 1]], l))
+                    return true;
+            }
             uint32_t marks = 0;
             const auto letter = [](const PageData& p, uint32_t gi) {
                 const uint32_t cp = FirstCodePoint(p.GlyphText(p.glyphs[gi]));

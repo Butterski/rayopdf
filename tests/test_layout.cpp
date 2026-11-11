@@ -382,6 +382,35 @@ void TestFootnotes() {
     RAYOPDF_CHECK(!Contains(md, "[^") && Contains(md, "1. Smith, J. A cited work. 2020."), 480);
 }
 
+void TestAffiliations() {
+    // Affiliations under the author list, each after its raised mark, at the size of the text
+    // below: they stay in the title block as text, no notes and no headings, and their marks are
+    // no notes' for a numbered list on the next page. Nor is a mark of the author list that no
+    // affiliation answers: a mark in larger print than the body refers to no endnote.
+    std::vector<PageData> pages{NewPage(1), NewPage(2)};
+    AddText(pages[0], "A Title of the Paper", 72, 740, 16);
+    float x = AddText(pages[0], "Ann Author", 72, 710, 12);
+    x = AddText(pages[0], "1", x, 715, 7);
+    x = AddText(pages[0], " and Bob Writer", x, 710, 12);
+    x = AddText(pages[0], "2", x, 715, 7);
+    x = AddText(pages[0], " and Cy Third", x, 710, 12);
+    AddText(pages[0], "3", x, 715, 7);
+    x = AddText(pages[0], "1", 72, 694, 6);
+    AddText(pages[0], "University of Alpha, Somewhere", x, 690, 10);
+    x = AddText(pages[0], "2", 72, 680, 6);
+    AddText(pages[0], "Institute of Beta, Elsewhere", x, 676, 10);
+    for (int i = 0; i < 36; ++i) AddText(pages[0], "Body text of the paper that runs long enough to fill a line", 72, 640.0f - 14 * i, 10);
+    AddText(pages[1], "The list on the next page follows its introduction here:", 72, 700, 10);
+    AddText(pages[1], "1. First point of the list", 72, 680, 10);
+    AddText(pages[1], "2. Second point of the list", 72, 666, 10);
+    AddText(pages[1], "3. Third point of the list", 72, 652, 10);
+    const std::string md = Run(pages);
+    Show("affiliations", md);
+    RAYOPDF_CHECK(!Contains(md, "[^"), 438);
+    RAYOPDF_CHECK(md.find("University of Alpha") < md.find("Body text") && !Contains(md, "# <sup>"), 439);
+    RAYOPDF_CHECK(Contains(md, "1. First point of the list") && Contains(md, "3. Third point of the list"), 440);
+}
+
 void TestRightToLeft() {
     // Hebrew placed in visual order (the last letter leftmost) is written in logical order.
     std::vector<PageData> pages{NewPage(1)};
@@ -1402,6 +1431,7 @@ int main() {
     TestOutlineHeading();
     TestHeadingLevels();
     TestFootnotes();
+    TestAffiliations();
     TestRightToLeft();
     TestPdfTjTj();
     TestPdfTextState();
