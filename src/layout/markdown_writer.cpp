@@ -82,6 +82,47 @@ bool IsCjk(uint32_t cp) {
            (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20000 && cp <= 0x3FFFF);
 }
 
+// The Unicode superscript (`sup`) or subscript form of `cp`, 0 when Unicode has none. Each form's
+// compatibility decomposition (NFKC) is `cp`, or for a mathematical bold, italic or bold italic
+// letter (𝑥) its letter: the text stays the same.
+uint32_t ScriptForm(uint32_t cp, bool sup) {
+    if (cp >= 0x1D400 && cp <= 0x1D49B) {
+        const uint32_t i = (cp - 0x1D400) % 52;
+        cp = i < 26 ? 'A' + i : 'a' + (i - 26);
+    } else if (cp == 0x210E) {
+        cp = 'h';  // the mathematical italic h
+    }
+    static constexpr uint16_t kSupDigits[10] = {0x2070, 0xB9, 0xB2, 0xB3, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079};
+    static constexpr uint16_t kSupSmall[26] = {0x1D43, 0x1D47, 0x1D9C, 0x1D48, 0x1D49, 0x1DA0, 0x1D4D, 0x2B0, 0x2071,
+                                               0x2B2,  0x1D4F, 0x2E1,  0x1D50, 0x207F, 0x1D52, 0x1D56, 0,     0x2B3,
+                                               0x2E2,  0x1D57, 0x1D58, 0x1D5B, 0x2B7,  0x2E3,  0x2B8,  0x1DBB};
+    static constexpr uint16_t kSupCapital[26] = {0x1D2C, 0x1D2E, 0,      0x1D30, 0x1D31, 0,      0x1D33, 0x1D34, 0x1D35,
+                                                 0x1D36, 0x1D37, 0x1D38, 0x1D39, 0x1D3A, 0x1D3C, 0x1D3E, 0,      0x1D3F,
+                                                 0,      0x1D40, 0x1D41, 0x2C7D, 0x1D42, 0,      0,      0};
+    static constexpr uint16_t kSubSmall[26] = {0x2090, 0,      0,      0,      0x2091, 0,      0,      0x2095, 0x1D62,
+                                               0x2C7C, 0x2096, 0x2097, 0x2098, 0x2099, 0x2092, 0x209A, 0,      0x1D63,
+                                               0x209B, 0x209C, 0x1D64, 0x1D65, 0,      0x2093, 0,      0};
+    if (cp >= '0' && cp <= '9') return sup ? kSupDigits[cp - '0'] : 0x2080 + (cp - '0');
+    if (cp >= 'a' && cp <= 'z') return sup ? kSupSmall[cp - 'a'] : kSubSmall[cp - 'a'];
+    if (cp >= 'A' && cp <= 'Z') return sup ? kSupCapital[cp - 'A'] : 0;
+    const uint32_t offset = sup ? 0 : 0x10;
+    switch (cp) {
+    case '+': return 0x207A + offset;
+    case 0x2212: return 0x207B + offset;  // minus sign; a hyphen has no form
+    case '=': return 0x207C + offset;
+    case '(': return 0x207D + offset;
+    case ')': return 0x207E + offset;
+    case 0x3B2: return sup ? 0x1D5D : 0x1D66;  // β
+    case 0x3B3: return sup ? 0x1D5E : 0x1D67;  // γ
+    case 0x3B4: return sup ? 0x1D5F : 0;       // δ
+    case 0x3B8: return sup ? 0x1DBF : 0;       // θ
+    case 0x3C1: return sup ? 0 : 0x1D68;       // ρ
+    case 0x3C6: return sup ? 0x1D60 : 0x1D69;  // φ
+    case 0x3C7: return sup ? 0x1D61 : 0x1D6A;  // χ
+    default: return 0;
+    }
+}
+
 class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math)
@@ -125,6 +166,15 @@ private:
     void FindFormulas();
     // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
     bool WriteFormula(uint32_t from, uint32_t to);
+    // Unicode mode (D6): a formula's script written in Unicode superscript or subscript forms
+    // ("mc²", "x₀"). The glyphs refs_[k, …) of word `w`, before `stop`, raised or lowered alike
+    // from `k` on are a formula's script when one of them, or their base (the glyph before them
+    // and the scripts between), is set in a math font or is a mathematical alphanumeric, a Greek
+    // letter or a math symbol, or when the base ends a variable: one to three italic letters in a
+    // text font whose body is upright. Scripts of text (H<sub>2</sub>O, 2<sup>10</sup>,
+    // "1<sup>st</sup>"), reference marks and scripts with a character that has no form stay
+    // <sup>/<sub>. Returns the script's end with its forms in forms_; 0 when it stays a tag.
+    uint32_t ScriptForms(const Word& w, uint32_t k, uint32_t stop);
     // The footnote number of the superscript run starting at `r`, `count` glyphs long; 0 when none.
     uint32_t NoteNumber(const GlyphRef& r, uint32_t count) const {
         const auto it = std::lower_bound(noteRefs_.begin(), noteRefs_.end(), r, [](const NoteRef& n, const GlyphRef& g) {
@@ -170,6 +220,7 @@ private:
     std::string plain_;
     std::string other_;
     std::vector<EscapedRun> runs_;   // the runs AppendEscaped wrote since the block's inline text began
+    std::string forms_;  // ScriptForms' forms
     // LaTeX mode.
     std::vector<InlineGlyph> inline_;
     std::vector<uint32_t> mathRun_;  // per GlyphRef: the end of the formula starting there, or 0
@@ -1035,6 +1086,16 @@ void Writer::Inline(const Block& block, bool styles) {
                 ++k;
                 continue;
             }
+            // Unicode mode: a formula's script in Unicode forms, in the style of its first glyph.
+            if (script != kScriptNone && !latex && !(styles_[k] & kStyleCode) && (k == w.first || refs_[k - 1].script != script)) {
+                if (const uint32_t to = ScriptForms(w, k, stop)) {
+                    SetStyle(styles_[k], k);
+                    out_.append(forms_);
+                    blockStart = false;
+                    k = to;
+                    continue;
+                }
+            }
             uint32_t runEnd = k + 1;
             while (runEnd < stop && refs_[runEnd].script == script && styles_[runEnd] == styles_[k] &&
                    !(refs_[runEnd].flags & kGlyphImage))
@@ -1082,6 +1143,55 @@ void Writer::Inline(const Block& block, bool styles) {
     // No trailing spaces.
     while (!out_.empty() && out_.back() == ' ') out_.pop_back();
     DropNeedlessEscapes(from);
+}
+
+uint32_t Writer::ScriptForms(const Word& w, uint32_t k, uint32_t stop) {
+    const uint8_t script = refs_[k].script;
+    const bool sup = script == kScriptSup;
+    const uint32_t wordEnd = w.first + w.count;
+    // The script's forms; every character needs one.
+    forms_.clear();
+    uint32_t end = k;
+    for (; end < wordEnd && refs_[end].script == script; ++end) {
+        if (end >= stop || (refs_[end].flags & kGlyphImage)) return 0;
+        const std::string_view t = Text(refs_[end]);
+        for (size_t at = 0; at < t.size();) {
+            uint32_t cp = 0;
+            size_t length = 0;
+            if (!Utf8::Decode(t, at, cp, length)) return 0;
+            const uint32_t form = ScriptForm(cp, sup);
+            if (form == 0) return 0;
+            Utf8::Append(forms_, form);
+            at += length;
+        }
+    }
+    const auto math = [&](uint32_t i) {
+        const GlyphRef& r = refs_[i];
+        const PageData& page = pages_[r.page];
+        const Glyph& g = page.glyphs[r.glyph];
+        if (g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0 && !(r.flags & kGlyphUnmapped))
+            return true;
+        const uint32_t cp = FirstOf(Text(r));
+        return (cp >= 0x1D400 && cp <= 0x1D7FF) || cp == 0x210E || (cp >= 0x391 && cp <= 0x3C9) || cp == 0x3D1 ||
+               cp == 0x3D5 || cp == 0x3F5 || (cp >= 0x2200 && cp <= 0x22FF);
+    };
+    for (uint32_t i = k; i < end; ++i)
+        if (math(i)) return end;
+    // The base: the glyph before the scripts in the word.
+    uint32_t base = k;
+    while (base > w.first && refs_[base - 1].script != kScriptNone) --base;
+    if (base == w.first) return 0;
+    --base;
+    if (math(base)) return end;
+    if (italicIsBody_) return 0;
+    // A variable: one to three italic letters ending at the base, after no other letter.
+    uint32_t letters = 0;
+    for (uint32_t i = base + 1; i > w.first; --i) {
+        const uint32_t cp = FirstOf(Text(refs_[i - 1]));
+        if (!((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z'))) break;
+        if (!(refs_[i - 1].flags & kGlyphItalic) || ++letters > 3) return 0;
+    }
+    return letters > 0 ? end : 0;
 }
 
 void Writer::FindFormulas() {

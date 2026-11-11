@@ -354,6 +354,17 @@ void TestSuperscript() {
     const std::string md = Run(pages);
     Show("superscript", md);
     RAYOPDF_CHECK(Contains(md, "mc<sup>2</sup> and H"), 419);
+    // A formula's script (after an italic variable) in Unicode forms; a script of text stays a tag.
+    std::vector<PageData> math{NewPage(1)};
+    x = AddText(math[0], "Energy is ", 72, 700, 10);
+    x = AddText(math[0], "mc", x, 700, 10, kGlyphItalic);
+    x = AddText(math[0], "2", x, 704, 6);
+    x = AddText(math[0], " and water is H", x, 700, 10);
+    x = AddText(math[0], "2", x, 698, 6);
+    AddText(math[0], "O.", x, 700, 10);
+    const std::string forms = Run(math);
+    Show("superscript forms", forms);
+    RAYOPDF_CHECK(Contains(forms, "Energy is mc\xC2\xB2 and water is H<sub>2</sub>O."), 499);
 }
 
 void TestOutlineHeading() {

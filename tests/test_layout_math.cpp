@@ -440,6 +440,10 @@ void TestPages() {
     AddText(page, "b", 301, 667, 10, 1);
     page.rulings.push_back(Ruling{299, 676.4f, 308, 676.8f, kRulingFill});
     AddText(page, "And so the text goes on after the formula.", 72, 640, 10);
+    x = AddText(page, "Its square ", 72, 628, 10);
+    x = AddText(page, "y", x, 628, 10, 1);
+    x = AddText(page, "2", x, 632, 6, 1);
+    AddText(page, " is no tag.", x, 628, 10);
     const std::string latex = Convert({page}, MathMode::Latex);
     const std::string unicode = Convert({page}, MathMode::Unicode);
     if (latex.find("Let $x$ be a number that costs $5 or \\$A.") == std::string::npos ||
@@ -451,6 +455,8 @@ void TestPages() {
     // The default output has no LaTeX and no escaped dollar.
     RAYOPDF_CHECK(unicode.find("Let x be a number that costs $5 or $A.") != std::string::npos, 1594);
     RAYOPDF_CHECK(unicode.find("\\frac") == std::string::npos && unicode.find("$$") == std::string::npos, 1595);
+    // A script of a math font in Unicode forms.
+    RAYOPDF_CHECK(unicode.find("Its square y\xC2\xB2 is no tag.") != std::string::npos, 1598);
 }
 
 } // namespace

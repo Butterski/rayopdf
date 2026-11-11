@@ -157,7 +157,20 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   whose fixtures keep the definitions at the end; odl unchanged).
 - Images are written as `![alt](<stem>-images/p<page>-<n>.<ext>)`: DCT streams as `.jpg`, JPX
   streams as `.jp2`, everything else decoded to `.png`.
-- Math is Unicode with `<sup>`/`<sub>`, wrapped in `$…$` only for linear inline math. Optional
+- Math is Unicode, wrapped in `$…$` only for linear inline math. A formula's script (a raised or
+  lowered glyph in a math font or a mathematical alphanumeric, Greek or math-symbol glyph, or after
+  a base that is one, or after one to three italic letters of a text font) is written in Unicode
+  superscript and subscript characters (`mc²`, `x₀`, `x⁽ⁱ⁾₀`) when each of its characters has one
+  whose NFKC is that character; a script with a character that has none (`∂`, `→`, `×`, a
+  hyphen) and raised or lowered text (`H<sub>2</sub>O`, `1<sup>st</sup>`, reference marks) are
+  `<sup>`/`<sub>` (decided 2026-11-11, measured against master c68a1ee: synthetic construct F1
+  sup/sub untagged 0.074/0.091 → 0.444/0.400, tagged 0.053/0.054 → 0.182/0.190, all-construct F1
+  untagged 0.9507 → 0.9695, tagged 0.9283 → 0.9509, NID untagged +0.0011, tagged +0.0021; odl
+  NID 0.9168 → 0.9177, TEDS 0.8952 → 0.8956, MHS 0.8397 → 0.8404; READoc-dev arXiv default mode
+  `text_eds` 0.7859 → 0.8171, `table_eds` −0.0026, `table_teds` −0.0012, github unchanged; olmOCR
+  pass rates unchanged; `--math=latex` output byte-identical). The rest of the synthetic misses
+  are fixtures whose producer drew no script (LibreOffice, Typst and XeLaTeX drop the raw HTML
+  `<sub>`/`<sup>` of c14-misc). Optional
   `--math=latex` (decided 2026-11-09) writes formulas as `$…$` / `$$…$$` LaTeX rebuilt from glyph
   geometry (an equation number after a display as `(n)`); the default stays Unicode and its output
   byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc

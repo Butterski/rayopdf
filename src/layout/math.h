@@ -35,7 +35,7 @@
 namespace RayoPdf::Layout {
 
 enum class MathMode : uint8_t {
-    Unicode,  // D6: math as Unicode text with <sup>/<sub>
+    Unicode,  // D6: math as Unicode text, scripts in Unicode forms or <sup>/<sub>
     Latex,    // formulas as LaTeX between $ and $$
 };
 

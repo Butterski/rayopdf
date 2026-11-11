@@ -2,9 +2,10 @@
 // The Markdown writer (roadmap D6, D4 step 7): GFM blocks separated by one blank line, paragraphs
 // as single lines with words joined across line breaks (dehyphenated, algorithms §4.4), emphasis
 // from bold and italic runs over whole words (§6.6), inline code from monospace runs, links from
-// link annotations over words (§6.8), superscripts and subscripts as <sup>/<sub> (D6), footnote
-// references as [^n] and definitions as [^n]: text (§6.9), fenced code with its spacing rebuilt
-// on the character grid (§6.4). Escapes are limited to what would otherwise change the structure.
+// link annotations over words (§6.8), superscripts and subscripts as <sup>/<sub> or, a formula's,
+// in Unicode superscript and subscript characters (D6), footnote references as [^n] and
+// definitions as [^n]: text (§6.9), fenced code with its spacing rebuilt on the character grid
+// (§6.4). Escapes are limited to what would otherwise change the structure.
 // With MathMode::Latex formulas are written as $…$ and $$…$$ LaTeX (layout/math.h).
 #pragma once
 
