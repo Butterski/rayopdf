@@ -55,6 +55,13 @@ float TextSize(const Row& r) { return r.prose > 0 ? r.prose : r.size; }
 // A row of the size `em` (a row of code only fits any).
 bool SizeFits(const Row& r, float em) { return r.prose == 0 || std::fabs(r.prose - em) <= 0.15f * em; }
 
+// A line in smaller type set right under a row (a standard error under its estimate, a unit under
+// its label): the second line of that row's cells.
+bool SubLine(const Row& above, const Row& row) {
+    const float em = TextSize(above);
+    return TextSize(row) < 0.85f * em && above.base - row.base < 0.9f * em;
+}
+
 // A whitespace gap that separates columns.
 struct Gap {
     float a = 0, b = 0;
@@ -477,7 +484,7 @@ private:
                   const std::vector<Gap>& gaps);
     void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb,
-                  const std::vector<uint8_t>* labels = nullptr);
+                  const std::vector<uint8_t>* labels = nullptr, const std::vector<uint8_t>* ruled = nullptr);
     bool Free(float x0, float y0, float x1, float y1) const;
     // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
@@ -1038,7 +1045,7 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
 // labels across the table: each a row of its own, whatever columns its words lie over.
 void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                         size_t rowEnd, const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa,
-                        float xb, const std::vector<uint8_t>* labels) {
+                        float xb, const std::vector<uint8_t>* labels, const std::vector<uint8_t>* ruled) {
     if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) return;
     const int cols = static_cast<int>(gaps.size()) + 1;
     if (rowEnd <= rowBegin || cols < 2 || cols > kMaxTableCols) return;
@@ -1054,8 +1061,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     std::vector<int>& columns = scratch_.gridColumns;
     WordColumns(rows, rowWords, rowBegin, rowEnd, gaps, columns);
     const uint32_t base = rows[rowBegin].first;
+    // The columns' extents, from the body's lines under a header set off by a rule (a header label
+    // over several columns reaches past the column its centre lies in).
     std::vector<float> colLeft(static_cast<size_t>(cols), INFINITY), colRight(static_cast<size_t>(cols), -INFINITY);
-    for (size_t r = rowBegin; r < rowEnd; ++r)
+    const size_t bodyBegin = ruled && rowBegin + headerRows < rowEnd ? rowBegin + headerRows : rowBegin;
+    for (size_t r = bodyBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(labels && (*labels)[r]); ++k) {
             const TWord& w = words_[rowWords[k]];
             const size_t c = static_cast<size_t>(columns[k - base]);
@@ -1065,7 +1075,9 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // rows and the narrower the lines of one cell (cell padding; cells set to the middle), except
     // that lines between wide gaps that all fill the same cells are rows of their own. Otherwise a
     // line continues the row above when its first cell is empty and its other cells continue cells
-    // above that reach their column's right edge (wrapped text in cells set to the top).
+    // above that reach their column's right edge (wrapped text in cells set to the top). A label
+    // is a row of its own, the line after it starts one, and so does a line flagged in `ruled` (a
+    // rule of the table runs above it): the lines between such starts are judged on their own.
     std::vector<size_t> starts{rowBegin};
     const size_t n = rowEnd - rowBegin;
     std::vector<uint64_t> mask(n, 0);
@@ -1077,63 +1089,84 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         return rows[r - 1].base - rows[r].base < 0.85f * Fmax(rows[r - 1].size, rows[r].size);
     };
     const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[r - 1].bottom - rows[r].top; };
-    float narrow = INFINITY;
-    for (size_t r = rowBegin + 1; r < rowEnd; ++r)
-        if (!offset(r)) narrow = Fmin(narrow, gapAbove(r));
-    const float wide = narrow + Fmax(2.0f, 0.25f * rows[rowBegin].size);
-    size_t wideGaps = 0;
-    for (size_t r = rowBegin + 1; r < rowEnd; ++r) wideGaps += gapAbove(r) >= wide;
-    if (n >= 3 && wideGaps >= 2 && wideGaps + 1 < n) {
-        size_t band = rowBegin;
-        const auto close = [&](size_t bandEnd) {
-            bool same = bandEnd - band > 1;
-            for (size_t q = band + 1; q < bandEnd && same; ++q) same = mask[q - rowBegin] == mask[band - rowBegin];
-            int filled = 0;
-            for (uint64_t m = mask[band - rowBegin]; m; m &= m - 1) filled++;
-            if (same && filled >= 2) {
-                for (size_t q = band + 1; q < bandEnd; ++q) starts.push_back(q);
-                return;
-            }
-            // A full line (its first cell and another) on the line grid, clear of the line above,
-            // under a line that fills the first cell too, starts a row: sections of one-line rows. A
-            // line filling only the first cell is that cell's wrapped text.
-            for (size_t q = band + 1; q < bandEnd; ++q)
-                if ((mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) && (mask[q - 1 - rowBegin] & 1) &&
-                    !offset(q) && (q + 1 >= rowEnd || !offset(q + 1)) && rows[q - 1].bottom >= rows[q].top)
-                    starts.push_back(q);
-        };
-        for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
-            if (gapAbove(r) < wide && r - rowBegin != headerRows) continue;
-            close(r);
-            starts.push_back(r);
-            band = r;
+    // Per column of a line: the right edge of its words, whether its first word is a number and
+    // whether its last word is one.
+    std::vector<float> above(static_cast<size_t>(cols)), here(static_cast<size_t>(cols));
+    std::vector<uint8_t> aboveFirst(static_cast<size_t>(cols)), aboveLast(static_cast<size_t>(cols));
+    std::vector<uint8_t> hereFirst(static_cast<size_t>(cols)), hereLast(static_cast<size_t>(cols));
+    const auto rights = [&](size_t r, std::vector<float>& out, std::vector<uint8_t>& first, std::vector<uint8_t>& last) {
+        std::fill(out.begin(), out.end(), -INFINITY);
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const size_t c = static_cast<size_t>(columns[k - base]);
+            const TWord& w = words_[rowWords[k]];
+            const uint8_t number = Numeric(Chars(w)) ? 1 : 0;
+            if (out[c] == -INFINITY) first[c] = number;
+            last[c] = number;
+            out[c] = Fmax(out[c], w.x1);
         }
-        close(rowEnd);
-    } else {
-        std::vector<float> above(static_cast<size_t>(cols)), here(static_cast<size_t>(cols));
-        const auto rights = [&](size_t r, std::vector<float>& out) {
-            std::fill(out.begin(), out.end(), -INFINITY);
-            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
-                const size_t c = static_cast<size_t>(columns[k - base]);
-                out[c] = Fmax(out[c], words_[rowWords[k]].x1);
+    };
+    // The rows of lines [a, b).
+    const auto part = [&](size_t a, size_t b) {
+        float narrow = INFINITY;
+        for (size_t r = a + 1; r < b; ++r)
+            if (!offset(r)) narrow = Fmin(narrow, gapAbove(r));
+        const float wide = narrow + Fmax(2.0f, 0.25f * rows[rowBegin].size);
+        size_t wideGaps = 0;
+        for (size_t r = a + 1; r < b; ++r) wideGaps += gapAbove(r) >= wide;
+        if (b - a >= 3 && wideGaps >= 2 && wideGaps + 1 < b - a) {
+            size_t band = a;
+            const auto close = [&](size_t bandEnd) {
+                bool same = bandEnd - band > 1;
+                for (size_t q = band + 1; q < bandEnd && same; ++q) same = mask[q - rowBegin] == mask[band - rowBegin];
+                int filled = 0;
+                for (uint64_t m = mask[band - rowBegin]; m; m &= m - 1) filled++;
+                if (same && filled >= 2) {
+                    for (size_t q = band + 1; q < bandEnd; ++q) starts.push_back(q);
+                    return;
+                }
+                // A full line (its first cell and another) on the line grid, clear of the line above,
+                // under a line that fills the first cell too, starts a row: sections of one-line rows.
+                // A line filling only the first cell is that cell's wrapped text.
+                for (size_t q = band + 1; q < bandEnd; ++q)
+                    if ((mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) && (mask[q - 1 - rowBegin] & 1) &&
+                        !offset(q) && (q + 1 >= b || !offset(q + 1)) && rows[q - 1].bottom >= rows[q].top)
+                        starts.push_back(q);
+            };
+            for (size_t r = a + 1; r < b; ++r) {
+                if (gapAbove(r) < wide && r - rowBegin != headerRows) continue;
+                close(r);
+                starts.push_back(r);
+                band = r;
             }
-        };
-        rights(rowBegin, above);
-        for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
-            rights(r, here);
-            bool wrapped = here[0] == -INFINITY && r - rowBegin != headerRows;
-            for (size_t c = 1; c < static_cast<size_t>(cols) && wrapped; ++c)
-                if (here[c] > -INFINITY && !(above[c] >= colLeft[c] + 0.7f * (colRight[c] - colLeft[c]))) wrapped = false;
-            if (!wrapped) starts.push_back(r);
-            above.swap(here);
+            close(b);
+        } else {
+            rights(a, above, aboveFirst, aboveLast);
+            for (size_t r = a + 1; r < b; ++r) {
+                rights(r, here, hereFirst, hereLast);
+                // A number under a number is a value of its own, not the cell's text wrapped, unless
+                // set in smaller type right under it (a standard error under its estimate).
+                const bool values = !SubLine(rows[r - 1], rows[r]);
+                bool wrapped = here[0] == -INFINITY && r - rowBegin != headerRows;
+                for (size_t c = 1; c < static_cast<size_t>(cols) && wrapped; ++c)
+                    if (here[c] > -INFINITY &&
+                        (!(above[c] >= colLeft[c] + 0.7f * (colRight[c] - colLeft[c])) ||
+                         (values && hereFirst[c] && above[c] > -INFINITY && aboveLast[c])))
+                        wrapped = false;
+                if (!wrapped) starts.push_back(r);
+                above.swap(here);
+                aboveFirst.swap(hereFirst);
+                aboveLast.swap(hereLast);
+            }
         }
+    };
+    size_t from = rowBegin;
+    for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
+        if (!((ruled && (*ruled)[r]) || (labels && ((*labels)[r] || (*labels)[r - 1])))) continue;
+        part(from, r);
+        starts.push_back(r);
+        from = r;
     }
-    if (labels) {
-        for (size_t r = rowBegin + 1; r < rowEnd; ++r)
-            if ((*labels)[r] || (*labels)[r - 1]) starts.push_back(r);
-        std::sort(starts.begin(), starts.end());
-        starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
-    }
+    part(from, rowEnd);
     // Without a header rule: up to four leading lines with no number in any cell, above a body whose
     // rows mostly hold numbers, are the header ("Aug 21," over "2011").
     if (headerRows == 0 && n >= 4) {
@@ -1161,15 +1194,19 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         if (lead >= 2 && lead + 2 <= n && 2 * numericRows >= n - lead) headerRows = static_cast<uint16_t>(lead);
     }
     // Header lines above the header rule are one header row (its cells' text wraps, or sits at
-    // different heights), unless a line runs across a column boundary: then the header has levels
-    // (a label over several columns) and keeps its rows.
+    // different heights), unless a label (a word, or words a word space apart) runs across a
+    // column boundary: then the header has levels (a label over several columns) and keeps its rows.
     if (headerRows >= 2) {
         bool levels = false;
-        for (size_t r = rowBegin; r < rowBegin + headerRows && r < rowEnd && !levels; ++r)
+        for (size_t r = rowBegin; r < rowBegin + headerRows && r < rowEnd && !levels; ++r) {
+            float x0 = 0, x1 = -INFINITY;  // the label so far
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !levels; ++k) {
                 const TWord& w = words_[rowWords[k]];
-                for (const Gap& gap : gaps) levels = levels || (w.x0 < gap.a && w.x1 > gap.b);
+                if (!(w.x0 - x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) x0 = w.x0;
+                x1 = w.x1;
+                for (const Gap& gap : gaps) levels = levels || (x0 < gap.a && x1 > gap.b);
             }
+        }
         if (!levels) {
             size_t kept = 0;
             for (size_t s : starts)
@@ -1928,6 +1965,7 @@ void Detector::RuleStacks() {
     std::vector<Gap> gaps, trial;
     std::vector<size_t> labelBands;  // the rule above each label band of the run
     std::vector<uint8_t> label;      // per row of the run: it lies in a label band
+    std::vector<uint8_t> ruled;      // per row of the run: a rule of the run lies between it and the row above
     for (const Stack& s : stacks) {
         if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
@@ -1938,11 +1976,13 @@ void Detector::RuleStacks() {
             // rules); a taller empty band holds something else (a heading out of the rules' width).
             size_t j = i;
             float em = bodySize_;
-            // A band of one line that does not split into columns, below a tabular band and above
-            // another, is a label across the table (the name of the rows that follow it): the run
-            // goes on through it.
+            // A band of one line that does not split into columns, right below a tabular band and
+            // above another that keeps its columns, is a label across the table (the name of the
+            // rows that follow it): the run goes on through it. Two such bands on end are the
+            // title of another table.
             labelBands.clear();
             size_t tabularEnd = i;  // the rule under the last tabular band
+            bool labelled = false;  // the last band with text was a label
             while (j + 1 < s.ys.size()) {
                 BuildRows(xa, xb, s.ys[j + 1], s.ys[j], rows, rowWords);
                 if (rows.empty()) {
@@ -1953,12 +1993,15 @@ void Detector::RuleStacks() {
                     em = TextSize(rows[0]);
                     bool even = true;
                     for (size_t q = 1; q < rows.size() && even; ++q)
-                        even = SizeFits(rows[q], em) && rows[q - 1].bottom - rows[q].top < 1.6f * em;
+                        even = (SizeFits(rows[q], em) || (SizeFits(rows[q - 1], em) && SubLine(rows[q - 1], rows[q]))) &&
+                               rows[q - 1].bottom - rows[q].top < 1.6f * em;
                     if (!even) break;
                     if (Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) {
                         tabularEnd = j + 1;
-                    } else if (rows.size() == 1 && tabularEnd > i && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
+                        labelled = false;
+                    } else if (rows.size() == 1 && tabularEnd > i && !labelled && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
                         labelBands.push_back(j);
+                        labelled = true;
                     } else {
                         break;
                     }
@@ -1989,6 +2032,11 @@ void Detector::RuleStacks() {
                 for (size_t r = 0; r < rows.size(); ++r)
                     if (rows[r].base < s.ys[band] && rows[r].base > s.ys[band + 1]) label[r] = 1;
             const std::vector<uint8_t>* labels = labelBands.empty() ? nullptr : &label;
+            ruled.assign(rows.size(), 0);
+            for (size_t r = 1, k = i; r < rows.size() && k <= j; ++r) {
+                while (k <= j && s.ys[k] >= rows[r - 1].base) ++k;
+                if (k <= j && s.ys[k] > rows[r].base) ruled[r] = 1;
+            }
             // Core rows: between the rules.
             size_t coreBegin = rows.size(), coreEnd = 0;
             for (size_t r = 0; r < rows.size(); ++r)
@@ -2013,6 +2061,7 @@ void Detector::RuleStacks() {
             }
             // The text size of the rows under the rule; a header row above it shares it.
             em = TextSize(rows[end - 1]);
+            if (end - begin >= 2 && SubLine(rows[end - 2], rows[end - 1])) em = TextSize(rows[end - 2]);
             // Rows wholly of running headers or footers (a rule under a page header) join no table
             // from the outside.
             const auto running = [&](size_t q) {
@@ -2139,10 +2188,10 @@ void Detector::RuleStacks() {
                 if (header > 0 && end - begin >= header + 3u &&
                     Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial, labels) && trial.size() > gaps.size() &&
                     KeepsGaps(gaps, trial) && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels);
+                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels, &ruled);
                 // Without such a label (or when its rows do not make a grid): the columns of all rows.
                 if (grids_.size() == before && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels);
+                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels, &ruled);
             }
             i = j + 1;
         }

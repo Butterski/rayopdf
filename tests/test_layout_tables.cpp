@@ -411,6 +411,35 @@ void TestRuledSectionLabels() {
     RAYOPDF_CHECK(!Contains(md, "| Values of the correlation") && Contains(md, "Values of the correlation"), 865);
 }
 
+// A ruled table with a rule around each group of rows: in a group, a line of numbers under a line
+// of numbers is a row of its own (its first cell empty), while a line in smaller type right under
+// a value (a standard error) is that value's second line and keeps the rule stack one table.
+void TestRuledRowGroups() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {712.0f, 698.0f, 668.0f, 642.0f, 614.0f}) HLine(page, 72, 330, y);
+    const auto line = [&](const char* name, const char* data, const char* a, const char* b, float y) {
+        if (*name) AddText(page, name, 76, y);
+        AddText(page, data, 150, y);
+        AddText(page, a, 220, y);
+        AddText(page, b, 280, y);
+    };
+    line("Model", "Data", "Score A", "Score B", 702);
+    line("mbert", "Merged", "57.59", "74.83", 686);
+    line("", "Mono", "61.45", "75.52", 674);
+    line("Indic", "Merged", "59.62", "74.64", 656);
+    AddText(page, "(0.03)", 220, 649, 7);
+    line("Xlm", "Merged", "60.73", "78.58", 632);
+    line("", "Mono", "60.97", "79.71", 620);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("ruled row groups", md);
+    RAYOPDF_CHECK(report.tables == 1, 870);
+    RAYOPDF_CHECK(Contains(md, "| mbert | Merged | 57.59 | 74.83 |\n|  | Mono | 61.45 | 75.52 |"), 871);
+    RAYOPDF_CHECK(Contains(md, "| Indic | Merged | 59.62 (0.03) | 74.64 |\n| Xlm | Merged | 60.73 | 78.58 |"), 872);
+    RAYOPDF_CHECK(Contains(md, "| Xlm | Merged | 60.73 | 78.58 |\n|  | Mono | 60.97 | 79.71 |"), 873);
+}
+
 // A full-width ruled table between two columns of text: the columns are read before it, the table
 // is one block, and the columns after it follow.
 void TestTableAcrossColumns() {
@@ -1118,6 +1147,7 @@ int main(int argc, char** argv) {
     TestListNotTable();
     TestAlgorithmBox();
     TestRuledSectionLabels();
+    TestRuledRowGroups();
     TestTableAcrossColumns();
     TestHostileRulings();
     TestDegenerateGrids();
