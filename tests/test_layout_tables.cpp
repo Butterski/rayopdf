@@ -309,7 +309,9 @@ void TestFigureText() {
 // corner on a diagonal are one cluster that weighs enough; the same eight with one empty cell
 // between the fourth and the fifth are two that do not. Six hundred long slanted strokes far
 // from them (no marks, no curves) cover so many cells over each other that the cells are counted
-// instead of painted: the regions stay the same.
+// instead of painted: the regions stay the same. What the page's strokes make is kept from the
+// first search, but a curve weighs against the text as it is at each search: four marks and a
+// curve are a region, and are none once a line of text stands inside the curve.
 void TestFigureCorners() {
     const auto build = [](bool crowded) {
         PageData page = NewPage();
@@ -331,14 +333,35 @@ void TestFigureCorners() {
         }
         return page;
     };
-    const PageData sparse = build(false), crowded = build(true);
+    PageData sparse = build(false), crowded = build(true);
     std::vector<FigureRegion> regions, counted;
     FigureRegions(sparse, regions);
     RAYOPDF_CHECK(regions.size() == 1 && regions[0].x0 == 80.5f && regions[0].y0 == 80.5f && regions[0].x1 == 175.5f &&
                       regions[0].y1 == 175.5f,
                   879);
     FigureRegions(crowded, counted);
-    RAYOPDF_CHECK(counted.size() == 1 && std::memcmp(&counted[0], &regions[0], sizeof(FigureRegion)) == 0, 880);
+    RAYOPDF_CHECK(counted.size() == 1 && std::memcmp(&counted[0], &regions[0], sizeof(FigureRegion)) == 0, 888);
+    FigureRegions(sparse, counted);
+    RAYOPDF_CHECK(counted.size() == 1 && std::memcmp(&counted[0], &regions[0], sizeof(FigureRegion)) == 0, 889);
+
+    PageData curve = NewPage();
+    Shape s;
+    s.x0 = 300, s.x1 = 400, s.y0 = 300, s.y1 = 400;
+    s.kind = ShapeKind::Other, s.stroked = true, s.curved = true, s.segments = 20;
+    curve.shapes.push_back(s);
+    for (int k = 0; k < 4; ++k) {
+        Shape m;
+        m.x0 = 310 + 20.0f * float(k), m.x1 = m.x0 + 3, m.y0 = 310, m.y1 = 313;
+        m.kind = ShapeKind::Other, m.stroked = true, m.segments = 3;
+        curve.shapes.push_back(m);
+    }
+    FigureRegions(curve, regions);
+    RAYOPDF_CHECK(regions.size() == 1 && regions[0].x0 == 300 && regions[0].x1 == 400, 890);
+    Line text;
+    text.u0 = 330, text.u1 = 370, text.vb = 345, text.vt = 355, text.size = 10, text.chars = 5;
+    curve.lines.push_back(text);
+    FigureRegions(curve, regions);
+    RAYOPDF_CHECK(regions.empty(), 891);
 }
 
 // A box of rulings with text in its cells drawn inside a plot (a legend) is part of the figure;

@@ -34,11 +34,6 @@ struct Stroke {
     bool curve;  // larger both ways, of kCurveSegments segments or more
 };
 
-struct Cluster {
-    float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
-    int weight = 0;
-};
-
 // Covered cells x0 to x1 of a grid row, and the run it joins (union-find over runs).
 struct Run {
     int32_t x0, x1, parent, cluster;
@@ -52,7 +47,8 @@ struct FigureScratch {
     std::vector<int32_t> text;      // (ny + 1) x (nx + 1): centres of text lines up to each cell (summed)
     std::vector<Run> runs;          // row by row, left to right
     std::vector<uint32_t> rowRuns;  // ny + 1: the first run of each row
-    std::vector<Cluster> clusters;
+    std::vector<uint32_t> centres;  // the cells of text lines' centres: row << 16 | column, from (c0, r0)
+    std::vector<int32_t> weights;   // per cluster
 };
 
 // The regions MarkFigureText works with, kept by the thread.
@@ -106,13 +102,37 @@ float TextShare(const PageData& page, float x0, float y0, float x1, float y1) {
     return box > 0 ? float(area / box) : 1.0f;
 }
 
-// The clusters of the strokes (scratch.strokes, two at least) on the page's grid into
-// scratch.clusters (empty when called): cells under strokes that touch (corners too), each with
-// its marks' and text-free curves' weight. A curve is weighed only where its cluster's marks do not
-// weigh enough on their own.
-void WeighClusters(const PageData& page, FigureScratch& scratch) {
+// The page's FigureStrokes from its shapes and images.
+void FindStrokes(PageData& page) {
+    FigureStrokes& found = page.figureStrokes;
+    found.Clear();
+    found.known = true;
+    found.possible = false;
     const float width = page.width, height = page.height;
+    const float pageArea = width * height;
+    FigureScratch& scratch = PerThread<FigureScratch>();
     std::vector<Stroke>& strokes = scratch.strokes;
+    strokes.clear();
+    int potential = 0;  // the weight all strokes could give, at most
+    for (const Shape& s : page.shapes) {
+        if (s.kind == ShapeKind::Rect) continue;
+        const float x0 = Fmax(s.x0, 0.0f), y0 = Fmax(s.y0, 0.0f), x1 = Fmin(s.x1, width), y1 = Fmin(s.y1, height);
+        const float w = x1 - x0, h = y1 - y0;
+        if (!(w >= 0) || !(h >= 0) || !std::isfinite(w) || !std::isfinite(h) || w * h > kMaxPage * pageArea) continue;
+        const float longer = Fmax(w, h), shorter = Fmin(w, h);
+        // A long thin stroke along an axis is a rule (one line, or the pieces of a dashed one).
+        if (shorter <= kSlant && longer > kTick) continue;
+        const bool mark = longer <= kMark, curve = shorter > kMark && s.segments >= kCurveSegments;
+        strokes.push_back(Stroke{x0, y0, x1, y1, 0, 0, 0, 0, 0, mark, curve});
+        if (potential < kMinWeight) potential += mark ? 1 : curve ? kCurveWeight : 0;
+    }
+    bool pictures = false;
+    for (const ImageBox& im : page.images) pictures = pictures || (im.x1 - im.x0 >= kMinSide && im.y1 - im.y0 >= kMinSide);
+    // No region without a picture or strokes that could weigh enough; no cluster without such
+    // strokes.
+    found.possible = potential >= kMinWeight || pictures;
+    if (potential < kMinWeight) return;
+
     // The grid covers the cells the strokes touch, aligned with a page-wide grid of the same cells
     // (a stroke's cells and the clusters are those of the whole page; text outside counts for none).
     const float cell = Fmax(kCell, Fmax(width, height) / float(kMaxSide));
@@ -126,6 +146,8 @@ void WeighClusters(const PageData& page, FigureScratch& scratch) {
         c0 = std::min(c0, s.a), c1 = std::max(c1, s.b);
         r0 = std::min(r0, s.c), r1 = std::max(r1, s.d);
     }
+    found.cell = cell, found.pageX = pageX, found.pageY = pageY;
+    found.c0 = c0, found.c1 = c1, found.r0 = r0, found.r1 = r1;
     const int nx = c1 - c0 + 1, ny = r1 - r0 + 1;
     const int stride = nx + 1;
     const size_t cells = static_cast<size_t>(stride) * static_cast<size_t>(ny + 1);
@@ -205,91 +227,104 @@ void WeighClusters(const PageData& page, FigureScratch& scratch) {
         }
     }
     rowRuns[static_cast<size_t>(ny)] = static_cast<uint32_t>(runs.size());
-    std::vector<Cluster>& clusters = scratch.clusters;
+    std::vector<FigureStrokes::Cluster>& clusters = found.clusters;
     for (size_t i = 0; i < runs.size(); ++i) {
         Run& root = runs[static_cast<size_t>(FindRun(runs, static_cast<int32_t>(i)))];
         if (root.cluster < 0) {
             root.cluster = static_cast<int32_t>(clusters.size());
-            clusters.emplace_back();
+            clusters.push_back(FigureStrokes::Cluster{INFINITY, INFINITY, -INFINITY, -INFINITY, 0});
         }
         runs[i].cluster = root.cluster;
     }
-    // Each stroke's cluster: that of the run holding its first cell. Marks weigh first.
+    // Each stroke's cluster: that of the run holding its first cell. Marks weigh here; the curves
+    // of clusters whose marks weigh too little are kept, to be weighed against the text.
     bool curves = false;
     for (Stroke& s : strokes) {
         const auto first = runs.begin() + rowRuns[static_cast<size_t>(s.c)], last = runs.begin() + rowRuns[static_cast<size_t>(s.c) + 1];
         const auto at = std::upper_bound(first, last, s.a, [](int32_t x, const Run& r) { return x < r.x0; }) - 1;
         s.cluster = at->cluster;
-        Cluster& c = clusters[static_cast<size_t>(s.cluster)];
+        FigureStrokes::Cluster& c = clusters[static_cast<size_t>(s.cluster)];
         c.x0 = Fmin(c.x0, s.x0), c.y0 = Fmin(c.y0, s.y0), c.x1 = Fmax(c.x1, s.x1), c.y1 = Fmax(c.y1, s.y1);
         if (s.mark) c.weight += 1;
         curves = curves || s.curve;
     }
-    if (curves) {
-        // Centres of upright text lines up to each cell: text[(y + 1) * stride + x + 1] counts those
-        // in cells [0, x] x [0, y]; built only when a curve is weighed.
-        std::vector<int32_t>& text = scratch.text;
-        bool built = false;
-        for (const Stroke& s : strokes) {
-            if (!s.curve || clusters[static_cast<size_t>(s.cluster)].weight >= kMinWeight) continue;
-            if (!built) {
-                built = true;
-                text.assign(cells, 0);
-                for (const Line& l : page.lines) {
-                    if (l.dir != 0 || l.chars == 0 || (l.flags & kLineTableAnchor)) continue;
-                    const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2;
-                    if (!(cx >= 0 && cx <= width && cy >= 0 && cy <= height)) continue;
-                    const int x = pageColumn(cx), y = pageRow(cy);
-                    if (x < c0 || x > c1 || y < r0 || y > r1) continue;
-                    text[static_cast<size_t>((y - r0 + 1) * stride + x - c0 + 1)]++;
-                }
-                for (int y = 1; y <= ny; ++y)
-                    for (int x = 1; x <= nx; ++x)
-                        text[static_cast<size_t>(y * stride + x)] += text[static_cast<size_t>(y * stride + x - 1)] +
-                                                                     text[static_cast<size_t>((y - 1) * stride + x)] -
-                                                                     text[static_cast<size_t>((y - 1) * stride + x - 1)];
+    if (!curves) return;
+    for (const Stroke& s : strokes)
+        if (s.curve && clusters[static_cast<size_t>(s.cluster)].weight < kMinWeight)
+            found.curves.push_back(FigureStrokes::Curve{s.a, s.b, s.c, s.d, static_cast<uint32_t>(s.cluster)});
+}
+
+// Adds kCurveWeight to the weight of a cluster for each of its curves (found.curves) that holds no
+// text line's centre in its cells, until the cluster weighs enough.
+void WeighCurves(const PageData& page, const FigureStrokes& found, FigureScratch& scratch) {
+    const float width = page.width, height = page.height;
+    const float cell = found.cell;
+    const int pageX = found.pageX, pageY = found.pageY, c0 = found.c0, c1 = found.c1, r0 = found.r0, r1 = found.r1;
+    const auto pageColumn = [&](float x) { return std::min(pageX - 1, std::max(0, static_cast<int>(x / cell))); };
+    const auto pageRow = [&](float y) { return std::min(pageY - 1, std::max(0, static_cast<int>(y / cell))); };
+    const int nx = c1 - c0 + 1, ny = r1 - r0 + 1;
+    const int stride = nx + 1;
+    const size_t cells = static_cast<size_t>(stride) * static_cast<size_t>(ny + 1);
+    // The cells of upright text lines' centres, within the grid.
+    std::vector<uint32_t>& centres = scratch.centres;
+    centres.clear();
+    for (const Line& l : page.lines) {
+        if (l.dir != 0 || l.chars == 0 || (l.flags & kLineTableAnchor)) continue;
+        const float cx = (l.u0 + l.u1) / 2, cy = (l.vb + l.vt) / 2;
+        if (!(cx >= 0 && cx <= width && cy >= 0 && cy <= height)) continue;
+        const int x = pageColumn(cx), y = pageRow(cy);
+        if (x < c0 || x > c1 || y < r0 || y > r1) continue;
+        centres.push_back(static_cast<uint32_t>(y - r0) << 16 | static_cast<uint32_t>(x - c0));
+    }
+    std::vector<int32_t>& weights = scratch.weights;
+    // Each curve against each centre, or, when that costs more than a pass over the grid, through
+    // the centres up to each cell: text[(y + 1) * stride + x + 1] counts those in [0, x] x [0, y].
+    if (found.curves.size() * centres.size() <= cells) {
+        for (const FigureStrokes::Curve& k : found.curves) {
+            if (weights[k.cluster] >= kMinWeight) continue;
+            bool free = true;
+            for (size_t i = 0; i < centres.size() && free; ++i) {
+                const int x = static_cast<int>(centres[i] & 0xFFFF), y = static_cast<int>(centres[i] >> 16);
+                free = x < k.a || x > k.b || y < k.c || y > k.d;
             }
-            const int a = s.a, b = s.b + 1, c = s.c, d = s.d + 1;
-            if (text[static_cast<size_t>(d * stride + b)] - text[static_cast<size_t>(c * stride + b)] -
-                    text[static_cast<size_t>(d * stride + a)] + text[static_cast<size_t>(c * stride + a)] ==
-                0)
-                clusters[static_cast<size_t>(s.cluster)].weight += kCurveWeight;
+            if (free) weights[k.cluster] += kCurveWeight;
         }
+        return;
+    }
+    std::vector<int32_t>& text = scratch.text;
+    text.assign(cells, 0);
+    for (uint32_t centre : centres)
+        text[static_cast<size_t>((static_cast<int>(centre >> 16) + 1) * stride + static_cast<int>(centre & 0xFFFF) + 1)]++;
+    for (int y = 1; y <= ny; ++y)
+        for (int x = 1; x <= nx; ++x)
+            text[static_cast<size_t>(y * stride + x)] += text[static_cast<size_t>(y * stride + x - 1)] +
+                                                         text[static_cast<size_t>((y - 1) * stride + x)] -
+                                                         text[static_cast<size_t>((y - 1) * stride + x - 1)];
+    for (const FigureStrokes::Curve& k : found.curves) {
+        if (weights[k.cluster] >= kMinWeight) continue;
+        const int a = k.a, b = k.b + 1, c = k.c, d = k.d + 1;
+        if (text[static_cast<size_t>(d * stride + b)] - text[static_cast<size_t>(c * stride + b)] -
+                text[static_cast<size_t>(d * stride + a)] + text[static_cast<size_t>(c * stride + a)] ==
+            0)
+            weights[k.cluster] += kCurveWeight;
     }
 }
 
 } // namespace
 
-void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
+void FigureRegions(PageData& page, std::vector<FigureRegion>& regions) {
     regions.clear();
     const float width = page.width, height = page.height;
     if (!(width > 0) || !(height > 0) || !std::isfinite(width) || !std::isfinite(height)) return;
-    const float pageArea = width * height;
+    if (!page.figureStrokes.known) FindStrokes(page);
+    const FigureStrokes& found = page.figureStrokes;
+    if (!found.possible) return;
     FigureScratch& scratch = PerThread<FigureScratch>();
-    std::vector<Stroke>& strokes = scratch.strokes;
-    strokes.clear();
-    int potential = 0;  // the weight all strokes could give, at most
-    for (const Shape& s : page.shapes) {
-        if (s.kind == ShapeKind::Rect) continue;
-        const float x0 = Fmax(s.x0, 0.0f), y0 = Fmax(s.y0, 0.0f), x1 = Fmin(s.x1, width), y1 = Fmin(s.y1, height);
-        const float w = x1 - x0, h = y1 - y0;
-        if (!(w >= 0) || !(h >= 0) || !std::isfinite(w) || !std::isfinite(h) || w * h > kMaxPage * pageArea) continue;
-        const float longer = Fmax(w, h), shorter = Fmin(w, h);
-        // A long thin stroke along an axis is a rule (one line, or the pieces of a dashed one).
-        if (shorter <= kSlant && longer > kTick) continue;
-        const bool mark = longer <= kMark, curve = shorter > kMark && s.segments >= kCurveSegments;
-        strokes.push_back(Stroke{x0, y0, x1, y1, 0, 0, 0, 0, 0, mark, curve});
-        if (potential < kMinWeight) potential += mark ? 1 : curve ? kCurveWeight : 0;
-    }
-    bool pictures = false;
-    for (const ImageBox& im : page.images) pictures = pictures || (im.x1 - im.x0 >= kMinSide && im.y1 - im.y0 >= kMinSide);
-    // No region without a picture or strokes that could weigh enough.
-    if ((strokes.size() < 2 || potential < kMinWeight) && !pictures) return;
-
-    // Clusters only where the strokes could weigh enough.
-    std::vector<Cluster>& clusters = scratch.clusters;
-    clusters.clear();
-    if (potential >= kMinWeight) WeighClusters(page, scratch);
+    std::vector<int32_t>& weights = scratch.weights;
+    weights.resize(found.clusters.size());
+    for (size_t c = 0; c < found.clusters.size(); ++c) weights[c] = found.clusters[c].weight;
+    if (!found.curves.empty()) WeighCurves(page, found, scratch);
+    const float pageArea = width * height;
     int tests = 0;
     const auto add = [&](float x0, float y0, float x1, float y1) {
         if (x1 - x0 < kMinSide || y1 - y0 < kMinSide || (x1 - x0) * (y1 - y0) > kMaxPage * pageArea) return true;
@@ -300,8 +335,11 @@ void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions) {
         return true;
     };
     bool bounded = true;
-    for (const Cluster& c : clusters)
-        if (bounded && c.weight >= kMinWeight) bounded = add(c.x0, c.y0, c.x1, c.y1);
+    for (size_t c = 0; c < found.clusters.size(); ++c)
+        if (bounded && weights[c] >= kMinWeight) {
+            const FigureStrokes::Cluster& k = found.clusters[c];
+            bounded = add(k.x0, k.y0, k.x1, k.y1);
+        }
     for (const ImageBox& im : page.images)
         if (bounded && std::isfinite(im.x0) && std::isfinite(im.y0) && std::isfinite(im.x1) && std::isfinite(im.y1))
             bounded = add(Fmax(im.x0, 0.0f), Fmax(im.y0, 0.0f), Fmin(im.x1, width), Fmin(im.y1, height));

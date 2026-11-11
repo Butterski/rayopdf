@@ -10,8 +10,9 @@
 // with rounded corners that holds its text) makes no region, and neither does an area mostly
 // covered by text (text drawn as paths under a text layer).
 //
-// One page at a time, no state between pages; bounded by the page's shapes (kMaxShapesPerPage)
-// and a fixed grid.
+// One page at a time; bounded by the page's shapes (kMaxShapesPerPage) and a fixed grid. What the
+// shapes and images make (PageData::figureStrokes) is found once a page and kept; the text is
+// weighed at every search.
 #pragma once
 
 #include "layout/page.h"
@@ -27,8 +28,9 @@ struct FigureRegion {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
 
-// The figure regions of `page` (its shapes, images and lines as they are when called).
-void FigureRegions(const PageData& page, std::vector<FigureRegion>& regions);
+// The figure regions of `page` (its shapes, images and lines as they are when called; its
+// figureStrokes found on the first call).
+void FigureRegions(PageData& page, std::vector<FigureRegion>& regions);
 
 // Flags kLineFigure on the upright lines of text standing in a figure region or within two ems of
 // it: a figure's own text (tick labels, legends, axis titles, the labels of a diagram).

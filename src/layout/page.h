@@ -74,6 +74,33 @@ struct Shape {
     uint16_t segments = 0;
 };
 
+// What the search for a page's figure regions (layout/figures.h) finds from its shapes and images
+// alone, kept from its first search: whether they can make a region at all, the clusters of its
+// drawing strokes with the weight of their marks, and the curves of the clusters whose marks alone
+// weigh too little, on the grid the strokes lie on.
+struct FigureStrokes {
+    struct Cluster {
+        float x0, y0, x1, y1;
+        int32_t weight;  // of its marks
+    };
+    struct Curve {
+        int32_t a, b, c, d;  // columns a to b and rows c to d of the grid, from (c0, r0)
+        uint32_t cluster;
+    };
+    bool known = false;
+    bool possible = false;  // a picture, or strokes that could weigh enough
+    float cell = 0;         // the grid's step: the page's grid is pageX x pageY cells
+    int32_t pageX = 0, pageY = 0, c0 = 0, c1 = 0, r0 = 0, r1 = 0;  // and the cells the strokes touch
+    std::vector<Cluster> clusters;
+    std::vector<Curve> curves;
+
+    void Clear() {
+        known = false;
+        clusters.clear();
+        curves.clear();
+    }
+};
+
 // An image placed on the page (an image XObject or an inline image), with what extracting it
 // takes (Image::EncodeXObject / EncodeInline): an XObject's stream and the resources that named
 // it, views valid while the Document lives; an inline image's source from BI to EI, copied into
@@ -238,6 +265,7 @@ struct PageData {
     uint32_t hiddenGlyphs = 0;         // glyphs dropped as hidden, clipped or duplicate
     std::vector<Table> tables;          // built by DetectTables
     std::vector<TableCell> tableCells;
+    FigureStrokes figureStrokes;        // kept by the first search for figure regions
 
     std::string_view GlyphText(const Glyph& g) const { return std::string_view(text).substr(g.text, g.textLength); }
     std::string_view LinkUri(const LinkArea& l) const { return std::string_view(text).substr(l.uri, l.uriLength); }
@@ -267,6 +295,7 @@ struct PageData {
         order.clear();
         tables.clear();
         tableCells.clear();
+        figureStrokes.Clear();
         contentErrors = 0;
         limitHit = false;
         hiddenGlyphs = 0;
