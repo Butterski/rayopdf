@@ -113,6 +113,11 @@ public:
     // the font bounding box) divided by 1000; 0.8 and -0.2 when unknown.
     double Ascent() const;
     double Descent() const;
+    // What a size-1 em measures in text space, 1 for all but a Type 3 font whose glyph space is
+    // not a thousandth of its em (device pixels); negative when the font matrix turns y over. A
+    // glyph's size and box take the text matrix's y axis times this; Ascent and Descent are then
+    // fractions of that em.
+    double EmScale() const;
     // The advance of the space character when the font has one (code 32 of a simple font, or
     // the code that maps to U+0020); 0 when unknown. Word-gap detection uses it.
     double SpaceWidth() const;

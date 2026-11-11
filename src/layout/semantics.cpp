@@ -53,6 +53,10 @@ struct Info {
     bool noteStart = false;
     uint32_t noteSkip = 0;   // marker glyphs of a note's first line
     bool raised = false;     // a raised glyph after those it starts with (LineInfo; FindNotes reads it)
+    // A parenthesized number or letter alone on its line ("(13)", "(2.4a)", "(b)"). BuildBlocks
+    // keeps it only where no text follows it on its baseline: an equation's number or a subfigure's
+    // label, a paragraph of its own and never a list item waiting for its text.
+    bool label = false;
     bool listStart() const { return marker != Marker::None; }
 };
 
@@ -447,6 +451,16 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
         ++wordEnd;
     scratch.clear();
     for (uint32_t k = 0; k < wordEnd; ++k) scratch.append(page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]]));
+    if (wordEnd == line.count && scratch.size() >= 3 && scratch.size() <= 8 && scratch.front() == '(' &&
+        scratch.back() == ')' && line.dir == 0 && !(line.flags & kLineRtl)) {
+        bool plain = true;
+        for (size_t c = 1; c + 1 < scratch.size(); ++c) {
+            const char ch = scratch[c];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '.' || ch == '-'))
+                plain = false;
+        }
+        info.label = plain;
+    }
     uint32_t value = 0;
     Marker marker = ParseMarker(scratch, value);
     uint32_t skip = wordEnd;
@@ -670,9 +684,50 @@ float SmallCapsSize(const std::vector<PageData>& pages, const std::vector<Info>&
     return 0.5f * (smallMax + large);
 }
 
+// Wide leading (a double-spaced manuscript): the pitch most pairs of neighbouring body lines
+// have is more than the 1.6 em that the first two lines of a paragraph may be apart, and at that
+// pitch the text runs on more often than not (the upper line ends without terminal punctuation
+// and the lower one starts in lowercase), which lines of a list or a table set that far apart do
+// not. The leading is set for the whole document (titles and abstracts in other sizes are spaced
+// in proportion, LaTeX's sizes within 6 % of the body's ratio): returns the pitch, in ems of a
+// line's size, up to which two lines are then neighbours (12 % above the common one), or 0.
+float WideLeading(const std::vector<Info>& infos, float body) {
+    constexpr int kSteps = 20;           // pitch in twentieths of the body size
+    constexpr int kBins = 3 * kSteps + 2;  // up to three body sizes
+    uint32_t pairs[kBins] = {}, running[kBins] = {};
+    uint32_t total = 0;
+    if (!(body > 0)) return 0;
+    for (size_t i = 0; i + 1 < infos.size(); ++i) {
+        const Info& a = infos[i];
+        const Info& b = infos[i + 1];
+        if (a.page != b.page || a.dir != 0 || b.dir != 0 || ((a.flags | b.flags) & (kLineAnchor | kLineTable | kLineFormula)))
+            continue;
+        if (std::fabs(a.size - body) > 0.05f * body || std::fabs(b.size - body) > 0.05f * body) continue;
+        if (b.u0 > a.u1 || b.u1 < a.u0) continue;
+        const float pitch = (a.baseline - b.baseline) / body;
+        if (!(pitch > 0.8f && pitch <= 3.0f)) continue;
+        const int bin = static_cast<int>(pitch * kSteps + 0.5f);
+        pairs[bin]++;
+        running[bin] += !a.endsTerminal && b.startsLower;
+        total++;
+    }
+    int mode = 0;
+    for (int bin = 1; bin < kBins; ++bin)
+        if (pairs[bin] > pairs[mode]) mode = bin;
+    if (mode <= static_cast<int>(1.6f * kSteps) + 1) return 0;
+    const uint32_t count = pairs[mode - 1] + pairs[mode] + pairs[mode + 1];
+    const uint32_t runs = running[mode - 1] + running[mode] + running[mode + 1];
+    if (count < 8 || 2 * count <= total || 2 * runs <= count) return 0;
+    return 1.12f * float(mode) / kSteps;
+}
+
 // `monoDocument`: the document is set in a monospace font, whose lines are prose, not code.
-bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next, bool monoDocument) {
+// `firstPitch`: how far apart, in ems, the first two lines of a paragraph may be (1.6, or more
+// in a document set with wide leading).
+bool Continues(const RawBlock& b, const Info& first, const Info& last, const Info& next, bool monoDocument,
+               float firstPitch) {
     if (next.page != last.page || next.dir != last.dir) return false;
+    if (next.label || last.label) return false;
     // A section number set apart from its title ("1.5.   Migrant Workers") joins it.
     if (b.count == 1 && last.numbering && std::fabs(last.baseline - next.baseline) <= 0.3f * last.size &&
         next.u0 > last.u1 && next.u0 - last.u1 <= 4 * last.size && std::fabs(next.size - last.size) <= 0.15f * last.size)
@@ -687,7 +742,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     if (!ocr && std::fabs(next.size - last.size) > 0.15f * em) return false;
     const float pitch = last.baseline - next.baseline;
     if (pitch <= 0.3f * em) return false;
-    const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : 1.6f * em;
+    const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : firstPitch * em;
     if (pitch > limit) return false;
     if (next.u0 > last.u1 || next.u1 < last.u0) return false;
     const bool monoNext = next.mono >= kMonoShare && !monoDocument;
@@ -1062,6 +1117,33 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 a.rowPeer = b.rowPeer = true;
             }
         }
+        // The text of a list item whose marker stands apart follows it in the order on its
+        // baseline; a parenthesized number without it labels an equation or a subfigure (the other
+        // column's line beside an equation number is not next in the order). So does one with a
+        // display formula two ems or more to its right: an equation numbered on the left.
+        for (size_t i = pageFirst; i < infos.size(); ++i) {
+            Info& in = infos[i];
+            if (!in.label) continue;
+            if (i + 1 < infos.size()) {
+                const Info& next = infos[i + 1];
+                if (next.dir == in.dir && std::fabs(next.baseline - in.baseline) <= 0.3f * in.size && next.u0 >= in.u1 &&
+                    !(next.flags & kLineAnchor)) {
+                    bool formula = false;
+                    if (next.u0 - in.u1 >= 2 * in.size && next.chars <= 200) {
+                        LineText(page, page.lines[next.line], scratch);
+                        formula = NoTitle(scratch) && MathSymbol(scratch);
+                    }
+                    if (!formula) {
+                        in.label = false;
+                        continue;
+                    }
+                }
+            }
+            in.marker = Marker::None;
+            in.skip = 0;
+            in.verbatimMarker = false;
+            in.textU0 = in.markerU0 = in.u0;
+        }
         // The page's topmost line, alone in the top 6 % of the page: a running head when set in
         // the body face with a wide gap below it (decided once the body size is known), even on a
         // page of its own, where no repeat on other pages removed it.
@@ -1132,6 +1214,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     out.boldBody = faceGlyphs > 0 && boldGlyphs * 10 > faceGlyphs * 6;
     out.italicBody = faceGlyphs > 0 && italicGlyphs * 10 > faceGlyphs * 6;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
+    const float firstPitch = Fmax(1.6f, WideLeading(infos, body));
     FindNotes(pages, infos, body, out.noteRefs);
     // A bar beside text set at heading size is an accent rule (slide titles, call-outs), not a
     // quote, unless the quote goes on in body text next to it ("> ## Title" then its paragraph).
@@ -1174,7 +1257,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 b.right = Fmax(b.right, in.u1);
                 b.bold = b.bold && (in.flags & kLineAllBold) != 0;
                 continue;
-            } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument)) {
+            } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument, firstPitch)) {
                 if (b.count == 1) {
                     b.pitch = last.baseline - in.baseline;
                     b.bodyU0 = in.u0;
@@ -1207,7 +1290,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         for (size_t r = 0; r < raws.size(); ++r) {
             const RawBlock& b = raws[r];
             const Info& in = infos[b.first];
-            if (b.count != 1 || b.note != 0 || b.mono || in.chars == 0 || in.chars > 40 || in.dir != 0 ||
+            if (b.count != 1 || b.note != 0 || b.mono || in.chars == 0 || in.chars > 40 || in.dir != 0 || in.label ||
                 in.listStart() || in.quoteBars != 0 || (in.flags & (kLineAnchor | kLineTable | kLineFormula)))
                 continue;
             LineText(pages[in.page], pages[in.page].lines[in.line], scratch);

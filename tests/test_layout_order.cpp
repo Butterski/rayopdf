@@ -195,6 +195,64 @@ void TestOffsetRows() {
     RAYOPDF_CHECK(Find(md, "Body line 0 of") != std::string::npos && Find(md, "Body line 29 of") != std::string::npos, 770);
 }
 
+// An equation's number is a paragraph of its own, never a list item: alone at the right of its
+// formula's line, at the end of that line a quad after the formula, and on the left of a formula.
+// "(3)" as the last word of a sentence stays in it, and "(1)" before its item's text is a marker.
+void TestEquationNumbers() {
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 4; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the article runs on to the margin here", 72,
+                740 - 12.0f * i, 10);
+    AddText(pages[0], "E = mc + pq", 200, 680, 10);
+    AddText(pages[0], "(13)", 520, 680, 10);
+    AddText(pages[0], "As the formula shows, the energy is given by (3)", 72, 660, 10);
+    AddText(pages[0], "and the text goes on in the next line of the paragraph.", 72, 648, 10);
+    AddText(pages[0], "F = ma + kx,", 200, 620, 10);
+    AddText(pages[0], "(14)", 200 + 12 * 5 + 10, 620, 10);
+    AddText(pages[0], "(15)", 72, 590, 10);
+    AddText(pages[0], "G = ab + cd", 200, 590, 10);
+    AddText(pages[0], "(1)", 72, 560, 10);
+    AddText(pages[0], "The first item of a list set with a tab.", 100, 560, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "\n\n(13)\n") != std::string::npos && Find(md, "- (13)") == std::string::npos, 771);
+    RAYOPDF_CHECK(Find(md, "given by (3) and the text") != std::string::npos, 772);
+    RAYOPDF_CHECK(Find(md, "F = ma + kx,\n\n(14)\n") != std::string::npos, 773);
+    RAYOPDF_CHECK(Find(md, "\n\n(15)\n\nG = ab + cd") != std::string::npos, 774);
+    RAYOPDF_CHECK(Find(md, "(1) The first item") != std::string::npos, 775);
+}
+
+// A double-spaced manuscript: the lines of a paragraph are two ems apart and still one paragraph;
+// its title in a larger size, spaced in proportion, is one heading; an indented line starts the
+// next paragraph. In a single-spaced document a gap of two ems still parts its paragraphs.
+void TestWideLeading() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "A Long Title of the Manuscript", 72, 740, 16);
+    AddText(pages[0], "That Takes Two Lines", 72, 740 - 33, 16);
+    float y = 660;
+    for (int p = 0; p < 3; ++p) {
+        for (int i = 0; i < 5; ++i, y -= 20) {
+            const bool last = i == 4;
+            AddText(pages[0],
+                    std::string(i == 0 ? "Paragraph " + std::to_string(p) + " starts here and" : "goes on with more words and") +
+                        (last ? " ends." : " then it"),
+                    i == 0 ? 87.0f : 72.0f, y, 10);
+        }
+    }
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "A Long Title of the Manuscript That Takes Two Lines\n") != std::string::npos, 776);
+    RAYOPDF_CHECK(Find(md, "Paragraph 0 starts here and then it goes on with more words and then it goes on") != std::string::npos, 777);
+    RAYOPDF_CHECK(Find(md, "ends.\n\nParagraph 1 starts here") != std::string::npos, 778);
+    std::vector<PageData> single{NewPage()};
+    y = 700;
+    for (int p = 0; p < 3; ++p, y -= 12) {
+        for (int i = 0; i < 5; ++i, y -= 12)
+            AddText(single[0], std::string(i == 0 ? "Block " + std::to_string(p) + " starts here and" : "goes on with more words and") +
+                                   (i == 4 ? " ends" : " then it"), 72, y, 10);
+    }
+    const std::string spaced = Run(single);
+    RAYOPDF_CHECK(Find(spaced, "ends\n\nBlock 1 starts") != std::string::npos && Find(spaced, "ends\n\nBlock 2 starts") != std::string::npos, 779);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -205,6 +263,8 @@ int main() {
     TestSparseMetadata();
     TestInnerFolio();
     TestOffsetRows();
+    TestEquationNumbers();
+    TestWideLeading();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

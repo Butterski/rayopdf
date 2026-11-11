@@ -31,6 +31,8 @@ void BuildLines(PageData& page);
 // by a wide space (a quad, not a word space) becomes a line of its own on the same baseline, with
 // the rest of the line right after it in page.order. Semantics reads it as a heading. A bold
 // lead-in that ends a sentence ("Results. We find ...") or introduces it ("Note: ...") stays.
+// An equation's number that ends its formula's line ("(12)" set a quad or more after the formula)
+// becomes a line of its own the same way, where semantics reads it as a paragraph of its own.
 // Runs after OrderLines, so that the order of the page's lines is decided on whole lines.
 void SplitRunInHeadings(PageData& page);
 

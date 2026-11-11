@@ -8,6 +8,7 @@
 // fonts never inflate it; that first Next allocates.
 
 #include "text/font.h"
+#include "pdf/syntax.h"
 
 #include "common/compiler.h"
 #include "common/utf8.h"
@@ -364,6 +365,7 @@ struct Font::Impl {
     double matrix[6] = {0.001, 0, 0, 0.001, 0, 0};
     double ascent = kDefaultAscent;
     double descent = kDefaultDescent;
+    double emScale = 1;
     double spaceWidth = 0;
     bool unmappable = false;
     std::string pool;  // UTF-8 text the tables point into
@@ -603,6 +605,7 @@ bool Font::Vertical() const { return impl_->vertical; }
 const double* Font::Matrix() const { return impl_->matrix; }
 double Font::Ascent() const { return impl_->ascent; }
 double Font::Descent() const { return impl_->descent; }
+double Font::EmScale() const { return impl_->emScale; }
 double Font::SpaceWidth() const {
     impl_->CompleteIfPending();
     return impl_->spaceWidth;
@@ -1300,6 +1303,55 @@ void CompleteSimpleTexts(Font::Impl& font, SimpleLoad& load) {
     font.unmappable = !hasToUnicode && (mapped == 0 || (differences > 0 && resolvedDifferences * 2 < differences));
 }
 
+// The glyph box a Type 3 glyph procedure declares (`wx wy llx lly urx ury d1`, §9.6.5.2) as
+// `box` = {llx, lly, urx, ury}; false when it declares none (d0) or cannot be read (at most 64 KiB
+// of it are).
+bool Type3GlyphBox(const Document& doc, const PdfValue& procValue, std::string& data, double box[4]) {
+    const PdfValue& proc = doc.Resolve(procValue);
+    if (!proc.IsStream() || doc.StreamData(proc, data, size_t(64) << 10) != StreamStatus::Ok) return false;
+    Syntax::Cursor cursor{data, 0};
+    double v[6];
+    for (int n = 0; n < 6; ++n) {
+        Syntax::SkipWhite(cursor);
+        PdfValue number;
+        if (!Syntax::ParseNumber(Syntax::ReadToken(cursor), number)) return false;
+        v[n] = number.type == PdfValue::Type::Int ? static_cast<double>(number.integer) : number.real;
+        if (!(v[n] > -1e6 && v[n] < 1e6)) return false;
+    }
+    Syntax::SkipWhite(cursor);
+    if (Syntax::ReadToken(cursor) != "d1") return false;
+    for (int i = 0; i < 4; ++i) box[i] = v[i + 2];
+    return true;
+}
+
+// The em of a Type 3 font, in units of its glyph space, read from the glyph boxes its procedures
+// declare: the tallest box top over 0.7 (the ascender height of text faces), or the boxes' whole
+// height when that is more (brackets, tall symbols); 0 when no procedure declares a box. At most
+// 256 procedures are read.
+double Type3EmUnits(const Document& doc, const PdfValue& dict) {
+    const PdfValue& procs = doc.Get(dict, "CharProcs");
+    double top = 0, bottom = 0;
+    std::string data;
+    size_t read = 0;
+    for (const PdfDictEntry& entry : procs.Entries()) {
+        if (++read > 256) break;
+        double box[4];
+        if (!Type3GlyphBox(doc, entry.value, data, box)) continue;
+        top = std::max(top, std::max(box[1], box[3]));
+        bottom = std::min(bottom, std::min(box[1], box[3]));
+    }
+    return std::max(top / 0.7, top - bottom);
+}
+
+// Whether the Type 3 glyph procedure `name` of the font `dict` declares a box with an area: it
+// draws something, so its character is no space.
+bool Type3GlyphInked(const Document& doc, const PdfValue& dict, std::string_view name) {
+    const PdfValue* proc = doc.Get(dict, "CharProcs").Find(name);
+    std::string data;
+    double box[4];
+    return proc && Type3GlyphBox(doc, *proc, data, box) && box[2] - box[0] > 0 && box[3] - box[1] > 0;
+}
+
 void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::Impl& font) {
     font.kind = kind;
     font.baseName = BaseNameOf(doc, dict);
@@ -1350,6 +1402,13 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
         for (int c = 0; c < 256 && unicodeAt != unicodeEnd; ++c) {
             while (unicodeAt != unicodeEnd && unicodeAt->code < static_cast<uint32_t>(c)) ++unicodeAt;
             if (unicodeAt != unicodeEnd && unicodeAt->code == static_cast<uint32_t>(c)) {
+                // A space or control character for a printable code of a Type 3 font whose
+                // procedure draws something is that procedure's name read as a character name
+                // ("CR", "HT": Ghostscript), not the glyph's text.
+                if (kind == FontKind::Type3 && c > 0x20 && unicodeAt->length == 1 &&
+                    static_cast<unsigned char>(load->toUnicode.text[unicodeAt->offset]) <= 0x20 && simple.differenced[c] &&
+                    Type3GlyphInked(doc, dict, simple.names[c]))
+                    continue;
                 ViewSlot(font, static_cast<uint8_t>(c), PoolOnce(font, load->toUnicode.text, mapAt) + unicodeAt->offset,
                          unicodeAt->length, UnicodeSource::ToUnicode);
             }
@@ -1411,7 +1470,21 @@ void LoadSimple(const Document& doc, const PdfValue& dict, FontKind kind, Font::
         PdfRect box;
         font.ascent = kDefaultAscent;
         font.descent = kDefaultDescent;
-        if (doc.Rect(doc.Get(dict, "FontBBox"), box) && font.matrix[3] != 0) {
+        // A glyph space that is not a thousandth of the em (bitmap fonts of dvips written by
+        // Ghostscript: device pixels, /FontMatrix [1 0 0 -1 0 0], selected at a size of 0.12, with a
+        // /FontBBox that says nothing): advances of more than four text-space units at size 1.
+        // The em is read from the glyph procedures, or is twice the mean advance.
+        double advances = 0;
+        int advancing = 0;
+        for (const Slot& slot : font.slots)
+            if (slot.width > 0 && std::isfinite(slot.width)) advances += slot.width, ++advancing;
+        const double meanAdvance = advancing > 0 ? advances / advancing : 0;
+        if (meanAdvance > 4 && font.matrix[0] != 0 && font.matrix[3] != 0) {
+            double em = Type3EmUnits(doc, dict);
+            if (!(em > 0)) em = 2 * meanAdvance / std::fabs(font.matrix[0]);
+            const double scale = em * font.matrix[3];
+            if (std::isfinite(scale) && std::fabs(scale) > 2 && std::fabs(scale) < 1e6) font.emScale = scale;
+        } else if (doc.Rect(doc.Get(dict, "FontBBox"), box) && font.matrix[3] != 0) {
             const double top = box.y1 * font.matrix[3], bottom = box.y0 * font.matrix[3];
             const double hi = top > bottom ? top : bottom, lo = top > bottom ? bottom : top;
             if (hi > 0 && hi < 3) font.ascent = hi;

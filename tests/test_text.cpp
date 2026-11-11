@@ -695,9 +695,43 @@ void TestPooledTexts() {
                   1463);
 }
 
+// A bitmap font as dvips sets it and Ghostscript writes it: glyph space in device pixels
+// (/FontMatrix [1 0 0 -1 0 0], selected at a size of 0.12), a /FontBBox that says nothing, and
+// procedures named by position ("CR"), one of which the ToUnicode map reads as a control character.
+void TestPixelType3() {
+    Loaded l;
+    Load(l, [](Test::PdfBuilder& b) {
+        const int tall = b.AddStream("", "85 0 3 0 81 84 d1 0 0 m 81 84 l f");
+        const int low = b.AddStream("", "51 0 3 -1 47 53 d1 0 0 m 47 53 l f");
+        const int toUnicode = b.AddStream("", "1 begincodespacerange <00> <FF> endcodespacerange\n"
+                                              "1 beginbfchar <63> <000D> endbfchar");
+        return "/F1 << /Type /Font /Subtype /Type3 /FontMatrix [1 0 0 -1 0 0] /FontBBox [0 0 1 -1]"
+               " /FirstChar 65 /LastChar 99 /Widths [85 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 57 0 51]"
+               " /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [65 /BT 97 /CP 99 /CR] >>"
+               " /CharProcs << /BT " + Ref(tall) + " /CP " + Ref(low) + " /CR " + Ref(low) + " >> /Resources << >>"
+               " /ToUnicode " + Ref(toUnicode) + " >>";
+    }, 1466);
+    const Font& font = l.Get("F1");
+    // The em: the tallest box top over 0.7; negative as the matrix turns y over. Widths stay in
+    // text space.
+    RAYOPDF_CHECK(Near(font.EmScale(), -120.0) && Near(font.Ascent(), 0.8) && Near(font.Descent(), -0.2), 1467);
+    const std::vector<Code> codes = Codes(font, "Aac");
+    RAYOPDF_CHECK(codes.size() == 3 && Near(codes[0].width, 85.0) && codes[0].unicode == "A" && codes[1].unicode == "a", 1468);
+    RAYOPDF_CHECK(codes[2].unicode == "c" && codes[2].source == UnicodeSource::Guess, 1469);
+    // A glyph space of a thousandth of the em keeps its scale.
+    Loaded plain;
+    Load(plain, [](Test::PdfBuilder&) {
+        return std::string("/F1 << /Type /Font /Subtype /Type3 /FontMatrix [0.001 0 0 0.001 0 0] /FontBBox [0 -200 800 900]"
+                           " /FirstChar 65 /LastChar 65 /Widths [500] /Encoding << /Differences [65 /A] >>"
+                           " /CharProcs << >> /Resources << >> >>");
+    }, 1470);
+    RAYOPDF_CHECK(Near(plain.Get("F1").EmScale(), 1.0) && Near(plain.Get("F1").Ascent(), 0.9), 1471);
+}
+
 } // namespace
 
 int main() {
+    TestPixelType3();
     TestGlyphNames();
     TestToUnicode();
     TestEncodingCMap();

@@ -1203,10 +1203,12 @@ RAYOPDF_HOT_INLINE uint16_t AppendGlyphText(std::string_view unicode, std::strin
 }
 
 const GlyphRun& Interpreter::RunFor(const Text::Font& font, const Matrix& tm) {
-    // Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm × CTM (§9.4.2), without its translation.
+    // Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm × CTM (§9.4.2), without its translation; the y axis in
+    // ems of the font (Text::Font::EmScale).
     const double tfs = gs_.fontSize;
     const double th = gs_.hScale;
-    const double a = tfs * th * tm.a, b = tfs * th * tm.b, c = tfs * tm.c, d = tfs * tm.d;
+    const double em = font.EmScale();
+    const double a = tfs * th * tm.a, b = tfs * th * tm.b, c = tfs * em * tm.c, d = tfs * em * tm.d;
     const bool artifact = artifactDepth_ > 0;
     GlyphRun& run = run_;
     if (run.font == &font && SameBits(run.a, a) && SameBits(run.b, b) && SameBits(run.c, c) && SameBits(run.d, d) &&

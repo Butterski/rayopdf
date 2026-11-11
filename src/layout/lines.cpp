@@ -1576,15 +1576,74 @@ void Measure(const PageData& page, Line& line) {
     if ((all & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
 }
 
+// Splits the line at `position` of page.order before its glyph `k` (0 < k < count): the rest
+// becomes a line of its own, next in the order.
+void SplitAt(PageData& page, size_t position, uint32_t k) {
+    Line& line = page.lines[page.order[position]];
+    Line rest = line;
+    rest.first = line.first + k;
+    rest.count = line.count - k;
+    line.count = k;
+    page.glyphs[page.lineGlyphs[rest.first]].flags &= static_cast<uint16_t>(~kGlyphSpaceBefore);
+    Measure(page, line);
+    Measure(page, rest);
+    page.order.insert(page.order.begin() + static_cast<std::ptrdiff_t>(position + 1),
+                      static_cast<uint32_t>(page.lines.size()));
+    page.lines.push_back(rest);
+}
+
+// Where the equation number at the end of `line` starts, or 0: "(", up to six digits, letters,
+// dots and hyphens with a digit among them, ")" on the line's baseline, set apart from all before
+// it by half an em or more (TeX keeps a quad between a formula and its number, amsmath half of
+// one) and by more than one and a half times any gap before it (the last word of a justified
+// line is no number).
+uint32_t EquationNumberAt(const PageData& page, const Line& line) {
+    if (line.count < 5) return 0;
+    const auto glyph = [&](uint32_t k) -> const Glyph& { return page.glyphs[page.lineGlyphs[line.first + k]]; };
+    if (page.GlyphText(glyph(line.count - 1)) != ")") return 0;
+    uint32_t open = line.count - 1;
+    bool digit = false;
+    while (open > 0 && line.count - open <= 7) {
+        --open;
+        const std::string_view t = page.GlyphText(glyph(open));
+        if (t == "(") break;
+        if (t.size() != 1) return 0;
+        const char c = t[0];
+        if (c >= '0' && c <= '9') digit = true;
+        else if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-')) return 0;
+    }
+    if (open == 0 || !digit || page.GlyphText(glyph(open)) != "(") return 0;
+    const Glyph& first = glyph(open);
+    for (uint32_t k = open + 1; k < line.count; ++k)
+        if (std::fabs(glyph(k).v - first.v) > 0.2f * line.size) return 0;
+    float before = glyph(0).u1, widest = 0;
+    for (uint32_t k = 1; k < open; ++k) {
+        const Glyph& g = glyph(k);
+        widest = Fmax(widest, g.u0 - before);
+        before = Fmax(before, g.u1);
+    }
+    const float gap = first.u0 - before;
+    return gap >= 0.5f * line.size && gap > 1.5f * widest ? open : 0;
+}
+
 } // namespace
 
 void SplitRunInHeadings(PageData& page) {
     const size_t ordered = page.order.size();
     for (size_t at = 0; at < ordered && page.order.size() < (size_t(1) << 24); ++at) {
         // Indices into page.order shift as rests are inserted: `at` walks the original entries.
-        const uint32_t li = page.order[at + (page.order.size() - ordered)];
-        Line& line = page.lines[li];
+        const size_t position = at + (page.order.size() - ordered);
+        const uint32_t li = page.order[position];
+        const Line& line = page.lines[li];
         if (line.dir != 0 || line.count < 3 || (line.flags & (kLineAnchor | kLineTableCell | kLineTable))) continue;
+        // An equation's number at the end of its formula's line is a line of its own, as it is
+        // where the formula leaves room for it.
+        if (!(line.flags & kLineRtl)) {
+            if (const uint32_t number = EquationNumberAt(page, line)) {
+                SplitAt(page, position, number);
+                continue;
+            }
+        }
         uint32_t k = 0, letters = 0;
         while (k < line.count && k <= 80) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
@@ -1605,17 +1664,7 @@ void SplitRunInHeadings(PageData& page) {
         if (lastText.empty() || std::strchr(".:;,!?0123456789", lastText.back()) != nullptr) continue;
         // The body text after it is set in another face (not one bold cell beside another).
         if (page.glyphs[page.lineGlyphs[line.first + line.count - 1]].flags & kGlyphBold) continue;
-        Line rest = line;
-        rest.first = line.first + k;
-        rest.count = line.count - k;
-        line.count = k;
-        page.glyphs[page.lineGlyphs[rest.first]].flags &= static_cast<uint16_t>(~kGlyphSpaceBefore);
-        Measure(page, line);
-        Measure(page, rest);
-        const size_t position = at + (page.order.size() - ordered) + 1;
-        page.order.insert(page.order.begin() + static_cast<std::ptrdiff_t>(position),
-                          static_cast<uint32_t>(page.lines.size()));
-        page.lines.push_back(rest);
+        SplitAt(page, position, k);
     }
 }
 
