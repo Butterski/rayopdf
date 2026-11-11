@@ -968,6 +968,21 @@ void TestContentsAndChapterNumbers() {
     md = Run(chapter);
     Show("chapter number", md);
     RAYOPDF_CHECK(Contains(md, "# 4 Basis Fields\n"), 719);
+    // Bold entries in the body size whose numbers stand apart, lines of their own: the entry is
+    // still no heading.
+    std::vector<PageData> numbered{NewPage(1)};
+    AddText(numbered[0], "Contents", 108, 700, 14.3f, kGlyphBold);
+    const char* titles[] = {"Introduction", "Methods", "Results", "Analysis"};
+    for (int i = 0; i < 4; ++i) {
+        AddText(numbered[0], std::to_string(1 + i), 108, 670.0f - 30 * i, 10, kGlyphBold);
+        AddText(numbered[0], titles[i], 140, 670.0f - 30 * i, 10, kGlyphBold);
+        AddText(numbered[0], std::to_string(2 + 3 * i), 498, 670.0f - 30 * i, 10, kGlyphBold);
+    }
+    for (int i = 0; i < 12; ++i)
+        AddText(numbered[0], "Body text of the page that runs on long enough to fill its line.", 108, 520.0f - 12 * i, 10);
+    md = Run(numbered);
+    Show("contents with numbers apart", md);
+    RAYOPDF_CHECK(Contains(md, "# Contents") && !Contains(md, "# 3") && !Contains(md, "# Results"), 441);
 }
 
 void TestWrappedListingLine() {

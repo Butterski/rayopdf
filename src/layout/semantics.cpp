@@ -1063,6 +1063,146 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
         return a.page != b.page ? a.page < b.page : a.glyph < b.glyph;
     });
 }
+
+constexpr size_t kTitleBlocks = 12;     // blocks after the title an abstract or heading is looked for in
+constexpr size_t kMaxAddressBlocks = 16; // paragraphs an address run at the document's end holds at most
+constexpr uint32_t kAddressLine = 120;   // characters of an address line without an e-mail or label
+constexpr size_t kMaxAuthorText = 2048;  // bytes of the title block's author lines searched for names
+constexpr size_t kMaxName = 80;          // bytes of a name looked up in them
+
+// A block's text: its lines' text joined by spaces.
+void BlockText(const std::vector<PageData>& pages, const std::vector<BlockLine>& lines, const Block& b,
+               std::string& out, std::string& line) {
+    out.clear();
+    for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+        const PageData& page = pages[lines[i].page];
+        LineText(page, page.lines[lines[i].line], line, lines[i].skip);
+        if (!out.empty()) out.push_back(' ');
+        out += line;
+    }
+}
+
+char AsciiLower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c | 0x20) : c; }
+
+// `t` starts with `prefix`, ASCII case folded.
+bool StartsFolded(std::string_view t, std::string_view prefix) {
+    if (t.size() < prefix.size()) return false;
+    for (size_t k = 0; k < prefix.size(); ++k)
+        if (AsciiLower(t[k]) != AsciiLower(prefix[k])) return false;
+    return true;
+}
+
+// `hay` holds `needle`, ASCII case folded.
+bool ContainsFolded(std::string_view hay, std::string_view needle) {
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    for (size_t at = 0; at + needle.size() <= hay.size(); ++at)
+        if (StartsFolded(hay.substr(at), needle)) return true;
+    return false;
+}
+
+bool EmailChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+           c == '_' || c == '+';
+}
+
+// An e-mail address in `t`: a name, "@" and a domain with a dot.
+bool HasEmail(std::string_view t) {
+    for (size_t at = t.find('@'); at != std::string_view::npos; at = t.find('@', at + 1)) {
+        if (at == 0 || !EmailChar(t[at - 1])) continue;
+        size_t end = at + 1;
+        bool dot = false;
+        while (end < t.size() && EmailChar(t[end])) {
+            if (t[end] == '.' && end > at + 1 && end + 1 < t.size() && EmailChar(t[end + 1]) && t[end + 1] != '.')
+                dot = true;
+            ++end;
+        }
+        if (dot) return true;
+    }
+    return false;
+}
+
+// The labels amsart sets before an author's addresses.
+bool AddressLabel(std::string_view t) {
+    return StartsFolded(t, "e-mail address") || StartsFolded(t, "email address") ||
+           StartsFolded(t, "current address") || StartsFolded(t, "present address") || StartsFolded(t, "url:");
+}
+
+// All letters capitals, four or more of them (an author line set in capitals).
+bool InCapitals(std::string_view t) {
+    uint32_t capitals = 0;
+    for (const char c : t) {
+        if (c >= 'a' && c <= 'z') return false;
+        capitals += c >= 'A' && c <= 'Z';
+    }
+    for (size_t k = 0; k < t.size();) {
+        const size_t start = k;
+        ++k;
+        while (k < t.size() && (static_cast<unsigned char>(t[k]) & 0xC0) == 0x80) ++k;
+        if (IsLower(FirstCodePoint(t.substr(start, k - start)))) return false;
+    }
+    return capitals >= 4;
+}
+
+// Authors' addresses printed after the bibliography (amsart and the classes following it), which
+// the source, and a reader, has under the author line: when the title's author line is set in
+// capitals, the run of paragraphs that ends the document, each short and unpunctuated, an
+// e-mail address, an address label ("E-mail address:") or starting with an author's name, with
+// at least one of the last two kinds among them, moves to before the abstract (or the first
+// heading after the title). `blocks` and `lines` hold the body only (no notes yet).
+void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines) {
+    if (blocks.size() < 3 || blocks[0].kind != BlockKind::Heading || lines[blocks[0].first].page != 0) return;
+    std::string text, line, authors;
+    size_t abstract = 0;
+    bool capitals = false;
+    for (size_t i = 1; i < blocks.size() && i <= kTitleBlocks; ++i) {
+        const Block& b = blocks[i];
+        if (b.count == 0 || lines[b.first].page != 0) return;
+        BlockText(pages, lines, b, text, line);
+        if (b.kind == BlockKind::Heading || StartsFolded(text, "abstract")) {
+            abstract = i;
+            break;
+        }
+        if (b.kind != BlockKind::Paragraph) return;
+        capitals = capitals || InCapitals(text);
+        authors += text;
+        authors.push_back('\n');
+        if (authors.size() > kMaxAuthorText) return;
+    }
+    if (abstract < 2 || !capitals) return;
+    size_t start = blocks.size();
+    bool named = false;
+    while (start - 1 > abstract && blocks.size() - start < kMaxAddressBlocks) {
+        const Block& b = blocks[start - 1];
+        if (b.kind != BlockKind::Paragraph || b.count == 0) break;
+        BlockText(pages, lines, b, text, line);
+        std::string_view t = text;
+        while (!t.empty() && (t[0] == '(' || t[0] == ' ')) t.remove_prefix(1);
+        const std::string_view name = t.substr(0, t.find_first_of(",)"));
+        const bool author = name.size() > 3 && name.size() <= kMaxName && name.find(' ') != std::string_view::npos &&
+                            ContainsFolded(authors, name);
+        const bool address = HasEmail(t) || AddressLabel(t);
+        const uint32_t cp = LastCodePoint(t);
+        const bool shortLine = t.size() <= kAddressLine && cp != '.' && cp != ';' && cp != ':' && !t.empty() && t[0] != '[';
+        if (!author && !address && !shortLine) break;
+        named = named || author || address;
+        --start;
+    }
+    if (!named || start == blocks.size()) return;
+    // Lines and blocks [start, end) go before blocks[abstract], in the same order.
+    const uint32_t to = blocks[abstract].first, from = blocks[start].first;
+    const uint32_t movedLines = static_cast<uint32_t>(lines.size()) - from, shift = from - to;
+    std::rotate(lines.begin() + to, lines.begin() + from, lines.end());
+    for (size_t i = abstract; i < start; ++i) blocks[i].first += movedLines;
+    for (size_t i = start; i < blocks.size(); ++i) {
+        Block& b = blocks[i];
+        b.first -= shift;
+        b.listParagraph = false;
+        b.depth = 0;
+        b.quote = 0;
+    }
+    std::rotate(blocks.begin() + static_cast<std::ptrdiff_t>(abstract), blocks.begin() + static_cast<std::ptrdiff_t>(start),
+                blocks.end());
+}
 } // namespace
 
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
@@ -1119,7 +1259,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
         // (a table header), not headings; a heading beside the other column's text has no peer. A
         // line with a lone number far to its right on its baseline is a table-of-contents entry
-        // and its page, not a heading either.
+        // and its page, not a heading either; so is the entry's own number set apart before it
+        // ("3   Results   8"), a line of its own.
         byBase.clear();
         for (size_t i = pageFirst; i < infos.size(); ++i) byBase.push_back(static_cast<uint32_t>(i));
         std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
@@ -1131,9 +1272,18 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 Info& b = infos[byBase[o]];
                 if (a.baseline - b.baseline > 0.3f * a.size) break;
                 if (a.dir == b.dir && a.numbering != b.numbering) {
-                    Info& entry = a.numbering ? b : a;
+                    const uint32_t at = a.numbering ? byBase[o] : byBase[k];
+                    Info& entry = infos[at];
                     const Info& number = a.numbering ? a : b;
-                    if (number.chars <= 4 && number.u0 - entry.u1 >= 3 * entry.size) entry.pageRef = true;
+                    if (number.chars <= 4 && number.u0 - entry.u1 >= 3 * entry.size) {
+                        entry.pageRef = true;
+                        if (at > pageFirst) {
+                            Info& before = infos[at - 1];
+                            if (before.numbering && before.dir == entry.dir && before.u1 <= entry.u0 &&
+                                std::fabs(before.baseline - entry.baseline) <= 0.3f * entry.size)
+                                before.pageRef = true;
+                        }
+                    }
                 }
                 if (a.dir != b.dir || std::fabs(a.size - b.size) > 0.03f * a.size) continue;
                 if (a.chars > 60 || b.chars > 60 || a.numbering || b.numbering) continue;
@@ -1499,13 +1649,15 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             continue;
         }
         // The outline. A table-of-contents entry repeats a title and heads nothing: a line with
-        // its page number far to its right next to another such line set alone (without one it
-        // is a heading beside a number in the other column), or one ending in a row of leader dots.
+        // its page number far to its right next to another such line set alone (or after its own
+        // number set apart; without one it is a heading beside a number in the other column), or
+        // one ending in a row of leader dots.
         const auto contentsEntry = [&]() {
             if (!first.pageRef) return false;
             for (size_t q = r >= 2 ? r - 2 : 0; q < raws.size() && q <= r + 2; ++q) {
                 const Info& near = infos[raws[q].first];
-                if (q != r && raws[q].count == 1 && near.pageRef && !near.endsTerminal && near.page == first.page)
+                const bool alone = raws[q].count == 1 || (raws[q].count == 2 && near.numbering);
+                if (q != r && alone && near.pageRef && !near.endsTerminal && near.page == first.page)
                     return true;
             }
             return false;
@@ -2223,6 +2375,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             floating.push_back(0);
         }
     }
+    MoveAddresses(pages, blocks, lines);
     const uint32_t base = static_cast<uint32_t>(lines.size());
     lines.insert(lines.end(), noteLines.begin(), noteLines.end());
     for (Block& note : notes) {

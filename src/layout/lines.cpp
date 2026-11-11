@@ -1594,8 +1594,8 @@ void SplitAt(PageData& page, size_t position, uint32_t k) {
 
 // Where the equation number at the end of `line` starts, or 0: "(", up to six digits, letters,
 // dots and hyphens with a digit among them, ")" on the line's baseline, set apart from all before
-// it by half an em or more (TeX keeps a quad between a formula and its number, amsmath half of
-// one) and by more than one and a half times any gap before it (the last word of a justified
+// it by nearly half an em or more (TeX keeps a quad between a formula and its number, amsmath half
+// of one) and by more than one and a half times any gap before it (the last word of a justified
 // line is no number).
 uint32_t EquationNumberAt(const PageData& page, const Line& line) {
     if (line.count < 5) return 0;
@@ -1617,13 +1617,21 @@ uint32_t EquationNumberAt(const PageData& page, const Line& line) {
     for (uint32_t k = open + 1; k < line.count; ++k)
         if (std::fabs(glyph(k).v - first.v) > 0.2f * line.size) return 0;
     float before = glyph(0).u1, widest = 0;
+    bool relation = false;
     for (uint32_t k = 1; k < open; ++k) {
         const Glyph& g = glyph(k);
         widest = Fmax(widest, g.u0 - before);
         before = Fmax(before, g.u1);
+        const std::string_view t = page.GlyphText(g);
+        relation = relation || t == "=" || t == "\xE2\x89\xA4" || t == "\xE2\x89\xA5" || t == "\xE2\x88\x9D" ||
+                   t == "\xE2\x89\x88" || t == "\xE2\x89\xA1";  // = ≤ ≥ ∝ ≈ ≡
     }
     const float gap = first.u0 - before;
-    return gap >= 0.5f * line.size && gap > 1.5f * widest ? open : 0;
+    if (gap < 0.45f * line.size) return 0;
+    // A display formula has wide spaces of its own (a quad between two equations, before "s.t."):
+    // after a relation sign, a gap of an em or more and nearly as wide as the widest of them sets
+    // the number apart too.
+    return gap > 1.5f * widest || (relation && gap >= line.size && gap >= 0.8f * widest) ? open : 0;
 }
 
 } // namespace

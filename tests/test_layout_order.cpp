@@ -196,8 +196,9 @@ void TestOffsetRows() {
 }
 
 // An equation's number is a paragraph of its own, never a list item: alone at the right of its
-// formula's line, at the end of that line a quad after the formula, and on the left of a formula.
-// "(3)" as the last word of a sentence stays in it, and "(1)" before its item's text is a marker.
+// formula's line, at the end of that line a quad after the formula, and on the left of a formula;
+// after two equations a quad apart, a little more than a quad after them. "(3)" as the last word
+// of a sentence stays in it, and "(1)" before its item's text is a marker.
 void TestEquationNumbers() {
     std::vector<PageData> pages{NewPage()};
     for (int i = 0; i < 4; ++i)
@@ -213,12 +214,16 @@ void TestEquationNumbers() {
     AddText(pages[0], "G = ab + cd", 200, 590, 10);
     AddText(pages[0], "(1)", 72, 560, 10);
     AddText(pages[0], "The first item of a list set with a tab.", 100, 560, 10);
+    AddText(pages[0], "a = b,", 150, 530, 10);
+    AddText(pages[0], "c = d,", 192, 530, 10);
+    AddText(pages[0], "(16)", 235, 530, 10);
     const std::string md = Run(pages);
     RAYOPDF_CHECK(Find(md, "\n\n(13)\n") != std::string::npos && Find(md, "- (13)") == std::string::npos, 771);
     RAYOPDF_CHECK(Find(md, "given by (3) and the text") != std::string::npos, 772);
     RAYOPDF_CHECK(Find(md, "F = ma + kx,\n\n(14)\n") != std::string::npos, 773);
     RAYOPDF_CHECK(Find(md, "\n\n(15)\n\nG = ab + cd") != std::string::npos, 774);
     RAYOPDF_CHECK(Find(md, "(1) The first item") != std::string::npos, 775);
+    RAYOPDF_CHECK(Find(md, "c = d,\n\n(16)") != std::string::npos, 786);
 }
 
 // A double-spaced manuscript: the lines of a paragraph are two ems apart and still one paragraph;
@@ -281,6 +286,39 @@ void TestParagraphAroundFloat() {
     RAYOPDF_CHECK(Find(body, "near the figure\n\nTable 1 shows") != std::string::npos, 782);
 }
 
+// Authors' addresses printed after the bibliography under a title block whose author line is set
+// in capitals (amsart) move to before the abstract, in their order; under an author line in
+// mixed case they stay at the end, where the source put them.
+void TestAddressesAtEnd() {
+    const auto build = [](const char* authors) {
+        std::vector<PageData> pages{NewPage(), NewPage()};
+        pages[1].number = 2;
+        AddText(pages[0], "A Title of the Paper", 72, 740, 16);
+        AddText(pages[0], authors, 72, 712, 10);
+        AddText(pages[0], "Abstract. We study a question of the test and answer it here.", 72, 684, 9);
+        for (int i = 0; i < 30; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    650 - 12.0f * i, 10);
+        for (int i = 0; i < 10; ++i)
+            AddText(pages[1], "More body text on the second page, line " + std::to_string(i) + ".", 72,
+                    700 - 12.0f * i, 10);
+        AddText(pages[1], "References", 72, 560, 12);
+        AddText(pages[1], "[1] A. Author, A paper of the field, Journal 1 (2000), 1-2.", 72, 540, 9);
+        AddText(pages[1], "Department of Mathematics, University of Alpha, Alphaville", 72, 500, 9);
+        AddText(pages[1], "E-mail address: ann@alpha.edu", 72, 488, 9);
+        AddText(pages[1], "Bob Writer, Institute of Beta, Betatown", 72, 464, 9);
+        AddText(pages[1], "E-mail address: bob@beta.org", 72, 452, 9);
+        return Run(pages);
+    };
+    const std::string md = build("ANN AUTHOR AND BOB WRITER");
+    const size_t authors = Find(md, "ANN AUTHOR"), abstract = Find(md, "Abstract."), first = Find(md, "Department of"),
+                 second = Find(md, "Bob Writer, Institute");
+    RAYOPDF_CHECK(authors != std::string::npos && authors < first && first < second && second < abstract, 783);
+    RAYOPDF_CHECK(Find(md, "bob@beta.org") < abstract && Find(md, "A paper of the field") != std::string::npos, 784);
+    const std::string mixed = build("Ann Author and Bob Writer");
+    RAYOPDF_CHECK(Find(mixed, "A paper of the field") < Find(mixed, "Department of"), 785);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -294,6 +332,7 @@ int main() {
     TestEquationNumbers();
     TestWideLeading();
     TestParagraphAroundFloat();
+    TestAddressesAtEnd();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
