@@ -1661,6 +1661,79 @@ void TestDotsNotRulings() {
     RAYOPDF_CHECK(page.rulings.size() == 1 && page.rulings[0].x0 < 72 && page.rulings[0].x1 > 400, 1705);
 }
 
+// A plot (a curve of many segments over ticks) as a figure region at x0..x1, y0..y1.
+void AddPlot(PageData& page, float x0, float x1, float y0, float y1) {
+    Shape s;
+    s.x0 = x0, s.x1 = x1, s.y0 = y0, s.y1 = y1;
+    s.kind = ShapeKind::Other, s.stroked = true, s.curved = true, s.segments = 40;
+    page.shapes.push_back(s);
+    for (int k = 0; k < 10; ++k) {
+        Shape tick;
+        tick.x0 = tick.x1 = x0 + 4 + (x1 - x0 - 8) * float(k) / 9, tick.y0 = y0 + 2, tick.y1 = y0 + 5;
+        tick.kind = ShapeKind::Line, tick.stroked = true, tick.segments = 1;
+        page.shapes.push_back(tick);
+    }
+}
+
+// Two plots side by side, each with its axis labels (wider than two ems) set left of it: the
+// labels are the plots' text, no table of two columns.
+void TestTickLabelsBesidePlots() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddPlot(page, 163, 300, 542, 710);
+    AddPlot(page, 346, 482, 542, 710);
+    const char* const left[] = {"TempN-R", "TempD-U", "TempN-R1", "TempN-U2", "TempD-R", "TempN-U", "NDVI-U", "NDWI-U"};
+    const char* const right[] = {"TempD-R1", "NDVI-R1", "TempD-R", "NDWI-R2", "NDVI-R", "NDWI-R1", "TempD-R2", "NDVI-R2"};
+    for (int r = 0; r < 8; ++r) {
+        const float y = 700 - 6.0f * float(r);
+        AddText(page, left[r], 160 - 3.0f * float(std::strlen(left[r])), y, 6);
+        AddText(page, right[r], 343 - 3.0f * float(std::strlen(right[r])), y, 6);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("tick labels beside plots", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "TempN-R1"), 1706);
+}
+
+// A ruled grid nine tenths inside a plot's region (the panel titles above it aside): the figure's,
+// no table.
+void TestGridMostlyInFigure() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddPlot(page, 100, 500, 400, 690);
+    for (float y : {722.0f, 702.0f, 560.0f, 425.0f}) HLine(page, 103, 497, y);
+    for (float x : {103.0f, 234.0f, 365.0f, 497.0f}) VLine(page, x, 425, 722);
+    const char* const titles[] = {"CaffeNet", "GoogleNet", "VGG-16"};
+    for (int c = 0; c < 3; ++c) {
+        AddText(page, titles[c], 110 + 131.0f * float(c), 708);
+        AddText(page, "[i] [r]", 110 + 131.0f * float(c), 600);
+        AddText(page, "[m] [n]", 110 + 131.0f * float(c), 500);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("grid mostly in figure", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "[m] [n]"), 1707);
+}
+
+// Lines of justified prose under a rule whose word spaces line up into a river: no table of two
+// columns.
+void TestProseRiverUnderRule() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 310, 560, 712);
+    const char* const left[] = {"In general, we train", "Ensemble members are", "Each update follows."};
+    const char* const right[] = {"The protagonist and its", "An outer loop wherein", "Both agents improve"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 700 - 12.0f * float(r);
+        AddText(page, left[r], 312, y);
+        AddText(page, right[r], 418, y);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("prose river under rule", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "outer loop"), 1708);
+}
+
 int Dump(const char* path, int only) {
     File::InputFile file;
     if (file.Open(path, uint64_t(1) << 31) != File::ReadStatus::Ok) return 2;
@@ -1844,6 +1917,9 @@ int main(int argc, char** argv) {
     TestHeaderAtColumns();
     TestTitleBand();
     TestDotsNotRulings();
+    TestTickLabelsBesidePlots();
+    TestGridMostlyInFigure();
+    TestProseRiverUnderRule();
     std::puts("test_layout_tables: ok");
     return 0;
 }

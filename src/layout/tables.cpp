@@ -537,6 +537,8 @@ private:
     void AddInk(const Row& row, const std::vector<uint32_t>& rowWords, const Ink& from, Ink& to) const;
     bool Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                const std::vector<Gap>& gaps, float em, bool closed = true);
+    bool WordSpaced(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
+                    const std::vector<Gap>& gaps) const;
     bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps);
     // `partial`: rules among the header lines narrower than the table (a label's \cmidrule).
@@ -819,8 +821,9 @@ const std::vector<Ruling>& Detector::Figures() {
     return figures_;
 }
 
-// Rows that are a figure's own text: most of their words stand in a figure region or within two
-// ems of it (tick labels along an axis, a legend, the labels of a diagram).
+// Rows that are a figure's own text: most of their words stand in a figure region or reach to
+// within two ems of it (tick labels along an axis, wider than two ems, a legend, the labels of a
+// diagram).
 bool Detector::FigureText(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                           size_t rowEnd, float em) {
     if (Figures().empty()) return false;
@@ -829,10 +832,10 @@ bool Detector::FigureText(const std::vector<Row>& rows, const std::vector<uint32
     for (size_t r = rowBegin; r < rowEnd; ++r) {
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
             const TWord& w = words_[rowWords[k]];
-            const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+            const float cy = (w.y0 + w.y1) / 2;
             all++;
             for (const Ruling& f : figures_)
-                if (cx >= f.x0 - reach && cx <= f.x1 + reach && cy >= f.y0 - reach && cy <= f.y1 + reach) {
+                if (w.x1 >= f.x0 - reach && w.x0 <= f.x1 + reach && cy >= f.y0 - reach && cy <= f.y1 + reach) {
                     inside++;
                     break;
                 }
@@ -1081,6 +1084,32 @@ bool Detector::Texty(const std::vector<Row>& rows, const std::vector<uint32_t>& 
         if (sentences && 10 * lower >= 7 * widths.size()) sentenceColumns++;
     }
     return texty >= 2 || (!closed && sentenceColumns >= 1);
+}
+
+// Rows of justified prose whose spaces line up (a river): in every row with words in two columns
+// or more, the gaps between columns are no wider than a quarter more than the widest space between
+// words of one column. Two such rows at least.
+bool Detector::WordSpaced(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
+                          size_t rowEnd, const std::vector<Gap>& gaps) const {
+    size_t multi = 0, spaced = 0;
+    for (size_t r = rowBegin; r < rowEnd; ++r) {
+        float within = 0, across = INFINITY;
+        int last = -1;
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            const int c = ColumnOf(gaps, (w.x0 + w.x1) / 2);
+            if (k > rows[r].first) {
+                const float d = w.x0 - words_[rowWords[k - 1]].x1;
+                if (c == last) within = Fmax(within, d);
+                else across = Fmin(across, d);
+            }
+            last = c;
+        }
+        if (across == INFINITY) continue;
+        multi++;
+        spaced += within > 0 && across <= 1.25f * within;
+    }
+    return multi >= 2 && spaced == multi;
 }
 
 // The number of a line of a numbered listing ("7:", as LaTeX's algorithmic sets its steps).
@@ -2090,9 +2119,10 @@ void Detector::Lattices() {
         if (!column && drawn && cols >= 2) HeaderAbove(g);
         if (!column && (cols < 2 || g.Rows() < 2 || wholeRows * 2 > g.Rows())) continue;
         bool figure = false;
-        // A grid drawn inside a figure region (the boxes of a diagram or a legend), or inside regions
-        // side by side that each span its height (the bars of a chart found as several drawings),
-        // is part of the figure.
+        // A grid drawn inside a figure region (the boxes of a diagram or a legend; nine tenths of
+        // its area at least, titles of the panels above it aside), or inside regions side by side
+        // that each span its height (the bars of a chart found as several drawings), is part of the
+        // figure.
         bool drawing = false;
         {
             const std::vector<Ruling>& regions = Figures();
@@ -2106,6 +2136,11 @@ void Detector::Lattices() {
                         reach = f.x1 + near, grown = true;
             }
             drawing = reach >= g.x1;
+            const float area = (g.x1 - g.x0) * (g.y1 - g.y0);
+            for (const Ruling& f : regions) {
+                const float w = Fmin(g.x1, f.x1 + near) - Fmax(g.x0, f.x0 - near), h = Fmin(g.y1, f.y1 + near) - Fmax(g.y0, f.y0 - near);
+                drawing = drawing || (w > 0 && h > 0 && w * h >= 0.9f * area);
+            }
         }
         if (drawing || !Validate(g, column, &figure)) {
             // A chart's gridlines or a diagram's boxes: their lines are no rules of a table either.
@@ -2587,6 +2622,7 @@ void Detector::RuleStacks() {
             if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&
                 multiCell() && !code() &&
                 !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps) &&
+                !(open && WordSpaced(rows, rowWords, begin, end, gaps)) &&
                 !FigureText(rows, rowWords, begin, end, em)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
                 // above it when they are few and rows follow below it. More than three lines above
