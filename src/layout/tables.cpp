@@ -2974,9 +2974,12 @@ bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockL
 }
 
 bool TableNeedsHtml(const PageData& page, const Table& table) {
+    // Labels over sub-columns in the header rows (cells spanning columns, not rows) fit a pipe
+    // table: the label stands in each column it spans.
+    const uint16_t header = std::max<uint16_t>(1, table.headerRows);
     for (uint32_t i = 0; i < table.cellCount; ++i) {
         const TableCell& c = page.tableCells[table.firstCell + i];
-        if (c.rowSpan > 1 || c.colSpan > 1) return true;
+        if (c.rowSpan > 1 || (c.colSpan > 1 && c.row >= header)) return true;
     }
     return false;
 }
@@ -2985,6 +2988,12 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
     if (parts.empty()) return;
     const uint16_t cols = parts[0].table->cols;
     bool first = true;
+    const auto put = [&](std::string_view text) {
+        for (char ch : text) {
+            if (ch == '|') out.push_back('\\');
+            out.push_back(ch == '\n' ? ' ' : ch);
+        }
+    };
     for (size_t p = 0; p < parts.size(); ++p) {
         const TablePart& part = parts[p];
         const Table& table = *part.table;
@@ -2996,16 +3005,20 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
                 if (!first) out.push_back('\n');
                 out += "|";
             }
+            std::string_view spanned;  // the text of a cell spanning the columns after it
+            uint16_t spanLeft = 0;
             for (uint16_t c = 0; c < cols; ++c) {
                 if (write) out.push_back(' ');
                 if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
                     part.page->tableCells[table.firstCell + i].col == c) {
-                    if (write)
-                        for (char ch : TrimLeaders(CellStyleless(part.cellText[i]))) {
-                            if (ch == '|') out.push_back('\\');
-                            out.push_back(ch == '\n' ? ' ' : ch);
-                        }
+                    const std::string_view text = TrimLeaders(CellStyleless(part.cellText[i]));
+                    if (write) put(text);
+                    const uint16_t span = part.page->tableCells[table.firstCell + i].colSpan;
+                    spanned = text, spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;
                     ++i;
+                } else if (spanLeft > 0) {
+                    if (write) put(spanned);
+                    --spanLeft;
                 }
                 if (write) out += " |";
             }

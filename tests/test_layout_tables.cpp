@@ -117,35 +117,42 @@ float AddProse(PageData& page, float x0, float width, float y, int lines, float 
     return y;
 }
 
-// A 3 x 3 lattice with a header cell spanning the last two columns.
+// A 3 x 3 lattice with a header cell spanning the last two columns and a body cell spanning them
+// too: HTML. Without the body span, a pipe table with the header label in both columns.
 void TestLatticeSpans() {
-    std::vector<PageData> pages{NewPage()};
-    PageData& page = pages[0];
-    AddText(page, "Intro text before the table.", 72, 720);
-    const float xs[] = {72, 200, 320, 440};
-    const float ys[] = {700, 680, 660, 640};
-    for (float y : ys) HLine(page, 72, 440, y);
-    VLine(page, 72, 640, 700);
-    VLine(page, 200, 640, 700);
-    VLine(page, 320, 640, 680);  // missing in the header row: "Results" spans two columns
-    VLine(page, 440, 640, 700);
-    AddText(page, "Name", xs[0] + 4, 686);
-    AddText(page, "Results", xs[1] + 4, 686);
-    AddText(page, "Alpha", xs[0] + 4, 666);
-    AddText(page, "12", xs[1] + 4, 666);
-    AddText(page, "34", xs[2] + 4, 666);
-    AddText(page, "Beta", xs[0] + 4, 646);
-    AddText(page, "56", xs[1] + 4, 646);
-    AddText(page, "78", xs[2] + 4, 646);
-    AddText(page, "Text after the table.", 72, 620);
-    ConvertReport report;
-    const std::string md = Run(pages, &report);
-    Show("lattice spans", md);
-    RAYOPDF_CHECK(report.tables == 1, 550);
-    RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Results</th>"), 551);
-    RAYOPDF_CHECK(Contains(md, "<tr><td>Alpha</td><td>12</td><td>34</td></tr>"), 552);
-    RAYOPDF_CHECK(md.find("Intro text") < md.find("<table>") && md.find("</table>") < md.find("Text after"), 553);
-    RAYOPDF_CHECK(Count(md, "Alpha") == 1, 554);
+    for (const bool bodySpan : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddText(page, "Intro text before the table.", 72, 720);
+        const float xs[] = {72, 200, 320, 440};
+        const float ys[] = {700, 680, 660, 640};
+        for (float y : ys) HLine(page, 72, 440, y);
+        VLine(page, 72, 640, 700);
+        VLine(page, 200, 640, 700);
+        VLine(page, 320, bodySpan ? 660 : 640, 680);  // missing in the header row: "Results" spans two columns
+        VLine(page, 440, 640, 700);
+        AddText(page, "Name", xs[0] + 4, 686);
+        AddText(page, "Results", xs[1] + 4, 686);
+        AddText(page, "Alpha", xs[0] + 4, 666);
+        AddText(page, "12", xs[1] + 4, 666);
+        AddText(page, "34", xs[2] + 4, 666);
+        AddText(page, "Beta", xs[0] + 4, 646);
+        AddText(page, "56", xs[1] + 4, 646);
+        if (!bodySpan) AddText(page, "78", xs[2] + 4, 646);
+        AddText(page, "Text after the table.", 72, 620);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("lattice spans", md);
+        RAYOPDF_CHECK(report.tables == 1, 550);
+        RAYOPDF_CHECK(Count(md, "Alpha") == 1, 554);
+        if (!bodySpan) {
+            RAYOPDF_CHECK(Contains(md, "| Name | Results | Results |\n| --- | --- | --- |\n| Alpha | 12 | 34 |\n| Beta | 56 | 78 |"), 887);
+            continue;
+        }
+        RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Results</th>") && Contains(md, "<td colspan=\"2\">56</td>"), 551);
+        RAYOPDF_CHECK(Contains(md, "<tr><td>Alpha</td><td>12</td><td>34</td></tr>"), 552);
+        RAYOPDF_CHECK(md.find("Intro text") < md.find("<table>") && md.find("</table>") < md.find("Text after"), 553);
+    }
 }
 
 // A full lattice without spans: a GFM pipe table; a `|` in a cell is escaped.
@@ -798,7 +805,8 @@ void TestClosedEmptyColumn() {
 }
 
 // Booktabs whose header puts one label over two sub-columns: the body rows set the columns, the
-// label spans them (HTML colspan); dot leaders after a label are not cell text.
+// label spans them (written in both columns of a pipe table); dot leaders after a label are not
+// cell text.
 void TestSpanningHeaderLabel() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
@@ -820,8 +828,8 @@ void TestSpanningHeaderLabel() {
     const std::string md = Run(pages, &report);
     Show("spanning header label", md);
     RAYOPDF_CHECK(report.tables == 1, 584);
-    RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Mean log DNA copies per gram</th>"), 585);
-    RAYOPDF_CHECK(Contains(md, "<tr><td>Bifidobacterium</td><td>4.79</td><td>5.31</td></tr>"), 586);
+    RAYOPDF_CHECK(Contains(md, "| Microbiota | Mean log DNA copies per gram | Mean log DNA copies per gram |\n| --- | --- | --- |"), 585);
+    RAYOPDF_CHECK(Contains(md, "| Bifidobacterium | 4.79 | 5.31 |"), 586);
 }
 
 // Appends `text` set upwards (baseline direction 1, page.h): in that direction's frame it starts
@@ -887,8 +895,7 @@ void TestLatticeSubColumns() {
     }
     const std::string md = Run(pages);
     Show("lattice sub-columns", md);
-    RAYOPDF_CHECK(Contains(md, "<th colspan=\"2\">Results</th>") && Contains(md, "<tr><td>Beta</td><td>13</td><td>0.52</td></tr>"),
-                  589);
+    RAYOPDF_CHECK(Contains(md, "| Domain | Results | Results |\n| --- | --- | --- |\n| Alpha | 12 | 0.51 |\n| Beta | 13 | 0.52 |"), 589);
 }
 
 // The same lattice with a label over each part, the labels set closer than the parts' text: the
@@ -988,7 +995,7 @@ void TestPairsHeaderAndContents() {
 }
 
 // A lattice with a title row inside its frame: the title and the column labels under it are the
-// header.
+// header (in a pipe table the title stands in each column it spans).
 void TestLatticeTitleRow() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
@@ -1008,7 +1015,7 @@ void TestLatticeTitleRow() {
     }
     const std::string md = Run(pages);
     Show("lattice title row", md);
-    RAYOPDF_CHECK(Contains(md, "<tr><th>Learning activity</th><th>Ects</th><th>Sector</th></tr>"), 594);
+    RAYOPDF_CHECK(Contains(md, "| 1st COURSE YEAR courses | 1st COURSE YEAR courses | 1st COURSE YEAR courses |\n| --- | --- | --- |\n| Learning activity | Ects | Sector |"), 594);
 }
 
 // A table turned on its page (set upwards, as a landscape table on a portrait page) is found in
@@ -1108,7 +1115,7 @@ void TestRuledGroupHeader() {
     HLine(page, 72, 400, 640);
     const std::string md = Run(pages);
     Show("ruled group header", md);
-    RAYOPDF_CHECK(Contains(md, "<td>Samples</td><td>52K</td><td>2.91M</td><td>126K</td>"), 853);
+    RAYOPDF_CHECK(Contains(md, "| --- | --- | --- | --- |\n| Samples | 52K | 2.91M | 126K |"), 853);
 }
 
 // The last rows of a ruled table set below its last rule, keeping its columns, belong to it.

@@ -1274,9 +1274,10 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             break;
         }
         case BlockKind::Table: {
-            // D6: GFM when no cell spans, else HTML (layout/tables.h). A table broken across pages is
-            // one table from its parts, each its anchor line then its cell lines. GFM cells are inline
-            // Markdown, cut back out of `out` after the writer appends them.
+            // D6: GFM unless a cell spans rows, or columns below the header rows, then HTML
+            // (layout/tables.h). A table broken across pages is one table from its parts, each its
+            // anchor line then its cell lines. GFM cells are inline Markdown, cut back out of `out`
+            // after the writer appends them.
             parts.clear();
             partFirst.clear();
             bool html = false;

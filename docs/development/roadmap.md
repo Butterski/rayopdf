@@ -133,7 +133,11 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 ### D6 Output dialect
 
 - GitHub Flavored Markdown.
-- Tables are GFM pipe tables, or HTML when a table has spanning cells or multi-paragraph cells.
+- Tables are GFM pipe tables, or HTML when a cell spans rows, a cell below the header rows spans
+  columns, or a cell holds several paragraphs. A header label over several columns is repeated in
+  each of them in a pipe table (measured 2026-11-11: READoc-dev arXiv table TEDS +0.037, odl
+  TEDS +0.0014, olmOCR table tests -3 of 1020; header cells spanning rows as pipe tables too: odl
+  TEDS -0.006).
 - Footnotes are `[^n]`.
 - Images are written as `![alt](<stem>-images/p<page>-<n>.<ext>)`: DCT streams as `.jpg`, JPX
   streams as `.jp2`, everything else decoded to `.png`.
