@@ -30,6 +30,7 @@ harness answers each condition:
 |olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development|
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
 |readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
+|readoc-val|`data/READoc-data/val`|600 further multi-page PDFs of READoc: `arxiv/<stem>` 300, `github/<stem>` 300|`data/READoc-data/val-gt/<subset>/<stem>.md`|**validation**, aggregate only (§ READoc development split)|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 |multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
@@ -38,24 +39,36 @@ Suite ids are paths relative to the suite root without `.pdf`. READoc's selectio
 stems of each subset (`<subset>_ground_truth/*.md`) sorted by the SHA-256 of the stem, first 150
 whose PDF is in `<subset>.zip`; `data/READoc-data/selection.json` records it.
 
-### READoc development split
+### READoc development and validation splits
 
-READoc has 1,009 arXiv and 1,224 GitHub documents; the holdout takes 150 of each. `readoc-dev`
-is 150 more of each for development: numbers 151 to 300 of the same order (ground-truth stems
-sorted by the SHA-256 of the stem, those with a same-stem PDF), so no document is in both.
-`fetch --only readoc-dev` downloads the two zips of the pinned revision again (one on disk at a
-time, deleted afterwards), fails when the first 150 of the order are not the holdout's
-`selection.json` or a selected stem is in it, and writes `data/READoc-data/selection-dev.json`
-(rule, counts, stems).
+READoc has 1,009 arXiv and 1,224 GitHub documents. Three disjoint sets take numbers of one
+order per subset (ground-truth stems sorted by the SHA-256 of the stem, those with a same-stem
+PDF):
 
-The two suites have different rules:
+|Set|Numbers per subset|Documents|Selection file|Role|
+|---|---|---|---|---|
+|`readoc`|1-150|300|`selection.json`|holdout|
+|`readoc-dev`|151-300|300|`selection-dev.json` (`"role": "development"`)|development|
+|`readoc-val`|301-600|600|`selection-val.json` (`"role": "validation"`)|validation|
+
+`fetch --only readoc-dev` and `fetch --only readoc-val` download the two zips of the pinned
+revision again (one on disk at a time, deleted afterwards), fail when the documents before the
+new set's first number are not exactly the earlier sets' selections (the holdout's, then the
+development split's) or a selected stem is in one of them, and write the selection file (rule,
+counts, stems). `readoc-val` needs the other two fetched first.
+
+The three suites have different rules:
 
 - `readoc-dev` may be inspected document by document: the PDFs, the ground truth, the outputs
   and each document's scores (`scores/readoc-dev/<tool>-<subset>-docs.json`, § READoc under
   Metrics). Heuristics for arXiv papers and GitHub READMEs are designed and checked on it.
+- `readoc-val` is aggregate only, like the holdout: never a per-document output or score (the
+  harness writes only `suite_e2e.py`'s aggregate file). Every quality landing is checked
+  against it, so that rules fitted to the development split document by document show whether
+  they transfer before they land.
 - `readoc` stays the holdout: aggregate scores only, never a per-document output or score, and
   measured once per release candidate, not during development. A change is judged on
-  `readoc-dev`; the holdout then shows whether the gain carries over.
+  `readoc-dev`, gated on `readoc-val`; the holdout then shows whether the gain carries over.
 
 [baselines-readoc-dev-2026-11-10.md](../benchmarks/baselines-readoc-dev-2026-11-10.md) has
 every tool's scores on the split beside the holdout's.
@@ -397,7 +410,7 @@ RayoPDF's own Unicode repair.
 ```sh
 python3 tools/eval.py all [--resume]          # everything below, in order, then report.md
 python3 tools/eval.py images [--only NAMES]   # build images, write images.json
-python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,safedocs]
+python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,safedocs]
 python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
 python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
 python3 tools/eval.py corpus --suite multiscript [--jobs 6]
@@ -431,6 +444,7 @@ runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
 scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
 scores/readoc-dev/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
+scores/readoc-val/<tool>-<subset>.json,
 scores/multiscript/<tool>.json (and .md, the tables)
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
@@ -444,7 +458,7 @@ RayoPDF's fully static build runs there as is:
 
 ```sh
 python3 tools/dev.py build --config static        # build/static/rayopdf
-for s in synthetic odl olmocr readoc readoc-dev scanned olmocr-scans multiscript; do
+for s in synthetic odl olmocr readoc readoc-dev readoc-val scanned olmocr-scans multiscript; do
     python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
     python3 tools/eval.py score --suite $s --tools cli
 done

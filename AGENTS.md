@@ -37,7 +37,9 @@ crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-oc
 
 7. Holdout: never inspect per-document outputs or scores of the `weasyprint` producer or the
    `readoc` suite (the 300 READoc documents of `data/READoc-data/selection.json`) while
-   designing converter heuristics; use aggregate scores only. `readoc-dev` (300 other READoc
+   designing converter heuristics; use aggregate scores only. The validation split
+   `readoc-val` (600 further READoc documents, `selection-val.json`) is aggregate-only in the
+   same way, and every quality landing is checked against it. `readoc-dev` (300 other READoc
    documents, `selection-dev.json`) is a development suite: inspect it freely. RayoMD producers
    never use `--embed-source`. Tagged and untagged producers are always reported separately.
 
