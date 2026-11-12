@@ -1392,8 +1392,6 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
             if (!first) {
                 const float em = M::Max(M::Min(previousSize, g.size), 0.5f * M::Max(previousSize, g.size));
                 const float gap = g.u0 - right;
-                // A combining mark takes two bytes at least.
-                const bool combining = g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g));
                 // A gap of kWordGap at least may break words: most gaps inside words are narrower.
                 bool wordBreak = pendingSpace;
                 if (!wordBreak && gap > kWordGap * em) {
@@ -1411,7 +1409,9 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                                                  spaceFontCount);
                     }
                 }
-                if (!combining && wordBreak) g.flags |= kGlyphSpaceBefore;
+                // A combining mark (two bytes at least) takes no space before it.
+                if (wordBreak && !(g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g))))
+                    g.flags |= kGlyphSpaceBefore;
                 // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.
