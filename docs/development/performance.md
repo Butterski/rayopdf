@@ -890,7 +890,8 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
   images written and again with `--math=latex`, and odl with `--format=json`. User instructions
   (`instr.sh`): odl -0.19 %, `multi_column` -0.23 %, `tables` -0.18 %, `arxiv_math` -0.21 %,
   heavy10 -0.04 %, syn6 +0.06 %, SafeDocs +0.09 %. Fresh page faults over odl (`fresh_timer`):
-  median 163 → 156, p95 264 → 247.
+  median 163 → 156, p95 264 → 247. Warm over odl, images off (CPU 3, 2026-11-12 22:24 UTC, load
+  about 2): 2,213 → 2,229 pages/s.
 - **This program's cost** (2026-11-12): callgrind self instructions of 0.1.0 (`c1116f0`) against
   the program's code (origin/master with `q4/boxgrid`, `q5/repeatheader`, `q7/edgegap`,
   `q8/cards`, `q9/leadline`, `q10/subtitle`, `ocr/imagetables` and `p9/glyph40`), over odl, the
@@ -918,10 +919,20 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
 
   |Commit|Change|Effect (`instr.sh`)|
   |---|---|---|
-  |`486edf2`|Box grids: a box's rivals looked up by centre and left edge in sorted order, rows and columns by sorted sweeps, groups joined in index order from row and column member lists; groups of fewer than four boxes skipped|SafeDocs -0.99 %, `tables` -0.30 %, heavy10 -0.09 %|
-  |`8584b0c`|The title block's abstract test builds a line's text only when its first byte is an a|odl -0.15 %, `multi_column` -0.14 %, `tables` -0.09 %|
-  |`91b2a7f`|A glyph's combining-mark test only where a word break is found|odl -0.15 %, syn6 -0.24 %, `multi_column` -0.19 %, `tables` -0.13 %, SafeDocs -0.10 %|
-  |`9e1b89a` (after glyph40)|`GlyphPageBox(page, glyph)` inlined, an inline image's box looked up out of line (`Piece`, `StyleWords`)|syn6 -0.42 %, SafeDocs -0.18 %|
+  |`93f7b2d`|Box grids: a box's rivals looked up by centre and left edge in sorted order, rows and columns by sorted sweeps, groups joined in index order from row and column member lists; groups of fewer than four boxes skipped|SafeDocs -0.99 %, `tables` -0.30 %, heavy10 -0.09 %|
+  |`9189f9c`|The title block's abstract test builds a line's text only when its first byte is an a|odl -0.15 %, `multi_column` -0.14 %, `tables` -0.09 %|
+  |`a2c69db`|A glyph's combining-mark test only where a word break is found|odl -0.15 %, syn6 -0.24 %, `multi_column` -0.19 %, `tables` -0.13 %, SafeDocs -0.10 %|
+  |`f719f31` (after glyph40)|`GlyphPageBox(page, glyph)` inlined, an inline image's box looked up out of line (`Piece`, `StyleWords`)|syn6 -0.42 %, SafeDocs -0.18 %|
+- **PNG writer checksums** (6.5): the chunk CRC-32 folds 64 bytes a step with carry-less
+  multiplies and the zlib stream's Adler-32 runs on 256-bit lanes, both ported from zlib-ng at
+  6727d88 (`src/image/checksum_x86.cpp`) and chosen by `CpuFeatures()` (PCLMULQDQ with SSE4.2;
+  AVX2); slicing-by-8 and the SSE2 Adler-32 stay as the baseline paths the tests compare them
+  with (every length 0-300 from every start within 32 bytes, runs to 70,000 bytes, chained
+  calls). Output identical (the synthetic corpus without weasyprint and the 40 JPEG 2000
+  documents, images written). Instruction counts compare different instruction sets, so the gain
+  is taken in time: warm `--bench` with images written over the synthetic corpus without
+  weasyprint (181 documents), CPU 3, 2026-11-12 22:23 UTC, load about 2: 1,528 → 1,574 pages/s
+  (+3.0 %, mean 0.655 → 0.635 ms a page).
 
 ### Tried and rejected (2026-11-12)
 
@@ -933,6 +944,13 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
   odl -0.064 %, `tables` -0.076 %, syn6 -0.072 %.
 - `BuildBlocks` itself: its growth (0.1.1's rules and q8-q10) is spread over a dozen passes of
   20-50 k instructions each over odl; no single pass reaches 0.1 %, none rewritten.
+- JPEG 2000 inverse transforms on AVX2 lanes (6.6, branch `p9/jpx`): the 9/7 and 5/3 lifting and
+  the colour transforms written once (`jpx_dwt_lanes.h`) and compiled for SSE2 and for AVX2
+  without FMA, every float bit-equal to the SSE2 path, chosen by `CpuFeatures()`. On the 40 JPEG
+  2000 documents (`jpxtime.sh`, CPU 3, 2026-11-12 22:24 UTC): -1.67 % (sum of best times 11,773 →
+  11,576 ms; median page 108.9 → 106.5 ms), below the 5 % the step had to reach: the transforms
+  are about a tenth of the decoder's instructions (round 3's profile), the rest is entropy
+  decoding.
 
 ## Open candidates (measured, not done)
 
@@ -952,8 +970,8 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
 - **Profile-guided builds:** +3 to +4 % warm with identical output, once a training set can live
   in the repository.
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
-  wavelet pass; ICT and RGB interleave per row. PNG: a carry-less-multiply CRC behind run-time
-  dispatch. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or band at a time for bounded RSS.
+  wavelet pass; ICT and RGB interleave per row. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or
+  band at a time for bounded RSS.
 
 ## Rerunning
 

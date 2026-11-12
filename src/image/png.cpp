@@ -4,7 +4,9 @@
 #include "image/png.h"
 
 #include "common/compiler.h"
+#include "common/cpu.h"
 #include "common/per_thread.h"
+#include "image/checksum_x86.h"
 #include "image/deflate.h"
 #include "image/image.h"
 
@@ -226,9 +228,8 @@ int FilterBestSse2(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_
 }
 #endif
 
-} // namespace
-
-uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc) {
+// Png::Crc32's reference: eight bytes a step through eight tables (slicing-by-8).
+uint32_t Crc32Slicing(const uint8_t* data, size_t size, uint32_t crc) {
     crc = ~crc;
     while (size >= 8) {
         const uint32_t low = crc ^ (static_cast<uint32_t>(data[0]) | static_cast<uint32_t>(data[1]) << 8 |
@@ -240,6 +241,21 @@ uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc) {
     }
     while (size-- > 0) crc = kCrc[0][(crc ^ *data++) & 0xFF] ^ (crc >> 8);
     return ~crc;
+}
+
+} // namespace
+
+uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc) {
+#if RAYOPDF_CHECKSUM_X86
+    // The bytes before the first 16-byte boundary by table, the rest by folding when there are
+    // at least 16 of them (zlib-ng's split).
+    const size_t head = (16 - reinterpret_cast<uintptr_t>(data) % 16) % 16;
+    if (size >= head + 16 && (CpuFeatures() & (kCpuPclmul | kCpuSse42)) == (kCpuPclmul | kCpuSse42)) {
+        crc = Crc32Slicing(data, head, crc);
+        return Checksum::Crc32Fold(data + head, size - head, crc);
+    }
+#endif
+    return Crc32Slicing(data, size, crc);
 }
 
 int FilterBestScalar(const uint8_t* row, const uint8_t* up, size_t rowBytes, size_t bpp, uint8_t* out) {

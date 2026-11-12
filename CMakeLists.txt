@@ -66,6 +66,10 @@ function(rayopdf_flags target)
         # Linux; every executable fully static (no libstdc++, libgcc or winpthread DLL beside it).
         target_compile_definitions(${target} PRIVATE __USE_MINGW_ANSI_STDIO=1)
         target_link_options(${target} PRIVATE -static)
+        # GCC keeps the Windows x64 stack only 16-byte aligned, yet spills 256-bit registers of the
+        # AVX2 kernels (common/cpu.h) with aligned moves (GCC bug 54412): the assembler writes every
+        # aligned vector move as an unaligned one, which is as fast on aligned addresses.
+        target_compile_options(${target} PRIVATE -Wa,-muse-unaligned-vector-move)
     endif()
     target_compile_definitions(${target} PRIVATE RAYOPDF_VERSION="${RAYOPDF_VERSION}")
 endfunction()

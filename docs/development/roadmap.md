@@ -61,7 +61,8 @@ C++17 with CMake, mirroring RayoMD. What the build does today (`CMakeLists.txt`)
   PCLMULQDQ) are compiled with `__attribute__((target(...)))` and chosen at run time in one place,
   `src/common/cpu.h` (`CpuFeatures()`, read once); each keeps its baseline path as the reference
   the tests check it against (`ForceCpuBaseline`). Today: the inflate decode loop for BMI2
-  (`src/pdf/inflate.cpp`). No hand-written assembly.
+  (`src/pdf/inflate.cpp`), and the PNG writer's CRC-32 for PCLMULQDQ and Adler-32 for AVX2
+  (`src/image/checksum_x86.cpp`). No hand-written assembly.
 
 Source: [algorithms §7](../research/algorithms.md#7-speed-engineering), RayoMD
 [AGENTS.md](https://github.com/Butterski/rayomd/blob/ef106cac5d8a7081cda6c02cec0f38d88048cf97/AGENTS.md)
@@ -101,6 +102,9 @@ headers (`git grep -n "Forked from\|Derived from\|forked from\|follow" src`):
   - `src/pdf/rayomd_source.*` (from `src/core/rayomd_pdf_source.*`) for exact recovery;
   - `src/common/compiler.h`, `batch.*` (from `batch_report.*`), `serve.*` (from
     `src/cli/serve_request.*`) and `src/cli/no_unwind.cpp`.
+- From zlib-ng at 6727d88 (zlib licence, `third_party/licenses/zlib-ng.txt`):
+  - `src/image/checksum_x86.cpp` (from `arch/x86/crc32_pclmulqdq_tpl.h` and `adler32_avx2.c`), the
+    PNG writer's CRC-32 folding and Adler-32 kernels.
 
 Source: [algorithms §1.3, §1.4, §3.3](../research/algorithms.md).
 

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the image module (exit codes 500-549): the PNG writer (CRC-32, row filters, the
-// deflate data read back with the pdf module's inflater, compression), and image XObjects and
-// inline images of files tests/pdf_builder.h makes: every colour space family, bit depths 1 to
-// 16, /Decode, stencils, soft, stencil and colour-key masks, DCT and JPX pass-through, the
-// filters that are not decoded, limits and truncated data. Every PNG written is decoded here by
+// deflate data read back with the pdf module's inflater, compression), the checksums' CPU kernels
+// against their baseline paths (codes 1653-1654), and image XObjects and inline images of files
+// tests/pdf_builder.h makes: every colour space family, bit depths 1 to 16, /Decode, stencils,
+// soft, stencil and colour-key masks, DCT and JPX pass-through, the filters that are not decoded,
+// limits and truncated data. Every PNG written is decoded here by
 // an independent reader (own CRC, own unfiltering) and compared pixel by pixel.
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "common/cpu.h"
 #include "image/deflate.h"
 #include "image/image.h"
 #include "image/jpeg.h"
@@ -254,6 +256,66 @@ void TestCrcAndFilters() {
                 }
             }
         }
+    }
+}
+
+// The checksums' run-time kernels (CRC-32 by carry-less multiplies, Adler-32 on AVX2) against their
+// baseline paths (ForceCpuBaseline): every length 0-300 from every start within 32 bytes, longer
+// runs around the 16-, 32-, 64- and 5,552-byte steps to 70,000 bytes, bytes all 0xFF (Adler-32's
+// largest sums), and chained calls over pieces of every size.
+uint32_t Crc(const uint8_t* data, size_t size, uint32_t crc, bool baseline) {
+    ForceCpuBaseline(baseline);
+    const uint32_t result = Image::Png::Crc32(data, size, crc);
+    ForceCpuBaseline(false);
+    return result;
+}
+
+uint32_t Adler(const uint8_t* data, size_t size, uint32_t adler, bool baseline) {
+    ForceCpuBaseline(baseline);
+    const uint32_t result = Image::Deflate::Adler32(data, size, adler);
+    ForceCpuBaseline(false);
+    return result;
+}
+
+void CheckChecksums(const uint8_t* data, size_t size) {
+    for (uint32_t seed : {0u, 0x12345678u, 0xFFFFFFFFu}) {
+        RAYOPDF_CHECK(Crc(data, size, seed, false) == Crc(data, size, seed, true), 1653);
+    }
+    for (uint32_t seed : {1u, 0xFFF0FFF0u, 0x0001FFF0u}) {
+        RAYOPDF_CHECK(Adler(data, size, seed, false) == Adler(data, size, seed, true), 1654);
+    }
+}
+
+void TestChecksumKernels() {
+    std::vector<uint8_t> data(70000 + 64);
+    for (auto& v : data) v = RandomByte();
+    for (size_t start = 0; start < 32; start++) {
+        for (size_t size = 0; size <= 300; size++) CheckChecksums(data.data() + start, size);
+    }
+    for (size_t start : {0, 1, 15, 31}) {
+        for (size_t size : {1023, 4096, 5551, 5552, 5553, 5583, 5600, 11104, 11137, 65536, 70000}) {
+            CheckChecksums(data.data() + start, size);
+        }
+    }
+    std::vector<uint8_t> ones(70000 + 64, 0xFF);
+    for (size_t start : {0, 3}) {
+        for (size_t size : {32, 5552, 5568, 70000}) CheckChecksums(ones.data() + start, size);
+    }
+    // Chained: the kernels piece by piece equal the baseline over the whole.
+    const uint32_t crcWhole = Crc(data.data() + 5, 70000, 0, true);
+    const uint32_t adlerWhole = Adler(data.data() + 5, 70000, 1, true);
+    for (size_t piece = 1; piece <= 300; piece += 13) {
+        uint32_t crc = 0;
+        uint32_t adler = 1;
+        size_t at = 0;
+        for (size_t step = 0; at < 70000; step++) {
+            const size_t n = std::min<size_t>(70000 - at, piece + (step * 37) % 300);
+            crc = Crc(data.data() + 5 + at, n, crc, false);
+            adler = Adler(data.data() + 5 + at, n, adler, false);
+            at += n;
+        }
+        RAYOPDF_CHECK(crc == crcWhole, 1653);
+        RAYOPDF_CHECK(adler == adlerWhole, 1654);
     }
 }
 
@@ -1465,6 +1527,7 @@ void TestStreamedImages() {
 
 int main() {
     TestCrcAndFilters();
+    TestChecksumKernels();
     TestEncodePng();
     TestDeviceSpaces();
     TestOtherSpaces();

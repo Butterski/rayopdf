@@ -83,7 +83,7 @@ private:
 };
 
 // The Adler-32 checksum (RFC 1950) of `size` bytes, as zlib's adler32(adler, data, size). Start
-// with 1. SSE2 where the target has it.
+// with 1. SSE2 where the target has it (the reference), 256-bit lanes where CpuFeatures() has AVX2.
 uint32_t Adler32(const uint8_t* data, size_t size, uint32_t adler = 1);
 
 } // namespace RayoPdf::Image::Deflate

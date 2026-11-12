@@ -2,6 +2,9 @@
 // Forked from RayoMD src/core/flate.cpp at ef106ca (Apache-2.0, same author).
 #include "image/deflate.h"
 
+#include "common/cpu.h"
+#include "image/checksum_x86.h"
+
 #include <array>
 #include <cstring>
 #include <type_traits>
@@ -442,6 +445,14 @@ uint32_t PrepareTable(size_t size, Scratch& scratch, unsigned& bits) {
 } // namespace
 
 uint32_t Adler32(const uint8_t* data, size_t size, uint32_t adler) {
+#if RAYOPDF_CHECKSUM_X86
+    if (size >= 32 && (CpuFeatures() & kCpuAvx2) != 0) {
+        const size_t whole = size & ~size_t(31);
+        adler = Checksum::Adler32Avx2(data, whole, adler);
+        data += whole;
+        size -= whole;
+    }
+#endif
     uint32_t a = adler & 0xffff;
     uint32_t b = adler >> 16;
 #ifdef RAYOPDF_DEFLATE_SSE2

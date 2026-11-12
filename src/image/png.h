@@ -15,7 +15,8 @@
 namespace RayoPdf::Image::Png {
 
 // The CRC-32 of PNG chunks (ISO 3309, reflected 0xEDB88320): start with 0, pass the result on to
-// continue over more bytes. Eight bytes a step through eight tables (slicing-by-8).
+// continue over more bytes. Eight bytes a step through eight tables (slicing-by-8), the reference,
+// or 64 a step by carry-less multiplies where CpuFeatures() has PCLMULQDQ and SSE4.2.
 uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc = 0);
 
 // PNG row filters. One row per call; `up` is the row above, or zeros for the first row, and `bpp`
