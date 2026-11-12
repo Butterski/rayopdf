@@ -109,7 +109,8 @@ def cmd_run(args) -> int:
                         "-rss_limit_mb=2048", "-print_final_stats=1",
                         f"-artifact_prefix=build/fuzz-artifacts/{target}/", f"build/fuzz-corpus/{target}"]
                 log = ARTIFACTS / f"{target}.log"
-                running[target] = (docker(argv, cpu, log, f"rayopdf-fuzz-{target}"), time.time(), cpu)
+                running[target] = (docker(argv, cpu, log, f"rayopdf-fuzz-{args.dir}-{target}"),
+                                   time.time(), cpu)
                 print(f"started {target} on CPU {cpu}", flush=True)
             for target, (proc, started, cpu) in list(running.items()):
                 if proc.poll() is None:
@@ -118,7 +119,9 @@ def cmd_run(args) -> int:
                 # "stat::number_of_executed_units: 2213521": the key runs to the last colon.
                 stats = {line.rsplit(":", 1)[0].strip(): line.rsplit(":", 1)[1].strip()
                          for line in output.splitlines() if line.startswith("stat::")}
-                artifacts = sorted(p.name for p in (ARTIFACTS / target).iterdir())
+                # Earlier campaigns' artifacts stay in the directory; only this run's count.
+                artifacts = sorted(p.name for p in (ARTIFACTS / target).iterdir()
+                                   if p.stat().st_mtime >= started)
                 results[target] = {"exit": proc.returncode, "seconds": round(time.time() - started),
                                    "runs": stats.get("stat::number_of_executed_units"),
                                    "peak_rss_mb": stats.get("stat::peak_rss_mb"), "artifacts": artifacts}
@@ -131,7 +134,7 @@ def cmd_run(args) -> int:
             time.sleep(1)
     except KeyboardInterrupt:
         for target in running:
-            subprocess.run(["docker", "kill", f"rayopdf-fuzz-{target}"], capture_output=True)
+            subprocess.run(["docker", "kill", f"rayopdf-fuzz-{args.dir}-{target}"], capture_output=True)
         raise
     summary = REPO / "build" / f"{args.dir}-summary.json"
     summary.write_text(json.dumps(results, indent=2) + "\n")
