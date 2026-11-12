@@ -185,6 +185,18 @@ bool FirstWordIs(std::string_view t, std::string_view lower) {
     return true;
 }
 
+// The first byte of LineText(page, line) without building it (0 for none): a space put before a
+// later glyph, or the first byte of the first glyph text.
+unsigned char FirstTextByte(const PageData& page, const Line& line) {
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (k > 0 && (g.flags & kGlyphSpaceBefore)) return ' ';
+        const std::string_view t = page.GlyphText(g);
+        if (!t.empty()) return static_cast<unsigned char>(t[0]);
+    }
+    return 0;
+}
+
 // Whether `t` holds a web address ("http://", "https://", "www.") or an e-mail address (a word
 // character before an '@' and a '.' after it in the same word).
 bool HoldsAddress(std::string_view t) {
@@ -2222,8 +2234,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             bool abstractAfter = false;
             for (size_t r = title + 1; r < raws.size() && infos[raws[r].first].page == page && !abstractAfter; ++r) {
                 const Info& in = infos[raws[r].first];
-                LineText(pages[in.page], pages[in.page].lines[in.line], line);
-                abstractAfter = raws[r].take != 0 || FirstWordIs(line, "abstract");
+                abstractAfter = raws[r].take != 0;
+                // Only a line whose text starts with an 'a' is read whole.
+                if (!abstractAfter && (FirstTextByte(pages[in.page], pages[in.page].lines[in.line]) | 0x20) == 'a') {
+                    LineText(pages[in.page], pages[in.page].lines[in.line], line);
+                    abstractAfter = FirstWordIs(line, "abstract");
+                }
             }
             // Every line of block r but its last runs across the block's width [u0, u1].
             const auto justified = [&](size_t r, float u0, float u1) {
