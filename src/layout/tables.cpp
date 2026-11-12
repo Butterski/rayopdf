@@ -597,6 +597,7 @@ private:
     void SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& read) const;
     void SplitByText(Grid& g) const;
     void SplitRowsByLines(Grid& g) const;
+    bool SplitSpanLines(Grid& g) const;
     void SplitColumnsByText(Grid& g) const;
     bool HeaderAbove(Grid& g);
     bool HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
@@ -1820,6 +1821,47 @@ void Detector::SplitRowsByLines(Grid& g) const {
     g.ys.swap(ys);
     g.vb.swap(vb);
     g.hb.swap(hb);
+}
+
+// A cell spanning rows whose text is one line in each row it spans, the i-th line from the top
+// within the i-th row (a label written over two rows of a LaTeX table, its \cline under the
+// other columns only): a cell in each row. True when a grid's cell was split so.
+bool Detector::SplitSpanLines(Grid& g) const {
+    constexpr int kMaxLines = 32;
+    const int cols = g.Cols();
+    bool split = false;
+    float bases[kMaxLines];
+    for (const Span& s : g.cells) {
+        if (s.rs < 2 || s.rs > kMaxLines) continue;
+        const float left = g.xs[s.c], right = g.xs[s.c + s.cs];
+        const float top = g.ys[s.r], bottom = g.ys[s.r + s.rs];
+        int lines = 0;
+        float lineSize = 0;
+        auto it = std::lower_bound(words_.begin(), words_.end(), top + 20, [](const TWord& w, float y) { return w.base > y; });
+        for (size_t i = static_cast<size_t>(it - words_.begin()); i < words_.size() && words_[i].base >= bottom - 20; ++i) {
+            const TWord& w = words_[i];
+            const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+            if (!(cx >= left && cx <= right && cy <= top && cy >= bottom)) continue;
+            // words_ descend by baseline: a word within 0.3 of the smaller size below the line's
+            // first word is on that line.
+            if (lines > 0 && bases[lines - 1] - w.base <= 0.3f * Fmin(lineSize, w.size)) continue;
+            if (lines == s.rs) {
+                lines++;  // more lines than rows
+                break;
+            }
+            bases[lines++] = w.base;
+            lineSize = w.size;
+        }
+        if (lines != s.rs) continue;
+        bool fits = true;
+        for (int i = 0; i < s.rs && fits; ++i)
+            fits = g.ys[static_cast<size_t>(s.r + i)] >= bases[i] && bases[i] >= g.ys[static_cast<size_t>(s.r + i + 1)];
+        if (!fits) continue;
+        for (int i = 1; i < s.rs; ++i)
+            for (int k = s.c; k < s.c + s.cs; ++k) g.hb[static_cast<size_t>((s.r + i) * cols + k)] = 1;
+        split = true;
+    }
+    return split;
 }
 
 // Columns of a lattice drawn without rules between them (a rule only around a group of columns
@@ -3334,8 +3376,10 @@ bool Detector::Contents(const Grid& g) const {
 }
 
 void Detector::Commit() {
-    for (Grid& g : grids_)
+    for (Grid& g : grids_) {
         if (g.cells.empty()) ComputeSpans(g);
+        if (SplitSpanLines(g)) ComputeSpans(g);
+    }
     // A list of contents stays lines of text; its words are free again.
     for (size_t gi = grids_.size(); gi-- > 0;) {
         const Grid& g = grids_[gi];

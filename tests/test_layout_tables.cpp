@@ -226,6 +226,47 @@ void TestLatticeRowSpans() {
     }
 }
 
+// A lattice whose rule between two body rows is missing under the first column only: the label
+// written there one line a row ("Baseline distance" over "of 3 meters", as LaTeX sets a label over
+// two rows with \cline under the other columns) is a cell in each row, and the table a pipe
+// table. One line set between the two rows ("Group") still spans them.
+void TestSpanOneLineARow() {
+    for (const bool twoLines : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        for (float y : {720.0f, 700.0f, 660.0f, 640.0f}) HLine(page, 72, 440, y);
+        HLine(page, 200, 440, 680);
+        for (float x : {72.0f, 200.0f, 320.0f, 440.0f}) VLine(page, x, 640, 720);
+        AddText(page, "Setting", 76, 706);
+        AddText(page, "Mean", 204, 706);
+        AddText(page, "Max", 324, 706);
+        if (twoLines) {
+            AddText(page, "Baseline distance", 76, 686);
+            AddText(page, "of 3 meters", 76, 666);
+        } else {
+            AddText(page, "Group", 76, 676);
+        }
+        AddText(page, "12", 204, 686);
+        AddText(page, "34", 324, 686);
+        AddText(page, "56", 204, 666);
+        AddText(page, "78", 324, 666);
+        AddText(page, "Gamma", 76, 646);
+        AddText(page, "90", 204, 646);
+        AddText(page, "11", 324, 646);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("span one line a row", md);
+        if (twoLines) {
+            RAYOPDF_CHECK(report.tables == 1 && !Contains(md, "<table") &&
+                              Contains(md, "| Setting | Mean | Max |\n| --- | --- | --- |\n| Baseline distance | 12 | 34 |\n"
+                                           "| of 3 meters | 56 | 78 |\n| Gamma | 90 | 11 |"),
+                          1728);
+        } else {
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "<td rowspan=\"2\">Group</td><td>12</td>"), 1729);
+        }
+    }
+}
+
 // A full lattice without spans: a GFM pipe table; a `|` in a cell is escaped.
 void TestLatticeGfm() {
     std::vector<PageData> pages{NewPage()};
@@ -2161,6 +2202,7 @@ int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--dump") == 0) return Dump(argv[2], argc >= 4 ? std::atoi(argv[3]) : 0);
     TestLatticeSpans();
     TestLatticeRowSpans();
+    TestSpanOneLineARow();
     TestLatticeGfm();
     TestCellEmphasisEscapes();
     TestBooktabs();
