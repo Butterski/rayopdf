@@ -1086,7 +1086,7 @@ int RemoveMarginLines(PageData& page) {
         if (l.dir == 0 || l.count == 0 || (l.flags & kLineRemoved)) continue;
         float x0 = INFINITY, x1 = -INFINITY;
         for (uint32_t k = 0; k < l.count; ++k) {
-            const Glyph& g = page.glyphs[page.lineGlyphs[l.first + k]];
+            const UprightBox g = GlyphPageBox(page, page.lineGlyphs[l.first + k]);
             x0 = Fmin(x0, g.x0), x1 = Fmax(x1, g.x1);
         }
         if (x1 <= left || x0 >= right) {
@@ -1273,7 +1273,7 @@ void PlaceTurnedLines(PageData& page) {
         const Line& line = page.lines[order[upright + t]];
         Box b{INFINITY, INFINITY, -INFINITY, -INFINITY};
         for (uint32_t k = 0; k < line.count; ++k) {
-            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            const UprightBox g = GlyphPageBox(page, page.lineGlyphs[line.first + k]);
             b.x0 = Fmin(b.x0, g.x0), b.y0 = Fmin(b.y0, g.y0), b.x1 = Fmax(b.x1, g.x1), b.y1 = Fmax(b.y1, g.y1);
         }
         boxes[t] = b;

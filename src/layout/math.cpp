@@ -1707,8 +1707,8 @@ void PrepareMathGlyphs(PageData& page) {
         uint8_t size = 0;
         if (!Finite(g.v) || !Finite(g.size) || !HangingInk(font, cp, family, g.size, g.u1 - g.u0, g.v, bottom, top, size))
             continue;
-        g.vb = g.y0 = bottom;
-        g.vt = g.y1 = top;
+        g.vb = bottom;
+        g.vt = top;
         g.v = (bottom + top) / 2 - 0.25f * g.size;
     }
     // Accents float over the letter they mark, often far enough for a line of their own: each
@@ -1800,7 +1800,7 @@ void PrepareMathGlyphs(PageData& page) {
         // Only math: an accent of a math font, or over a glyph of one (text accents are diacritics).
         const auto math = [&](const Glyph& g) { return g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0; };
         if (!math(a) && !math(page.glyphs[under])) continue;
-        a.v -= best, a.vb -= best, a.vt -= best, a.y0 -= best, a.y1 -= best;
+        a.v -= best, a.vb -= best, a.vt -= best;
     }
 }
 

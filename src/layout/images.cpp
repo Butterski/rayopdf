@@ -226,7 +226,7 @@ int32_t InlineLine(const PageData& page, const ImageBox& image) {
         if (std::fabs(image.y0 - line.baseline) > 0.5f * em || image.y1 - image.y0 > 10 * em) continue;
         if (image.x1 < line.u0 - 1.5f * em || image.x0 > line.u1 + 1.5f * em) continue;
         for (uint32_t k = 0; k < line.count; ++k) {
-            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            const UprightBox g = GlyphPageBox(page, page.lineGlyphs[line.first + k]);
             if ((g.x1 <= image.x0 + 0.5f && image.x0 - g.x1 <= 1.5f * em) ||
                 (g.x0 >= image.x1 - 0.5f && g.x0 - image.x1 <= 1.5f * em))
                 return static_cast<int32_t>(li);
@@ -254,7 +254,6 @@ bool InsertInline(PageData& page, uint32_t index, std::string& link) {
     if (link.size() > UINT16_MAX || page.text.size() > (size_t(1) << 30)) return false;
     Line& line = page.lines[static_cast<size_t>(image.line)];
     Glyph g;
-    g.x0 = image.x0, g.x1 = image.x1, g.y0 = image.y0, g.y1 = image.y1;
     g.u0 = image.x0, g.u1 = image.x1, g.vb = line.vb, g.vt = line.vt, g.v = line.baseline;
     g.size = line.size;
     g.text = static_cast<uint32_t>(page.text.size());
@@ -263,6 +262,7 @@ bool InsertInline(PageData& page, uint32_t index, std::string& link) {
     page.text += link;
     const uint32_t glyph = static_cast<uint32_t>(page.glyphs.size());
     page.glyphs.push_back(g);
+    page.images[index].glyph = glyph;
     const uint32_t first = static_cast<uint32_t>(page.lineGlyphs.size());
     const float middle = (image.x0 + image.x1) / 2;
     bool placed = false;

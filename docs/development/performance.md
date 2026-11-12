@@ -883,6 +883,14 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
 
 ### Steps
 
+- **Glyph record 56 → 40 bytes** (2026-11-12): `Glyph` keeps only its box in the direction frame;
+  the box on the upright page is that box turned back (`GlyphPageBox`, `layout/page.h`), equal to
+  it for direction 0, and an inline image's glyph takes its image's box. Output identical in 4,100
+  conversions: synthetic without weasyprint, odl, olmOCR born-digital and READoc-dev, each with
+  images written and again with `--math=latex`, and odl with `--format=json`. User instructions
+  (`instr.sh`): odl -0.19 %, `multi_column` -0.23 %, `tables` -0.18 %, `arxiv_math` -0.21 %,
+  heavy10 -0.04 %, syn6 +0.06 %, SafeDocs +0.09 %. Fresh page faults over odl (`fresh_timer`):
+  median 163 → 156, p95 264 → 247.
 - **This program's cost** (2026-11-12): callgrind self instructions of 0.1.0 (`c1116f0`) against
   the program's code (origin/master with `q4/boxgrid`, `q5/repeatheader`, `q7/edgegap`,
   `q8/cards`, `q9/leadline`, `q10/subtitle`, `ocr/imagetables` and `p9/glyph40`), over odl, the
@@ -928,8 +936,6 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
 
 ## Open candidates (measured, not done)
 
-- **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults
-  (about 3.5 faults a document for every 8 bytes); a smaller record means a new `page.h`.
 - **Text path:** a dense code index for Type0 ToUnicode maps (about 1.7 M over odl, a few faults a
   font); the empty-clip flag folded into the SSE2 clip test (about 3 instructions a glyph); line
   and word texts copied once when contiguous in the page text.

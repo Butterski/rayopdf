@@ -43,11 +43,11 @@ enum : uint16_t {
     kGlyphOcr = 1u << 15,
 };
 
+// One glyph: 40 bytes, so a page's glyphs take as little memory as they can. Its box on the
+// upright page is not stored: it is the frame box turned back (PageBox below).
 struct Glyph {
-    // Box on the upright page.
-    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     // Box in the direction frame: u0..u1 along the baseline (origin to origin + advance), vb..vt
-    // from descent to ascent; `v` is the baseline.
+    // from descent to ascent; `v` is the baseline. For direction 0 it is the box on the page.
     float u0 = 0, u1 = 0, vb = 0, vt = 0, v = 0;
     float size = 0;          // effective font size in points
     uint32_t text = 0;       // offset of its UTF-8 text in PageData::text
@@ -58,6 +58,7 @@ struct Glyph {
     uint16_t font = 0;       // page-local font index, for style comparisons
     int32_t mcid = -1;       // marked-content id, -1 when none
 };
+static_assert(sizeof(Glyph) == 40, "Glyph is a 40-byte record");
 
 // A painted path, reduced to what layout needs: its box, how it was painted and its shape.
 enum class ShapeKind : uint8_t {
@@ -126,6 +127,7 @@ struct ImageBox {
     uint32_t name = 0, nameLength = 0;  // in PageData::text, set by PlaceImages
     ImageState state = ImageState::Found;
     int32_t line = -1;  // the text line it sits in (an inline image), or -1
+    uint32_t glyph = UINT32_MAX;  // its glyph in that line (kGlyphImage), set by PlaceImages
     int32_t mcid = -1;  // marked-content id, -1 when none (counted as Glyph::mcid is)
     uint8_t mcStream = 0;
     uint32_t alt = 0, altLength = 0;  // alternate text in PageData::text (a tagged /Figure's /Alt), empty when none
@@ -330,6 +332,28 @@ inline void RectFromFrame(uint8_t dir, float& x0, float& y0, float& x1, float& y
     FromFrame(dir, x0, y0, ax, ay);
     FromFrame(dir, x1, y1, bx, by);
     x0 = std::min(ax, bx), x1 = std::max(ax, bx), y0 = std::min(ay, by), y1 = std::max(ay, by);
+}
+
+// A box on the upright page.
+struct UprightBox {
+    float x0, y0, x1, y1;
+};
+
+// A glyph's box on the upright page: its frame box, turned back for directions other than 0.
+inline UprightBox GlyphPageBox(const Glyph& g) {
+    UprightBox box{g.u0, g.vb, g.u1, g.vt};
+    if (g.dir != 0) RectFromFrame(g.dir, box.x0, box.y0, box.x1, box.y1);
+    return box;
+}
+
+// The box on the upright page of glyph `glyph` of `page`: an inline image's glyph (kGlyphImage)
+// stands in its line with the line's height, but covers its image's box.
+inline UprightBox GlyphPageBox(const PageData& page, uint32_t glyph) {
+    const Glyph& g = page.glyphs[glyph];
+    if (g.flags & kGlyphImage)
+        for (const ImageBox& image : page.images)
+            if (image.glyph == glyph) return UprightBox{image.x0, image.y0, image.x1, image.y1};
+    return GlyphPageBox(g);
 }
 
 } // namespace RayoPdf::Layout

@@ -603,8 +603,9 @@ uint32_t Piece(const PageData& page, const std::vector<uint32_t>& owner, const s
             if (go == o) {
                 key = std::min(key, GlyphKey(seq[gi], gi));
                 if (box) {
-                    box[0] = Fmin(box[0], g.x0), box[1] = Fmin(box[1], g.y0);
-                    box[2] = Fmax(box[2], g.x1), box[3] = Fmax(box[3], g.y1);
+                    const UprightBox b = GlyphPageBox(page, gi);
+                    box[0] = Fmin(box[0], b.x0), box[1] = Fmin(box[1], b.y0);
+                    box[2] = Fmax(box[2], b.x1), box[3] = Fmax(box[3], b.y1);
                 }
             }
         }
@@ -1280,8 +1281,11 @@ void TaggedLayout::LayOut(std::vector<PageData>& pages, uint32_t p) {
         if (image.state != ImageState::Written || image.line < 0 || image.altLength == 0) continue;
         const Line& line = page.lines[static_cast<size_t>(image.line)];
         for (uint32_t k = 0; k < line.count; ++k) {
-            Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
-            if (!(g.flags & kGlyphImage) || g.x0 != image.x0 || g.y0 != image.y0) continue;
+            const uint32_t gi = page.lineGlyphs[line.first + k];
+            Glyph& g = page.glyphs[gi];
+            if (!(g.flags & kGlyphImage)) continue;
+            const UprightBox box = GlyphPageBox(page, gi);
+            if (box.x0 != image.x0 || box.y0 != image.y0) continue;
             const std::string_view old = page.GlyphText(g);
             if (old.size() < 4 || old.substr(0, 4) != "![](") break;
             link = "![";

@@ -262,10 +262,9 @@ uint32_t AddUprightGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& 
                 sx1 = std::min(std::max(sx0 + measured.pitch, sx0), double(cw));
             }
             Glyph g;
-            g.x0 = float(canvas.x0 + sx0 * step);
-            g.x1 = std::max(float(canvas.x0 + std::max(sx1, sx0) * step), g.x0);
-            g.y0 = bottom, g.y1 = top;
-            g.u0 = g.x0, g.u1 = g.x1, g.vb = bottom, g.vt = top, g.v = baseline;
+            g.u0 = float(canvas.x0 + sx0 * step);
+            g.u1 = std::max(float(canvas.x0 + std::max(sx1, sx0) * step), g.u0);
+            g.vb = bottom, g.vt = top, g.v = baseline;
             g.size = size;
             g.text = static_cast<uint32_t>(page.text.size());
             g.textLength = static_cast<uint16_t>(bytes.size());
@@ -277,11 +276,8 @@ uint32_t AddUprightGlyphs(const OcrCanvas& canvas, const OcrProtocol::Response& 
             }
             g.font = kOcrFont;
             page.text.append(bytes.data(), bytes.size());
-            if (dir != 0) {
-                // The glyph's box (u0..u1, vb..vt) is in the frame; on the page it is the box it covers.
-                RectFromFrame(dir, g.x0, g.y0, g.x1, g.y1);
-                g.dir = dir;
-            }
+            // The glyph's box (u0..u1, vb..vt) is in the frame of the canvas's direction.
+            g.dir = dir;
             page.glyphs.push_back(g);
         }
     }

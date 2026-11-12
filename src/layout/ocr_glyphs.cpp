@@ -714,8 +714,6 @@ uint32_t Apply(const FontWork& work, uint32_t page, std::vector<PageData>& pages
                 if (g.flags & (kGlyphUnmapped | kGlyphGuessed)) unreliable++;
                 g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphUnmapped | kGlyphGuessed | kGlyphSpace));
                 if (k == i) continue;
-                head.x0 = std::min(head.x0, g.x0), head.y0 = std::min(head.y0, g.y0);
-                head.x1 = std::max(head.x1, g.x1), head.y1 = std::max(head.y1, g.y1);
                 head.u0 = std::min(head.u0, g.u0), head.u1 = std::max(head.u1, g.u1);
                 head.vb = std::min(head.vb, g.vb), head.vt = std::max(head.vt, g.vt);
                 g.textLength = 0;

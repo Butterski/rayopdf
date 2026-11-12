@@ -367,7 +367,6 @@ RAYOPDF_NOINLINE bool GeneralGlyphBox(const Placement& p, double width, double v
             fu0 = Fmin(fu0, u), fu1 = Fmax(fu1, u);
             fv0 = Fmin(fv0, v), fv1 = Fmax(fv1, v);
         }
-        g.x0 = float(bx0), g.y0 = float(by0), g.x1 = float(bx1), g.y1 = float(by1);
         g.u0 = float(fu0), g.u1 = float(fu1), g.vb = float(fv0), g.vt = float(fv1);
     }
     // Clipped away: the glyph's centre is outside the clip (which lies within the page).
@@ -1127,8 +1126,6 @@ void Interpreter::EndMarked() {
         }
         Glyph& c = glyphs[carrier];
         if (g.dir == c.dir) {
-            c.x0 = Fmin(c.x0, g.x0), c.y0 = Fmin(c.y0, g.y0);
-            c.x1 = Fmax(c.x1, g.x1), c.y1 = Fmax(c.y1, g.y1);
             c.u0 = Fmin(c.u0, g.u0), c.u1 = Fmax(c.u1, g.u1);
             c.vb = Fmin(c.vb, g.vb), c.vt = Fmax(c.vt, g.vt);
         }

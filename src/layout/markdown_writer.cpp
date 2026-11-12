@@ -360,7 +360,7 @@ void Writer::StyleWords(bool styles) {
         if (links.empty()) continue;
         float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
-            const Glyph& g = pages_[refs_[k].page].glyphs[refs_[k].glyph];
+            const UprightBox g = GlyphPageBox(pages_[refs_[k].page], refs_[k].glyph);
             x0 = Fmin(x0, g.x0), y0 = Fmin(y0, g.y0), x1 = Fmax(x1, g.x1), y1 = Fmax(y1, g.y1);
         }
         const float cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;

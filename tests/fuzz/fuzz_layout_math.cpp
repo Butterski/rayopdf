@@ -84,8 +84,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         formula.glyphs.push_back(g);
         // The same glyph on a page, around (300, 400).
         Glyph pg;
-        pg.u0 = pg.x0 = 300 + g.u0, pg.u1 = pg.x1 = 300 + g.u1;
-        pg.v = 400 + g.v, pg.vb = pg.y0 = pg.v - 0.2f * g.size, pg.vt = pg.y1 = pg.v + 0.8f * g.size;
+        pg.u0 = 300 + g.u0, pg.u1 = 300 + g.u1;
+        pg.v = 400 + g.v, pg.vb = pg.v - 0.2f * g.size, pg.vt = pg.v + 0.8f * g.size;
         pg.size = g.size;
         pg.font = g.font;
         pg.text = static_cast<uint32_t>(page.text.size());

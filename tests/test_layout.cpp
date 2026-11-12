@@ -39,8 +39,7 @@ float AddText(PageData& page, std::string_view text, float x, float y, float siz
     while (Utf8::Decode(text, at, cp, length)) {
         Glyph g;
         const float w = advance * size;
-        g.x0 = x, g.x1 = x + w, g.y0 = y - 0.2f * size, g.y1 = y + 0.8f * size;
-        g.u0 = g.x0, g.u1 = g.x1, g.vb = g.y0, g.vt = g.y1, g.v = y;
+        g.u0 = x, g.u1 = x + w, g.vb = y - 0.2f * size, g.vt = y + 0.8f * size, g.v = y;
         g.size = size;
         g.text = static_cast<uint32_t>(page.text.size());
         page.text.append(text.substr(at, length));
@@ -1475,10 +1474,10 @@ void TestShadingMathAndGutters() {
     RAYOPDF_CHECK(split && !joined, 743);
 }
 
-// The bits of a glyph's eight box floats.
+// The bits of a glyph's four box floats.
 bool SameBoxBits(const Glyph& a, const Glyph& b) {
-    const float fa[8] = {a.x0, a.y0, a.x1, a.y1, a.u0, a.u1, a.vb, a.vt};
-    const float fb[8] = {b.x0, b.y0, b.x1, b.y1, b.u0, b.u1, b.vb, b.vt};
+    const float fa[4] = {a.u0, a.u1, a.vb, a.vt};
+    const float fb[4] = {b.u0, b.u1, b.vb, b.vt};
     return std::memcmp(fa, fb, sizeof fa) == 0;
 }
 
@@ -1526,7 +1525,7 @@ void TestGlyphBox() {
 #endif
         RAYOPDF_CHECK(SameBoxBits(scalar, simd), 744);
         RAYOPDF_CHECK(clipScalar == clipSimd, 745);
-        infinite += std::isinf(scalar.x0) || std::isinf(scalar.y1);
+        infinite += std::isinf(scalar.u0) || std::isinf(scalar.vt);
         (clipScalar ? clipped : inside)++;
     }
     RAYOPDF_CHECK(infinite > 0 && clipped > 0 && inside > 0, 746);
@@ -1542,8 +1541,7 @@ void TestGlyphBox() {
     t.clipEmpty = false;
     Glyph g;
     const bool cut = HorizontalBox(t, 0.5, 100, 200, 0, g);
-    RAYOPDF_CHECK(!cut && g.x0 == 100 && g.x1 == 105 && g.y0 == 197.5f && g.y1 == 207.5f && g.u0 == 100 &&
-                      g.u1 == 105 && g.vb == 197.5f && g.vt == 207.5f,
+    RAYOPDF_CHECK(!cut && g.u0 == 100 && g.u1 == 105 && g.vb == 197.5f && g.vt == 207.5f,
                   747);
 }
 

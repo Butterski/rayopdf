@@ -321,8 +321,7 @@ PageData NewPage() {
 void AddText(PageData& page, std::string_view text, float x, float y, float size, uint16_t flags = 0) {
     for (char c : text) {
         Glyph g;
-        g.x0 = x, g.x1 = x + 0.5f * size, g.y0 = y - 0.2f * size, g.y1 = y + 0.8f * size;
-        g.u0 = g.x0, g.u1 = g.x1, g.vb = g.y0, g.vt = g.y1, g.v = y;
+        g.u0 = x, g.u1 = x + 0.5f * size, g.vb = y - 0.2f * size, g.vt = y + 0.8f * size, g.v = y;
         g.size = size;
         g.text = static_cast<uint32_t>(page.text.size());
         page.text.push_back(c);
@@ -628,8 +627,8 @@ void TestOcrGlyphs() {
     RAYOPDF_CHECK(added == 14 + 20, 1222);
     const Glyph& first = pages[0].glyphs[0];
     RAYOPDF_CHECK(pages[0].GlyphText(first) == "F" && (first.flags & kGlyphOcr) && (first.flags & kGlyphInvisible) &&
-                      std::fabs(first.x0 - 72) < 0.01f && std::fabs(first.y1 - (792 - 100)) < 0.01f &&
-                      std::fabs(first.y0 - (792 - 115)) < 0.01f,
+                      std::fabs(first.u0 - 72) < 0.01f && std::fabs(first.vt - (792 - 100)) < 0.01f &&
+                      std::fabs(first.vb - (792 - 115)) < 0.01f,
                   1222);
     RAYOPDF_CHECK((pages[0].glyphs[5].flags & kGlyphSpace) && pages[0].GlyphText(pages[0].glyphs[11]) == "\xC5\xBC", 1222);
     std::string md;

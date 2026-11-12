@@ -116,70 +116,81 @@ int64_t FloorOf(float v) {
     return t - (v < static_cast<float>(t) ? 1 : 0);
 }
 
-// |x0| < kFloatReach and |y0| < kFloatReach (false for NaN), both at once on their bits: a float's
+// The lower-left corner of a glyph's box on the upright page, by which the fold places it.
+struct Corner {
+    float x, y;
+};
+
+RAYOPDF_HOT_INLINE Corner CornerOf(const Glyph& g) {
+    if (RAYOPDF_LIKELY(g.dir == 0)) return Corner{g.u0, g.vb};
+    const UprightBox box = GlyphPageBox(g);
+    return Corner{box.x0, box.y0};
+}
+
+// |x| < kFloatReach and |y| < kFloatReach (false for NaN), both at once on their bits: a float's
 // magnitude bits order as its magnitude, NaN's above infinity's, and 2048 is 0x45000000; adding
 // 0x80000000 - 0x45000000 to each 31-bit magnitude sets its bit 31 exactly when it is 2048 or more,
 // without a carry into the other half.
 static_assert(kFloatReach == 2048.0f, "Near's constant is 2048's bits");
-static_assert(offsetof(Glyph, y0) == offsetof(Glyph, x0) + 4, "Glyph's x0 and y0 are adjacent");
-RAYOPDF_HOT_INLINE bool Near(const Glyph& g) {
+static_assert(sizeof(Corner) == 8, "Corner is two adjacent floats");
+RAYOPDF_HOT_INLINE bool Near(Corner c) {
     uint64_t xy;
-    std::memcpy(&xy, &g.x0, sizeof xy);
+    std::memcpy(&xy, &c, sizeof xy);
     constexpr uint64_t kMagnitude = 0x7FFFFFFF7FFFFFFFull, kBias = 0x3B0000003B000000ull, kHigh = 0x8000000080000000ull;
     return (((xy & kMagnitude) + kBias) & kHigh) == 0;
 }
 
-// A near glyph's column and row.
-RAYOPDF_HOT_INLINE void NearCells(const Glyph& g, uint32_t& column, uint32_t& row) {
-    column = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + 4096.0f));
-    row = static_cast<uint32_t>(static_cast<int32_t>(g.y0 * 0.125f + 1024.0f));
+// A near corner's column and row.
+RAYOPDF_HOT_INLINE void NearCells(Corner c, uint32_t& column, uint32_t& row) {
+    column = static_cast<uint32_t>(static_cast<int32_t>(c.x + 4096.0f));
+    row = static_cast<uint32_t>(static_cast<int32_t>(c.y * 0.125f + 1024.0f));
 }
 
-// A glyph's column and row; false beyond kKeepReach (or NaN).
-bool CellsOf(const Glyph& g, uint32_t& column, uint32_t& row) {
-    if (Near(g)) {
-        NearCells(g, column, row);
+// A corner's column and row; false beyond kKeepReach (or NaN).
+bool CellsOf(Corner c, uint32_t& column, uint32_t& row) {
+    if (Near(c)) {
+        NearCells(c, column, row);
         return true;
     }
-    if (!(std::fabs(g.x0) < kKeepReach && std::fabs(g.y0) < kKeepReach)) return false;
-    column = static_cast<uint32_t>(FloorOf(static_cast<double>(g.x0)) + kColumnOrigin);
-    row = static_cast<uint32_t>(FloorOf(static_cast<double>(g.y0) / 8) + kRowOrigin);
+    if (!(std::fabs(c.x) < kKeepReach && std::fabs(c.y) < kKeepReach)) return false;
+    column = static_cast<uint32_t>(FloorOf(static_cast<double>(c.x)) + kColumnOrigin);
+    row = static_cast<uint32_t>(FloorOf(static_cast<double>(c.y) / 8) + kRowOrigin);
     return true;
 }
 
-// The columns [ca, cb] and rows [ra, rb] under a near glyph's window.
-RAYOPDF_HOT_INLINE void NearWindow(const Glyph& g, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
+// The columns [ca, cb] and rows [ra, rb] under a near corner's window.
+RAYOPDF_HOT_INLINE void NearWindow(Corner c, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
     const float rx = tolerance + 1.0f / 512, ry = tolerance * 0.125f + 1.0f / 2048;
-    const float qy = g.y0 * 0.125f;
-    ca = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + (4096.0f - rx)));
-    cb = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + (4096.0f + rx)));
+    const float qy = c.y * 0.125f;
+    ca = static_cast<uint32_t>(static_cast<int32_t>(c.x + (4096.0f - rx)));
+    cb = static_cast<uint32_t>(static_cast<int32_t>(c.x + (4096.0f + rx)));
     ra = static_cast<uint32_t>(static_cast<int32_t>(qy + (1024.0f - ry)));
     rb = static_cast<uint32_t>(static_cast<int32_t>(qy + (1024.0f + ry)));
 }
 
-// The same for any glyph within kTestReach. Far from the origin the columns and rows may wrap
+// The same for any corner within kTestReach. Far from the origin the columns and rows may wrap
 // around 2^32 inside the window (cb < ca or rb < ra).
-void WindowOf(const Glyph& g, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
-    if (Near(g)) {
-        NearWindow(g, tolerance, ca, cb, ra, rb);
+void WindowOf(Corner c, float tolerance, uint32_t& ca, uint32_t& cb, uint32_t& ra, uint32_t& rb) {
+    if (Near(c)) {
+        NearWindow(c, tolerance, ca, cb, ra, rb);
         return;
     }
     const double reach = static_cast<double>(tolerance) + 1.0 / 1024;
-    ca = static_cast<uint32_t>(FloorOf(g.x0 - reach) + kColumnOrigin);
-    cb = static_cast<uint32_t>(FloorOf(g.x0 + reach) + kColumnOrigin);
-    ra = static_cast<uint32_t>(FloorOf((g.y0 - reach) / 8) + kRowOrigin);
-    rb = static_cast<uint32_t>(FloorOf((g.y0 + reach) / 8) + kRowOrigin);
+    ca = static_cast<uint32_t>(FloorOf(c.x - reach) + kColumnOrigin);
+    cb = static_cast<uint32_t>(FloorOf(c.x + reach) + kColumnOrigin);
+    ra = static_cast<uint32_t>(FloorOf((c.y - reach) / 8) + kRowOrigin);
+    rb = static_cast<uint32_t>(FloorOf((c.y + reach) / 8) + kRowOrigin);
 }
 
-// The probe's home cell of a glyph. Coordinates are finite but may be huge: clamped before the
+// The probe's home cell of a corner. Coordinates are finite but may be huge: clamped before the
 // integer conversion.
-void ProbeCell(const Glyph& g, int64_t& cx, int64_t& cy) {
-    if (Near(g)) {
-        cx = FloorOf(g.x0 / kProbeCell);
-        cy = FloorOf(g.y0 / kProbeCell);
+void ProbeCell(Corner c, int64_t& cx, int64_t& cy) {
+    if (Near(c)) {
+        cx = FloorOf(c.x / kProbeCell);
+        cy = FloorOf(c.y / kProbeCell);
     } else {
-        cx = FloorOf(Fmin(Fmax(g.x0 / kProbeCell, -1e15f), 1e15f));
-        cy = FloorOf(Fmin(Fmax(g.y0 / kProbeCell, -1e15f), 1e15f));
+        cx = FloorOf(Fmin(Fmax(c.x / kProbeCell, -1e15f), 1e15f));
+        cy = FloorOf(Fmin(Fmax(c.y / kProbeCell, -1e15f), 1e15f));
     }
 }
 
@@ -222,16 +233,19 @@ struct Folder {
     }
     void Insert(uint32_t position, const Glyph& g, uint64_t h) {
         int64_t cx, cy;
-        ProbeCell(g, cx, cy);
+        ProbeCell(CornerOf(g), cx, cy);
         uint64_t slot = Mix(cx, cy, h) & mask;
         while (table[slot] >= base) slot = (slot + 1) & mask;
         table[slot] = base + position;
     }
     // A glyph kept outside Place while the table exists joins it as Place would add it.
     RAYOPDF_NOINLINE void InsertKept(uint32_t position, const Glyph& g) { Insert(position, g, HashText(page.GlyphText(g))); }
-    // Whether kept glyph `o` is one the probe takes for `g` (whose text, and so its key, it has).
-    bool Matches(const Glyph& o, const Glyph& g, float tolerance, std::string_view text) const {
-        return o.dir == g.dir && std::fabs(o.x0 - g.x0) < tolerance && std::fabs(o.y0 - g.y0) < tolerance &&
+    // Whether kept glyph `o` is one the probe takes for `g` (whose text, and so its key, it has,
+    // and whose corner is `c`).
+    bool Matches(const Glyph& o, const Glyph& g, Corner c, float tolerance, std::string_view text) const {
+        if (o.dir != g.dir) return false;
+        const Corner oc = CornerOf(o);
+        return std::fabs(oc.x - c.x) < tolerance && std::fabs(oc.y - c.y) < tolerance &&
                std::fabs(o.size - g.size) < tolerance && page.GlyphText(o) == text;
     }
     void MakeTable(uint32_t i);
@@ -265,14 +279,15 @@ void Folder::Place(uint32_t i) {
     GlyphVector& glyphs = page.glyphs;
     Glyph& g = glyphs[i];
     const std::string_view text = page.GlyphText(g);
+    const Corner c = CornerOf(g);
     const uint64_t key = KeyOf(text.data(), static_cast<uint32_t>(text.size()), g.dir);
     // Fmax against a constant: a NaN size gives 0.5 either way.
     const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
     bool probe = true;
     uint32_t found = kEmpty;
-    if (tolerance <= kTestTolerance && std::fabs(g.x0) < kTestReach && std::fabs(g.y0) < kTestReach) {
+    if (tolerance <= kTestTolerance && std::fabs(c.x) < kTestReach && std::fabs(c.y) < kTestReach) {
         uint32_t ca, cb, ra, rb;
-        WindowOf(g, tolerance, ca, cb, ra, rb);
+        WindowOf(c, tolerance, ca, cb, ra, rb);
         // The window's words (at most two blocks of columns by three rows), each once, with the
         // bits of its columns.
         size_t at[6];
@@ -301,7 +316,7 @@ void Folder::Place(uint32_t i) {
                 for (uint32_t d = 0; d < distinct; ++d) {
                     for (uint32_t p = heads[at[d]]; p >= base && steps < kMaxChainSteps; ++steps) {
                         const FoldEntry& e = entries[p - base];
-                        if (Matches(glyphs[e.glyph], g, tolerance, text)) count++, found = e.glyph;
+                        if (Matches(glyphs[e.glyph], g, c, tolerance, text)) count++, found = e.glyph;
                         p = e.next;
                     }
                 }
@@ -313,14 +328,14 @@ void Folder::Place(uint32_t i) {
         if (!table) MakeTable(i);
         const uint64_t h = HashText(text);
         int64_t cx, cy;
-        ProbeCell(g, cx, cy);
+        ProbeCell(c, cx, cy);
         found = kEmpty;
         for (int dx = -1; dx <= 1 && found == kEmpty; ++dx) {
             for (int dy = -1; dy <= 1 && found == kEmpty; ++dy) {
                 uint64_t slot = Mix(cx + dx, cy + dy, h) & mask;
                 for (size_t probes = 0; table[slot] >= base && probes <= mask; ++probes) {
                     const uint32_t p = table[slot] - base;
-                    if (Matches(glyphs[vis[p]], g, tolerance, text)) {
+                    if (Matches(glyphs[vis[p]], g, c, tolerance, text)) {
                         found = vis[p];
                         break;
                     }
@@ -337,7 +352,7 @@ void Folder::Place(uint32_t i) {
     }
     if (table) Insert(kept, g, HashText(text));
     uint32_t column, row;
-    if (CellsOf(g, column, row)) Chain(WordOf(key, column, row), column, i);
+    if (CellsOf(c, column, row)) Chain(WordOf(key, column, row), column, i);
     vis[kept++] = i;
 }
 
@@ -349,8 +364,9 @@ void Folder::Place(uint32_t i) {
 //
 // The duplicate rule is the probe's: it looks in the nine 2-unit cells around a glyph (a hash
 // table filled in content order, linear probing) for a kept glyph of the same direction and text
-// (hash, then bytes) whose x0, y0 and size lie within the glyph's tolerance t, and takes the first
-// it meets. A kept glyph it could take lies in the window [x0 - t, x0 + t] x [y0 - t, y0 + t]
+// (hash, then bytes) whose box's lower-left corner (x0, y0 on the upright page) and size lie
+// within the glyph's tolerance t, and takes the first it meets. A kept glyph it could take lies in
+// the window [x0 - t, x0 + t] x [y0 - t, y0 + t]
 // (|a - b| < t in float implies it for the real difference too). Most glyphs have none, and exact
 // steps find that out before the probe, each looking only at cells under that window: kept glyphs
 // are placed by column (1 unit wide) and row (8 units high), and each sets the bit of its column
@@ -463,7 +479,8 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
             order[kept++] = i;
             continue;
         }
-        if (RAYOPDF_LIKELY(Near(g))) {
+        const Corner c = CornerOf(g);
+        if (RAYOPDF_LIKELY(Near(c))) {
             if (!(g.size == windowSize)) {
                 const float scaled = 0.15f * g.size, tolerance = scaled > 0.5f ? scaled : 0.5f;
                 const float rx = tolerance + 1.0f / 512, ry = tolerance * 0.125f + 1.0f / 2048;
@@ -471,9 +488,9 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 windowSmall = tolerance <= 3.5f;
                 windowSize = g.size;
             }
-            const float qy = g.y0 * 0.125f;
-            const uint32_t ca = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + x0Low));
-            const uint32_t cb = static_cast<uint32_t>(static_cast<int32_t>(g.x0 + x0High));
+            const float qy = c.y * 0.125f;
+            const uint32_t ca = static_cast<uint32_t>(static_cast<int32_t>(c.x + x0Low));
+            const uint32_t cb = static_cast<uint32_t>(static_cast<int32_t>(c.x + x0High));
             if (windowSmall && ((ca ^ cb) >> 6) == 0 && size_t(g.text) + g.textLength <= textSize) {
                 const uint32_t ra = static_cast<uint32_t>(static_cast<int32_t>(qy + qyLow));
                 const uint32_t rb = static_cast<uint32_t>(static_cast<int32_t>(qy + qyHigh));
@@ -485,7 +502,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 if (((bits[wa] | bits[wb]) & columns) == 0) {
                     // Kept: its column and row lie in the window, so its word is wa or wb.
                     uint32_t column, row;
-                    NearCells(g, column, row);
+                    NearCells(c, column, row);
                     const size_t word = row == ra ? wa : wb;
                     bits[word] |= uint64_t(1) << (column & 63);
                     entries[entryCount] = FoldEntry{heads[word], static_cast<uint32_t>(word), i};

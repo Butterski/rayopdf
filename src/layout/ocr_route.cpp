@@ -261,7 +261,8 @@ void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, Oc
         uint32_t covering = 0;
         for (const Glyph& g : page.glyphs) {
             if (!Counted(g)) continue;
-            const float cx = 0.5f * (g.x0 + g.x1), cy = 0.5f * (g.y0 + g.y1);
+            const UprightBox box = GlyphPageBox(g);
+            const float cx = 0.5f * (box.x0 + box.x1), cy = 0.5f * (box.y0 + box.y1);
             if (cx >= image.x0 && cx <= image.x1 && cy >= image.y0 && cy <= image.y1 && ++covering > kRegionMaxCoveringChars)
                 break;
         }

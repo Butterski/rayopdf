@@ -2,8 +2,8 @@
 // The box of one glyph of a horizontal run (writing mode 0), the hot part of glyph placement
 // (Interpreter::PlaceGlyphs in layout/interpreter.cpp): the four corners [x y] × Trm of the glyph
 // space box (x from the run's left edge to the glyph's advance width, y from descent to ascent),
-// their extremes on the upright page and in the frame of the baseline direction, written as the
-// glyph's floats, and whether the box's centre lies outside the clip.
+// their extremes on the upright page turned into the frame of the baseline direction, written as
+// the glyph's frame box, and whether the box's centre lies outside the clip.
 //
 // The x and y of a corner are independent sums, so SSE2 computes both in one register: the same
 // IEEE additions, multiplications and comparisons in the same order, so the floats have the bits of
@@ -46,9 +46,9 @@ RAYOPDF_HOT_INLINE void BoxExtremes(double c0, double c1, double c2, double c3, 
     lo = lo < c3 ? lo : c3, hi = hi > c3 ? hi : c3;
 }
 
-// Writes g.x0..g.vt from the extremes (bx0, by0)-(bx1, by1) and the baseline direction `dir`:
-// the frame's coordinates are the device ones permuted and negated (interpreter.cpp ToFrame), so
-// their extremes are the device extremes, negated where the axis is.
+// Writes the frame box g.u0..g.vt from the extremes (bx0, by0)-(bx1, by1) and the baseline direction
+// `dir`: the frame's coordinates are the device ones permuted and negated (interpreter.cpp ToFrame),
+// so their extremes are the device extremes, negated where the axis is.
 RAYOPDF_HOT_INLINE void WriteBox(double bx0, double by0, double bx1, double by1, uint8_t dir, Glyph& g) {
     double fu0, fu1, fv0, fv1;
     switch (dir) {
@@ -57,7 +57,6 @@ RAYOPDF_HOT_INLINE void WriteBox(double bx0, double by0, double bx1, double by1,
     case 3: fu0 = -by1, fu1 = -by0, fv0 = bx0, fv1 = bx1; break;
     default: fu0 = bx0, fu1 = bx1, fv0 = by0, fv1 = by1; break;
     }
-    g.x0 = float(bx0), g.y0 = float(by0), g.x1 = float(bx1), g.y1 = float(by1);
     g.u0 = float(fu0), g.u1 = float(fu1), g.vb = float(fv0), g.vt = float(fv1);
 }
 
@@ -74,9 +73,6 @@ inline bool BoxScalar(const BoxTerms& t, double width, double e, double f, uint8
 }
 
 #if defined(RAYOPDF_GLYPH_BOX_SSE2)
-static_assert(offsetof(Glyph, y0) == offsetof(Glyph, x0) + 4 && offsetof(Glyph, x1) == offsetof(Glyph, x0) + 8 &&
-                  offsetof(Glyph, y1) == offsetof(Glyph, x0) + 12,
-              "Glyph's x0, y0, x1, y1 are stored as four consecutive floats");
 static_assert(offsetof(Glyph, u1) == offsetof(Glyph, u0) + 4 && offsetof(Glyph, vb) == offsetof(Glyph, u0) + 8 &&
                   offsetof(Glyph, vt) == offsetof(Glyph, u0) + 12,
               "Glyph's u0, u1, vb, vt are stored as four consecutive floats");
@@ -93,8 +89,8 @@ inline bool BoxSse2(const BoxTerms& t, double width, double e, double f, uint8_t
     const __m128d c3 = _mm_add_pd(_mm_add_pd(edge, _mm_loadu_pd(t.y1)), ef);
     const __m128d lo = _mm_min_pd(_mm_min_pd(_mm_min_pd(c0, c1), c2), c3);
     const __m128d hi = _mm_max_pd(_mm_max_pd(_mm_max_pd(c0, c1), c2), c3);
-    // (x0 y0 x1 y1) and, for direction 0, the frame's (u0 u1 vb vt) = (x0 x1 y0 y1).
-    const __m128 box = _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));
+    // The frame's (u0 u1 vb vt): for direction 0 the page box (x0 x1 y0 y1).
+    const __m128 box = _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));  // (x0 y0 x1 y1)
     const __m128 negative = _mm_set1_ps(-0.0f);
     __m128 frame;
     if (RAYOPDF_LIKELY(dir == 0)) {
@@ -107,7 +103,6 @@ inline bool BoxSse2(const BoxTerms& t, double width, double e, double f, uint8_t
         default: frame = _mm_shuffle_ps(box, box, _MM_SHUFFLE(3, 1, 2, 0)); break;
         }
     }
-    _mm_storeu_ps(&g.x0, box);
     _mm_storeu_ps(&g.u0, frame);
     // The centre against the clip: (lo + hi) / 2 (halving is exact as a product by 0.5).
     const __m128d mid = _mm_mul_pd(_mm_add_pd(lo, hi), _mm_set1_pd(0.5));

@@ -45,8 +45,7 @@ float AddText(PageData& page, std::string_view text, float x, float y, float siz
     while (Utf8::Decode(text, at, cp, length)) {
         Glyph g;
         const float w = advance * size;
-        g.x0 = x, g.x1 = x + w, g.y0 = y - 0.2f * size, g.y1 = y + 0.8f * size;
-        g.u0 = g.x0, g.u1 = g.x1, g.vb = g.y0, g.vt = g.y1, g.v = y;
+        g.u0 = x, g.u1 = x + w, g.vb = y - 0.2f * size, g.vt = y + 0.8f * size, g.v = y;
         g.size = size;
         g.text = static_cast<uint32_t>(page.text.size());
         page.text.append(text.substr(at, length));
@@ -1085,7 +1084,6 @@ void AddTurnedText(PageData& page, std::string_view text, float u, float v, floa
         Glyph g;
         const float w = 0.5f * size;
         g.u0 = u, g.u1 = u + w, g.vb = v - 0.2f * size, g.vt = v + 0.8f * size, g.v = v;
-        g.x0 = -g.vt, g.x1 = -g.vb, g.y0 = g.u0, g.y1 = g.u1;
         g.dir = 1;
         g.size = size;
         g.text = static_cast<uint32_t>(page.text.size());
