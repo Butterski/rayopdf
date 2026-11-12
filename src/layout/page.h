@@ -132,6 +132,9 @@ struct ImageBox {
     // Text the OCR add-on read in the image (region OCR, layout/ocr.h) when the image is written:
     // its alternate text where it has no /Alt. In PageData::text, empty when none.
     uint32_t ocr = 0, ocrLength = 0;
+    // A table drawn as an image whose OCR text was read as a table (layout/ocr.h): its text is the
+    // page's and it is no figure region (layout/figures.h). Such an image is also Skipped.
+    bool ocrTable = false;
 };
 
 // A link annotation with a URI action.

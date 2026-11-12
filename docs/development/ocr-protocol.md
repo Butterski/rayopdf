@@ -29,8 +29,8 @@ is [ocr_ml_decision.md](ocr_ml_decision.md).
 
 The flags apply to `--convert`, `--batch`, `--bench` and to `--serve` sessions and requests.
 `--report` gains the counters `ocr_pages_routed`, `ocr_pages`, `ocr_failures`,
-`ocr_addon_missing`, `ocr_broken_pages`, `ocr_vector_text_pages`, `ocr_glyph_fonts` and
-`ocr_glyphs` (below).
+`ocr_addon_missing`, `ocr_broken_pages`, `ocr_vector_text_pages`, `ocr_glyph_fonts`,
+`ocr_glyphs` and `ocr_tables` (below).
 
 ## Discovery and process lifetime
 
@@ -377,6 +377,7 @@ for a scan.
 |`ocr_vector_text_pages`|pages that look like vector-outline text (they are routed when an add-on runs)|
 |`ocr_glyph_fonts`|fonts whose recognised glyphs replaced their text|
 |`ocr_glyphs`|shown glyphs given text from their shapes|
+|`ocr_tables`|tables read from images by the OCR add-on|
 
 A routed page that stays without text because the add-on failed is written as
 `<!-- rayopdf: page N has no extractable text; OCR failed -->`. A missing add-on leaves the usual

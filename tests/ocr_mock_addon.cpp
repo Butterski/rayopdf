@@ -19,6 +19,8 @@
 //   error         answers every page request with status "error" (engine-failed)
 //   bad-handshake announces protocol 2
 //   low-conf      answers lines with confidence 0.3 (op lines read as in mode glyphs)
+//   table         answers a page request with a table of 3 x 3 words, one centred in each third of
+//                 the image both ways ("Item Count Price", "Apple 12 3.50", "Pear 7 2.25")
 //
 // The answer depends only on the request's pixels (never on its id or on earlier requests).
 #include "common/ocr_protocol.h"
@@ -117,6 +119,24 @@ void Recognise(const Request& request, std::string_view pixels, uint16_t conf, R
         top.lines.push_back(line);
     }
     for (size_t i = top.lines.size(); i > 0; --i) response.lines.push_back(top.lines[i - 1]);
+}
+
+// Mode table: one word centred in each cell of the image cut in thirds both ways.
+void RecogniseTable(const Request& request, Response& response) {
+    static const char* const kWords[3][3] = {{"Item", "Count", "Price"}, {"Apple", "12", "3.50"}, {"Pear", "7", "2.25"}};
+    const int32_t w = static_cast<int32_t>(request.width), h = static_cast<int32_t>(request.height);
+    for (int32_t r = 0; r < 3; ++r)
+        for (int32_t c = 0; c < 3; ++c) {
+            Line line;
+            line.text = kWords[r][c];
+            const int32_t n = static_cast<int32_t>(line.text.size());
+            const int32_t cx = w * (2 * c + 1) / 6, cy = h * (2 * r + 1) / 6, half = h / 24, letter = w / 40;
+            line.x0 = cx - n * letter / 2, line.x1 = line.x0 + n * letter;
+            line.y0 = cy - half, line.y1 = cy + half;
+            line.conf = 9500;
+            for (int32_t k = 0; k < n; ++k) line.chars.push_back({line.x0 + k * letter, line.x0 + (k + 1) * letter});
+            response.lines.push_back(line);
+        }
 }
 
 // A line image of bar glyphs (mode glyphs): each group of ink columns read by its bars.
@@ -228,6 +248,8 @@ int main(int argc, char** argv) {
         } else if (mode == "error") {
             response.ok = false;
             response.error = kErrorEngineFailed;
+        } else if (mode == "table") {
+            RecogniseTable(request, response);
         } else {
             if (mode == "wrong-id") response.id = request.id + 7;
             Recognise(request, frame.payload, mode == "low-conf" ? 3000 : 9000, response);

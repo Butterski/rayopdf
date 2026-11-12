@@ -135,6 +135,7 @@ void AppendCounters(std::string& out, const Layout::ConvertReport& r, const Docu
     AppendField(out, "ocr_vector_text_pages", static_cast<uint64_t>(r.ocrVectorTextPages));
     AppendField(out, "ocr_glyph_fonts", static_cast<uint64_t>(r.ocrGlyphFonts));
     AppendField(out, "ocr_glyphs", r.ocrGlyphs);
+    AppendField(out, "ocr_tables", static_cast<uint64_t>(r.ocrTables));
     AppendField(out, "repaired", d.repaired);
     AppendField(out, "encrypted", d.encrypted);
     AppendField(out, "broken_objects", static_cast<uint64_t>(d.brokenObjects));

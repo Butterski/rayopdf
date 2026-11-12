@@ -3,8 +3,11 @@
 
 #include "layout/ocr_client.h"
 #include "layout/ocr_glyphs.h"
+#include "layout/lines.h"
 #include "layout/ocr_layer.h"
 #include "layout/ocr_route.h"
+#include "layout/ocr_tables.h"
+#include "layout/tables.h"
 
 #include <memory>
 
@@ -12,36 +15,65 @@ namespace RayoPdf::Layout {
 
 namespace {
 
-// One canvas to the add-on and its lines into `page`: the non-space glyphs added, or the failure.
-OcrStatus Recognise(OcrSession& session, const OcrCanvas& canvas, PageData& page, uint32_t& added) {
+// One canvas to the add-on: its answer in `response`, or the failure.
+OcrStatus Ask(OcrSession& session, const OcrCanvas& canvas, OcrProtocol::Response& response) {
     OcrProtocol::Request request;
     request.op = OcrProtocol::Op::Page;
     request.width = canvas.width;
     request.height = canvas.height;
     request.dpi = static_cast<uint32_t>(canvas.scale * 72.0f + 0.5f);
+    return session.Recognize(request, canvas.pixels, response);
+}
+
+// One canvas to the add-on and its lines into `page`: the non-space glyphs added, or the failure.
+OcrStatus Recognise(OcrSession& session, const OcrCanvas& canvas, PageData& page, uint32_t& added) {
     OcrProtocol::Response response;
-    const OcrStatus status = session.Recognize(request, canvas.pixels, response);
+    const OcrStatus status = Ask(session, canvas, response);
     added = status == OcrStatus::Ok ? AddOcrGlyphs(canvas, response, page) : 0;
     return status;
 }
 
-// One region to the add-on, its text kept as the image's alternate text (ImageBox::ocr): the
-// bytes kept, or the failure.
-OcrStatus RecogniseAlt(OcrSession& session, const OcrCanvas& canvas, PageData& page, ImageBox& image, size_t& kept) {
-    OcrProtocol::Request request;
-    request.op = OcrProtocol::Op::Page;
-    request.width = canvas.width;
-    request.height = canvas.height;
-    request.dpi = static_cast<uint32_t>(canvas.scale * 72.0f + 0.5f);
-    OcrProtocol::Response response;
-    const OcrStatus status = session.Recognize(request, canvas.pixels, response);
-    kept = 0;
-    if (status != OcrStatus::Ok || page.text.size() > (size_t(1) << 30)) return status;
+// A region's text kept as the image's alternate text (ImageBox::ocr): the bytes kept.
+size_t KeepAlt(const OcrProtocol::Response& response, PageData& page, ImageBox& image) {
+    if (page.text.size() > (size_t(1) << 30)) return 0;
     const size_t at = page.text.size();
-    kept = AppendOcrAltText(response, page.text);
+    const size_t kept = AppendOcrAltText(response, page.text);
     image.ocr = static_cast<uint32_t>(at);
     image.ocrLength = static_cast<uint32_t>(kept);
-    return status;
+    return kept;
+}
+
+bool RulingsOver(const PageData& page, const OcrCanvas& canvas) {
+    for (const Ruling& r : page.rulings)
+        if (r.x1 > canvas.x0 && r.x0 < canvas.x1 && r.y1 > canvas.y0 && r.y0 < canvas.y1) return true;
+    return false;
+}
+
+// A region's lines into `page` as AddOcrGlyphs adds them; when that found no rules over the region
+// (nor had the page any), the rules of its pixels (ImageRulings). The non-space glyphs added.
+uint32_t AddRegion(const OcrCanvas& canvas, const OcrProtocol::Response& response, PageData& page) {
+    const uint32_t added = AddOcrGlyphs(canvas, response, page);
+    if (!RulingsOver(page, canvas)) ImageRulings(canvas, page.rulings);
+    return added;
+}
+
+// Whether the region's text, alone on a page of `page`'s size with the region's rules, makes a
+// table holding at least kOcrTableShare of its characters: an image of a table.
+constexpr float kOcrTableShare = 0.8f;
+bool ReadsAsTable(const OcrCanvas& canvas, const OcrProtocol::Response& response, const PageData& page) {
+    PageData scratch;
+    scratch.number = page.number;
+    scratch.width = page.width, scratch.height = page.height;
+    const uint32_t added = AddRegion(canvas, response, scratch);
+    if (added == 0) return false;
+    BuildLines(scratch);
+    TableContinuation continuation;
+    DetectTables(scratch, continuation);
+    uint64_t inCells = 0;
+    for (const Table& table : scratch.tables)
+        for (uint32_t l = table.firstLine; l < table.firstLine + table.lineCount && l < scratch.lines.size(); ++l)
+            inCells += scratch.lines[l].chars;
+    return !scratch.tables.empty() && double(inCells) >= kOcrTableShare * double(added);
 }
 
 } // namespace
@@ -164,13 +196,8 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
                 routed = true;
                 report.ocrPagesRouted++;
             }
-            uint32_t added = 0;
-            size_t kept = 0;
-            // A figure's text on a digital page is its alternate text; on a page without a text
-            // layer (a scan with margins) the region's text is the page's.
-            const OcrStatus status = imagesWritten && plan.textLayer
-                                         ? RecogniseAlt(*session, canvas, page, page.images[index], kept)
-                                         : Recognise(*session, canvas, page, added);
+            OcrProtocol::Response response;
+            const OcrStatus status = Ask(*session, canvas, response);
             if (status != OcrStatus::Ok) {
                 regionFailed = true;
                 if (status != OcrStatus::Refused) {
@@ -178,6 +205,24 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
                     break;
                 }
                 continue;
+            }
+            uint32_t added = 0;
+            size_t kept = 0;
+            if (imagesWritten && plan.textLayer) {
+                // A figure's text on a digital page is its alternate text, unless the figure is a
+                // table drawn as an image: then its text is the table, and the image is not written.
+                if (ReadsAsTable(canvas, response, page)) {
+                    added = AddRegion(canvas, response, page);
+                    page.images[index].state = ImageState::Skipped;
+                    page.images[index].ocrTable = true;
+                    report.ocrTables++;
+                } else {
+                    kept = KeepAlt(response, page, page.images[index]);
+                }
+            } else {
+                // On a page without a text layer (a scan with margins), or with images off, the
+                // region's text is the page's.
+                added = AddRegion(canvas, response, page);
             }
             recognised = recognised || added > 0 || kept > 0;
         }

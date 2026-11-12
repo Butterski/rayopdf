@@ -60,6 +60,7 @@ std::string Record(const Layout::ConvertReport& r, const DocumentReport& d) {
     Field(out, "ocr_vector_text_pages", static_cast<uint64_t>(r.ocrVectorTextPages));
     Field(out, "ocr_glyph_fonts", static_cast<uint64_t>(r.ocrGlyphFonts));
     Field(out, "ocr_glyphs", r.ocrGlyphs);
+    Field(out, "ocr_tables", static_cast<uint64_t>(r.ocrTables));
     Field(out, "repaired", d.repaired);
     Field(out, "encrypted", d.encrypted);
     Field(out, "linearized", d.linearized);

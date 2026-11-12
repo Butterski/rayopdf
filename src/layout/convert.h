@@ -128,6 +128,7 @@ struct ConvertReport {
     // and the glyphs (shown codes) given text so.
     int ocrGlyphFonts = 0;
     uint64_t ocrGlyphs = 0;
+    int ocrTables = 0;               // tables read from images by the OCR add-on
 };
 
 // Converts the pages of `document` to Markdown in `markdown` (replaced): a verified RayoMD source

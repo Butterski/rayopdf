@@ -341,7 +341,8 @@ void FigureRegions(PageData& page, std::vector<FigureRegion>& regions) {
             bounded = add(k.x0, k.y0, k.x1, k.y1);
         }
     for (const ImageBox& im : page.images)
-        if (bounded && std::isfinite(im.x0) && std::isfinite(im.y0) && std::isfinite(im.x1) && std::isfinite(im.y1))
+        if (bounded && !im.ocrTable && std::isfinite(im.x0) && std::isfinite(im.y0) && std::isfinite(im.x1) &&
+            std::isfinite(im.y1))
             bounded = add(Fmax(im.x0, 0.0f), Fmax(im.y0, 0.0f), Fmin(im.x1, width), Fmin(im.y1, height));
     if (!bounded) regions.clear();
 }

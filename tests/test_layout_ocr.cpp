@@ -497,9 +497,10 @@ void TestLooksLikeText() {
                   1214);
 }
 
-// A 600 x 300 gray image of a ruled grid of 3 rows and 4 columns (2-pixel rules), with two bands
-// of text-like strokes (dark runs of 3-6 pixels) 12 pixels high in each row of cells when `text`.
-std::string RuledGrid(bool text) {
+// A 600 x 300 gray image of a ruled grid of 3 rows and `cols` columns (2-pixel rules), with two
+// bands of text-like strokes (dark runs of 3-6 pixels) 12 pixels high in each row of cells when
+// `text`.
+std::string RuledGrid(bool text, uint32_t cols = 4) {
     const uint32_t w = 600, h = 300;
     std::string grid(size_t(w) * h, static_cast<char>(0xFF));
     if (text) {
@@ -517,8 +518,9 @@ std::string RuledGrid(bool text) {
     for (uint32_t r = 0; r <= 3; ++r)
         for (uint32_t y = std::min(r * 98 + 2, h - 2); y < std::min(r * 98 + 4, h); ++y)
             for (uint32_t x = 2; x < w - 2; ++x) grid[size_t(y) * w + x] = 0;
-    for (uint32_t c = 0; c <= 4; ++c)
-        for (uint32_t x = std::min(c * 148 + 2, w - 4); x < std::min(c * 148 + 4, w - 2); ++x)
+    const uint32_t pitch = 592 / cols;
+    for (uint32_t c = 0; c <= cols; ++c)
+        for (uint32_t x = std::min(c * pitch + 2, w - 4); x < std::min(c * pitch + 4, w - 2); ++x)
             for (uint32_t y = 2; y < h - 2; ++y) grid[size_t(y) * w + x] = 0;
     return grid;
 }
@@ -1187,6 +1189,45 @@ void TestAltText() {
                   1248);
 }
 
+void TestImageTable() {
+    // A table drawn as an image on a digital page, images written: its words in a table of its
+    // own, the image not written.
+    Mode("table");
+    Test::PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pagesObject = b.Reserve();
+    const int grid = b.AddFlateStream(
+        "/Type /XObject /Subtype /Image /ColorSpace /DeviceGray /BitsPerComponent 8 /Width 600 /Height 300",
+        RuledGrid(false, 3));
+    std::string content;
+    for (int i = 0; i < 3; ++i)
+        content += "BT /F1 11 Tf 72 " + std::to_string(720 - 16 * i) +
+                   " Td (Body text that a reader extracts from the text layer of the page.) Tj ET\n";
+    content += "q 450 0 0 225 72 250 cm /Gr Do Q\n";
+    const int stream = b.AddFlateStream("", content);
+    const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pagesObject) +
+                           " 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 "
+                           "/BaseFont /Helvetica >> >> /XObject << /Gr " + std::to_string(grid) +
+                           " 0 R >> >> /Contents " + std::to_string(stream) + " 0 R >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pagesObject) + " 0 R >>");
+    b.Set(pagesObject, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] /Count 1 >>");
+    const std::string pdf = b.Build(catalog);
+    ImageFolder folder;
+    ConvertOptions options;
+    options.ocr = MockOptions();
+    options.ocr.mode = OcrMode::Force;  // a bare grid is no text to the text check
+    options.imageDirectory = folder.path;
+    options.imageLinkPrefix = "img/";
+    ConvertReport report;
+    const std::string md = ConvertWith(pdf, options, report);
+    Show("image table", md);
+    RAYOPDF_CHECK(Contains(md, "| Item | Count | Price |") && Contains(md, "| Apple | 12 | 3.50 |") &&
+                      Contains(md, "| Pear | 7 | 2.25 |") && !Contains(md, "![") && report.ocrTables == 1 &&
+                      report.images == 0 && Contains(md, "Body text that a reader"),
+                  1753);
+    Mode("ok");
+}
+
 } // namespace
 
 int main() {
@@ -1208,6 +1249,7 @@ int main() {
     TestConvertWithMock();
     TestConvertFailures();
     TestWorkers();
+    TestImageTable();
     TestAltText();
     std::puts("test_layout_ocr: ok");
     return 0;

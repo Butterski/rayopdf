@@ -38,13 +38,17 @@ void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mod
 
 // Recognises `pages` (interpreted with `fonts`; `quality` and `routes` per page, from RoutePage)
 // and adds the OCR counters to `report`: ocrPagesRouted, ocrPages, ocrFailures, ocrAddonMissing,
-// ocrBrokenPages, ocrVectorTextPages, ocrGlyphFonts, ocrGlyphs. Sets quality[p].ocrFailed for
-// routed pages left without text by a failing add-on. Does nothing with OcrMode::Off.
+// ocrBrokenPages, ocrVectorTextPages, ocrGlyphFonts, ocrGlyphs, ocrTables. Sets quality[p].ocrFailed
+// for routed pages left without text by a failing add-on. Does nothing with OcrMode::Off.
 //
 // Text read in an image region of a page with a text layer goes where the reader of the Markdown
 // meets the image: with `imagesWritten`, it is the image's alternate text (ImageBox::ocr, used
 // when the image has no /Alt), so the figure's words stay with the figure instead of entering the
-// body; without images it is body text at the image's place (an OCR text layer).
+// body; without images it is body text at the image's place (an OCR text layer). A region whose
+// text, alone with the rules of its pixels (layout/ocr_tables.h), makes a table holding at least
+// 80 % of its characters is a table drawn as an image: its text becomes an OCR text layer (so the
+// page's tables read it) and the image is not written (ImageState::Skipped). Every region read as
+// a text layer brings the rules of its pixels when AddOcrGlyphs found none over it.
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
                     std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
                     const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten);

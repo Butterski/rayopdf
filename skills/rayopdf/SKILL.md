@@ -149,7 +149,7 @@ rayopdf --convert paper.pdf paper.md --report
 ```
 
 ```json
-{"input":"paper.pdf","output":"paper.md","status":"ok","code":0,"pages":12,"bytes":48211,"ms":9.8,"pages_without_text":0,"glyphs":61234,"unmapped_glyphs":0,"guessed_glyphs":0,"hidden_glyphs":0,"headings":14,"paragraphs":131,"list_items":22,"code_blocks":0,"tables":3,"links":9,"footnotes":4,"images":5,"images_skipped":0,"images_mask_dropped":0,"header_footer_lines":24,"content_errors":0,"structure":"none","structure_elements":0,"exact":"none","ocr_pages_routed":0,"ocr_pages":0,"ocr_failures":0,"ocr_addon_missing":false,"ocr_broken_pages":0,"ocr_vector_text_pages":0,"ocr_glyph_fonts":0,"ocr_glyphs":0,"repaired":false,"encrypted":false,"broken_objects":0,"salvaged_streams":0,"failed_streams":0,"limit_hits":0}
+{"input":"paper.pdf","output":"paper.md","status":"ok","code":0,"pages":12,"bytes":48211,"ms":9.8,"pages_without_text":0,"glyphs":61234,"unmapped_glyphs":0,"guessed_glyphs":0,"hidden_glyphs":0,"headings":14,"paragraphs":131,"list_items":22,"code_blocks":0,"tables":3,"links":9,"footnotes":4,"images":5,"images_skipped":0,"images_mask_dropped":0,"header_footer_lines":24,"content_errors":0,"structure":"none","structure_elements":0,"exact":"none","ocr_pages_routed":0,"ocr_pages":0,"ocr_failures":0,"ocr_addon_missing":false,"ocr_broken_pages":0,"ocr_vector_text_pages":0,"ocr_glyph_fonts":0,"ocr_glyphs":0,"ocr_tables":0,"repaired":false,"encrypted":false,"broken_objects":0,"salvaged_streams":0,"failed_streams":0,"limit_hits":0}
 ```
 
 Check `status` is `"ok"` (`"error"`: `error` says why) and `pages` is plausible, then:
