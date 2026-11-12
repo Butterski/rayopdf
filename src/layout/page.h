@@ -9,6 +9,7 @@
 // A page owns everything it refers to and depends on no other page: pages can be built in parallel.
 #pragma once
 
+#include "common/compiler.h"
 #include "pdf/value.h"
 
 #include <algorithm>
@@ -346,13 +347,18 @@ inline UprightBox GlyphPageBox(const Glyph& g) {
     return box;
 }
 
+// The box of an inline image's glyph `glyph` (kGlyphImage): its image's, else its own.
+RAYOPDF_NOINLINE inline UprightBox ImageGlyphPageBox(const PageData& page, uint32_t glyph) {
+    for (const ImageBox& image : page.images)
+        if (image.glyph == glyph) return UprightBox{image.x0, image.y0, image.x1, image.y1};
+    return GlyphPageBox(page.glyphs[glyph]);
+}
+
 // The box on the upright page of glyph `glyph` of `page`: an inline image's glyph (kGlyphImage)
 // stands in its line with the line's height, but covers its image's box.
-inline UprightBox GlyphPageBox(const PageData& page, uint32_t glyph) {
+RAYOPDF_HOT_INLINE UprightBox GlyphPageBox(const PageData& page, uint32_t glyph) {
     const Glyph& g = page.glyphs[glyph];
-    if (g.flags & kGlyphImage)
-        for (const ImageBox& image : page.images)
-            if (image.glyph == glyph) return UprightBox{image.x0, image.y0, image.x1, image.y1};
+    if (RAYOPDF_UNLIKELY(g.flags & kGlyphImage)) return ImageGlyphPageBox(page, glyph);
     return GlyphPageBox(g);
 }
 
