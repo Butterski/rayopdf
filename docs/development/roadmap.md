@@ -57,9 +57,11 @@ C++17 with CMake, mirroring RayoMD. What the build does today (`CMakeLists.txt`)
   `tools/hot_sections.py`).
 - Static Linux and MinGW Windows builds.
 - SIMD: x86-64's SSE2 baseline through intrinsics, chosen at compile time, each with a scalar
-  reference implementation that tests compare against. The one choice made at run time is the
-  inflate decode loop compiled for BMI2 (`src/pdf/inflate.cpp`, `__builtin_cpu_supports`). No
-  hand-written assembly.
+  reference implementation that tests compare against. Kernels for later extensions (AVX2, BMI2,
+  PCLMULQDQ) are compiled with `__attribute__((target(...)))` and chosen at run time in one place,
+  `src/common/cpu.h` (`CpuFeatures()`, read once); each keeps its baseline path as the reference
+  the tests check it against (`ForceCpuBaseline`). Today: the inflate decode loop for BMI2
+  (`src/pdf/inflate.cpp`). No hand-written assembly.
 
 Source: [algorithms §7](../research/algorithms.md#7-speed-engineering), RayoMD
 [AGENTS.md](https://github.com/Butterski/rayomd/blob/ef106cac5d8a7081cda6c02cec0f38d88048cf97/AGENTS.md)

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/common: the --serve --json request reader, the line reader, the batch record
-// and the worker threads (codes 950-999), and the batch modes' file paths (codes 1680-1699).
+// and the worker threads (codes 950-999), the batch modes' file paths (codes 1680-1699) and the
+// run-time choice of kernels (codes 1650-1679).
 #include "check.h"
 #include "common/batch.h"
+#include "common/cpu.h"
 #include "common/file.h"
 #include "common/serve.h"
 
@@ -30,6 +32,18 @@ bool Rejects(std::string_view line) {
     Serve::Request request;
     std::string error;
     return !Serve::ParseRequest(line, request, error) && !error.empty();
+}
+
+// common/cpu.h: forcing the baseline turns every extension off, so each dispatched kernel's
+// comparison with its baseline path compares two paths; lifting it gives back the features found,
+// the same on every call.
+void TestCpuFeatures() {
+    const uint32_t found = CpuFeatures();
+    RAYOPDF_CHECK((found & ~uint32_t(kCpuSse42 | kCpuAvx2 | kCpuBmi2 | kCpuPclmul)) == 0, 1650);
+    ForceCpuBaseline(true);
+    RAYOPDF_CHECK(CpuFeatures() == 0, 1651);
+    ForceCpuBaseline(false);
+    RAYOPDF_CHECK(CpuFeatures() == found, 1652);
 }
 
 void TestRequests() {
@@ -285,6 +299,7 @@ void TestStagedNames() {
 } // namespace
 
 int main() {
+    TestCpuFeatures();
     TestRequests();
     TestLineReader();
     TestRecords();

@@ -6,6 +6,7 @@
 #include "pdf/inflate.h"
 
 #include "common/compiler.h"
+#include "common/cpu.h"
 #include "common/per_thread.h"
 
 #include <algorithm>
@@ -25,15 +26,10 @@
 namespace RayoPdf::Inflate {
 namespace {
 
-bool gPortable = false;  // ForcePortable
-
 #if RAYOPDF_INFLATE_BMI2
 // The decode loop compiled for BMI2 (BZHI, SHRX: fewer instructions for the bit fields) runs where
-// the CPU has it; the portable one is its reference.
-bool UseBmi2() {
-    static const bool kHasBmi2 = __builtin_cpu_supports("bmi2");
-    return kHasBmi2 && !gPortable;
-}
+// the CPU has it (common/cpu.h); the portable one is its reference.
+bool UseBmi2() { return (CpuFeatures() & kCpuBmi2) != 0; }
 #endif
 
 // Past the target the fast loop may write two literals and a match of 258 bytes, whose copy goes
@@ -893,8 +889,6 @@ private:
 constexpr size_t kKeptBuffer = size_t(1) << 20;
 
 } // namespace
-
-void ForcePortable(bool portable) { gPortable = portable; }
 
 Output::~Output() { std::free(data_); }
 

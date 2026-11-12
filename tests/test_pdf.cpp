@@ -6,6 +6,7 @@
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "common/cpu.h"
 #include "crypt/crypt.h"
 #include "pdf/content_lexer.h"
 #include "pdf/document.h"
@@ -501,9 +502,9 @@ void TestFlate() {
                 const std::string_view in(stream.data(), cut);
                 std::string fast;
                 std::string portable;
-                Inflate::ForcePortable(true);
+                ForceCpuBaseline(true);
                 const Inflate::Result portableResult = Inflate::Inflate(in, portable, limit);
-                Inflate::ForcePortable(false);
+                ForceCpuBaseline(false);
                 const Inflate::Result fastResult = Inflate::Inflate(in, fast, limit);
                 RAYOPDF_CHECK(fastResult == portableResult && fast == portable, 265);
                 // Onto a buffer from byte 5 on: the prefix kept, the bytes and Result Inflate's.
