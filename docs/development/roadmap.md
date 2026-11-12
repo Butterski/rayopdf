@@ -125,7 +125,9 @@ Source: [algorithms §2, §4, §5, §6](../research/algorithms.md).
 
 ### D5 Source precedence
 
-1. `rayomd-source/1` exact recovery of RayoMD-made PDFs (`--no-exact` turns it off).
+1. `rayomd-source/1` exact recovery of RayoMD-made PDFs (`--no-exact` turns it off). JSON output
+   and page markers need the pages' layout, so with `--format=json` or `--page-markers` a payload
+   is not used (`"exact":"format"`).
 2. A structure tree that passes validation.
 3. The document outline.
 4. Geometry heuristics.
@@ -188,6 +190,32 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
   else in the default mode. 0.1.0 was released with one key open, READoc arXiv `table_teds`
   (decided 2026-11-11, after the key had been held to docling's number under (b)).
+- Optional additions to the Markdown (decided 2026-11-12; off by default, the default output
+  byte-identical): `--page-markers` writes `<!-- page N -->` (N the page's number in the file) as
+  a block of its own before the first block of each page, and markers for pages with no block of
+  their own (a page whose text only continues a paragraph, after it; pages at the end); a marker
+  ends a list or block quote that runs across a page break. `--front-matter` writes YAML front
+  matter first from the document information (`/Info`): `title`, `author`, `subject`,
+  `keywords`, `creator`, `producer`, `created`, `modified` (only those present, each a
+  double-quoted string, dates as ISO 8601 `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the date
+  gives its offset, else as the file has them) and `pages: N`, between `---` lines and a blank
+  line; not when a verified RayoMD payload that starts with its own front matter is written.
+- JSON output (`--format=json`, schema 1, decided 2026-11-12): one compact JSON object and a line
+  break, `{"rayopdf": VERSION, "schema": 1, "repaired": bool, "metadata": {the fields above that
+  are present}, "pages": [{"page", "width", "height"}...], "blocks": [...]}`. A block has `type`
+  (`heading`, `paragraph`, `list_item`, `code`, `table`, `image`, `footnote`, `comment`), `page`
+  (its first page), `boxes` (`[{"page", "bbox": [x0, y0, x1, y1]}...]`: per page the union of its
+  lines' boxes in points on the upright page, origin at the lower left of the crop box, two
+  decimals; a turned line's box turned upright; a table's box, an image's placement; `[]` for a
+  comment), then by type: heading `level`; list item `depth`, `ordered`, `number` (ordered only),
+  `task` (`"open"`, `"done"`; task items only); table `rows`, `cols`, `header_rows`, `cells`
+  (`[{"row", "col", "row_span", "col_span", "text"}...]`, the text a cell's inline Markdown, an
+  HTML table's too; a table broken across pages is one table without the header rows its later
+  parts repeat); image `file` (the link target, `null` when not written) and `alt`; footnote
+  `number`; any block `quote` (its depth, when inside a quote) and `alert` (`note`, `tip`,
+  `important`, `warning`, `caution`, on an alert's first block); last `markdown`, the bytes the
+  Markdown output writes for the block, so that the blocks' `markdown` occur in that output in
+  order. `--page-markers` and `--front-matter` have no effect on it (the metadata is always there).
 
 ### D7 Command line
 
@@ -195,6 +223,7 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
+        [--format=markdown|json] [--page-markers] [--front-matter]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
 rayopdf --serve --json [options] [--workers=N]
@@ -207,19 +236,23 @@ rayopdf --bench IN.pdf TMPDIR N [options]       (developer option, performance.m
 `src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).
 One record shape serves `--report`, the batch report and the serve answers, after RayoMD's
 protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error", "code",
-"error"?, "pages", "bytes", "ms", <counters>, "markdown"?}`, one JSON object a line; `code` is the
-exit code the document alone would give.
+"error"?, "pages", "bytes", "ms", <counters>, "markdown"? | "json"?}`, one JSON object a line;
+`code` is the exit code the document alone would give.
 
+- **`--format=json`**, **`--page-markers`** and **`--front-matter`** choose what is written (D6):
+  the JSON document instead of Markdown, page markers in the Markdown, front matter before it.
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
-  hidden ones and links to folders excepted, mirrored) to `NAME.md` and `NAME-images/` under the
-  output folder, sorted by their UTF-8 paths. Two inputs with one output (`a.pdf`, `a.PDF`) leave
-  the second refused (code 12). The exit code is the last failed document's, in input order.
+  hidden ones and links to folders excepted, mirrored) to `NAME.md` (`NAME.json` with
+  `--format=json`) and `NAME-images/` under the output folder, sorted by their UTF-8 paths. Two
+  inputs with one output (`a.pdf`, `a.PDF`) leave the second refused (code 12). The exit code is
+  the last failed document's, in input order.
 - **`--serve --json`** answers requests `{"id"?, "input", "output"?, "args"?}` (RayoMD's protocol
   1 without its `markdown`/`source_path` input, as the input of a PDF converter is a file). The
   first line out is `{"rayopdf":"VERSION","protocol":1}`; without `output` the answer carries the
-  Markdown. `args` holds flags of `--convert` only; batch flags and unknown fields are code-2
-  errors and the session goes on. Lines are at most 1 MiB, `args` at most 64. The request reader
-  (`src/common/serve.*`) has the fuzz target `fuzz_common_serve`.
+  Markdown, or with `--format=json` the JSON document itself as `"json"`. `args` holds flags of
+  `--convert` only; batch flags and unknown fields are code-2 errors and the session goes on.
+  Lines are at most 1 MiB, `args` at most 64. The request reader (`src/common/serve.*`) has the
+  fuzz target `fuzz_common_serve`.
 - **`--workers=N`** (1–64) never changes the output. With `--batch` and `--serve` it converts
   documents in parallel, one thread each: a batch defaults to one per usable CPU, at most 6; a
   serve session to 1. With `--convert` it reads the pages of one document on N threads (default

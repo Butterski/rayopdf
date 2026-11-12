@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/markdown_writer.h"
 
+#include "common/batch.h"
 #include "common/minmax.h"
 #include "common/utf8.h"
 #include "layout/lines.h"
@@ -8,7 +9,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string_view>
+
+#ifndef RAYOPDF_VERSION
+#define RAYOPDF_VERSION "0.0.0"
+#endif
 
 namespace RayoPdf::Layout {
 namespace {
@@ -1400,7 +1406,7 @@ void Writer::Code(const Block& block, const std::string& prefix) {
 } // namespace
 
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bool repaired, std::string& out,
-                   WriteCounts& counts, MathMode math) {
+                   WriteCounts& counts, MathMode math, bool pageMarkers, std::vector<WrittenBlock>* written) {
     Writer writer(pages, list, out, counts, math);
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
     int contentColumn[9] = {};
@@ -1409,8 +1415,21 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
     std::vector<std::string> cellText;
     std::vector<TablePart> parts;
     std::vector<uint32_t> partFirst;
+    size_t marked = 0;  // pages[0, marked) have their marker
+    const auto markPagesTo = [&](int number) {
+        for (; marked < pages.size() && pages[marked].number <= number; ++marked) {
+            if (!out.empty()) out += "\n\n";
+            out += "<!-- page ";
+            out += std::to_string(pages[marked].number);
+            out += " -->";
+            previous = nullptr;
+        }
+    };
     for (const Block& block : list.blocks) {
         if (block.kind != BlockKind::Comment && block.count == 0) continue;
+        if (pageMarkers)
+            markPagesTo(block.kind == BlockKind::Comment ? static_cast<int>(block.number)
+                                                         : pages[list.lines[block.first].page].number);
         if (!out.empty()) {
             const bool tight = previous && previous->kind == BlockKind::ListItem && block.kind == BlockKind::ListItem &&
                                previous->quote == block.quote;
@@ -1434,6 +1453,11 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             }
         }
         previous = &block;
+        if (written) {
+            written->emplace_back();
+            written->back().block = static_cast<uint32_t>(&block - list.blocks.data());
+            written->back().begin = out.size();
+        }
         prefix.clear();
         for (int q = 0; q < block.quote; ++q) prefix += "> ";
         if (block.alert != 0 && block.quote > 0) {
@@ -1520,10 +1544,13 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             }
             if (parts.empty()) break;
             counts.tables++;
-            if (html) {
+            if (html && !written) {
                 WriteHtmlTable(parts, out);
                 break;
             }
+            // The JSON output (`written`) takes every cell's inline Markdown, an HTML table's too;
+            // the links of the cells of an HTML table are no links written.
+            const int links = counts.links;
             size_t total = 0;
             for (const TablePart& part : parts) total += part.table->cellCount;
             cellText.resize(total);
@@ -1546,6 +1573,27 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 }
                 parts[p].cellText = cellText.data() + at;
                 at += table.cellCount;
+            }
+            if (written) {
+                WrittenBlock& entry = written->back();
+                entry.cols = parts[0].table->cols;
+                entry.headerRows = std::max<uint16_t>(1, parts[0].table->headerRows);
+                for (size_t p = 0; p < parts.size(); ++p) {
+                    const Table& table = *parts[p].table;
+                    const uint16_t skip = p > 0 ? RepeatedHeader(parts[0], parts[p]) : 0;
+                    for (uint32_t c = 0; c < table.cellCount; ++c) {
+                        const TableCell& cell = parts[p].page->tableCells[table.firstCell + c];
+                        if (cell.row < skip) continue;
+                        entry.cells.push_back(WrittenCell{entry.rows + (cell.row - skip), cell.col, cell.rowSpan,
+                                                          cell.colSpan, parts[p].cellText[c]});
+                    }
+                    entry.rows += table.rows > skip ? table.rows - skip : 0;
+                }
+            }
+            if (html) {
+                counts.links = links;
+                WriteHtmlTable(parts, out);
+                break;
             }
             WriteGfmTable(parts, out);
             break;
@@ -1587,8 +1635,208 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             break;
         }
         }
+        if (written) {
+            if (out.size() > written->back().begin)
+                written->back().end = out.size();
+            else
+                written->pop_back();
+        }
     }
+    if (pageMarkers) markPagesTo(pages.empty() ? 0 : pages.back().number);
     if (!out.empty()) out.push_back('\n');
+}
+
+namespace {
+
+// A coordinate as `%.2f` (0 for a value that is not finite: JSON has no NaN).
+void AppendCoordinate(std::string& out, float value) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.2f", std::isfinite(value) ? static_cast<double>(value) : 0.0);
+    out += buf;
+}
+
+void AppendKey(std::string& out, const char* key) {
+    out += ",\"";
+    out += key;
+    out += "\":";
+}
+
+void AppendInteger(std::string& out, const char* key, uint64_t value) {
+    AppendKey(out, key);
+    out += std::to_string(value);
+}
+
+// A block's box on one page (an index into the pages), on the upright page.
+struct PageBox {
+    uint32_t page;
+    float x0, y0, x1, y1;
+};
+
+// Adds a box of the frame of `dir` on page `page` to `boxes`: joined with the box it has there.
+void AddBox(std::vector<PageBox>& boxes, uint32_t page, uint8_t dir, float x0, float y0, float x1, float y1) {
+    RectFromFrame(dir, x0, y0, x1, y1);
+    for (PageBox& box : boxes) {
+        if (box.page != page) continue;
+        box.x0 = Fmin(box.x0, x0), box.y0 = Fmin(box.y0, y0), box.x1 = Fmax(box.x1, x1), box.y1 = Fmax(box.y1, y1);
+        return;
+    }
+    boxes.push_back(PageBox{page, x0, y0, x1, y1});
+}
+
+const char* BlockTypeName(BlockKind kind) {
+    switch (kind) {
+    case BlockKind::Paragraph: return "paragraph";
+    case BlockKind::Heading: return "heading";
+    case BlockKind::ListItem: return "list_item";
+    case BlockKind::Code: return "code";
+    case BlockKind::Comment: return "comment";
+    case BlockKind::Footnote: return "footnote";
+    case BlockKind::Table: return "table";
+    case BlockKind::Image: return "image";
+    }
+    return "paragraph";
+}
+
+} // namespace
+
+void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool repaired,
+               const DocumentMetadata* metadata, std::string& out, WriteCounts& counts, MathMode math) {
+    std::string markdown;
+    std::vector<WrittenBlock> written;
+    WriteMarkdown(pages, list, false, markdown, counts, math, false, &written);
+    out += "{\"rayopdf\":\"" RAYOPDF_VERSION "\",\"schema\":1,\"repaired\":";
+    out += repaired ? "true" : "false";
+    out += ",\"metadata\":{";
+    if (metadata) {
+        bool first = true;
+        for (const MetadataField& field : kMetadataFields) {
+            const std::string& value = metadata->*field.member;
+            if (value.empty()) continue;
+            if (!first) out.push_back(',');
+            first = false;
+            Batch::AppendJsonString(out, field.name);
+            out.push_back(':');
+            Batch::AppendJsonString(out, value);
+        }
+    }
+    out += "},\"pages\":[";
+    for (size_t p = 0; p < pages.size(); ++p) {
+        if (p > 0) out.push_back(',');
+        out += "{\"page\":";
+        out += std::to_string(pages[p].number);
+        out += ",\"width\":";
+        AppendCoordinate(out, pages[p].width);
+        out += ",\"height\":";
+        AppendCoordinate(out, pages[p].height);
+        out.push_back('}');
+    }
+    out += "],\"blocks\":[";
+    std::vector<PageBox> boxes;
+    for (size_t w = 0; w < written.size(); ++w) {
+        const WrittenBlock& entry = written[w];
+        const Block& block = list.blocks[entry.block];
+        if (w > 0) out.push_back(',');
+        out += "{\"type\":\"";
+        out += BlockTypeName(block.kind);
+        out.push_back('"');
+        const BlockLine* anchor = block.kind == BlockKind::Comment ? nullptr : &list.lines[block.first];
+        AppendInteger(out, "page", anchor ? static_cast<uint64_t>(pages[anchor->page].number) : block.number);
+        // Boxes: an image's, a table's parts' (their anchor lines' tables, in the frame of their
+        // direction), any other block's lines'.
+        boxes.clear();
+        for (uint32_t bl = block.first; anchor && bl < block.first + block.count; ++bl) {
+            const PageData& page = pages[list.lines[bl].page];
+            const Line& line = page.lines[list.lines[bl].line];
+            if (block.kind == BlockKind::Image) {
+                const ImageBox& image = page.images[line.first];
+                AddBox(boxes, list.lines[bl].page, 0, image.x0, image.y0, image.x1, image.y1);
+                break;
+            }
+            if (block.kind == BlockKind::Table) {
+                if (!(line.flags & kLineTableAnchor)) continue;
+                const Table& table = page.tables[line.first];
+                AddBox(boxes, list.lines[bl].page, line.dir, table.x0, table.y0, table.x1, table.y1);
+                continue;
+            }
+            if (line.count == 0 && !(line.flags & kLineAnchor)) continue;
+            AddBox(boxes, list.lines[bl].page, line.dir, line.u0, line.vb, line.u1, line.vt);
+        }
+        out += ",\"boxes\":[";
+        for (size_t b = 0; b < boxes.size(); ++b) {
+            if (b > 0) out.push_back(',');
+            out += "{\"page\":";
+            out += std::to_string(pages[boxes[b].page].number);
+            out += ",\"bbox\":[";
+            AppendCoordinate(out, boxes[b].x0);
+            out.push_back(',');
+            AppendCoordinate(out, boxes[b].y0);
+            out.push_back(',');
+            AppendCoordinate(out, boxes[b].x1);
+            out.push_back(',');
+            AppendCoordinate(out, boxes[b].y1);
+            out += "]}";
+        }
+        out.push_back(']');
+        switch (block.kind) {
+        case BlockKind::Heading:
+            AppendInteger(out, "level", static_cast<uint64_t>(std::max(1, std::min<int>(6, block.level))));
+            break;
+        case BlockKind::ListItem:
+            AppendInteger(out, "depth", std::min<uint64_t>(block.depth, 8));
+            AppendKey(out, "ordered");
+            out += block.ordered ? "true" : "false";
+            if (block.ordered) AppendInteger(out, "number", block.number == 0 ? 1 : block.number);
+            if (block.task != 0) {
+                AppendKey(out, "task");
+                out += block.task == 2 ? "\"done\"" : "\"open\"";
+            }
+            break;
+        case BlockKind::Table:
+            AppendInteger(out, "rows", entry.rows);
+            AppendInteger(out, "cols", entry.cols);
+            AppendInteger(out, "header_rows", entry.headerRows);
+            out += ",\"cells\":[";
+            for (size_t c = 0; c < entry.cells.size(); ++c) {
+                const WrittenCell& cell = entry.cells[c];
+                out += c > 0 ? ",{\"row\":" : "{\"row\":";
+                out += std::to_string(cell.row);
+                AppendInteger(out, "col", cell.col);
+                AppendInteger(out, "row_span", cell.rowSpan);
+                AppendInteger(out, "col_span", cell.colSpan);
+                AppendKey(out, "text");
+                Batch::AppendJsonString(out, cell.text);
+                out.push_back('}');
+            }
+            out.push_back(']');
+            break;
+        case BlockKind::Image: {
+            const PageData& page = pages[anchor->page];
+            const ImageBox& image = page.images[page.lines[anchor->line].first];
+            AppendKey(out, "file");
+            if (image.state == ImageState::Written)
+                Batch::AppendJsonString(out, page.ImageName(image));
+            else
+                out += "null";
+            AppendKey(out, "alt");
+            Batch::AppendJsonString(out, image.altLength > 0 ? page.ImageAlt(image) : page.ImageOcrText(image));
+            break;
+        }
+        case BlockKind::Footnote: AppendInteger(out, "number", block.number); break;
+        case BlockKind::Paragraph:
+        case BlockKind::Code:
+        case BlockKind::Comment: break;
+        }
+        if (block.quote > 0) AppendInteger(out, "quote", block.quote);
+        if (block.alert != 0 && block.quote > 0) {
+            static const char* const kAlerts[] = {"\"note\"", "\"tip\"", "\"important\"", "\"warning\"", "\"caution\""};
+            AppendKey(out, "alert");
+            out += kAlerts[std::min<int>(block.alert, 5) - 1];
+        }
+        AppendKey(out, "markdown");
+        Batch::AppendJsonString(out, std::string_view(markdown).substr(entry.begin, entry.end - entry.begin));
+        out.push_back('}');
+    }
+    out += "]}\n";
 }
 
 } // namespace RayoPdf::Layout

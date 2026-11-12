@@ -11,6 +11,7 @@
 
 #include "pdf/value.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -308,5 +309,24 @@ struct OutlineEntry {
     std::string title;
     int level = 1;
 };
+
+// A point of the frame of baseline direction `dir` (interpreter.cpp ToFrame) back on the upright
+// page.
+inline void FromFrame(uint8_t dir, float u, float v, float& x, float& y) {
+    switch (dir) {
+    case 1: x = -v, y = u; break;
+    case 2: x = -u, y = -v; break;
+    case 3: x = v, y = -u; break;
+    default: x = u, y = v; break;
+    }
+}
+
+// A rectangle of the frame of `dir` as the rectangle it covers on the upright page.
+inline void RectFromFrame(uint8_t dir, float& x0, float& y0, float& x1, float& y1) {
+    float ax, ay, bx, by;
+    FromFrame(dir, x0, y0, ax, ay);
+    FromFrame(dir, x1, y1, bx, by);
+    x0 = std::min(ax, bx), x1 = std::max(ax, bx), y0 = std::min(ay, by), y1 = std::max(ay, by);
+}
 
 } // namespace RayoPdf::Layout

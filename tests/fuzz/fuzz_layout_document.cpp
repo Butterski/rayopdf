@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // libFuzzer target of the whole conversion: the input as a PDF file through Document::Open and
 // Layout::Convert (fonts, content, layout, semantics and the writer, as `rayopdf --convert` runs
-// them, without image files). Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
+// them, without image files), then again as JSON (--format=json), which must be one object and a
+// line break. Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
 
 #include "layout/convert.h"
 #include "pdf/document.h"
@@ -20,5 +21,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     std::string markdown;
     RayoPdf::Layout::ConvertReport report;
     RayoPdf::Layout::Convert(*document, options, markdown, report);
+    options.format = RayoPdf::Layout::OutputFormat::Json;
+    RayoPdf::Layout::Convert(*document, options, markdown, report);
+    if (markdown.size() < 3 || markdown.front() != '{' || markdown.compare(markdown.size() - 2, 2, "}\n") != 0)
+        __builtin_trap();
     return 0;
 }

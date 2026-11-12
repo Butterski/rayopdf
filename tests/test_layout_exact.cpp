@@ -96,6 +96,17 @@ void TestConvert() {
     range.firstPage = 2;
     RAYOPDF_CHECK(ConvertBytes(pdf, range).report.exact == Layout::ExactUse::Pages, 1340);
 
+    // JSON and page markers need the pages' layout, so the pages are converted (layout code).
+    Layout::ConvertOptions json = Options();
+    json.format = Layout::OutputFormat::Json;
+    Layout::ConvertOptions markers = Options();
+    markers.pageMarkers = true;
+    const Converted asJson = ConvertBytes(pdf, json), marked = ConvertBytes(pdf, markers);
+    RAYOPDF_CHECK(asJson.report.exact == Layout::ExactUse::Format && asJson.markdown.compare(0, 1, "{") == 0 &&
+                      marked.report.exact == Layout::ExactUse::Format &&
+                      marked.markdown.compare(0, 15, "<!-- page 1 -->") == 0,
+                  1918);
+
     // An ordinary PDF claims no payload.
     const std::string plain = Test::OnePage("BT /F1 12 Tf 72 700 Td (Hello) Tj ET");
     RAYOPDF_CHECK(ConvertBytes(plain, Options()).report.exact == Layout::ExactUse::None, 1341);

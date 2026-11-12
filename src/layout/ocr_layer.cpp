@@ -40,17 +40,6 @@ uint32_t Decode(const std::string& text, size_t at, size_t& length) {
     return cp;
 }
 
-// A point of the frame of baseline direction `dir` (interpreter.cpp ToFrame) back on the upright
-// page.
-void FromFrame(uint8_t dir, float u, float v, float& x, float& y) {
-    switch (dir) {
-    case 1: x = -v, y = u; break;
-    case 2: x = -u, y = -v; break;
-    case 3: x = v, y = -u; break;
-    default: x = u, y = v; break;
-    }
-}
-
 void ToFrame(uint8_t dir, float x, float y, float& u, float& v) {
     switch (dir) {
     case 1: u = y, v = -x; break;
@@ -58,14 +47,6 @@ void ToFrame(uint8_t dir, float x, float y, float& u, float& v) {
     case 3: u = -y, v = x; break;
     default: u = x, v = y; break;
     }
-}
-
-// A rectangle of the frame of `dir` as the rectangle it covers on the upright page.
-void RectFromFrame(uint8_t dir, float& x0, float& y0, float& x1, float& y1) {
-    float ax, ay, bx, by;
-    FromFrame(dir, x0, y0, ax, ay);
-    FromFrame(dir, x1, y1, bx, by);
-    x0 = std::min(ax, bx), x1 = std::max(ax, bx), y0 = std::min(ay, by), y1 = std::max(ay, by);
 }
 
 // `canvas` turned so that text of baseline direction `dir` stands upright on it: its pixels turned

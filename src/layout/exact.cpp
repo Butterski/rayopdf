@@ -16,6 +16,7 @@ const char* ExactUseName(ExactUse use) {
     case ExactUse::None: return "none";
     case ExactUse::Used: return "used";
     case ExactUse::Pages: return "pages";
+    case ExactUse::Format: return "format";
     case ExactUse::Unsupported: return "unsupported";
     case ExactUse::Corrupt: return "corrupt";
     case ExactUse::Integrity: return "integrity";

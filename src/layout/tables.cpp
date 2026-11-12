@@ -3584,7 +3584,8 @@ std::string_view CellStyleless(std::string_view t) {
     return t;
 }
 
-// How many leading rows of `part` repeat the header of `head` (a header repeated on each page).
+} // namespace
+
 uint16_t RepeatedHeader(const TablePart& head, const TablePart& part) {
     const uint16_t n = std::max<uint16_t>(1, head.table->headerRows);
     if (part.table->rows <= n || head.table->rows < n || part.table->cols != head.table->cols) return 0;
@@ -3601,8 +3602,6 @@ uint16_t RepeatedHeader(const TablePart& head, const TablePart& part) {
     }
     return n;
 }
-
-} // namespace
 
 int DetectTables(PageData& page, TableContinuation& continuation) {
     if (page.lines.empty()) {

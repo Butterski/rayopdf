@@ -38,6 +38,8 @@ struct Record {
     std::string counters;        // further members, JSON text without braces: ,"name":value...
     bool hasMarkdown = false;    // --serve --json without an output: the Markdown itself
     std::string markdown;
+    bool hasJson = false;        // the same with --format=json: the JSON object, written as it is
+    std::string json;            // one JSON object, without its line break
 };
 
 // Appends `text` as a JSON string, its quotes included: quotes, backslashes and control characters
@@ -46,7 +48,8 @@ void AppendJsonString(std::string& out, std::string_view text);
 
 // Appends `record` to `out` as one line, its line break included:
 // {"id":..,"input":..,"output":..,"status":..,"code":..,"error":..,"pages":..,"bytes":..,"ms":..,
-//  <counters>,"markdown":..}; "id", "error" and "markdown" only when there are.
+//  <counters>,"markdown":..}; "id", "error" and "markdown" only when there are, and "json" (the
+//  object as it is) instead of "markdown" when there is one.
 void AppendRecord(std::string& out, const Record& record);
 
 // The CPUs this process may run on: its affinity mask, which taskset or a container narrows, where

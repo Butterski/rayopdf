@@ -244,6 +244,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--ocr=auto|off|force] [--ocr-addon=PATH]
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
                                 [--math=unicode|latex] [--workers=N]
+                                [--format=markdown|json] [--page-markers] [--front-matter]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -275,6 +276,37 @@ repairs, limits reached, `exact`, ...).
 the document read at once (by default up to one a CPU and at most 4, each thread started only
 when the pages read so far are worth it).
 
+### JSON, page markers and front matter
+
+`--format=json` writes the document as one JSON object instead (schema 1): its metadata, its
+pages' sizes and its blocks in reading order, each with its `type` (`heading`, `paragraph`,
+`list_item`, `code`, `table`, `image`, `footnote`, `comment`), its first `page`, its `boxes` on
+each page (`bbox` in points, origin at the lower left), what its type adds (a heading's `level`,
+a list item's `depth` and `number`, a table's `rows`, `cols` and `cells`, an image's `file` and
+`alt`, ...) and, last, the `markdown` the Markdown output writes for it.
+[roadmap D6](docs/development/roadmap.md#d6-output-dialect) has the full schema.
+
+```sh
+rayopdf --convert paper.pdf paper.json --format=json
+```
+
+`--page-markers` writes `<!-- page N -->` before the Markdown of each page (a list or quote that
+runs across a page break is split there):
+
+```sh
+rayopdf --convert paper.pdf paper.md --page-markers
+```
+
+`--front-matter` starts the Markdown with YAML front matter from the PDF's document information:
+`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created` and `modified` (dates in
+ISO 8601) when the file has them, and `pages`:
+
+```sh
+rayopdf --convert paper.pdf paper.md --front-matter
+```
+
+Both apply to Markdown only; the JSON output always carries the metadata.
+
 ### Exact recovery of RayoMD PDFs
 
 A PDF that [RayoMD](https://github.com/Butterski/rayomd) exported with `--embed-source` carries
@@ -286,9 +318,10 @@ the source, compared in runs of 8 with the normal conversion's, may miss or add 
 detects damage, not forgery, and the comparison does not cover punctuation, Markdown syntax or
 link targets beyond that allowance. The profile carries no images: the source's image links stay
 as written and no image files are written. The record's `exact` says what happened: `used`,
-`none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), or why the payload
-was rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`,
-`utf8`, `mismatch`. `--no-exact` always converts the pages.
+`none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
+with `--format=json` or `--page-markers`, which need the pages' layout), or why the payload was
+rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`,
+`mismatch`. `--no-exact` always converts the pages.
 
 ### OCR add-on
 
@@ -310,8 +343,9 @@ on one core for a 300 dpi Latin page, more for other scripts.
 
 ### Batch conversion
 
-`--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md`, its
-images to `OUT-FOLDER/NAME-images/`. `--recursive` adds the subfolders, except hidden ones, mirrored
+`--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md` (with
+`--format=json` `NAME.json`), its images to `OUT-FOLDER/NAME-images/`. `--recursive` adds the
+subfolders, except hidden ones, mirrored
 under `OUT-FOLDER`; `--skip-unchanged` keeps Markdown files at least as new as their PDF; `--report`
 writes one record a document, in the sorted order of the inputs, to standard output or to FILE.
 `--workers=N` converts N documents at once (1 to 64; by default one a CPU, at most 6). The files and
@@ -329,9 +363,10 @@ rayopdf --batch papers md-out --recursive --skip-unchanged --report=report.jsonl
 line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
-Markdown as `markdown` and no images are written) and `args` (flags of `--convert`:
-`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`, `--math`,
-`--ocr`, `--ocr-addon`, over those
+Markdown as `markdown`, or with `--format=json` the JSON object as `json`, and no images are
+written) and `args` (flags of `--convert`: `--password`, `--pages`, `--images`, `--no-exact`,
+`--no-annotations`, `--no-structure`, `--math`, `--ocr`, `--ocr-addon`, `--format`,
+`--page-markers`, `--front-matter`, over those
 the session started with). A malformed request gets an error record (code 2) and the session goes
 on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
 converted N at a time, and the answers still come in request order.

@@ -52,7 +52,7 @@ int LayOutPages(std::vector<PageData>& pages, PagePool& pool, MathMode math) {
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images, const Structure* structure, MathMode math, PagePool* pool,
-                  const DocumentRead* document) {
+                  const DocumentRead* document, const OutputSettings* output) {
     // Page-local stages first: they depend on nothing outside their page (D4: pages in parallel).
     // The caller's reads of the document (DocumentRead) are the round's first job: the calling
     // thread takes it while the pool's threads build lines.
@@ -109,7 +109,10 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     BuildBlocks(pages, outline, unmapped, blocks);
     if (tree) tagged.Blocks(pages, blocks);
     WriteCounts counts;
-    WriteMarkdown(pages, blocks, repaired, markdown, counts, math);
+    if (output && output->format == OutputFormat::Json)
+        WriteJson(pages, blocks, repaired, output->metadata, markdown, counts, math);
+    else
+        WriteMarkdown(pages, blocks, repaired, markdown, counts, math, output && output->pageMarkers);
     report.headings += counts.headings;
     report.paragraphs += counts.paragraphs;
     report.listItems += counts.listItems;

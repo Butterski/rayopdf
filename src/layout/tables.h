@@ -103,6 +103,10 @@ struct TablePart {
 // header of several rows; any other as a GFM pipe table.
 bool TableNeedsHtml(const PageData& page, const Table& table);
 
+// How many leading rows of `part` repeat the header of `head` (a header repeated on each page):
+// the writers drop them from a later part.
+uint16_t RepeatedHeader(const TablePart& head, const TablePart& part);
+
 // A GFM pipe table: the first row of the first part is the header row; header rows of a later
 // part that repeat the first part's are dropped. `|` in cells is escaped; a cell spanning columns
 // is written in each of them, a cell spanning rows in its first row (the rows below it empty).

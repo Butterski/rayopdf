@@ -4,6 +4,7 @@
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
+//                                   [--format=markdown|json] [--page-markers] [--front-matter]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -111,6 +112,11 @@ void PrintUsage(std::FILE* out) {
         "  --math=MODE        unicode (default): formulas as Unicode text, scripts as Unicode\n"
         "                     superscripts and subscripts or else <sup>/<sub>;\n"
         "                     latex: formulas rebuilt as LaTeX, $...$ inline and $$...$$ displayed\n"
+        "  --format=FORMAT    markdown (default), or json: one JSON object with the document's\n"
+        "                     metadata and its blocks (type, page, boxes, Markdown; schema 1)\n"
+        "  --page-markers     <!-- page N --> before the Markdown of each page\n"
+        "  --front-matter     YAML front matter from the document's information (title, author,\n"
+        "                     dates, pages) before the Markdown\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"
@@ -129,8 +135,10 @@ void PrintUsage(std::FILE* out) {
         "                     without FILE)\n"
         "\n"
         "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
-        "(\"output\" left out: the answer carries the Markdown) and answers each with its record,\n"
-        "in request order, after a first line {\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it.\n"
+        "(\"output\" left out: the answer carries the Markdown, or with --format=json the JSON as\n"
+        "\"json\") and answers each with its record, in request order, after a first line\n"
+        "{\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it. --batch writes NAME.json with\n"
+        "--format=json.\n"
         "\n"
         "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
         "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
@@ -243,6 +251,20 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             error = "--math takes unicode or latex: " + std::string(mode);
             return FlagStatus::Invalid;
         }
+    } else if (StartsWith(arg, "--format=")) {
+        const std::string_view format = arg.substr(9);
+        if (format == "markdown") {
+            options.convert.format = Layout::OutputFormat::Markdown;
+        } else if (format == "json") {
+            options.convert.format = Layout::OutputFormat::Json;
+        } else {
+            error = "--format takes markdown or json: " + std::string(format);
+            return FlagStatus::Invalid;
+        }
+    } else if (arg == "--page-markers") {
+        options.convert.pageMarkers = true;
+    } else if (arg == "--front-matter") {
+        options.convert.frontMatter = true;
     } else {
         return FlagStatus::Unknown;
     }
@@ -724,7 +746,8 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
         BatchJob& job = jobs[i];
         const std::string& relative = files[i];
         job.input = Join(inputFolder, relative);
-        job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) + ".md";
+        job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) +
+                     (document.convert.format == Layout::OutputFormat::Json ? ".json" : ".md");
         if (!outputs.insert(kWindows ? Lowered(job.output) : job.output).second) {
             job.record.status = "error";
             job.record.code = kExitUnwritable;
@@ -806,8 +829,13 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
     ConvertDocument(request.input, request.hasOutput ? request.output : std::string(), document.password, options,
                     markdown, record, true);
     if (record.code == kExitOk && !request.hasOutput) {
-        record.hasMarkdown = true;
-        record.markdown = markdown;
+        if (options.format == Layout::OutputFormat::Json) {
+            record.hasJson = true;
+            record.json.assign(markdown, 0, markdown.empty() ? 0 : markdown.size() - 1);  // without its line break
+        } else {
+            record.hasMarkdown = true;
+            record.markdown = markdown;
+        }
     }
     record.milliseconds = MillisecondsSince(start);
 }

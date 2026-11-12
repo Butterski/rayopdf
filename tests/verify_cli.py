@@ -4,8 +4,8 @@
 --report, encrypted input, --convert with several page workers (the same Markdown and record as
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
-with 1 and 4 workers). It builds the PDFs it needs in a temporary directory (none are committed)
-and never times anything.
+with 1 and 4 workers), and the output options (--format=json, --page-markers, --front-matter). It
+builds the PDFs it needs in a temporary directory (none are committed) and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -335,6 +335,58 @@ def check_page_workers(c: Checker, work: Path) -> None:
     c.check("bench with workers", r.returncode == 0 and b"pages=7" in r.stdout, repr(r.stdout))
 
 
+def check_output_features(c: Checker, work: Path, hello: str) -> None:
+    """--format=json (one object, schema 1, every block's Markdown in the Markdown output in order;
+    --batch writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page) and
+    --front-matter (YAML first, with the page count)."""
+    pages = str(work / "pages.pdf")
+    markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
+    r = c.run("--convert", pages, str(work / "pages.json"), "--format=json")
+    try:
+        document = json.loads((work / "pages.json").read_bytes())
+    except (OSError, ValueError):
+        document = {}
+    blocks = document.get("blocks") or []
+    c.check("json output", r.returncode == 0 and document.get("schema") == 1 and len(document.get("pages", [])) == 7
+            and bool(blocks) and all("type" in b and "page" in b and "boxes" in b for b in blocks), repr(document)[:300])
+    at, ordered = 0, True
+    for block in blocks:
+        found = markdown.find(block.get("markdown", "\0"), at)
+        ordered = ordered and found >= 0
+        at = found + len(block.get("markdown", "")) if found >= 0 else at
+    c.check("json blocks' Markdown in the Markdown's order", bool(blocks) and ordered)
+    c.check("bad format", c.run("--convert", pages, "-", "--format=html").returncode == 2)
+    r = c.run("--convert", pages, "-", "--page-markers")
+    marked = r.stdout.decode("utf-8")
+    markers = [n for n in range(1, 8) if f"<!-- page {n} -->" in marked]
+    positions = [marked.find(f"<!-- page {n} -->") for n in markers]
+    c.check("page markers", r.returncode == 0 and markers == list(range(1, 8)) and positions == sorted(positions) and
+            marked.count("<!-- page ") == 7, repr(marked[:300]))
+    r = c.run("--convert", pages, "-", "--front-matter")
+    front = r.stdout.decode("utf-8")
+    c.check("front matter", r.returncode == 0 and front.startswith("---\n") and "\npages: 7\n---\n\n" in front and
+            front.endswith(markdown), repr(front[:200]))
+    r = c.run("--convert", pages, "-", "--format=json", "--page-markers", "--front-matter")
+    c.check("json ignores markers and front matter", r.returncode == 0 and r.stdout == (work / "pages.json").read_bytes())
+
+    source = work / "json-in"
+    source.mkdir()
+    (source / "hello.pdf").write_bytes(Path(hello).read_bytes())
+    r = c.run("--batch", str(source), str(work / "json-out"), "--format=json")
+    try:
+        batch = json.loads((work / "json-out" / "hello.json").read_bytes())
+    except (OSError, ValueError):
+        batch = {}
+    c.check("batch writes NAME.json", r.returncode == 0 and batch.get("schema") == 1 and
+            not (work / "json-out" / "hello.md").exists(), repr(batch)[:200])
+    request = json.dumps({"id": 1, "input": hello, "args": ["--format=json"]}).encode() + b"\n"
+    lines = records(c.run("--serve", "--json", stdin=request).stdout)
+    answer = lines[1] if len(lines) > 1 else {}
+    c.check("serve answers with the JSON", isinstance(answer.get("json"), dict) and answer["json"].get("schema") == 1
+            and "markdown" not in answer and any("Hello World" in b.get("markdown", "")
+                                                 for b in answer["json"].get("blocks", [])), repr(answer)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -445,6 +497,7 @@ def main() -> int:
         r = c.run("--convert", picture, "-")
         c.check("no images on standard output", r.returncode == 0 and b"![" not in r.stdout)
 
+        check_output_features(c, work, hello)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

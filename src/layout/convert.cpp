@@ -4,6 +4,7 @@
 #include "common/batch.h"
 #include "layout/exact.h"
 #include "layout/interpreter.h"
+#include "layout/metadata.h"
 #include "layout/ocr.h"
 #include "layout/page_pool.h"
 #include "layout/pipeline.h"
@@ -138,13 +139,15 @@ struct DocumentParts {
     Conversion* conversion;
     int first;
     int last;
-    bool structure;  // ConvertOptions::structure
+    bool structure;                // ConvertOptions::structure
+    DocumentMetadata* metadata;    // the JSON output's, or null
 
     static bool Read(void* context) {
         const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
         ReadOutline(*parts.document, parts.conversion->outline);
         if (parts.structure && parts.first <= parts.last)
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
+        if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);
         return parts.document->Report().repaired;
     }
 };
@@ -194,10 +197,17 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     images.linkPrefix = options.imageLinkPrefix;
     images.pool = pool.get();
     images.pageWorkers = options.pageWorkers;
-    DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure};
+    // JSON and page markers: what the writer writes instead of plain Markdown.
+    const bool json = options.format == OutputFormat::Json;
+    DocumentMetadata metadata;
+    OutputSettings output;
+    output.format = options.format;
+    output.pageMarkers = options.pageMarkers;
+    output.metadata = &metadata;
+    DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure, json ? &metadata : nullptr};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,
-                 options.math, pool.get(), &read);
+                 options.math, pool.get(), &read, json || options.pageMarkers ? &output : nullptr);
     return conversion;
 }
 
@@ -210,6 +220,8 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         const int count = document.PageCount();
         if (options.firstPage > 1 || (options.lastPage > 0 && options.lastPage < count)) use = ExactUse::Pages;
     }
+    if (use == ExactUse::Used && (options.format != OutputFormat::Markdown || options.pageMarkers)) use = ExactUse::Format;
+    std::unique_ptr<Conversion> conversion;
     if (use == ExactUse::Used) {
         // The check converts the pages without writing images or running OCR, with Unicode math;
         // when the caller asked for none of these, that conversion is also the fallback.
@@ -218,23 +230,27 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         check.imageLinkPrefix.clear();
         check.ocr.mode = OcrMode::Off;
         check.math = MathMode::Unicode;
-        std::unique_ptr<Conversion> checked = ConvertDocument(document, check, markdown, report);
+        conversion = ConvertDocument(document, check, markdown, report);
         ExactMatch match;
         if (SourceMatchesPages(source, markdown, match)) {
             markdown.assign(source.data(), source.size());
-            report.exact = ExactUse::Used;
-            Finish(checked, options);
-            return;
-        }
-        use = ExactUse::Mismatch;
-        if (options.imageDirectory.empty() && options.ocr.mode == OcrMode::Off && options.math == MathMode::Unicode) {
-            report.exact = use;
-            Finish(checked, options);
-            return;
+        } else {
+            use = ExactUse::Mismatch;
+            if (!options.imageDirectory.empty() || options.ocr.mode != OcrMode::Off || options.math != MathMode::Unicode)
+                conversion.reset();
         }
     }
-    std::unique_ptr<Conversion> conversion = ConvertDocument(document, options, markdown, report);
+    if (!conversion) conversion = ConvertDocument(document, options, markdown, report);
     report.exact = use;
+    // Front matter (Markdown only), unless the payload written brings its own.
+    if (options.frontMatter && options.format == OutputFormat::Markdown &&
+        !(use == ExactUse::Used && markdown.compare(0, 4, "---\n") == 0)) {
+        DocumentMetadata metadata;
+        ReadMetadata(document, metadata);
+        std::string front;
+        AppendFrontMatter(metadata, report.pages, front);
+        markdown.insert(0, front);
+    }
     Finish(conversion, options);
 }
 

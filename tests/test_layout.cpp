@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout: the layout and semantic stages on pages built glyph by glyph, then the
-// whole conversion on PDFs built in memory (tests/pdf_builder.h). Exit codes 400-499 and 700-749.
+// whole conversion on PDFs built in memory (tests/pdf_builder.h), and the output options (front
+// matter, page markers, JSON). Exit codes 400-499, 700-749 and 1900-1949.
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -9,6 +10,7 @@
 #include "layout/convert.h"
 #include "layout/glyph_box.h"
 #include "layout/lines.h"
+#include "layout/metadata.h"
 #include "layout/page.h"
 #include "layout/path_box.h"
 #include "layout/pipeline.h"
@@ -1592,6 +1594,181 @@ void TestPathBox() {
     RAYOPDF_CHECK(any && grown > 0 && skipped > 0 && box[0] == 8 && box[1] == 23 && box[2] == 12 && box[3] == 26, 749);
 }
 
+// --- Output features: front matter, page markers, JSON (roadmap D6) -------------------------------
+
+std::string ConvertPdfWith(const std::string& pdf, const ConvertOptions& options) {
+    std::unique_ptr<Document> doc;
+    RAYOPDF_CHECK(Document::Open(pdf, "", doc) == OpenStatus::Ok, 450);
+    std::string out;
+    ConvertReport report;
+    Convert(*doc, options, out, report);
+    return out;
+}
+
+std::string RunWith(std::vector<PageData>& pages, const OutputSettings& output) {
+    std::string out;
+    ConvertReport report;
+    std::vector<PageTextQuality> quality(pages.size());
+    ConvertPages(pages, quality, {}, false, out, report, nullptr, nullptr, MathMode::Unicode, nullptr, nullptr, &output);
+    return out;
+}
+
+// The values of the "markdown" members of a JSON text, unescaped.
+std::vector<std::string> MarkdownValues(const std::string& json) {
+    std::vector<std::string> values;
+    const std::string key = "\"markdown\":\"";
+    for (size_t at = json.find(key); at != std::string::npos; at = json.find(key, at)) {
+        at += key.size();
+        std::string value;
+        while (at < json.size() && json[at] != '"') {
+            char c = json[at++];
+            if (c == '\\' && at < json.size()) {
+                const char e = json[at++];
+                c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
+                if (e == 'u' && at + 4 <= json.size()) {
+                    c = static_cast<char>(std::strtol(json.substr(at, 4).c_str(), nullptr, 16));
+                    at += 4;
+                }
+            }
+            value.push_back(c);
+        }
+        values.push_back(value);
+    }
+    return values;
+}
+
+// The document information as YAML front matter: escaped strings, the date in ISO 8601 with its
+// offset, the page count; the same fields as the JSON output's metadata.
+void TestFrontMatter() {
+    Test::PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    const int content = b.AddFlateStream("", "BT /F1 12 Tf 72 700 Td (Hello world) Tj ET");
+    const int page = b.Add("<< /Type /Page /Parent " + std::to_string(pages) +
+                           " 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 "
+                           "/BaseFont /Helvetica >> >> >> /Contents " + std::to_string(content) + " 0 R >>");
+    const int info = b.Add("<< /Title (A \"quoted\" title ) /Author (Ann Author) /CreationDate (D:20210304102030+01'00') "
+                           "/Producer 42 >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) + " 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] /Count 1 >>");
+    const std::string pdf = b.Build(catalog, "/Info " + std::to_string(info) + " 0 R");
+    ConvertOptions options;
+    options.frontMatter = true;
+    const std::string md = ConvertPdfWith(pdf, options);
+    Show("front matter", md);
+    RAYOPDF_CHECK(md == "---\ntitle: \"A \\\"quoted\\\" title\"\nauthor: \"Ann Author\"\n"
+                        "created: \"2021-03-04T10:20:30+01:00\"\npages: 1\n---\n\nHello world\n",
+                  1909);
+    options.format = OutputFormat::Json;
+    const std::string json = ConvertPdfWith(pdf, options);
+    RAYOPDF_CHECK(Contains(json, ",\"metadata\":{\"title\":\"A \\\"quoted\\\" title\",\"author\":\"Ann Author\","
+                                 "\"created\":\"2021-03-04T10:20:30+01:00\"},") &&
+                      json.compare(0, 4, "{\"ra") == 0 && !Contains(json, "---"),
+                  1917);
+}
+
+void TestPdfDates() {
+    std::string iso;
+    RAYOPDF_CHECK(PdfDateToIso("D:2021", iso) && iso == "2021-01-01T00:00:00", 1910);
+    RAYOPDF_CHECK(PdfDateToIso("D:20211231235959Z", iso) && iso == "2021-12-31T23:59:59Z", 1911);
+    RAYOPDF_CHECK(!PdfDateToIso("garbage", iso) && !PdfDateToIso("D:20211301", iso) &&
+                      !PdfDateToIso("D:2021123", iso) && PdfDateToIso("20210304-05'30", iso) &&
+                      iso == "2021-03-04T00:00:00-05:30",
+                  1912);
+}
+
+// A marker before each page's first block; a page whose text only continues a paragraph of the
+// page before still has its marker, after that paragraph.
+void TestPageMarkers() {
+    OutputSettings markers;
+    markers.pageMarkers = true;
+    std::vector<PageData> two{NewPage(1), NewPage(2)};
+    AddText(two[0], "First page text ends here.", 72, 700, 10);
+    AddText(two[1], "Second page text ends here.", 72, 700, 10);
+    const std::string md = RunWith(two, markers);
+    Show("page markers", md);
+    RAYOPDF_CHECK(md == "<!-- page 1 -->\n\nFirst page text ends here.\n\n<!-- page 2 -->\n\nSecond page text ends here.\n",
+                  1913);
+    std::vector<PageData> three{NewPage(1), NewPage(2), NewPage(3)};
+    AddText(three[0], "The first page ends in the middle of a", 72, 60, 10);
+    AddText(three[1], "sentence that the second page ends.", 72, 740, 10);
+    AddText(three[2], "Third page text.", 72, 740, 10);
+    const std::string runOn = RunWith(three, markers);
+    Show("page markers, run-on page", runOn);
+    RAYOPDF_CHECK(Contains(runOn, "<!-- page 1 -->\n\nThe first page ends in the middle of a sentence that the second "
+                                  "page ends.\n\n<!-- page 2 -->\n\n<!-- page 3 -->\n\nThird page text.\n"),
+                  1914);
+}
+
+// JSON: every block with its type and page, a table's cells, and its Markdown as the Markdown
+// output writes it, in the same order.
+void TestJsonOutput() {
+    const auto build = [] {
+        std::vector<PageData> pages{NewPage(1), NewPage(2)};
+        PageData& page = pages[0];
+        AddText(page, "Big Title", 72, 700, 20);
+        AddText(page, "Body text that is long enough to be a paragraph line.", 72, 660, 10);
+        AddText(page, "Second line of the same paragraph goes here and ends.", 72, 648, 10);
+        float x = AddText(page, "\xE2\x80\xA2", 72, 620, 10);
+        AddText(page, "first item", x + 8, 620, 10);
+        x = AddText(page, "\xE2\x80\xA2", 72, 606, 10);
+        AddText(page, "second item", x + 8, 606, 10);
+        for (float y : {560.0f, 540.0f, 520.0f}) page.rulings.push_back(Ruling{72, y - 0.25f, 300, y + 0.25f, kRulingStroke});
+        for (float rx : {72.0f, 180.0f, 300.0f}) page.rulings.push_back(Ruling{rx - 0.25f, 520, rx + 0.25f, 560, kRulingStroke});
+        AddText(page, "Key", 76, 546, 10);
+        AddText(page, "Value", 184, 546, 10);
+        AddText(page, "alpha", 76, 526, 10);
+        AddText(page, "42", 184, 526, 10);
+        AddText(page, "A closing paragraph after the table ends the page.", 72, 480, 10);
+        AddText(pages[1], "Second page paragraph ends here.", 72, 700, 10);
+        return pages;
+    };
+    std::vector<PageData> forMarkdown = build(), forJson = build();
+    const std::string md = Run(forMarkdown);
+    OutputSettings output;
+    output.format = OutputFormat::Json;
+    const std::string json = RunWith(forJson, output);
+    Show("json", json);
+    const std::vector<std::string> blocks = MarkdownValues(json);
+    size_t at = 0;
+    bool ordered = !blocks.empty();
+    for (const std::string& block : blocks) {
+        const size_t found = md.find(block, at);
+        ordered = ordered && found != std::string::npos;
+        if (found != std::string::npos) at = found + block.size();
+    }
+    RAYOPDF_CHECK(json.compare(0, 12, "{\"rayopdf\":\"") == 0 && Contains(json, "\"schema\":1,\"repaired\":false,") &&
+                      Contains(json, "\"type\":\"heading\",\"page\":1,") && Contains(json, "\"level\":1,") &&
+                      Contains(json, "\"type\":\"list_item\",\"page\":1,") &&
+                      Contains(json, "\"type\":\"paragraph\",\"page\":2,") &&
+                      Contains(json, "\"rows\":2,\"cols\":2,\"header_rows\":1,\"cells\":[{\"row\":0,\"col\":0,"
+                                     "\"row_span\":1,\"col_span\":1,\"text\":\"Key\"},") &&
+                      Contains(json, "{\"row\":1,\"col\":1,\"row_span\":1,\"col_span\":1,\"text\":\"42\"}],") &&
+                      json.compare(json.size() - 3, 3, "]}\n") == 0 && blocks.size() == 7 && ordered,
+                  1915);
+}
+
+// A turned line's box is on the page: its frame's box turned back upright, taller than wide.
+void TestJsonTurnedBox() {
+    ConvertOptions options;
+    options.format = OutputFormat::Json;
+    const std::string json = ConvertPdfWith(
+        Test::OnePage("BT /F1 12 Tf 72 700 Td (A line of upright text on the page.) Tj ET\n"
+                      "BT /F1 12 Tf 0 1 -1 0 300 200 Tm (Turned label text) Tj ET\n"),
+        options);
+    Show("json turned", json);
+    bool inside = true, turned = false;
+    int boxes = 0;
+    for (size_t at = json.find("\"bbox\":["); at != std::string::npos; at = json.find("\"bbox\":[", at + 1)) {
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        inside = inside && std::sscanf(json.c_str() + at + 8, "%lf,%lf,%lf,%lf", &x0, &y0, &x1, &y1) == 4 && 0 <= x0 &&
+                 x0 < x1 && x1 <= 612 && 0 <= y0 && y0 < y1 && y1 <= 792;
+        turned = turned || (x1 - x0 < y1 - y0 && x0 > 280 && x1 < 310 && y0 > 190);
+        ++boxes;
+    }
+    RAYOPDF_CHECK(inside && turned && boxes == 2, 1916);
+}
+
 } // namespace
 
 int main() {
@@ -1658,6 +1835,11 @@ int main() {
     TestMonospaceDocument();
     TestGlyphBox();
     TestPathBox();
+    TestFrontMatter();
+    TestPdfDates();
+    TestPageMarkers();
+    TestJsonOutput();
+    TestJsonTurnedBox();
     std::puts("test_layout: all checks passed");
     return 0;
 }

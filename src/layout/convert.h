@@ -19,6 +19,10 @@ namespace RayoPdf::Layout {
 // leave little to gain from more).
 constexpr unsigned kDefaultPageWorkers = 4;
 
+// What Convert writes (roadmap D6): Markdown, or the document as one JSON object (schema 1, the
+// blocks with their pages, boxes and Markdown; layout/markdown_writer.h WriteJson).
+enum class OutputFormat : uint8_t { Markdown, Json };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -34,6 +38,12 @@ struct ConvertOptions {
     OcrOptions ocr;
     // Formulas as Unicode (D6, the default) or as LaTeX between $ and $$ (layout/math.h).
     MathMode math = MathMode::Unicode;
+    OutputFormat format = OutputFormat::Markdown;
+    // Markdown only: `<!-- page N -->` before the blocks of each page (layout/markdown_writer.h).
+    bool pageMarkers = false;
+    // Markdown only: YAML front matter from the document's /Info first (layout/metadata.h), unless
+    // a verified RayoMD payload that has its own is written.
+    bool frontMatter = false;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
     // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
     // may run on, at most kDefaultPageWorkers, each started only once the pages read so far are
@@ -68,6 +78,7 @@ enum class ExactUse : uint8_t {
     None,         // the file claims no payload
     Used,         // the payload passed both checks and is the Markdown written
     Pages,        // not used: a page range was asked for and the payload is the whole document
+    Format,       // not used: the output asked for (JSON, page markers) needs the pages' layout
     Unsupported,  // rejected: another profile version or encoding
     Corrupt,      // rejected: the file or the profile's objects are not as the profile writes them
     Integrity,    // rejected: the payload's SHA-256 or length does not match its packet
@@ -76,7 +87,7 @@ enum class ExactUse : uint8_t {
     Mismatch,     // rejected: the payload does not say what the pages show
 };
 
-// "off", "none", "used", "pages", "unsupported", "corrupt", "integrity", "limit", "utf8",
+// "off", "none", "used", "pages", "format", "unsupported", "corrupt", "integrity", "limit", "utf8",
 // "mismatch".
 const char* ExactUseName(ExactUse use);
 
@@ -120,8 +131,9 @@ struct ConvertReport {
 };
 
 // Converts the pages of `document` to Markdown in `markdown` (replaced): a verified RayoMD source
-// payload as it is (layout/exact.h), else the pages. Never fails: what cannot be read is reported
-// in `report` and marked in the text.
+// payload as it is (layout/exact.h), else the pages; with OutputFormat::Json the document as one
+// JSON object instead. Never fails: what cannot be read is reported in `report` and marked in the
+// text.
 void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report);
 
 } // namespace RayoPdf::Layout

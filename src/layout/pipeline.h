@@ -12,6 +12,7 @@
 
 namespace RayoPdf::Layout {
 
+struct DocumentMetadata;
 class PagePool;
 struct Structure;
 
@@ -35,6 +36,13 @@ struct DocumentRead {
     void* context = nullptr;
 };
 
+// What the writer writes when it is not plain Markdown (ConvertOptions::format, pageMarkers).
+struct OutputSettings {
+    OutputFormat format = OutputFormat::Markdown;
+    bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
+    const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
+};
+
 // Lines, header/footer removal, images, reading order, semantics and the writer over `pages`
 // (each with its glyphs, shapes and links filled). Appends to `markdown`; adds to the counters of
 // `report` that these stages own (pagesWithoutText, hiddenGlyphs, headings, paragraphs, listItems,
@@ -44,10 +52,12 @@ struct DocumentRead {
 // when it passes the checks, decides blocks and order instead of the geometry. `math` Latex marks
 // display formulas (layout/math.h) and has the writer write formulas as LaTeX. The page-local
 // stages (math glyphs, lines, tables, reading order) run on the threads of `pool` when there is
-// one (layout/page_pool.h), with the same result.
+// one (layout/page_pool.h), with the same result. `output` null writes plain Markdown; else JSON
+// (WriteJson) or Markdown with page markers as it says.
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images = nullptr, const Structure* structure = nullptr,
-                  MathMode math = MathMode::Unicode, PagePool* pool = nullptr, const DocumentRead* document = nullptr);
+                  MathMode math = MathMode::Unicode, PagePool* pool = nullptr, const DocumentRead* document = nullptr,
+                  const OutputSettings* output = nullptr);
 
 } // namespace RayoPdf::Layout
