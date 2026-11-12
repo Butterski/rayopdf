@@ -23,6 +23,9 @@ constexpr float kHeadingSize = 1.12f; // a heading candidate: at least this time
 constexpr float kTitleSize = 1.38f;
 // A top level used once or twice above deeper levels is a title from this times the body size up.
 constexpr float kSmallTitleSize = 1.25f;
+// A heading line over a title of at least this times its size, the page's topmost text, is a
+// kicker (BuildBlocks).
+constexpr float kKickerSize = 1.3f;
 
 struct Info {
     uint32_t page = 0, line = 0;
@@ -2012,6 +2015,33 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (weighed && chars * 10 <= (totalChars + cellChars) * 3) continue;
             k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
         }
+    }
+
+    // A kicker: a short line set above a page's title in a smaller size ("AI Pack" over a slide's
+    // title) names what the title belongs to and heads nothing. It is a heading of one line, the
+    // page's topmost text (an image may stand above it), directly over the next block, a heading
+    // of kKickerSize times its size at least within three of its sizes below it, the two
+    // overlapping across half the narrower. (kordoc's heading-demote.ts demotes the same.)
+    for (size_t r = 0; r + 1 < raws.size(); ++r) {
+        Classified& k = kinds[r];
+        const Classified& n = kinds[r + 1];
+        if (k.kind != BlockKind::Heading || k.level > 0 || n.kind != BlockKind::Heading || raws[r].count != 1) continue;
+        const Info& a = infos[raws[r].first];
+        const Info& b = infos[raws[r + 1].first];
+        if (b.page != a.page || a.dir != 0 || b.dir != 0 || !(n.size >= kKickerSize * k.size)) continue;
+        if (!(a.baseline > b.baseline) || a.vb - b.vt > 3 * k.size) continue;
+        float u0 = INFINITY, u1 = -INFINITY;
+        for (uint32_t i = raws[r + 1].first; i < raws[r + 1].first + raws[r + 1].count; ++i)
+            u0 = Fmin(u0, infos[i].u0), u1 = Fmax(u1, infos[i].u1);
+        if (Fmin(a.u1, u1) - Fmax(a.u0, u0) < 0.5f * Fmin(a.u1 - a.u0, u1 - u0)) continue;
+        // The page's lines are the infos around the kicker's of its page.
+        uint32_t from = raws[r].first, to = raws[r].first;
+        while (from > 0 && infos[from - 1].page == a.page) --from;
+        while (to < infos.size() && infos[to].page == a.page) ++to;
+        bool topmost = true;
+        for (uint32_t i = from; i < to && topmost; ++i)
+            topmost = infos[i].dir != 0 || (infos[i].flags & kLineImage) || !(infos[i].vb > a.vt);
+        if (topmost) k.kind = a.listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
     }
 
     // A title block (§6.1): under the title on the first page, blocks centred under it in a

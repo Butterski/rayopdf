@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the heading rules of src/layout/semantics.cpp on scientific papers: the title
 // above an outline that names the sections only, small capitals, numbering in the outline match,
-// the standard unnumbered sections. Pages are built glyph by glyph and converted by the whole
-// pipeline. Exit codes 1800-1849.
+// the standard unnumbered sections; and the kicker over a slide's title. Pages are built glyph by
+// glyph and converted by the whole pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -214,6 +214,35 @@ void TestStandardSections() {
     RAYOPDF_CHECK(!Contains(md, "# Abstract") && Contains(md, "We show that a label closed by a period"), 1818);
 }
 
+void TestKicker() {
+    // A short line over a slide's title in a smaller size, the page's topmost text, names what the
+    // title belongs to: a paragraph, and the title the top heading.
+    std::vector<PageData> slide{NewPage(1)};
+    AddText(slide[0], "AI Pack", 72, 740, 13);
+    AddText(slide[0], "Upstage Offers Packs", 72, 710, 22);
+    AddBody(slide[0], 670, 3);
+    std::string md = Run(slide);
+    Show("kicker", md);
+    RAYOPDF_CHECK(Contains(md, "AI Pack\n") && !Contains(md, "# AI Pack") && Contains(md, "# Upstage Offers Packs\n"), 1819);
+    // Text above it: the line heads what follows it, a section of its own.
+    std::vector<PageData> below{NewPage(1)};
+    AddBody(below[0], 770, 1);
+    AddText(below[0], "AI Pack", 72, 740, 13);
+    AddText(below[0], "Upstage Offers Packs", 72, 710, 22);
+    AddBody(below[0], 670, 3);
+    md = Run(below);
+    Show("not topmost", md);
+    RAYOPDF_CHECK(Contains(md, "## AI Pack\n"), 1820);
+    // A chapter's label in nearly the title's size is a heading of its own.
+    std::vector<PageData> chapter{NewPage(1)};
+    AddText(chapter[0], "Chapter 3", 72, 740, 20, kGlyphBold);
+    AddText(chapter[0], "Numerical Methods", 72, 700, 24, kGlyphBold);
+    AddBody(chapter[0], 660, 3);
+    md = Run(chapter);
+    Show("chapter label", md);
+    RAYOPDF_CHECK(Contains(md, "## Chapter 3\n") && Contains(md, "# Numerical Methods\n"), 1821);
+}
+
 } // namespace
 
 int main() {
@@ -221,6 +250,7 @@ int main() {
     TestSmallCapitals();
     TestOutlineNumbering();
     TestStandardSections();
+    TestKicker();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }
