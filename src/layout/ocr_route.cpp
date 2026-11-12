@@ -30,6 +30,7 @@ constexpr uint32_t kMinBandHeight = 4;
 constexpr float kMinStrokes = 3.0f;          // ink runs a row of a text band crosses, at least
 constexpr float kStrokesPerHeight = 0.8f;    // ... and per band height of ink span
 constexpr float kMinTextRows = 0.15f;
+constexpr float kCellGap = 2.0f;             // band heights: a gap between a table's cells, not words
 
 // Vector-outline text: glyph-sized filled curves.
 constexpr float kGlyphShapeMin = 2.0f, kGlyphShapeMax = 40.0f;  // points high
@@ -349,14 +350,26 @@ bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextE
         return !ruleMask.empty() && ((ruleMask[size_t(at >> 6)] >> (at & 63)) & 1) != 0;
     };
 
-    // Rows: bands of rows holding ink, and how many ink runs cross each.
+    // Rows: bands of rows holding ink, and how many ink runs cross each. A band's span leaves out
+    // the gaps between its inked columns wider than kCellGap band heights: a row of a table has
+    // its words in cells far apart, and is as dense as a line of text where it has words.
     const uint32_t inked = std::max<uint32_t>(2, width / 333);
     std::vector<uint32_t> heights;
+    std::vector<uint32_t> inkRow(width, 0);  // per column: 1 + the last row that inked it
     uint32_t bandStart = 0, bandRuns = 0, bandMin = 0, bandMax = 0;
     bool inBand = false;
     const auto closeBand = [&](uint32_t end) {
         const uint32_t h = end - bandStart;
-        const float span = float(bandMax - bandMin + 1);
+        // Columns inked by the band's rows (and by the row that ends it, a few pixels at most).
+        const auto inBandColumn = [&](uint32_t x) { return inkRow[x] > bandStart && inkRow[x] <= end + 1; };
+        uint64_t gaps = 0;
+        uint32_t previous = bandMin;
+        for (uint32_t x = bandMin + 1; x <= bandMax; ++x) {
+            if (!inBandColumn(x)) continue;
+            if (float(x - previous - 1) > kCellGap * float(h)) gaps += x - previous - 1;
+            previous = x;
+        }
+        const float span = float(uint64_t(bandMax - bandMin + 1) - gaps);
         const float strokes = float(bandRuns) / float(h);
         e.bands++;
         if (h >= kMinBandHeight && h <= height / 3 && strokes >= kMinStrokes && strokes >= kStrokesPerHeight * span / float(h))
@@ -378,6 +391,7 @@ bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextE
                 for (uint32_t k = x; k < end; ++k) {
                     const bool ink = !masked(rowAt + k);
                     if (ink) {
+                        inkRow[k] = y + 1;
                         count++;
                         if (!previous) runs++;
                         if (first == width) first = k;

@@ -499,9 +499,10 @@ void TestLooksLikeText() {
 
 // A 600 x 300 gray image of a ruled grid of 3 rows and `cols` columns (2-pixel rules), with two
 // bands of text-like strokes (dark runs of 3-6 pixels) 12 pixels high in each row of cells when
-// `text`.
-std::string RuledGrid(bool text, uint32_t cols = 4) {
+// `text`: across the width, or with `word` a word of that many pixels at the left of each cell.
+std::string RuledGrid(bool text, uint32_t cols = 4, uint32_t word = 0) {
     const uint32_t w = 600, h = 300;
+    const uint32_t pitch = 592 / cols;
     std::string grid(size_t(w) * h, static_cast<char>(0xFF));
     if (text) {
         for (uint32_t r = 0; r < 3; ++r)
@@ -510,15 +511,16 @@ std::string RuledGrid(bool text, uint32_t cols = 4) {
                 for (uint32_t y = top; y < top + 12; ++y)
                     for (uint32_t x = 8; x + 8 < w;) {
                         const uint32_t run = 3 + (x / 7 + y) % 4;
-                        for (uint32_t k = x; k < x + run && k + 8 < w; ++k) grid[size_t(y) * w + k] = 20;
+                        const bool inWord = word == 0 || (x % pitch >= 8 && x % pitch < 8 + word);
+                        for (uint32_t k = x; inWord && k < x + run && k + 8 < w; ++k) grid[size_t(y) * w + k] = 20;
                         x += run + 4;
                     }
             }
     }
+    // The rules.
     for (uint32_t r = 0; r <= 3; ++r)
         for (uint32_t y = std::min(r * 98 + 2, h - 2); y < std::min(r * 98 + 4, h); ++y)
             for (uint32_t x = 2; x < w - 2; ++x) grid[size_t(y) * w + x] = 0;
-    const uint32_t pitch = 592 / cols;
     for (uint32_t c = 0; c <= cols; ++c)
         for (uint32_t x = std::min(c * pitch + 2, w - 4); x < std::min(c * pitch + 4, w - 2); ++x)
             for (uint32_t y = 2; y < h - 2; ++y) grid[size_t(y) * w + x] = 0;
@@ -534,6 +536,9 @@ void TestRuledGridText() {
     // The grid alone holds no text.
     const std::string empty = RuledGrid(false);
     RAYOPDF_CHECK(!LooksLikeText(reinterpret_cast<const uint8_t*>(empty.data()), 600, 300), 1751);
+    // A table of short words, far apart in their cells: its rows are lines of text.
+    const std::string sparse = RuledGrid(true, 4, 40);
+    RAYOPDF_CHECK(LooksLikeText(reinterpret_cast<const uint8_t*>(sparse.data()), 600, 300, &e) && e.textBands == 6, 1752);
 }
 
 void TestImageRulings() {
