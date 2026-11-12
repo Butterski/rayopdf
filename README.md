@@ -376,6 +376,22 @@ printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-
   '{"id":2,"input":"b.pdf"}' | rayopdf --serve --json
 ```
 
+### C++ API
+
+The archives `rayopdf-lib-VERSION-linux-x64.tar.gz` and `rayopdf-lib-VERSION-windows-x64.zip`
+(MinGW-w64) hold the converter as a static library, `lib/librayopdf.a`, with its one header,
+`include/rayopdf/rayopdf.h`, and `example.cpp`. `RayoPdf::Api::ConvertFile` and `ConvertMemory`
+convert a file or the bytes of a PDF to Markdown, or with `Format::Json` to the JSON document,
+with the options of `--convert` (pages, password, images, `math`, OCR, page markers, front
+matter, page threads); the `Result` holds the status (the command line's exit code), the error,
+the pages converted and the `--report` counters as one JSON object. The library throws no
+exceptions and keeps no state between calls, which may run on several threads at once.
+
+```sh
+g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread
+./a.out paper.pdf > paper.md
+```
+
 <p align="right"><a href="#readme-top">back to top ↑</a></p>
 
 ## Boundaries

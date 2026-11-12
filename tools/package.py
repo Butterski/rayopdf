@@ -14,6 +14,13 @@ SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
   rayopdf-VERSION-linux-x64-static.tar.gz   build/static/rayopdf (fully static, -static-pie)
   rayopdf-VERSION-windows-x64.zip           build/windows/rayopdf.exe (MinGW-w64, static)
 
+The C++ API's archives (--only lib-linux|lib-windows) hold, in a folder of the archive's name,
+include/rayopdf/rayopdf.h, lib/librayopdf.a (every module the command line links, merged by the
+build's rayopdf_bundle target), example.cpp and the core archives' documents and licences:
+
+  rayopdf-lib-VERSION-linux-x64.tar.gz      build/static/librayopdf.a (GCC, x86-64 Linux)
+  rayopdf-lib-VERSION-windows-x64.zip       build/windows/librayopdf.a (MinGW-w64)
+
 With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
 the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
@@ -40,8 +47,10 @@ Build the binaries first:
 
 Usage:
   python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
+                           [--lib-linux build/static/librayopdf.a] [--lib-windows build/windows/librayopdf.a]
                            [--out build/dist]
-                           [--only linux|windows|ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
+                           [--only linux|windows|lib-linux|lib-windows|ocr-linux|ocr-windows|
+                                   ocr-scripts-linux|ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
                            [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
@@ -211,6 +220,37 @@ def check_windows(binary: Path) -> None:
             raise SystemExit(f"package: {binary} imports {dll.decode()}: build it with --config windows")
 
 
+def check_library(library: Path, windows: bool) -> None:
+    """A static library whose objects are x86-64 ELF (Linux) or x86-64 COFF (MinGW-w64)."""
+    data = library.read_bytes()
+    if data[:8] != b"!<arch>\n":
+        raise SystemExit(f"package: {library} is not a static library (ar archive)")
+    at = 8
+    while at + 60 <= len(data):
+        name = data[at:at + 16].rstrip()
+        size = int(data[at + 48:at + 58])
+        member = data[at + 60:at + 60 + size]
+        if name not in (b"/", b"//", b"/SYM64/"):  # symbol and long-name tables
+            if windows:
+                ok = member[:2] == b"\x64\x86"
+            else:
+                ok = member[:4] == b"\x7fELF" and struct.unpack_from("<H", member, 18)[0] == 62
+            if not ok:
+                platform = "an x86-64 COFF" if windows else "an x86-64 ELF"
+                raise SystemExit(f"package: {library} holds {name.decode(errors='replace')}, not {platform} object: "
+                                 f"build it with --config {'windows' if windows else 'static'}")
+            return
+        at += 60 + size + (size & 1)
+    raise SystemExit(f"package: {library} holds no object")
+
+
+def lib_entries(library: Path, docs: list[tuple[str, bytes, int]]) -> list[tuple[str, bytes, int]]:
+    """The C++ API archive's entries: the public header, the library, the example and `docs`."""
+    return [("include/rayopdf/rayopdf.h", (REPO / "include" / "rayopdf" / "rayopdf.h").read_bytes(), 0o644),
+            ("lib/librayopdf.a", library.read_bytes(), 0o644),
+            ("example.cpp", (REPO / "src" / "api" / "example" / "example.cpp").read_bytes(), 0o644)] + docs
+
+
 def tar_gz(path: Path, folder: str, entries: list[tuple[str, bytes, int]], mtime: int) -> None:
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
@@ -275,9 +315,11 @@ def main() -> int:
     parser.add_argument("--linux", default="build/static/rayopdf", help="the linux-x64-static binary")
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
-    parser.add_argument("--only", choices=("linux", "windows", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
-                                           "ocr-scripts-windows"),
+    parser.add_argument("--only", choices=("linux", "windows", "lib-linux", "lib-windows", "ocr-linux", "ocr-windows",
+                                           "ocr-scripts-linux", "ocr-scripts-windows"),
                         help="package one archive")
+    parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
+    parser.add_argument("--lib-windows", default="build/windows/librayopdf.a", help="the windows-x64 C++ API library")
     parser.add_argument("--ocr", action="store_true", help="also package the OCR add-on's archives and script pack")
     parser.add_argument("--ocr-linux", default="build/ocr/addon/rayopdf-ocr", help="the linux add-on binary")
     parser.add_argument("--ocr-windows", default="build/ocr-windows/addon/rayopdf-ocr.exe", help="the windows add-on")
@@ -304,6 +346,18 @@ def main() -> int:
         check_windows(binary)
         name = f"rayopdf-{version}-windows-x64"
         zip_archive(out / f"{name}.zip", name, [("rayopdf.exe", binary.read_bytes(), 0o755)] + docs["core"], mtime)
+        made.append(out / f"{name}.zip")
+    if args.only in (None, "lib-linux"):
+        library = REPO / args.lib_linux if not Path(args.lib_linux).is_absolute() else Path(args.lib_linux)
+        check_library(library, False)
+        name = f"rayopdf-lib-{version}-linux-x64"
+        tar_gz(out / f"{name}.tar.gz", name, lib_entries(library, docs["core"]), mtime)
+        made.append(out / f"{name}.tar.gz")
+    if args.only in (None, "lib-windows"):
+        library = REPO / args.lib_windows if not Path(args.lib_windows).is_absolute() else Path(args.lib_windows)
+        check_library(library, True)
+        name = f"rayopdf-lib-{version}-windows-x64"
+        zip_archive(out / f"{name}.zip", name, lib_entries(library, docs["core"]), mtime)
         made.append(out / f"{name}.zip")
     ocr = {"ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"}
     wanted = ocr if args.ocr and args.only is None else {args.only}
@@ -338,7 +392,7 @@ def main() -> int:
 
     # SHA256SUMS covers every archive of this version in the folder, also one packaged earlier.
     archives = sorted(p for p in out.iterdir()
-                      if p.name.startswith((f"rayopdf-{version}-", f"rayopdf-ocr-{version}-",
+                      if p.name.startswith((f"rayopdf-{version}-", f"rayopdf-lib-{version}-", f"rayopdf-ocr-{version}-",
                                             f"rayopdf-ocr-scripts-{version}-")) and
                       p.name.endswith((".tar.gz", ".zip")))
     sums = "".join(f"{sha256(p)}  {p.name}\n" for p in archives)

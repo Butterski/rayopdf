@@ -164,6 +164,29 @@ if(TARGET rayopdf_api)
     endif()
 endif()
 
+# The C++ API as one library for the release's lib archives (tools/package.py): librayopdf.a in the
+# build directory, every module the command line links merged by an `ar -M` script. Built by the
+# static and Windows builds, whose objects need no shared runtime.
+if(TARGET rayopdf_api AND (RAYOPDF_STATIC OR WIN32))
+    set(bundle "${CMAKE_BINARY_DIR}/librayopdf.a")
+    set(bundle_script "${CMAKE_BINARY_DIR}/librayopdf.mri")
+    set(bundle_libraries)
+    set(content "CREATE ${bundle}\n")
+    foreach(module api layout text image pdf raster crypt common)
+        string(APPEND content "ADDLIB $<TARGET_FILE:rayopdf_${module}>\n")
+        list(APPEND bundle_libraries rayopdf_${module})
+    endforeach()
+    string(APPEND content "SAVE\nEND\n")
+    file(GENERATE OUTPUT "${bundle_script}" CONTENT "${content}")
+    add_custom_command(OUTPUT "${bundle}"
+        COMMAND ${CMAKE_COMMAND} -E remove -f "${bundle}"
+        COMMAND sh -c "\"${CMAKE_AR}\" -M < \"${bundle_script}\""
+        DEPENDS ${bundle_libraries} "${bundle_script}"
+        COMMENT "Merging the modules into librayopdf.a"
+        VERBATIM)
+    add_custom_target(rayopdf_bundle ALL DEPENDS "${bundle}")
+endif()
+
 # The OCR add-on rayopdf-ocr (docs/development/ocr-engine.md): src/ocr/addon/ plus one inference
 # runtime, a static build of it under RAYOPDF_OCR_RUNTIME_DIR (include/, lib/), as
 # docker/ocr.Dockerfile installs them (tools/dev.py configs ocr, ocr-ort, ocr-windows).
@@ -228,6 +251,13 @@ if(RAYOPDF_TESTS)
             set_tests_properties(${test_name} PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
         endif()
     endforeach()
+    # The C++ API's example (src/api/example/, shipped in the lib archives), built with the tests
+    # so that it always compiles against the public header.
+    if(TARGET rayopdf_api)
+        add_executable(rayopdf_api_example src/api/example/example.cpp)
+        target_link_libraries(rayopdf_api_example PRIVATE rayopdf_api)
+        rayopdf_flags(rayopdf_api_example)
+    endif()
     # The stand-in OCR add-on that tests/test_layout_ocr.cpp and tests/test_layout_glyph.cpp start
     # (tests/ocr_mock_addon.cpp).
     if(TARGET test_layout_ocr)

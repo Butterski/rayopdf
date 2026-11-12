@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-# A tag v<VERSION> builds the core archives (tools/package.py) and makes a draft release with
-# them and SHA256SUMS. Run by hand (`gh workflow run release.yml`) it is a dry run: the same
-# archives as workflow artifacts, no release. The OCR add-on's archives need the rayopdf-ocr:1
-# image and are built and attached locally: CONTRIBUTING.md § Versions and releases.
+# A tag v<VERSION> builds the core archives (tools/package.py: the binaries and the C++ API's
+# library archives) and makes a draft release with them and SHA256SUMS. Run by hand (`gh workflow
+# run release.yml`) it is a dry run: the same archives as workflow artifacts, no release. The OCR
+# add-on's archives need the rayopdf-ocr:1 image and are built and attached locally:
+# CONTRIBUTING.md § Versions and releases.
 name: Release
 
 on:
