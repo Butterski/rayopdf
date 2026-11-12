@@ -1219,6 +1219,86 @@ void AddObstacles(PageData& page, std::vector<uint32_t>& items) {
     }
 }
 
+// Comparisons PlaceTurnedLines makes at most on a page (turned lines times upright ones); a page
+// beyond keeps its turned lines after the upright text.
+constexpr uint64_t kTurnedChecks = uint64_t(1) << 22;
+
+// Lines of another direction (a chart's turned axis labels, a turned note) join the upright text's
+// order where they stand, as images do (OrderLines). A run of them next to each other in their own
+// order (each within three sizes of the one before, a row of axis labels) is placed as one: before
+// the first upright line read below the run's top edge that shares its horizontal extent, else
+// before the first upright line read below its top edge, else at the end; never inside a
+// paragraph. Runs placed before the same line keep their order. `order` holds the upright lines
+// first, then the turned ones in their own order.
+void PlaceTurnedLines(PageData& page) {
+    std::vector<uint32_t>& order = page.order;
+    size_t upright = 0;
+    while (upright < order.size() && page.lines[order[upright]].dir == 0) ++upright;
+    const size_t turned = order.size() - upright;
+    if (turned == 0 || upright == 0 || uint64_t(turned) * upright > kTurnedChecks) return;
+    const auto continues = [&](const Line& a, const Line& b) {
+        if (a.count == 0 || b.count == 0 || a.dir != 0 || b.dir != 0) return false;
+        const float gap = a.vb - b.vt;
+        return gap > -0.3f * a.size && gap < 0.8f * a.size && b.u0 < a.u1 && a.u0 < b.u1 &&
+               std::fabs(a.size - b.size) <= 0.15f * a.size;
+    };
+    // The turned lines' boxes on the page.
+    struct Box {
+        float x0, y0, x1, y1;
+    };
+    std::vector<Box> boxes(turned);
+    for (size_t t = 0; t < turned; ++t) {
+        const Line& line = page.lines[order[upright + t]];
+        Box b{INFINITY, INFINITY, -INFINITY, -INFINITY};
+        for (uint32_t k = 0; k < line.count; ++k) {
+            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+            b.x0 = Fmin(b.x0, g.x0), b.y0 = Fmin(b.y0, g.y0), b.x1 = Fmax(b.x1, g.x1), b.y1 = Fmax(b.y1, g.y1);
+        }
+        boxes[t] = b;
+    }
+    // before[t]: the upright line the turned line t goes before (`upright` for the end).
+    std::vector<uint32_t> before(turned);
+    for (size_t first = 0; first < turned;) {
+        size_t end = first + 1;
+        Box run = boxes[first];
+        for (; end < turned; ++end) {
+            const Line& a = page.lines[order[upright + end - 1]];
+            const Line& b = page.lines[order[upright + end]];
+            const Box& p = boxes[end - 1];
+            const Box& q = boxes[end];
+            const float dx = Fmax(Fmax(p.x0, q.x0) - Fmin(p.x1, q.x1), 0.0f);
+            const float dy = Fmax(Fmax(p.y0, q.y0) - Fmin(p.y1, q.y1), 0.0f);
+            if (b.dir != a.dir || !(Fmax(dx, dy) <= 3 * Fmax(a.size, b.size))) break;
+            run.x0 = Fmin(run.x0, q.x0), run.y0 = Fmin(run.y0, q.y0), run.x1 = Fmax(run.x1, q.x1), run.y1 = Fmax(run.y1, q.y1);
+        }
+        size_t at = upright, below = upright;
+        for (size_t k = 0; k < upright; ++k) {
+            const Line& l = page.lines[order[k]];
+            if (!(l.vt <= run.y1)) continue;
+            if (below == upright) below = k;
+            if (l.u1 > run.x0 && l.u0 < run.x1) {
+                at = k;
+                break;
+            }
+        }
+        if (at == upright) at = below;
+        while (at > 0 && at < upright && continues(page.lines[order[at - 1]], page.lines[order[at]])) ++at;
+        for (size_t t = first; t < end; ++t) before[t] = static_cast<uint32_t>(at);
+        first = end;
+    }
+    std::vector<uint32_t> turnedAt(turned);  // the turned lines by where they go, each place's in order
+    for (size_t t = 0; t < turned; ++t) turnedAt[t] = static_cast<uint32_t>(t);
+    std::stable_sort(turnedAt.begin(), turnedAt.end(), [&](uint32_t a, uint32_t b) { return before[a] < before[b]; });
+    std::vector<uint32_t> placed;
+    placed.reserve(order.size());
+    size_t next = 0;
+    for (size_t k = 0; k <= upright; ++k) {
+        for (; next < turned && before[turnedAt[next]] == k; ++next) placed.push_back(order[upright + turnedAt[next]]);
+        if (k < upright) placed.push_back(order[k]);
+    }
+    order.swap(placed);
+}
+
 } // namespace
 
 void OrderLines(PageData& page) {
@@ -1239,6 +1319,7 @@ void OrderLines(PageData& page) {
     page.order.erase(std::remove_if(page.order.begin(), page.order.end(), [&](uint32_t i) { return i >= lineCount; }),
                      page.order.end());
     page.lines.resize(lineCount);
+    PlaceTurnedLines(page);
     // Images join the text's order without changing it: before the first line read below their
     // top edge that shares their horizontal extent (the text after them in their column, or after
     // a full-width figure), else before the first line read below their top edge anywhere, else

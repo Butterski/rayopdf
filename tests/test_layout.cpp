@@ -640,6 +640,22 @@ void TestPdfRotation() {
     RAYOPDF_CHECK(Contains(side, "Sideways words here"), 461);
 }
 
+void TestPdfTurnedLabels() {
+    // A chart's turned axis labels read where they stand: after the axis above them, before the
+    // source line below the chart, left to right; not after the page's text.
+    std::string content = "BT /F1 12 Tf 72 700 Td (Figure 1. Permits by month) Tj ET\n"
+                          "BT /F1 8 Tf 72 660 Td (300) Tj ET\nBT /F1 8 Tf 72 620 Td (0) Tj ET\n";
+    for (int i = 0; i < 5; ++i)
+        content += "BT /F1 8 Tf 0 1 -1 0 " + std::to_string(110 + 30 * i) + " 560 Tm (Month " + std::to_string(i) + ") Tj ET\n";
+    content += "BT /F1 10 Tf 72 520 Td (Source: the agency) Tj ET\n"
+               "BT /F1 10 Tf 72 490 Td (Body text after the chart goes on here.) Tj ET\n";
+    const std::string md = ConvertPdf(Test::OnePage(content));
+    Show("pdf turned labels", md);
+    const size_t axis = md.find("\n0\n"), first = md.find("Month 0"), last = md.find("Month 4");
+    RAYOPDF_CHECK(axis < first && first < md.find("Month 1") && md.find("Month 3") < last, 1907);
+    RAYOPDF_CHECK(last < md.find("Source: the agency"), 1908);
+}
+
 void TestPdfColumnsAndHeading() {
     std::string content = "BT /F1 20 Tf 200 740 Td (Paper Title) Tj ET\n";
     for (int i = 0; i < 5; ++i) {
@@ -1607,6 +1623,7 @@ int main() {
     TestPdfForm();
     TestPdfNestedShortForm();
     TestPdfRotation();
+    TestPdfTurnedLabels();
     TestPdfColumnsAndHeading();
     TestPdfActualText();
     TestPdfLinkAndEmptyPage();
