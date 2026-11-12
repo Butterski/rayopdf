@@ -1359,6 +1359,32 @@ void TestRuledGroupHeader() {
                   853);
 }
 
+// A ruled table, a note under it, then its header row again at its columns over one more row (a
+// second table of the same columns): the repeated header starts a table of two rows.
+void TestRepeatedHeaderRow() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 680.0f, 660.0f, 640.0f}) HLine(page, 72, 360, y);
+    for (float x : {72.0f, 160.0f, 260.0f, 360.0f}) VLine(page, x, 640, 700);
+    const char* const cells[3][3] = {{"Item", "Count", "Price"}, {"pens", "12", "3.50"}, {"cups", "4", "8.00"}};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) AddText(page, cells[r][c], c == 0 ? 76.0f : c == 1 ? 164.0f : 264.0f, 686 - 20.0f * float(r));
+    AddText(page, "Note: prices in euros, see the second table below.", 72, 610);
+    AddText(page, "Item", 76, 580);
+    AddText(page, "Count", 164, 580);
+    AddText(page, "Price", 264, 580);
+    AddText(page, "mugs", 76, 564);
+    AddText(page, "6", 164, 564);
+    AddText(page, "5.25", 264, 564);
+    AddText(page, "Text after the tables.", 72, 520);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("repeated header row", md);
+    RAYOPDF_CHECK(report.tables == 2 && Contains(md, "| Item | Count | Price |\n| --- | --- | --- |\n| mugs | 6 | 5.25 |") &&
+                      Contains(md, "| cups | 4 | 8.00 |"),
+                  1736);
+}
+
 // The last rows of a ruled table set below its last rule, keeping its columns, belong to it.
 void TestRowsBelowLattice() {
     std::vector<PageData> pages{NewPage()};
@@ -2339,6 +2365,7 @@ int main(int argc, char** argv) {
     TestWideHeaderLabels();
     TestRuledGroupHeader();
     TestRowsBelowLattice();
+    TestRepeatedHeaderRow();
     TestMiddleHeaderCell();
     TestHeaderAboveRuledRows();
     TestDiagramGrids();

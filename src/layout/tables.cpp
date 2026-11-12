@@ -612,6 +612,7 @@ private:
     void LatticeHeader(Grid& g) const;
     void RowsBelow(Grid& g);
     void JoinStripes();
+    void RepeatedHeaders();
     void Commit();
     bool Contents(const Grid& g) const;
     void MarkUsed(const Grid& g);
@@ -3549,6 +3550,86 @@ bool Detector::Contents(const Grid& g) const {
     return leaders || roman || (refs >= 5 && uneven) || contentsTitle();
 }
 
+// A table's header row repeated lower on the page (the same table again after a note, or its next
+// part): a free row whose words, in order, are the cell texts of the table's first row (three cells
+// with text at least), with a row within two line pitches below it that fills two of its columns,
+// starts a table. Its columns are the repeated labels' (a column parts in the space before each
+// label after the first: the part may be set closer than the table above), and it runs down through
+// each row that fills two columns at least, up to a gap of more than two line pitches.
+void Detector::RepeatedHeaders() {
+    std::vector<Row> rows;
+    std::vector<uint32_t> rowWords;
+    std::vector<Gap> gaps;
+    std::vector<uint32_t> labelWords;  // per first-row cell with text: its number of words
+    std::string scratch, expected, text;
+    const size_t count = grids_.size();
+    for (size_t gi = 0; gi < count && grids_.size() < static_cast<size_t>(kMaxTablesPerPage); ++gi) {
+        if (grids_[gi].cells.empty()) ComputeSpans(grids_[gi]);
+        const Grid& g = grids_[gi];
+        const int cols = g.Cols();
+        if (cols < 3 || cols > kMaxTableCols || g.Rows() < 1) continue;
+        // The first row's cell texts, left to right (the cells are in row-major order).
+        expected.clear();
+        labelWords.clear();
+        for (const Span& s : g.cells) {
+            if (s.r != 0) continue;
+            const float left = g.xs[s.c], right = g.xs[s.c + s.cs], top = g.ys[0], bottom = g.ys[s.rs];
+            uint32_t words = 0;
+            auto it = std::lower_bound(words_.begin(), words_.end(), top + 20, [](const TWord& w, float y) { return w.base > y; });
+            for (; it != words_.end() && it->base >= bottom - 20; ++it) {
+                const float cx = (it->x0 + it->x1) / 2, cy = (it->y0 + it->y1) / 2;
+                if (!(cx >= left && cx <= right && cy <= top && cy >= bottom)) continue;
+                if (!expected.empty()) expected += ' ';
+                expected += WordText(*it, scratch);
+                words++;
+            }
+            if (words > 0) labelWords.push_back(words);
+        }
+        if (labelWords.size() < 3) continue;
+        uint32_t total = 0;  // the words of the first row's cells
+        for (const uint32_t words : labelWords) total += words;
+        const float x0 = g.x0, x1 = g.x1, y0 = g.y0;
+        BuildRows(x0, x1, -INFINITY, y0, rows, rowWords);
+        for (size_t r = 0; r + 1 < rows.size(); ++r) {
+            if (rows[r].count != total) continue;
+            text.clear();
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                if (!text.empty()) text += ' ';
+                text += WordText(words_[rowWords[k]], scratch);
+            }
+            if (text != expected) continue;
+            // The gaps before each label after the first (the words match the labels in order).
+            gaps.clear();
+            uint32_t k = rows[r].first;
+            float right = -INFINITY;
+            bool apart = true;
+            for (const uint32_t words : labelWords) {
+                const TWord& first = words_[rowWords[k]];
+                if (right > -INFINITY) {
+                    apart = apart && first.x0 > right;
+                    gaps.push_back(Gap{right, first.x0});
+                }
+                k += words;
+                right = words_[rowWords[k - 1]].x1;
+            }
+            if (!apart) break;
+            const auto columnsFilled = [&](const Row& row) {
+                uint64_t mask = 0;
+                for (uint32_t q = row.first; q < row.first + row.count; ++q) {
+                    const TWord& w = words_[rowWords[q]];
+                    mask |= uint64_t(1) << std::min(ColumnOf(gaps, (w.x0 + w.x1) / 2), 63);
+                }
+                return Bits(mask);
+            };
+            const float reach = 2 * 1.2f * TextSize(rows[r]);
+            size_t end = r + 1;
+            while (end < rows.size() && rows[end - 1].base - rows[end].base <= reach && columnsFilled(rows[end]) >= 2) ++end;
+            if (end > r + 1) TextGrid(rows, rowWords, r, end, gaps, TableKind::Borderless, 1, x0, x1);
+            break;
+        }
+    }
+}
+
 void Detector::Commit() {
     for (Grid& g : grids_) {
         if (g.cells.empty()) ComputeSpans(g);
@@ -3736,6 +3817,7 @@ int Detector::Run() {
     Borderless(1.0f);
     const float close = Fmax(0.6f, 2.5f * wordSpace_);
     if (close < 1.0f) Borderless(close);
+    if (dir_ == 0) RepeatedHeaders();
     Commit();
     return restored_;
 }
