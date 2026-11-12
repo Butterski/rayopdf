@@ -1888,6 +1888,7 @@ void LoadType0(const Document& doc, const PdfValue& dict, Font::Impl& font) {
     const Repair::Context repairContext = Repair::ContextForName(font.baseName);
     const bool hasToUnicode =
         LoadToUnicode(doc, dict, repairContext, font.toUnicode, &droppedToUnicode, font.toUnicodeUntrusted);
+    font.toUnicode.Index();  // looked up for every glyph shown (Composite)
     const bool unicodeCMap = font.cmapKind == CMapKind::Ucs2 || font.cmapKind == CMapKind::Utf16 ||
                              font.cmapKind == CMapKind::Utf8 || font.cmapKind == CMapKind::Utf32;
     // The collection maps codes when their CIDs can be known.

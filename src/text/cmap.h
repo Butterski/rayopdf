@@ -71,8 +71,15 @@ struct ToUnicodeMap {
     // them (codes out of order or defined twice). LoadToUnicode reads and clears them.
     std::vector<UnicodeRun> runs;
     bool truncated = false;  // a limit was reached
+    // Index's: entry + 1 of code denseLow + i (0: none), or empty.
+    std::vector<uint16_t> dense;
+    uint32_t denseLow = 0;
 
     const UnicodeEntry* Find(uint32_t code) const;
+    // For a map looked up for every glyph shown (a composite font's): when its codes span at most
+    // 65,536 codes and 16 for each code it maps, Find indexes an array instead of searching. The
+    // entries must not change afterwards.
+    void Index();
     // An entry's text; every entry of the map lies within `text` (ParseToUnicode and LoadToUnicode
     // keep that), so no bound is tested.
     std::string_view Text(const UnicodeEntry& entry) const { return std::string_view(text.data() + entry.offset, entry.length); }

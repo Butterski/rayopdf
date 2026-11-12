@@ -150,6 +150,22 @@ void TestToUnicode() {
                       wide.Find(0x1F) && wide.Text(*wide.Find(0x1F)) == "fu" && !pairs.truncated &&
                       pairs.entries.size() == 0x400 && lastPair && pairs.Text(*lastPair) == "\xF0\xA0\x8F\xBF",
                   1472);
+    // Index: Find gives the same entry for every code with the index as without, codes below,
+    // between and above the mapped ones included; a map too sparse for it keeps searching.
+    for (const char* text : {"beginbfrange <0100> <01FF> <0041> endbfrange beginbfchar <0300> <0042> <0305> <0043> endbfchar",
+                             "beginbfchar <0001> <0041> <F000> <0042> endbfchar"}) {
+        ToUnicodeMap searched, indexed;
+        ParseToUnicode(text, searched);
+        ParseToUnicode(text, indexed);
+        indexed.Index();
+        bool same = indexed.dense.empty() == (searched.entries.size() == 2);
+        for (uint32_t code = 0; code < 0x10000 && same; ++code) {
+            const UnicodeEntry* a = searched.Find(code);
+            const UnicodeEntry* b = indexed.Find(code);
+            same = (a == nullptr) == (b == nullptr) && (!a || (a->code == b->code && searched.Text(*a) == indexed.Text(*b)));
+        }
+        RAYOPDF_CHECK(same && !indexed.Find(0xFFFFFFFFu) && !indexed.Find(0x10FFFFu), 1476);
+    }
     // Entries of plain hex strings take a scanner of their own: the same map as the general lexer
     // gives, which reads them when every string has white space inside.
     const std::string plain = "beginbfchar <41> <0041> <42> <D840DC3E> <043> <0066006> <44> <> <0102030405> <41>\n"

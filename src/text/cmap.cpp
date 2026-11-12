@@ -603,9 +603,26 @@ uint8_t Codespace::Read(std::string_view bytes, size_t at, uint32_t& code) const
 }
 
 const UnicodeEntry* ToUnicodeMap::Find(uint32_t code) const {
+    if (!dense.empty()) {
+        const uint32_t i = code - denseLow;  // a code below denseLow wraps past the array
+        const uint16_t e = i < dense.size() ? dense[i] : 0;
+        return e ? &entries[e - 1u] : nullptr;
+    }
     auto it = std::lower_bound(entries.begin(), entries.end(), code,
                                [](const UnicodeEntry& e, uint32_t c) { return e.code < c; });
     return it != entries.end() && it->code == code ? &*it : nullptr;
+}
+
+void ToUnicodeMap::Index() {
+    dense.clear();
+    if (entries.empty() || entries.size() >= 65536) return;
+    // The entries are sorted by code, one per code.
+    const uint32_t low = entries.front().code;
+    const uint64_t span = uint64_t(entries.back().code) - low + 1;
+    if (span > 65536 || span > 16 * uint64_t(entries.size())) return;
+    dense.assign(static_cast<size_t>(span), 0);
+    for (size_t e = 0; e < entries.size(); ++e) dense[entries[e].code - low] = static_cast<uint16_t>(e + 1);
+    denseLow = low;
 }
 
 bool ParseToUnicode(std::string_view data, ToUnicodeMap& out) {
