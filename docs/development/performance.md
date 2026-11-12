@@ -879,6 +879,53 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
   an empty clip taken off the SSE2 box path (odl places many glyphs under empty clips: +0.3 %).
 - Wall-clock timings were not taken: the machine ran agents throughout the round.
 
+## Ninth round
+
+### Steps
+
+- **This program's cost** (2026-11-12): callgrind self instructions of 0.1.0 (`c1116f0`) against
+  the program's code (origin/master with `q4/boxgrid`, `q5/repeatheader`, `q7/edgegap`,
+  `q8/cards`, `q9/leadline`, `q10/subtitle`, `ocr/imagetables` and `p9/glyph40`), over odl, the
+  SafeDocs sample and olmOCR `tables` (Release with `-g` and a `src/hot.ld` placing nothing: its
+  placement leaves the placed functions without line information). The program cost odl +0.67 %,
+  SafeDocs +2.31 %, `tables` +1.62 %, syn6 +1.04 %, `multi_column` +0.46 % (`instr.sh`). The ten
+  functions that grew most (odl + SafeDocs + `tables`; functions inlined or split between the
+  builds counted together, the dense ToUnicode index counted with the search it replaced):
+
+  |Function|odl|SafeDocs|`tables`|
+  |---|---|---|---|
+  |`Detector::BoxGrids` (q4)|0 → 1.13 M|0 → 26.5 M|0 → 8.5 M|
+  |`BuildLines` (with `PlaceGlyphs`, `MarkStruck`, `DropLineNumbers`)|113.1 → 115.5 M|161.5 → 164.3 M|146.0 → 148.7 M|
+  |`BuildBlocks`|5.32 → 6.09 M|8.91 → 9.98 M|6.16 → 6.91 M|
+  |`GlyphPageBox` with the tagged layout's `Piece` (glyph40)|0 → 0.02 M|10.94 → 14.77 M|0 → 0.11 M|
+  |`AppendLineText` (called by `BuildBlocks`)|2.24 → 3.21 M|6.83 → 7.10 M|2.69 → 3.57 M|
+  |`Detector::BuildRows` (q5's `RepeatedHeaders`)|8.83 → 8.89 M|11.93 → 12.03 M|12.25 → 13.60 M|
+  |`PlanPage` (glyph40)|2.54 → 3.16 M|2.10 → 2.64 M|1.12 → 1.41 M|
+  |`Writer::StyleWords` (glyph40)|13.67 → 14.05 M|17.92 → 18.42 M|10.24 → 10.64 M|
+  |`Folder::Place` (glyph40)|7.87 → 8.20 M|10.32 → 10.78 M|8.97 → 9.40 M|
+  |`Writer::JoinLeaderDots` with `string::find` and `memchr` (0.1.1)|0.10 → 0.66 M|0.29 → 1.10 M|0.49 → 1.29 M|
+
+  One rewrite each, kept at 0.1 % fewer instructions or more on odl or the group it serves, each
+  byte-identical (G-bytes 0 of 6,331 differ):
+
+  |Commit|Change|Effect (`instr.sh`)|
+  |---|---|---|
+  |`486edf2`|Box grids: a box's rivals looked up by centre and left edge in sorted order, rows and columns by sorted sweeps, groups joined in index order from row and column member lists; groups of fewer than four boxes skipped|SafeDocs -0.99 %, `tables` -0.30 %, heavy10 -0.09 %|
+  |`8584b0c`|The title block's abstract test builds a line's text only when its first byte is an a|odl -0.15 %, `multi_column` -0.14 %, `tables` -0.09 %|
+  |`91b2a7f`|A glyph's combining-mark test only where a word break is found|odl -0.15 %, syn6 -0.24 %, `multi_column` -0.19 %, `tables` -0.13 %, SafeDocs -0.10 %|
+  |`9e1b89a` (after glyph40)|`GlyphPageBox(page, glyph)` inlined, an inline image's box looked up out of line (`Piece`, `StyleWords`)|syn6 -0.42 %, SafeDocs -0.18 %|
+
+### Tried and rejected (2026-11-12)
+
+- `RepeatedHeaders`: no `BuildRows` below a table unless a free word there starts with the first
+  byte of its header labels: `tables` -0.006 %, odl +0.004 % (most pages have such a word).
+- `PlanPage`: the image's centre test before `Counted`: odl -0.056 %, `multi_column` -0.059 %.
+- `Folder::Place`: the corner `CollectAndFold` computed passed in: odl +0.026 %, syn6 +0.040 %.
+- `JoinLeaderDots`: a `memchr` scan testing the bytes after each dot instead of `string::find`:
+  odl -0.064 %, `tables` -0.076 %, syn6 -0.072 %.
+- `BuildBlocks` itself: its growth (0.1.1's rules and q8-q10) is spread over a dozen passes of
+  20-50 k instructions each over odl; no single pass reaches 0.1 %, none rewritten.
+
 ## Open candidates (measured, not done)
 
 - **Glyph record:** 56 bytes a glyph is the largest owner of a fresh conversion's heap faults
