@@ -525,6 +525,18 @@ RAYOPDF_HOT_INLINE bool OpeningMark(const PageData& page, const Glyph& g) {
     return (c == 0xE2 || c == 0xC2) && OpeningQuote(page.GlyphText(g));
 }
 
+// Punctuation that closes what is before it: , . ; : ! ? % ) ] } ” ’ ».
+bool ClosingMark(const PageData& page, const Glyph& g) {
+    if (g.textLength == 0) return false;
+    const std::string_view t = page.GlyphText(g);
+    if (t.size() == 1) {
+        const char c = t[0];
+        return c == ',' || c == '.' || c == ';' || c == ':' || c == '!' || c == '?' || c == '%' || c == ')' || c == ']' ||
+               c == '}';
+    }
+    return t == "\xE2\x80\x9D" || t == "\xE2\x80\x99" || t == "\xC2\xBB";
+}
+
 bool StartsWithCombiningMark(std::string_view text) {
     // U+0300-U+036F combining diacritical marks: C3 80..CD AF in UTF-8.
     if (text.size() < 2) return false;
@@ -1042,6 +1054,69 @@ float MostSize(const SizeCount* sizes, uint32_t count) {
     return best.size;
 }
 
+// Lines that draw their own spaces may still leave one out where a run of text ends (an Office
+// export starts the next run where the space would have ended): on such a line a gap of
+// kSpaceShare of the width of its spaces in the font before it at least is a word break too, when
+// the fonts on both sides draw spaces in the line and the gaps beside it are under kTightShare of
+// it. In letter-spaced text every gap is as wide: its words stay whole. A formula's fonts draw no
+// spaces: the room set around its operators breaks nothing, nor does the room after it before the
+// punctuation that follows (no such break comes before a closing mark or after an opening one).
+// Right-to-left text is shaped (joined forms, kashidas) and may leave such room inside a word: the
+// rule keeps to other text.
+constexpr float kSpaceShare = 0.85f, kTightShare = 0.6f;
+
+// The fonts of a line's space glyphs, the first kSpaceFonts of them, with their widths' sum in
+// units of their size.
+struct SpaceFont {
+    uint16_t font;
+    uint32_t count;
+    float sum;
+};
+constexpr uint32_t kSpaceFonts = 8;
+
+uint32_t SpaceFonts(const Glyph* glyphs, const uint32_t* begin, const uint32_t* end, SpaceFont* fonts) {
+    uint32_t count = 0;
+    for (const uint32_t* at = begin; at != end; ++at) {
+        const Glyph& s = glyphs[*at];
+        if (!(s.flags & kGlyphSpace) || !(s.size > 0)) continue;
+        const float width = (s.u1 - s.u0) / s.size;
+        if (!(width > 0.05f && width < 1.5f)) continue;
+        uint32_t f = 0;
+        while (f < count && fonts[f].font != s.font) ++f;
+        if (f == count) {
+            if (count == kSpaceFonts) continue;
+            fonts[count++] = SpaceFont{s.font, 0, 0};
+        }
+        fonts[f].count++;
+        fonts[f].sum += width;
+    }
+    return count;
+}
+
+// The mean width of `font`'s spaces among `fonts`; 0 when it draws none.
+float SpaceWidth(const SpaceFont* fonts, uint32_t count, uint16_t font) {
+    for (uint32_t f = 0; f < count; ++f)
+        if (fonts[f].font == font) return fonts[f].sum / float(fonts[f].count);
+    return 0;
+}
+
+// Whether a gap of `gap` points between `before` and `g` (glyphs of size about `em`) on a line that
+// draws its own spaces is a space the line left out (kSpaceShare). `previous` and `next` are the
+// gaps beside it (-1 for none); `fonts` and `count` keep SpaceFonts of the line's glyphs
+// [begin, end), found at the first call that needs them (`count` -1 until then).
+RAYOPDF_NOINLINE bool DroppedSpace(const PageData& page, const Glyph& before, const Glyph& g, float gap, float em,
+                                   float previous, float next, const uint32_t* begin, const uint32_t* end,
+                                   SpaceFont* fonts, int32_t& count) {
+    if (!(previous < kTightShare * gap && next < kTightShare * gap)) return false;
+    const auto mayBeRtl = [&](const Glyph& x) {
+        return x.textLength != 0 && RightToLeftLead(static_cast<unsigned char>(page.text[x.text]));
+    };
+    if (mayBeRtl(before) || mayBeRtl(g) || OpeningMark(page, before) || ClosingMark(page, g)) return false;
+    if (count < 0) count = static_cast<int32_t>(SpaceFonts(page.glyphs.data(), begin, end, fonts));
+    const float width = SpaceWidth(fonts, static_cast<uint32_t>(count), before.font);
+    return width > 0 && SpaceWidth(fonts, static_cast<uint32_t>(count), g.font) > 0 && gap >= kSpaceShare * width * em;
+}
+
 // Sets a measured line's size, baseline (that of its first glyph of that size, else the proto's)
 // and flags from its glyphs' common ones, and appends it.
 void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t allFlags) {
@@ -1291,6 +1366,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
         float right = 0;
         float previousSize = 0;
         bool first = true;
+        SpaceFont spaceFonts[kSpaceFonts];
+        int32_t spaceFontCount = -1;  // SpaceFonts of the line, found at its first gap that needs them
         Segment seg{0, 0, 0};  // the ink segment being extended, appended when the next starts
         // A glyph set tight after the one before it (no space, no wide gap) may be an opening
         // quote or bracket hanging into a column gutter (LaTeX's protrusion): the gap is then also
@@ -1317,7 +1394,24 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 const float gap = g.u0 - right;
                 // A combining mark takes two bytes at least.
                 const bool combining = g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g));
-                if (!combining && (pendingSpace || gap > wordGap * em)) g.flags |= kGlyphSpaceBefore;
+                // A gap of kWordGap at least may break words: most gaps inside words are narrower.
+                bool wordBreak = pendingSpace;
+                if (!wordBreak && gap > kWordGap * em) {
+                    wordBreak = gap > wordGap * em;
+                    if (!wordBreak && spaces) {
+                        // The gaps beside it: before the glyph before (when no word break is there)
+                        // and after this one (when no space follows).
+                        const Glyph& before = glyphs[protoAt[protoCount - 1]];
+                        const float previous = protoCount - 1 > p.first && !(before.flags & kGlyphSpaceBefore)
+                                                   ? before.u0 - beforePrevious
+                                                   : -1;
+                        const float next =
+                            at + 1 != lineEnd && !(glyphs[at[1]].flags & kGlyphSpace) ? glyphs[at[1]].u0 - g.u1 : -1;
+                        wordBreak = DroppedSpace(page, before, g, gap, em, previous, next, lineBegin, lineEnd, spaceFonts,
+                                                 spaceFontCount);
+                    }
+                }
+                if (!combining && wordBreak) g.flags |= kGlyphSpaceBefore;
                 // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.

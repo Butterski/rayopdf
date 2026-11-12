@@ -526,6 +526,17 @@ void TestPdfTextState() {
     RAYOPDF_CHECK(Contains(md, "x<sup>2</sup> squared"), 456);
 }
 
+void TestPdfDroppedSpaces() {
+    // A line that draws its spaces may leave one out where a run ends: a gap as wide as its spaces
+    // between letters set tight breaks the words. Letters spaced as wide (Tc) keep theirs.
+    const std::string md = ConvertPdf(Test::OnePage(
+        "BT /F1 12 Tf 72 700 Td [(Runs drop) -278 (their spaces)] TJ ET\n"
+        "BT /F1 12 Tf 3.3 Tc 72 680 Td (TRACKED HEAD) Tj ET\n"));
+    Show("pdf dropped spaces", md);
+    RAYOPDF_CHECK(Contains(md, "Runs drop their spaces"), 1905);
+    RAYOPDF_CHECK(Contains(md, "TRACKED HEAD"), 1906);
+}
+
 // The rules of a one-column lattice painted as dvips with Ghostscript paints every rule of TeX: a
 // stencil mask of one sample scaled to the rule. The painted sample (0, or 1 under /D [1 0]) is a
 // ruling and the rows are a table; a sample that is masked out, or a turned one, paints no rule.
@@ -1591,6 +1602,7 @@ int main() {
     TestRightToLeft();
     TestPdfTjTj();
     TestPdfTextState();
+    TestPdfDroppedSpaces();
     TestPdfStencilRules();
     TestPdfForm();
     TestPdfNestedShortForm();
