@@ -290,38 +290,37 @@ corpus.
 
 ### Status (2026-11-12)
 
-0.1.0 is released ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md),
-[release check](../benchmarks/release-check-2026-11-12.md)). Every item of the bar holds except
-one key, released as open by the user's decision of 2026-11-11: READoc arXiv `table_teds` 0.617
-(LaTeX mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882, `head_teds` 0.693,
-`seg_kt` 0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above the best
-text-layer tool, NID and MHS above docling. (c): 2,209 pages/s warm, 0.931 ms fresh. (d): 24 fuzz
-targets, 25.1 h aggregate, clean; ASan sweeps in three modes clean. (e): reported in the release
-check.
+0.1.1 is released ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)): six layout steps taken from a
+comparison with kordoc ([baselines-2026-11-12](../benchmarks/baselines-2026-11-12.md)) and one
+found beside it, each through the quality gate: lists of contents as text, Office runs' left-out
+spaces, a slide title's kicker, turned chart labels in reading position, the heading-style share
+counting a style's paragraphs, a paper's title block past wide affiliations, set flush left or
+under a split title, and lettered page numbers and address lines. Against 0.1.0: odl overall
+0.896 → 0.902 (NID 0.917 → 0.922, MHS 0.840 → 0.853); READoc arXiv `head_teds` 0.693 → 0.695
+(holdout, LaTeX mode) and 0.701 → 0.706 (validation); olmOCR `headers_footers` 0.841 → 0.839 (two
+tests whose page numbers the turned labels used to follow); the rest unchanged.
 
-After 0.1.0, master holds six layout steps taken from a comparison with kordoc
-([baselines-2026-11-12](../benchmarks/baselines-2026-11-12.md)) and one found beside it, each
-through the quality gate: lists of contents as text, Office runs' left-out spaces, a slide title's
-kicker, turned chart labels in reading position, the heading-style share counting a style's
-paragraphs, a paper's title block past wide affiliations, set flush left or under a split title,
-and lettered page numbers and address lines. Against 0.1.0 on the development suites: odl overall
-0.8965 → 0.9018 (MHS 0.8404 → 0.8534, NID 0.9177 → 0.9222); READoc arXiv `head_teds` 0.700 →
-0.710 (development) and 0.701 → 0.706 (validation); olmOCR `headers_footers` 0.841 → 0.839 (two
-absent tests whose page numbers the turned labels used to follow); synthetic unchanged; odl
-instructions +0.77 %, warm 2,199 → 2,188 pages/s. Not released; the holdouts were not run.
+The bar stands as for 0.1.0 ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md),
+[release check](../benchmarks/release-check-2026-11-12.md)): every item holds except one key,
+released as open by the user's decision of 2026-11-11: READoc arXiv `table_teds` 0.617 (LaTeX
+mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882, `head_teds` 0.695, `seg_kt`
+0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above the best text-layer tool,
+NID and MHS above docling. (c): 2,217 pages/s warm, 0.909 ms fresh. (d): the 0.1.0 campaign's 24
+fuzz targets, the regressions replayed clean on 0.1.1; ASan sweeps in three modes clean. (e):
+reported in the release check.
 
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.1.0
   campaign covered all 24 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M3 Layout:** open: olmOCR `headers_footers` (0.841, docling 0.898), `long_tiny_text` without
-  the add-on, synthetic `xelatex-2col` NID ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md)).
-- **M4 Semantics:** open: holdout construct F1 ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md));
+- **M3 Layout:** open: olmOCR `headers_footers` (0.839, docling 0.898), `long_tiny_text` without
+  the add-on, synthetic `xelatex-2col` NID ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)).
+- **M4 Semantics:** open: holdout construct F1 ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md));
   READoc arXiv `head_teds` met.
 - **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
-  ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md)).
+  ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M7 Product:** front ends, Windows build, packaging, the speed bar and the 0.1.0 release done
-  ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md), [performance.md](performance.md)).
+- **M7 Product:** front ends, Windows build, packaging, the speed bar and the 0.1.0 and 0.1.1
+  releases done ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md), [performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)); open: Hebrew, Kannada and
