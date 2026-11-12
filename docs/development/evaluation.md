@@ -31,6 +31,7 @@ harness answers each condition:
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
 |readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |readoc-val|`data/READoc-data/val`|600 further multi-page PDFs of READoc: `arxiv/<stem>` 300, `github/<stem>` 300|`data/READoc-data/val-gt/<subset>/<stem>.md`|**validation**, aggregate only (§ READoc development split)|
+|readoc-dev2|`data/READoc-data/dev2`|up to 600 further multi-page PDFs of READoc: `arxiv/<stem>` and `github/<stem>`, up to 300 each|`data/READoc-data/dev2-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 |multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
@@ -41,7 +42,7 @@ whose PDF is in `<subset>.zip`; `data/READoc-data/selection.json` records it.
 
 ### READoc development and validation splits
 
-READoc has 1,009 arXiv and 1,224 GitHub documents. Three disjoint sets take numbers of one
+READoc has 1,009 arXiv and 1,224 GitHub documents. Four disjoint sets take numbers of one
 order per subset (ground-truth stems sorted by the SHA-256 of the stem, those with a same-stem
 PDF):
 
@@ -50,18 +51,23 @@ PDF):
 |`readoc`|1-150|300|`selection.json`|holdout|
 |`readoc-dev`|151-300|300|`selection-dev.json` (`"role": "development"`)|development|
 |`readoc-val`|301-600|600|`selection-val.json` (`"role": "validation"`)|validation|
+|`readoc-dev2`|601-900 (fewer when a subset ends)|up to 600|`selection-dev2.json` (`"role": "development"`)|second development split|
 
-`fetch --only readoc-dev` and `fetch --only readoc-val` download the two zips of the pinned
-revision again (one on disk at a time, deleted afterwards), fail when the documents before the
-new set's first number are not exactly the earlier sets' selections (the holdout's, then the
-development split's) or a selected stem is in one of them, and write the selection file (rule,
-counts, stems). `readoc-val` needs the other two fetched first.
+`fetch --only readoc-dev`, `fetch --only readoc-val` and `fetch --only readoc-dev2` download the
+two zips of the pinned revision again (one on disk at a time, deleted afterwards), fail when the
+documents before the new set's first number are not exactly the earlier sets' selections (the
+holdout's, then the development split's, then the validation split's) or a selected stem is in
+one of them, and write the selection file (rule, counts, stems). `readoc-val` needs the first
+two fetched, `readoc-dev2` the first three.
 
-The three suites have different rules:
+The four sets have different rules:
 
-- `readoc-dev` may be inspected document by document: the PDFs, the ground truth, the outputs
-  and each document's scores (`scores/readoc-dev/<tool>-<subset>-docs.json`, § READoc under
-  Metrics). Heuristics for arXiv papers and GitHub READMEs are designed and checked on it.
+- `readoc-dev` and `readoc-dev2` may be inspected document by document: the PDFs, the ground
+  truth, the outputs and each document's scores (`scores/<suite>/<tool>-<subset>-docs.json`,
+  § READoc under Metrics). Heuristics for arXiv papers and GitHub READMEs are designed and
+  checked on them. `readoc-dev2` came after the rules of rounds 5 to 8 were designed on
+  `readoc-dev` (arXiv `table_teds` 0.713 there against 0.578 on the validation split), so that
+  new rules are found on documents no rule was fitted to.
 - `readoc-val` is aggregate only, like the holdout: never a per-document output or score (the
   harness writes only `suite_e2e.py`'s aggregate file). Every quality landing is checked
   against it, so that rules fitted to the development split document by document show whether
@@ -71,7 +77,7 @@ The three suites have different rules:
   `readoc-dev`, gated on `readoc-val`; the holdout then shows whether the gain carries over.
 
 [baselines-readoc-dev-2026-11-10.md](../benchmarks/baselines-readoc-dev-2026-11-10.md) has
-every tool's scores on the split beside the holdout's.
+every tool's scores on the first development split beside the holdout's.
 
 Pinned sources:
 
@@ -286,13 +292,13 @@ wordnet baked in). Keys: `text_eds`, `text_f1` (text edit similarity and vocabul
 Kendall tau and Spearman, block and token level); the GitHub subset has no formula or table keys.
 READoc normalises headings, formulas and tables and strips links and images before scoring.
 
-`readoc-dev` is scored by `eval/scorer/readoc_docs.py` in the same image. It imports the
-evaluator from the clone (nothing of it is copied): `file_evaluate` scores each document, on
-every CPU of the work cpuset at once, and `e2e_evaluate` then aggregates those scores, so
-`scores/readoc-dev/<tool>-<subset>.json` is the file `suite_e2e.py` writes (checked against a
-plain `suite_e2e.py` run: identical). `scores/readoc-dev/<tool>-<subset>-docs.json` has the
-per-document values: `docs.<stem>.<key>` for the keys above (`null` where the evaluator leaves
-the document out of that mean, for example `table_teds` of a document without a table),
+`readoc-dev` and `readoc-dev2` are scored by `eval/scorer/readoc_docs.py` in the same image. It
+imports the evaluator from the clone (nothing of it is copied): `file_evaluate` scores each
+document, on every CPU of the work cpuset at once, and `e2e_evaluate` then aggregates those
+scores, so `scores/<suite>/<tool>-<subset>.json` is the file `suite_e2e.py` writes (checked
+against a plain `suite_e2e.py` run: identical). `scores/<suite>/<tool>-<subset>-docs.json` has
+the per-document values: `docs.<stem>.<key>` for the keys above (`null` where the evaluator
+leaves the document out of that mean, for example `table_teds` of a document without a table),
 `metrics.<stem>` with every metric the evaluator computes (`<task>.<group>.<measure>`, such as
 `table.mapped.teds_f1`), `keys` (which metric each key reports), `empty` (documents without
 output) and `aggregate`. The weakest documents of a key are the lowest `docs.<stem>.<key>`.
@@ -414,7 +420,7 @@ RayoPDF's own Unicode repair.
 ```sh
 python3 tools/eval.py all [--resume]          # everything below, in order, then report.md
 python3 tools/eval.py images [--only NAMES]   # build images, write images.json
-python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,safedocs]
+python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs]
 python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
 python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
 python3 tools/eval.py corpus --suite multiscript [--jobs 6]
@@ -447,7 +453,7 @@ suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
 scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
-scores/readoc-dev/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
+scores/{readoc-dev,readoc-dev2}/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
 scores/readoc-val/<tool>-<subset>.json,
 scores/multiscript/<tool>.json (and .md, the tables)
 speed/<tool>.json           and speed/<tool>/ with the raw runs
@@ -462,7 +468,7 @@ RayoPDF's fully static build runs there as is:
 
 ```sh
 python3 tools/dev.py build --config static        # build/static/rayopdf
-for s in synthetic odl olmocr readoc readoc-dev readoc-val scanned olmocr-scans multiscript; do
+for s in synthetic odl olmocr readoc readoc-dev readoc-val readoc-dev2 scanned olmocr-scans multiscript; do
     python3 tools/eval.py convert --tool cli --suite $s --bin-dir build/static --cmd 'rayopdf --convert {in} {out}'
     python3 tools/eval.py score --suite $s --tools cli
 done

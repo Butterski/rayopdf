@@ -8,7 +8,7 @@ builds those images, lays out files on the host, starts containers and writes th
 Usage:
   python3 tools/eval.py all [--resume]
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
-  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,safedocs]
+  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs]
   python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
@@ -20,15 +20,16 @@ Usage:
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
 pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, kordoc (OCR off),
 kordoc-ocr (kordoc's default, OCR models present), cli. Suites:
-synthetic, odl, olmocr, readoc, readoc-dev, readoc-val, scanned, olmocr-scans, multiscript. The
-scanned suite is built from the synthetic corpus by `corpus --suite scanned`; olmocr-scans comes
-with `fetch --only olmocr`; multiscript (image-only pages in 9 scripts) is rendered by `corpus
---suite multiscript`. Three disjoint READoc sets, numbers of one order per subset (arXiv,
-GitHub): readoc is the holdout (1-150, 300 documents, aggregate scores only, once per release
-candidate); readoc-dev is the development split (151-300, `fetch --only readoc-dev`), scored per
-document too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is the validation split
-(301-600, 600 documents, `fetch --only readoc-val`), aggregate scores only, checked at every
-quality landing.
+synthetic, odl, olmocr, readoc, readoc-dev, readoc-val, readoc-dev2, scanned, olmocr-scans,
+multiscript. The scanned suite is built from the synthetic corpus by `corpus --suite scanned`;
+olmocr-scans comes with `fetch --only olmocr`; multiscript (image-only pages in 9 scripts) is
+rendered by `corpus --suite multiscript`. Four disjoint READoc sets, numbers of one order per
+subset (arXiv, GitHub): readoc is the holdout (1-150, 300 documents, aggregate scores only, once
+per release candidate); readoc-dev is the development split (151-300, `fetch --only
+readoc-dev`), scored per document too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val
+is the validation split (301-600, 600 documents, `fetch --only readoc-val`), aggregate scores
+only, checked at every quality landing; readoc-dev2 is a second development split (601-900, up
+to 600 documents, `fetch --only readoc-dev2`), scored per document like readoc-dev.
 The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
 RAYOPDF_EVAL_CPUS replaces the work cpuset (default 0-2,4,6-8,10), so that several conversions
@@ -69,13 +70,14 @@ OCR_TOOL_SUITES = {"kordoc-ocr": ["odl"]}  # suites besides the scanned ones
 TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # readoc-dev: 300 READoc documents the holdout (readoc) did not take; development only.
 # readoc-val: 600 further READoc documents; validation, aggregate only.
-TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc", "readoc-dev", "readoc-val"]
+# readoc-dev2: up to 600 READoc documents after those; a second development split.
+TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2"]
 # multiscript: image-only pages in Cyrillic, Hangul, Arabic, Hebrew, Devanagari, Kannada, Tamil,
 # Latin and a mix, upright and turned (eval/producers/multiscript.py); development only.
 SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
 IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
-DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "safedocs"]
+DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs"]
 
 ODL_URL = "https://github.com/opendataloader-project/opendataloader-bench"
 ODL_COMMIT = "7af1d8f4d0c09f51ea1a5c6ba5f66e993286d109"
@@ -97,9 +99,12 @@ READOC_PER_SUBSET = 150
 READOC_DEV_PER_SUBSET = 150
 # The validation split: the documents after the development split's in the same order.
 READOC_VAL_PER_SUBSET = 300
+# The second development split: the documents after the validation split's in the same order
+# (fewer when a subset ends first).
+READOC_DEV2_PER_SUBSET = 300
 # Per suite: the folders of the PDFs and of their ground truth under data/READoc-data.
 READOC_DIRS = {"readoc": ("sel", "sel-gt"), "readoc-dev": ("dev", "dev-gt"),
-               "readoc-val": ("val", "val-gt")}
+               "readoc-val": ("val", "val-gt"), "readoc-dev2": ("dev2", "dev2-gt")}
 # Suites scored by suite_e2e.py's aggregate alone (no per-document scores are written).
 READOC_AGGREGATE_ONLY = ["readoc", "readoc-val"]
 SAFEDOCS_URL = ("https://digitalcorpora.s3.amazonaws.com/corpora/files/"
@@ -108,7 +113,8 @@ SAFEDOCS_SIZE = 1_266_879_273
 # Bytes each dataset needs while it is fetched (READoc holds one 1.2 GB zip until its selection
 # is extracted).
 DATASET_NEED = {"odl": GIB // 2, "olmocr": GIB // 2, "readoc": 3 * GIB // 2,
-                "readoc-dev": 3 * GIB // 2, "readoc-val": 3 * GIB // 2, "safedocs": 3 * GIB // 2}
+                "readoc-dev": 3 * GIB // 2, "readoc-val": 3 * GIB // 2,
+                "readoc-dev2": 3 * GIB // 2, "safedocs": 3 * GIB // 2}
 FULL_RUN_NEED = 25 * GIB
 
 SPEED_SYNTHETIC = [f"{p}/{f}" for p in ("rayomd", "xelatex", "libreoffice")
@@ -282,6 +288,7 @@ def suite_root(root: Path, suite: str) -> Path:
         "readoc": root / "data" / "READoc-data" / READOC_DIRS["readoc"][0],
         "readoc-dev": root / "data" / "READoc-data" / READOC_DIRS["readoc-dev"][0],
         "readoc-val": root / "data" / "READoc-data" / READOC_DIRS["readoc-val"][0],
+        "readoc-dev2": root / "data" / "READoc-data" / READOC_DIRS["readoc-dev2"][0],
         "scanned": root / "scanned",
         "olmocr-scans": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
     }[suite]
@@ -389,8 +396,9 @@ def dataset_present(data: Path, name: str) -> bool:
     if name == "readoc":
         return ((data / "READoc-data" / "selection.json").is_file()
                 and (data / "READoc" / ".git").is_dir())
-    if name in ("readoc-dev", "readoc-val"):
-        selection = "selection-dev.json" if name == "readoc-dev" else "selection-val.json"
+    if name in ("readoc-dev", "readoc-val", "readoc-dev2"):
+        selection = {"readoc-dev": "selection-dev.json", "readoc-val": "selection-val.json",
+                     "readoc-dev2": "selection-dev2.json"}[name]
         return ((data / "READoc-data" / selection).is_file()
                 and (data / "READoc" / ".git").is_dir())
     target = data / "safedocs" / "0000.zip"
@@ -424,9 +432,9 @@ def readoc_subset(data: Path, sub: str, first: int, count: int, suite: str,
 
     The order: ground-truth stems sorted by SHA-256 of the stem, those without a same-stem PDF
     left out. `before` is the earlier sets' selections in order (the holdout, then the
-    development split): the documents before `first` must be exactly it and none of the
-    extracted ones may be in it. Only one zip (up to 1.2 GB) is on disk at a time; it is
-    deleted again.
+    development split, then the validation split): the documents before `first` must be
+    exactly it and none of the extracted ones may be in it. Only one zip (up to 1.2 GB) is on
+    disk at a time; it is deleted again.
     """
     base = data / "READoc-data"
     gt_dir = base / f"{sub}_ground_truth"
@@ -533,6 +541,34 @@ def fetch_readoc_val(data: Path) -> None:
     shutil.rmtree(base / ".cache", ignore_errors=True)
 
 
+def fetch_readoc_dev2(data: Path) -> None:
+    """The second development split: the documents after the validation split's in the same
+    order."""
+    base = data / "READoc-data"
+    earlier = [read_json(base / name) for name in
+               ("selection.json", "selection-dev.json", "selection-val.json")]
+    if not all(earlier):
+        raise SystemExit("readoc-dev2: the split follows selection.json, selection-dev.json and "
+                         "selection-val.json; run `fetch --only readoc,readoc-dev,readoc-val` "
+                         "first")
+    readoc_clone(data)
+    taken = READOC_PER_SUBSET + READOC_DEV_PER_SUBSET + READOC_VAL_PER_SUBSET
+    first, last = taken + 1, taken + READOC_DEV2_PER_SUBSET
+    selection = {"dataset": READOC_DATASET, "revision": READOC_REVISION,
+                 "rule": "GT stems sorted by SHA-256 of the stem; of those with a same-stem PDF, "
+                         f"numbers {first}-{last} (1-{READOC_PER_SUBSET} holdout, "
+                         f"{READOC_PER_SUBSET + 1}-{READOC_PER_SUBSET + READOC_DEV_PER_SUBSET} "
+                         f"development, {READOC_PER_SUBSET + READOC_DEV_PER_SUBSET + 1}-{taken} "
+                         "validation)",
+                 "role": "development", "subsets": {}}
+    for sub in READOC_SUBSETS:
+        before = [stem for chosen in earlier for stem in chosen["subsets"][sub]["selected"]]
+        selection["subsets"][sub] = readoc_subset(
+            data, sub, taken, READOC_DEV2_PER_SUBSET, "readoc-dev2", before=before)
+    write_json(base / "selection-dev2.json", selection)
+    shutil.rmtree(base / ".cache", ignore_errors=True)
+
+
 def fetch_safedocs(data: Path) -> None:
     target = data / "safedocs" / "0000.zip"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -559,7 +595,7 @@ def cmd_fetch(args) -> int:
         log(f"fetch {name}")
         {"odl": fetch_odl, "olmocr": fetch_olmocr, "readoc": fetch_readoc,
          "readoc-dev": fetch_readoc_dev, "readoc-val": fetch_readoc_val,
-         "safedocs": fetch_safedocs}[name](data)
+         "readoc-dev2": fetch_readoc_dev2, "safedocs": fetch_safedocs}[name](data)
     return 0
 
 
@@ -790,13 +826,13 @@ def score_olmocr(root: Path, tools: list[str], suite: str) -> None:
 
 
 def score_readoc(root: Path, tools: list[str], suite: str) -> int:
-    """READoc's evaluator on each subset of the holdout, the development or the validation split.
+    """READoc's evaluator on each subset of the holdout, a development or the validation split.
 
     The holdout (readoc) and the validation split (readoc-val) get `suite_e2e.py`'s aggregate
-    file and nothing else. readoc-dev is scored by eval/scorer/readoc_docs.py, which runs the
-    same evaluator document by document in parallel and writes the same aggregate file plus
-    `<tool>-<subset>-docs.json` with every document's metrics. Returns the number of (tool,
-    subset) pairs left without a result.
+    file and nothing else. The development splits (readoc-dev, readoc-dev2) are scored by
+    eval/scorer/readoc_docs.py, which runs the same evaluator document by document in parallel
+    and writes the same aggregate file plus `<tool>-<subset>-docs.json` with every document's
+    metrics. Returns the number of (tool, subset) pairs left without a result.
     """
     data = root / "data"
     gt_name = READOC_DIRS[suite][1]
@@ -1324,6 +1360,12 @@ def report(root: Path) -> str:
               "or the development split. Quality landings are checked against it; like the "
               "holdout, only aggregate scores are written and looked at.", ""]
     lines += report_readoc(root, "readoc-val")
+    lines += ["## 15. READoc second development split (readoc-dev2; not the holdout)", "",
+              f"Up to {READOC_DEV2_PER_SUBSET} documents per subset that follow the validation "
+              "split's in the same order (`data/READoc-data/selection-dev2.json`); none is in the "
+              "holdout, the development or the validation split. Development data: each "
+              "document's scores are in `scores/readoc-dev2/<tool>-<subset>-docs.json`.", ""]
+    lines += report_readoc(root, "readoc-dev2")
     return "\n".join(lines) + "\n"
 
 
