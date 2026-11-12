@@ -320,6 +320,25 @@ void TestTitleBlock() {
     RAYOPDF_CHECK(Contains(md, "Jane Author") && !Contains(md, "# Jane Author") && Contains(md, "# In Two Blocks"), 1827);
 }
 
+void TestAddresses() {
+    // Short lines set larger than the body that hold an e-mail address or a web address say where
+    // to write or to look: paragraphs. An '@' between spaces is no address.
+    std::vector<PageData> page{NewPage(1)};
+    AddText(page[0], "1 Contact", 72, 740, 14, kGlyphBold);
+    AddBody(page[0], 720, 3);
+    AddText(page[0], "Write to jane.doe@example.org", 72, 670, 12);
+    AddBody(page[0], 650, 3);
+    AddText(page[0], "Code at https://example.org/repo", 72, 600, 12);
+    AddBody(page[0], 580, 3);
+    AddText(page[0], "2 Meet @ Noon", 72, 530, 14, kGlyphBold);
+    AddBody(page[0], 510, 3);
+    const std::string md = Run(page);
+    Show("addresses", md);
+    RAYOPDF_CHECK(Contains(md, "\nWrite to jane.doe@example.org") && !Contains(md, "# Write to"), 1828);
+    RAYOPDF_CHECK(Contains(md, "\nCode at https://example.org/repo") && !Contains(md, "# Code at"), 1829);
+    RAYOPDF_CHECK(Contains(md, "# 2 Meet @ Noon\n"), 1830);
+}
+
 } // namespace
 
 int main() {
@@ -330,6 +349,7 @@ int main() {
     TestKicker();
     TestRunningTextStyle();
     TestTitleBlock();
+    TestAddresses();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

@@ -440,6 +440,20 @@ void TestPageWords() {
     RAYOPDF_CHECK(Find(md, "gina 6") == std::string::npos && Find(md, "Body line 39 of") != std::string::npos, 797);
 }
 
+// A supplement's page number ("S84", bold in the corner) and an electronic page's ("e123") are page
+// numbers.
+void TestLetteredPageNumbers() {
+    for (const char* folio : {"S84", "e123"}) {
+        std::vector<PageData> pages{NewPage()};
+        AddBody(pages[0], 40, 720, 10);
+        const size_t from = pages[0].glyphs.size();
+        AddText(pages[0], folio, 40, 50, 9);
+        for (size_t i = from; i < pages[0].glyphs.size(); ++i) pages[0].glyphs[i].flags |= kGlyphBold;
+        const std::string md = Run(pages);
+        RAYOPDF_CHECK(Find(md, folio) == std::string::npos && Find(md, "Body line 39 of") != std::string::npos, 1856);
+    }
+}
+
 // A journal masthead of five rows of small print over the text goes as one block.
 void TestFiveRowMasthead() {
     std::vector<PageData> pages{NewPage()};
@@ -515,6 +529,7 @@ int main() {
     TestHashIsNoFolio();
     TestNoBreakFootnote();
     TestPageWords();
+    TestLetteredPageNumbers();
     TestFiveRowMasthead();
     TestCloseFolioRows();
     TestOverlappingHeadRow();

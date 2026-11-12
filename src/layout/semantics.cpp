@@ -185,6 +185,24 @@ bool FirstWordIs(std::string_view t, std::string_view lower) {
     return true;
 }
 
+// Whether `t` holds a web address ("http://", "https://", "www.") or an e-mail address (a word
+// character before an '@' and a '.' after it in the same word).
+bool HoldsAddress(std::string_view t) {
+    if (t.find("http://") != std::string_view::npos || t.find("https://") != std::string_view::npos ||
+        t.find("www.") != std::string_view::npos)
+        return true;
+    const auto word = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+               c == '.' || c == '}';
+    };
+    for (size_t at = t.find('@'); at != std::string_view::npos; at = t.find('@', at + 1)) {
+        if (at == 0 || !word(t[at - 1])) continue;
+        for (size_t i = at + 1; i < t.size() && t[i] != ' '; ++i)
+            if (t[i] == '.' && i > at + 1 && i + 1 < t.size() && t[i + 1] != ' ') return true;
+    }
+    return false;
+}
+
 // The depth of a section number opening a heading: "4 Results" 1, "4.3. Ablation" 2,
 // "A.1 Proofs" 2 (an appendix letter only before ".digit"); 0 when none ("2025 Report", "3D").
 int SectionDepth(std::string_view t) {
@@ -2035,6 +2053,20 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (weighed && chars * 10 <= (totalChars + cellChars) * 3) continue;
             k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
         }
+    }
+
+    // A line that holds an e-mail address or a web address (an author's address under a title, a
+    // repository's address set on every page) says where to write or to look, and heads nothing.
+    for (size_t r = 0; r < raws.size(); ++r) {
+        Classified& k = kinds[r];
+        if (k.kind != BlockKind::Heading || k.level > 0 || raws[r].take != 0) continue;
+        bool address = false;
+        for (uint32_t i = raws[r].first; i < raws[r].first + raws[r].count && !address; ++i) {
+            const PageData& page = pages[infos[i].page];
+            LineText(page, page.lines[infos[i].line], line);
+            address = HoldsAddress(line);
+        }
+        if (address) k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
     }
 
     // A kicker: a short line set above a page's title in a smaller size ("AI Pack" over a slide's

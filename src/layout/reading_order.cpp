@@ -124,6 +124,11 @@ bool IsPageNumberKey(const std::string& key) {
             ++i;
             continue;
         }
+        // A supplement's or an electronic page's number: "S84", "e123".
+        if ((c == 's' || c == 'e') && i + 1 < key.size() && key[i + 1] == '#' && (i == 0 || key[i - 1] == ' ')) {
+            ++i;
+            continue;
+        }
         if (std::string_view(" -/|.,:()[]").find(c) != std::string_view::npos) {
             ++i;
             continue;
