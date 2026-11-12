@@ -243,6 +243,25 @@ void TestKicker() {
     RAYOPDF_CHECK(Contains(md, "## Chapter 3\n") && Contains(md, "# Numerical Methods\n"), 1821);
 }
 
+void TestRunningTextStyle() {
+    // A long list of authors in a smaller size makes that size the most common one; the running
+    // text set larger keeps its lone lines (a reference) as paragraphs, its bold sections headings.
+    std::vector<PageData> paper{NewPage(1), NewPage(2)};
+    AddText(paper[0], "1 Introduction", 72, 740, 12, kGlyphBold);
+    for (int i = 0; i < 18; ++i)
+        AddText(paper[0], "Running text of the paper set larger than the list of its authors at the end.", 72,
+                720 - 14.0f * i, 11);
+    AddText(paper[0], "[1] A. Author et al. Journal 12 (2020) 34.", 72, 440, 11);
+    AddText(paper[0], "[2] B. Author et al. Journal 13 (2021) 56.", 72, 410, 11);
+    for (int i = 0; i < 30; ++i)
+        AddText(paper[1], "A. Name, B. Name, C. Name, D. Name, E. Name, F. Name, G. Name, H. Name, I. Name.", 72,
+                740 - 10.0f * i, 8);
+    const std::string md = Run(paper);
+    Show("running text style", md);
+    RAYOPDF_CHECK(Contains(md, "\n[1] A. Author et al.") && !Contains(md, "# [1]"), 1822);
+    RAYOPDF_CHECK(Contains(md, "# 1 Introduction\n"), 1823);
+}
+
 } // namespace
 
 int main() {
@@ -251,6 +270,7 @@ int main() {
     TestOutlineNumbering();
     TestStandardSections();
     TestKicker();
+    TestRunningTextStyle();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

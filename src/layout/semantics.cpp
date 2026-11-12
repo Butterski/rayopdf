@@ -1991,16 +1991,25 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     }
 
     // A heading style that holds a large share of the text is the body of a document whose most
-    // common size is something else (footnotes, captions): its blocks are not headings. A style
-    // of a single block is still a heading when the text of the tables beside it outweighs it (the
-    // title over a page that is all table). Scanned text (the add-on's OCR layer) has no outline to
-    // name the section titles of a document that is mostly tables: there a style of title size
-    // (kTitleSize) is weighed against the tables' text too, whatever its number of blocks.
+    // common size is something else (footnotes, captions): its blocks are not headings. A style of
+    // size counts its paragraphs too: running text set larger than a document's most common size
+    // (a long list of authors or the figures' labels in a smaller one) leaves its short blocks
+    // (references, a lone line) in that style, and they head nothing. A style of a single block is
+    // still a heading when the text of the tables beside it outweighs it (the title over a page
+    // that is all table). Scanned text (the add-on's OCR layer) has no outline to name the section
+    // titles of a document that is mostly tables: there a style of title size (kTitleSize) is
+    // weighed against the tables' text too, whatever its number of blocks.
     {
-        std::unordered_map<int, uint64_t> styleChars;
+        std::unordered_map<int, uint64_t> styleChars, textChars;
         std::unordered_map<int, uint32_t> styleBlocks;
-        for (const Classified& k : kinds)
+        const auto sizeStyle = [](const Classified& k) {
+            return static_cast<int>(std::lround(k.size * 2)) * 2 + (k.bold ? 1 : 0);
+        };
+        for (const Classified& k : kinds) {
             if (k.kind == BlockKind::Heading && k.level == 0) styleChars[k.styleKey] += k.chars, styleBlocks[k.styleKey]++;
+            if (k.kind == BlockKind::Paragraph || k.kind == BlockKind::ListItem || (k.kind == BlockKind::Heading && k.level == 0))
+                textChars[sizeStyle(k)] += k.chars;
+        }
         const auto scanned = [&](size_t r) {
             const Info& in = infos[raws[r].first];
             const Line& l = pages[in.page].lines[in.line];
@@ -2009,7 +2018,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         for (size_t r = 0; r < raws.size(); ++r) {
             Classified& k = kinds[r];
             if (k.kind != BlockKind::Heading || k.level > 0) continue;
-            const uint64_t chars = styleChars[k.styleKey];
+            uint64_t chars = styleChars[k.styleKey];
+            if (k.styleKey >= 0) chars = std::max(chars, textChars[sizeStyle(k)]);
             if (chars * 10 <= totalChars * 3) continue;
             const bool weighed = styleBlocks[k.styleKey] == 1 || (k.size >= kTitleSize * body && scanned(r));
             if (weighed && chars * 10 <= (totalChars + cellChars) * 3) continue;
