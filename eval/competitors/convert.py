@@ -21,7 +21,10 @@ persistent worker process, timed there around the conversion call only. A docume
 runs past --timeout kills the worker; the next document starts a fresh one, so
 a tool's stuck threads cannot spoil the documents after it. docling-ocr is docling with
 its default OCR (it runs in the docling image); tesseract renders pages with pdftoppm
-and writes tesseract's plain text.
+and writes tesseract's plain text. kordoc runs one Node process a document
+(/opt/kordoc/run.mjs: `parse()` and its Markdown, as kordoc's own benchmark driver does) with
+its OCR off; kordoc-ocr is kordoc's default, which reads pages without text and large images
+with the OCR models baked into the image (it runs in the kordoc image).
 """
 
 import argparse
@@ -47,6 +50,8 @@ TIMING = {
     "docling": "in-process",
     "docling-ocr": "in-process",
     "tesseract": "fresh-process",
+    "kordoc": "fresh-process",
+    "kordoc-ocr": "fresh-process",
     "cli": "fresh-process",
 }
 ERR_KEEP = 500
@@ -254,6 +259,22 @@ def MakeTesseract(args):
     return Conv, "pdftoppm -r 300 -gray + tesseract -l eng --psm 1 per page (plain text)"
 
 
+def MakeKordoc(args, ocr=False):
+    os.environ["KORDOC_OFFLINE"] = "1"
+    # The OCR models are only found where KORDOC_MODEL_CACHE points; `kordoc` also passes
+    # ocr: false, so an empty cache only makes that doubly sure.
+    os.environ["KORDOC_MODEL_CACHE"] = "/opt/kordoc/models" if ocr else "/tmp/kordoc-no-models"
+    mode = "default" if ocr else "off"
+
+    def Conv(pdf, md, t):
+        return RunCommand(["node", "/opt/kordoc/run.mjs", pdf, md, mode], t)
+    return Conv, "kordoc parse() %s" % ("default (OCR models present)" if ocr else "{ ocr: false }")
+
+
+def MakeKordocOcr(args):
+    return MakeKordoc(args, ocr=True)
+
+
 def MakeCli(args):
     if not args.cmd:
         raise SystemExit("--cmd is required for --tool cli")
@@ -275,6 +296,8 @@ MAKERS = {
     "docling": MakeDocling,
     "docling-ocr": MakeDoclingOcr,
     "tesseract": MakeTesseract,
+    "kordoc": MakeKordoc,
+    "kordoc-ocr": MakeKordocOcr,
     "cli": MakeCli,
 }
 

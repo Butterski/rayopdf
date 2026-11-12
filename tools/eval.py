@@ -18,7 +18,8 @@ Usage:
   python3 tools/eval.py report
 
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
-pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, cli. Suites:
+pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, kordoc (OCR off),
+kordoc-ocr (kordoc's default, OCR models present), cli. Suites:
 synthetic, odl, olmocr, readoc, readoc-dev, readoc-val, scanned, olmocr-scans, multiscript. The
 scanned suite is built from the synthetic corpus by `corpus --suite scanned`; olmocr-scans comes
 with `fetch --only olmocr`; multiscript (image-only pages in 9 scripts) is rendered by `corpus
@@ -57,13 +58,15 @@ TIMING_CPU = "3"
 GIB = 1024 ** 3
 
 TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse", "edgeparse",
-         "docling", "docling-ocr", "tesseract", "cli"]
+         "docling", "docling-ocr", "tesseract", "kordoc", "kordoc-ocr", "cli"]
 TEXT_LAYER_TOOLS = ["pdftotext", "markitdown", "pymupdf", "opendataloader", "liteparse",
                     "edgeparse"]
-# OCR reference tools; `all` runs them on the scanned suites only.
-OCR_TOOLS = ["docling-ocr", "tesseract"]
+# OCR reference tools; `all` runs them on the scanned suites only (kordoc-ocr on odl as well,
+# where kordoc reports its result with OCR on) and does not time them.
+OCR_TOOLS = ["docling-ocr", "tesseract", "kordoc-ocr"]
+OCR_TOOL_SUITES = {"kordoc-ocr": ["odl"]}  # suites besides the scanned ones
 # Tools that run in another tool's image (same install and models, different options).
-TOOL_IMAGE = {"docling-ocr": "docling"}
+TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # readoc-dev: 300 READoc documents the holdout (readoc) did not take; development only.
 # readoc-val: 600 further READoc documents; validation, aggregate only.
 TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc", "readoc-dev", "readoc-val"]
@@ -319,7 +322,8 @@ def write_list(path: Path, ids: list[str]) -> None:
 
 def tool_timeout(tool: str) -> int:
     # cli gets the OCR tools' limit: with the OCR add-on beside it, it OCRs scanned pages too.
-    return {"docling": 600, "docling-ocr": 1800, "tesseract": 600, "cli": 600}.get(tool, 120)
+    return {"docling": 600, "docling-ocr": 1800, "tesseract": 600, "kordoc-ocr": 600,
+            "cli": 600}.get(tool, 120)
 
 
 def odl_pages(root: Path) -> dict[str, int | None]:
@@ -632,6 +636,8 @@ def tool_mounts(tool: str, bin_dir: str | None) -> list[tuple[Path, str, bool]]:
     # The repository's adapter replaces the image's copy, so an adapter change needs no rebuild
     # of the (multi-GB) tool images.
     mounts = [(REPO / "eval" / "competitors" / "convert.py", "/opt/eval/convert.py", True)]
+    if tool in ("kordoc", "kordoc-ocr"):
+        mounts.append((REPO / "eval" / "competitors" / "kordoc_run.mjs", "/opt/kordoc/run.mjs", True))
     if tool == "cli" and bin_dir:
         mounts.append((Path(bin_dir), "/opt/tool", True))
     return mounts
@@ -1551,8 +1557,8 @@ def cmd_all(args) -> int:
         step("corpus --suite multiscript", cmd_corpus, ns(suite="multiscript"))
     step("score --selftest", cmd_score, ns(selftest=True))
     for tool in TOOLS[:-1]:
-        # The OCR reference tools run on the scanned suites only.
-        for suite in SCAN_SUITES if tool in OCR_TOOLS else SUITES:
+        # The OCR reference tools run on the scanned suites (and those OCR_TOOL_SUITES adds).
+        for suite in OCR_TOOL_SUITES.get(tool, []) + SCAN_SUITES if tool in OCR_TOOLS else SUITES:
             if args.resume and run_complete(root, tool, suite):
                 log(f"=== convert {tool}/{suite}: complete, skipped (--resume)")
                 continue

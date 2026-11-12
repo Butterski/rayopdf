@@ -327,7 +327,9 @@ One image per tool, `rayopdf-eval-<tool>:1`, built from `eval/docker/tool-<tool>
 shared adapter `eval/competitors/convert.py` runs each. "Text-layer tools" are the first six;
 docling is the ML reference. docling-ocr and tesseract are the OCR references: `all` runs them on
 the scanned suites only (`scanned`, `olmocr-scans`, `multiscript`); every other tool runs on every
-suite.
+suite. kordoc, which leads opendataloader-bench by its own claim, runs as its benchmark driver
+runs it: with its OCR off on every suite, and as its default (kordoc-ocr, OCR models present)
+where OCR is the point, the scanned suites and odl, on which kordoc reports its OCR result.
 
 |Tool|Version|Licence|Mode|Timing|
 |---|---|---|---|---|
@@ -340,6 +342,8 @@ suite.
 |docling|2.147.0, CPU torch, models in `/models`|MIT|`DocumentConverter` with `PdfPipelineOptions(artifacts_path="/models", do_ocr=False)`, `export_to_markdown()`|in-process|
 |docling-ocr|the docling image (no image of its own): docling 2.147.0, RapidOCR 3.10.0 on torch (docling's auto OCR picks it because onnxruntime is not installed), PP-OCRv6 small det + rec and the mobile v2 angle classifier from `/models/RapidOcr` (downloaded by `docling-tools models download` at image build; SHA-256 of the `.pth` files: det `fbdc74c9…`, rec `0107b2ad…`, cls `bfe13860…`)|MIT; models Apache-2.0|the same with `do_ocr=True` and docling's default `OcrAutoOptions` (OCR of bitmap regions, not forced full-page)|in-process|
 |tesseract|Tesseract 5.5.0 (Debian `tesseract-ocr=5.5.0-1+b1`, `tesseract-ocr-eng`/`-osd=1:4.1.0-2`), Poppler 25.03.0 (`poppler-utils=25.03.0-5+deb13u4`), base `python:3.13-slim` pinned by digest|Apache-2.0 (Poppler GPL)|`pdftoppm -r 300 -gray -png`, then `tesseract <page> out -l eng --psm 1 --dpi 300` per page, single-threaded (`OMP_THREAD_LIMIT=1`), `OMP_NUM_THREADS` pages at a time; plain text, pages joined by blank lines; `versions.json` records the model SHA-256|fresh-process|
+|kordoc|kordoc 4.24.66 (npm, exact), Node v22.23.5, pdfjs-dist 4.10.38; `versions.json` records the resolved npm tree|MIT|`node /opt/kordoc/run.mjs` (`eval/competitors/kordoc_run.mjs`): `parse(buffer, { ocr: false })` and its `markdown`, as kordoc's `bench/odl-bench.mjs` calls it; `KORDOC_OFFLINE=1`|fresh-process|
+|kordoc-ocr|the kordoc image: onnxruntime-node 1.31.1 and kordoc's PP-OCRv5 models (`det.onnx`, `rec_korean.onnx` and its dictionary, fetched by `kordoc check-ocr-models` at image build into `/opt/kordoc/models`)|MIT; models Apache-2.0|`parse(buffer)` without options: kordoc's default, which OCRs pages without a text layer and large images when its models are present|fresh-process|
 |cli|any binary|–|`--cmd` template, binary dir mounted at `/opt/tool`|fresh-process|
 
 marker and MinerU are not run locally (6–54 s/page on CPU per odl-bench). Their odl-bench
@@ -350,8 +354,8 @@ The adapter writes `<id>.md` and one `results.jsonl` line per document
 the image's `versions.json`. `tools/eval.py` mounts the repository's adapter over the image's copy,
 so the adapter in use is always the committed one. In-process tools run in one persistent worker
 process and are timed there with `perf_counter` around the conversion call only; a document past
-the timeout (600 s for docling, tesseract and cli — which OCRs scanned pages when the OCR add-on
-sits beside it —, 1,800 s for docling-ocr, 120 s otherwise) kills
+the timeout (600 s for docling, tesseract, kordoc-ocr and cli — which OCRs scanned pages when the
+OCR add-on sits beside it —, 1,800 s for docling-ocr, 120 s otherwise) kills
 the worker and the next document starts a fresh one, so stuck model threads cannot spoil later
 documents. Subprocess tools are timed around `subprocess.run`, so their time includes process
 start. Quality runs use the work cpuset with `OMP_NUM_THREADS=4`; their times are not speed
