@@ -186,7 +186,8 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
   `inline_eds`) and every key of READoc arXiv (decided 2026-11-11: that suite's ground truth is
   LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
-  else in the default mode. 0.1.0 waits until every key is met (decided 2026-11-11).
+  else in the default mode. 0.1.0 was released with one key open, READoc arXiv `table_teds`
+  (decided 2026-11-11, after the key had been held to docling's number under (b)).
 
 ### D7 Command line
 
@@ -287,31 +288,29 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-11)
+### Status (2026-11-12)
 
-0.1.0 is not tagged. (c) speed held at 0.0.13 (2,138 pages/s warm, 0.911 ms fresh:
-[v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)); 0.0.14 is within 1.2 % of 0.0.12's
-instructions on odl and is timed again in the release check. The
-[release check](../benchmarks/release-check-2026-11-09.md) found (d) security and (e) footprint
-met, to be repeated on the code that is released. (a) and (b) are open on one key, READoc arXiv
-`table_teds` (measured with `--math=latex`, D6; held to docling's number, (b)): 0.602 at master
-a285266 against docling's 0.656. `text_eds` 0.880 (best text-layer tool 0.826), `head_teds` 0.693
-(0.515) and `seg_kt` 0.981 (0.976) are met. The numbers are in the latest records, listed in the
-[benchmark index](../benchmarks/README.md).
+0.1.0 is released ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md),
+[release check](../benchmarks/release-check-2026-11-12.md)). Every item of the bar holds except
+one key, released as open by the user's decision of 2026-11-11: READoc arXiv `table_teds` 0.617
+(LaTeX mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882, `head_teds` 0.693,
+`seg_kt` 0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above the best
+text-layer tool, NID and MHS above docling. (c): 2,209 pages/s warm, 0.931 ms fresh. (d): 24 fuzz
+targets, 25.1 h aggregate, clean; ASan sweeps in three modes clean. (e): reported in the release
+check.
 
-- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release check). The 24 h
-  campaign covered 22 fuzz targets; `fuzz_layout_math` (0.0.11) has had 2 × 5 min so far.
+- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.1.0
+  campaign covered all 24 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M3 Layout:** open: olmOCR `headers_footers`, `long_tiny_text` without the add-on, synthetic
-  `xelatex-2col` NID ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M4 Semantics:** open: holdout construct F1 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md));
-  READoc arXiv `head_teds` met ([v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)).
+- **M3 Layout:** open: olmOCR `headers_footers` (0.841, docling 0.898), `long_tiny_text` without
+  the add-on, synthetic `xelatex-2col` NID ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md)).
+- **M4 Semantics:** open: holdout construct F1 ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md));
+  READoc arXiv `head_teds` met.
 - **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
-  ([v0.0.13](../benchmarks/v0.0.13-2026-11-11.md)).
+  ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M7 Product:** front ends, Windows build, packaging and the speed bar done
-  ([v0.0.12](../benchmarks/v0.0.12-2026-11-10.md), [performance.md](performance.md)); the rest of
-  the release bar open.
+- **M7 Product:** front ends, Windows build, packaging, the speed bar and the 0.1.0 release done
+  ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md), [performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)); open: Hebrew, Kannada and

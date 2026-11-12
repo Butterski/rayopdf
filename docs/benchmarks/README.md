@@ -11,10 +11,12 @@ against the baselines; each version record compares RayoPDF with them.
 | [baselines-2026-11-05.md](baselines-2026-11-05.md) | The competitors on every suite, the census; the reference for every gate |
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
 | [baselines-readoc-dev-2026-11-10.md](baselines-readoc-dev-2026-11-10.md) | The READoc development split (`readoc-dev`): RayoPDF and the competitors on 300 READoc documents outside the holdout, beside their holdout scores |
-| [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | The latest version on every suite, core and bundle, both math modes, the holdouts once; READoc tables on the development, validation and holdout sets; speed against 0.0.12 |
+| [v0.1.0-2026-11-12.md](v0.1.0-2026-11-12.md) | The release: every suite, core and bundle, both math modes, the holdouts once; READoc tables on the three READoc sets with docling; speed against 0.0.12 |
+| [release-check-2026-11-12.md](release-check-2026-11-12.md) | 0.1.0 against the release bar: quality, speed, the 24-target fuzz campaign, ASan sweeps, footprint |
+| [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | Round 7 and the validation split |
 | [v0.0.14-2026-11-11.md](v0.0.14-2026-11-11.md) | Round 6: segment order on papers, the release bar's READoc arXiv keys in LaTeX mode |
 | [v0.0.12-2026-11-10.md](v0.0.12-2026-11-10.md) | The comparison of speed with other tools |
-| [release-check-2026-11-09.md](release-check-2026-11-09.md) | 0.0.10 (and the 0.0.11 update) against the 0.1.0 release bar |
+| [release-check-2026-11-09.md](release-check-2026-11-09.md) | The first release check (0.0.10 and the 0.0.11 update): the bar not met then |
 
 ## History
 
@@ -37,6 +39,7 @@ Each version record links its predecessor.
 | 0.0.13 | 2026-11-11 | [v0.0.13-2026-11-11.md](v0.0.13-2026-11-11.md) | Quality round 5 on scientific papers (READoc arXiv headings 0.473 → 0.688), the READoc development split, images on page threads |
 | 0.0.14 | 2026-11-11 | [v0.0.14-2026-11-11.md](v0.0.14-2026-11-11.md) | Segment order and tables on papers (READoc arXiv seg_kt 0.981, table_teds 0.604, LaTeX mode); round 5's speed cost won back; two fuzz findings fixed |
 | 0.0.15 | 2026-11-11 | [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | Page furniture on single pages (olmOCR headers_footers 0.841), table headers, escaping; the READoc validation split, which showed round 7's table rules fitted the development split |
+| 0.1.0 | 2026-11-12 | [v0.1.0-2026-11-12.md](v0.1.0-2026-11-12.md) | The first release ([release check](release-check-2026-11-12.md)): table dialect checked on the validation split, Unicode script forms; READoc arXiv tables released as the one open item |
 
 ## Naming
 
