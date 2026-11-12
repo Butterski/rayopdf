@@ -313,6 +313,42 @@ bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextE
         e.midtones > kMaxMidtones)
         return false;
 
+    // Rules (a table's grid, a frame) ink long runs of pixels: a horizontal run of at least
+    // `longRow` or a vertical one of at least `longColumn` counts as paper in the band pass, so that
+    // a table's vertical rules do not join its rows of text into one band. The vertical runs are
+    // marked in a bit mask, the horizontal ones found in the row pass itself.
+    const uint8_t t = static_cast<uint8_t>(threshold);
+    const uint32_t longRow = std::max<uint32_t>(width / 4, 32), longColumn = std::max<uint32_t>(height / 4, 32);
+    std::vector<uint64_t> ruleMask;
+    if (height >= longColumn) {
+        std::vector<uint32_t> runStart(width, UINT32_MAX);
+        const auto closeRun = [&](uint32_t x, uint32_t end) {
+            const uint32_t start = runStart[x];
+            runStart[x] = UINT32_MAX;
+            if (end - start < longColumn) return;
+            if (ruleMask.empty()) ruleMask.assign(size_t((n + 63) / 64), 0);
+            for (uint32_t y = start; y < end; ++y) {
+                const uint64_t at = uint64_t(y) * width + x;
+                ruleMask[size_t(at >> 6)] |= uint64_t(1) << (at & 63);
+            }
+        };
+        for (uint32_t y = 0; y < height; ++y) {
+            const uint8_t* row = pixels + uint64_t(y) * width;
+            for (uint32_t x = 0; x < width; ++x) {
+                if (row[x] <= t) {
+                    if (runStart[x] == UINT32_MAX) runStart[x] = y;
+                } else if (runStart[x] != UINT32_MAX) {
+                    closeRun(x, y);
+                }
+            }
+        }
+        for (uint32_t x = 0; x < width; ++x)
+            if (runStart[x] != UINT32_MAX) closeRun(x, height);
+    }
+    const auto masked = [&](uint64_t at) {
+        return !ruleMask.empty() && ((ruleMask[size_t(at >> 6)] >> (at & 63)) & 1) != 0;
+    };
+
     // Rows: bands of rows holding ink, and how many ink runs cross each.
     const uint32_t inked = std::max<uint32_t>(2, width / 333);
     std::vector<uint32_t> heights;
@@ -326,20 +362,31 @@ bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextE
         if (h >= kMinBandHeight && h <= height / 3 && strokes >= kMinStrokes && strokes >= kStrokesPerHeight * span / float(h))
             heights.push_back(h);
     };
-    const uint8_t t = static_cast<uint8_t>(threshold);
     for (uint32_t y = 0; y < height; ++y) {
         const uint8_t* row = pixels + uint64_t(y) * width;
+        const uint64_t rowAt = uint64_t(y) * width;
         uint32_t count = 0, runs = 0, first = width, last = 0;
-        bool previous = false;
-        for (uint32_t x = 0; x < width; ++x) {
-            const bool ink = row[x] <= t;
-            if (ink) {
-                count++;
-                if (!previous) runs++;
-                if (first == width) first = x;
-                last = x;
+        for (uint32_t x = 0; x < width;) {
+            if (row[x] > t) {
+                ++x;
+                continue;
             }
-            previous = ink;
+            uint32_t end = x + 1;
+            while (end < width && row[end] <= t) ++end;
+            if (end - x < longRow) {
+                bool previous = false;
+                for (uint32_t k = x; k < end; ++k) {
+                    const bool ink = !masked(rowAt + k);
+                    if (ink) {
+                        count++;
+                        if (!previous) runs++;
+                        if (first == width) first = k;
+                        last = k;
+                    }
+                    previous = ink;
+                }
+            }
+            x = end;
         }
         if (count >= inked) {
             if (!inBand) {

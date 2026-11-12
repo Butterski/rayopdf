@@ -496,6 +496,43 @@ void TestLooksLikeText() {
                   1214);
 }
 
+// A 600 x 300 gray image of a ruled grid of 3 rows and 4 columns (2-pixel rules), with two bands
+// of text-like strokes (dark runs of 3-6 pixels) 12 pixels high in each row of cells when `text`.
+std::string RuledGrid(bool text) {
+    const uint32_t w = 600, h = 300;
+    std::string grid(size_t(w) * h, static_cast<char>(0xFF));
+    if (text) {
+        for (uint32_t r = 0; r < 3; ++r)
+            for (uint32_t band = 0; band < 2; ++band) {
+                const uint32_t top = 20 + r * 98 + band * 36;
+                for (uint32_t y = top; y < top + 12; ++y)
+                    for (uint32_t x = 8; x + 8 < w;) {
+                        const uint32_t run = 3 + (x / 7 + y) % 4;
+                        for (uint32_t k = x; k < x + run && k + 8 < w; ++k) grid[size_t(y) * w + k] = 20;
+                        x += run + 4;
+                    }
+            }
+    }
+    for (uint32_t r = 0; r <= 3; ++r)
+        for (uint32_t y = std::min(r * 98 + 2, h - 2); y < std::min(r * 98 + 4, h); ++y)
+            for (uint32_t x = 2; x < w - 2; ++x) grid[size_t(y) * w + x] = 0;
+    for (uint32_t c = 0; c <= 4; ++c)
+        for (uint32_t x = std::min(c * 148 + 2, w - 4); x < std::min(c * 148 + 4, w - 2); ++x)
+            for (uint32_t y = 2; y < h - 2; ++y) grid[size_t(y) * w + x] = 0;
+    return grid;
+}
+
+void TestRuledGridText() {
+    // A table drawn as an image: its vertical rules ink every row, yet its rows of text are text.
+    const std::string table = RuledGrid(true);
+    TextEvidence e;
+    RAYOPDF_CHECK(LooksLikeText(reinterpret_cast<const uint8_t*>(table.data()), 600, 300, &e), 1750);
+    RAYOPDF_CHECK(e.textBands == 6, 1750);
+    // The grid alone holds no text.
+    const std::string empty = RuledGrid(false);
+    RAYOPDF_CHECK(!LooksLikeText(reinterpret_cast<const uint8_t*>(empty.data()), 600, 300), 1751);
+}
+
 void TestCanvas() {
     OcrCanvas canvas;
     // Scale clamped to 72-300 dpi; a large region lowered to the pixel cap.
@@ -1135,6 +1172,7 @@ int main() {
     TestRouting();
     TestBrokenAndVector();
     TestLooksLikeText();
+    TestRuledGridText();
     TestCanvas();
     TestOcrGlyphs();
     TestOcrTypography();

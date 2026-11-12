@@ -91,7 +91,9 @@ struct TextEvidence {
 
 // Whether 8-bit gray pixels (rows top to bottom) look like printed text: dark ink on light paper
 // with few midtones (not a photo), and at least kMinTextBands rows of characters of a common height
-// (not a chart with a few labels). Built for no false triggers on digital documents' figures.
+// (not a chart with a few labels). Built for no false triggers on digital documents' figures. Long
+// runs of ink (a table's rules: a quarter of the width or height, at least 32 pixels) count as
+// paper when the rows of text are sought, so a table drawn as an image is text.
 constexpr uint32_t kMinTextBands = 4;
 bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextEvidence* evidence = nullptr);
 
