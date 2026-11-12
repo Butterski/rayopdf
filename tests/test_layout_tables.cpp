@@ -1649,6 +1649,56 @@ void TestCrossingAreas() {
     }
 }
 
+// A filled box from (x0, y0) to (x1, y1) drawn as four lines (m l l l h f), as a slide draws a
+// cell: a shape of three segments and, along its sides, four rulings of no thickness.
+void AddBox(PageData& page, float x0, float y0, float x1, float y1) {
+    Shape s;
+    s.x0 = x0, s.y0 = y0, s.x1 = x1, s.y1 = y1;
+    s.kind = ShapeKind::Other, s.filled = true, s.segments = 3;
+    page.shapes.push_back(s);
+    page.rulings.push_back(Ruling{x0, y1, x1, y1, kRulingFill});
+    page.rulings.push_back(Ruling{x1, y0, x1, y1, kRulingFill});
+    page.rulings.push_back(Ruling{x0, y0, x1, y0, kRulingFill});
+    page.rulings.push_back(Ruling{x0, y0, x0, y1, kRulingFill});
+}
+
+// Cells drawn as separate filled boxes 12 points apart (a slide's table, no edge of a box near
+// another's): four rows of three boxes, a short text in each, are a table of four rows and three
+// columns. Two rows of three boxes holding paragraphs (cards of text) are no table.
+void TestBoxGrid() {
+    for (const bool cells : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        if (cells) {
+            const char* const text[4][3] = {{"Stage", "Name", "Benefit"}, {"One", "Alpha", "Fast"}, {"Two", "Beta", "Safe"},
+                                            {"Three", "Gamma", "Cheap"}};
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 3; ++c) {
+                    const float x0 = 72 + 112.0f * float(c), y1 = 710 - 32.0f * float(r);
+                    AddBox(page, x0, y1 - 20, x0 + 100, y1);
+                    AddText(page, text[r][c], x0 + 4, y1 - 14);
+                }
+        } else {
+            for (int r = 0; r < 2; ++r)
+                for (int c = 0; c < 3; ++c) {
+                    const float x0 = 72 + 156.0f * float(c), y1 = 710 - 96.0f * float(r);
+                    AddBox(page, x0, y1 - 90, x0 + 150, y1);
+                    AddProse(page, x0 + 4, 142, y1 - 14, 6);
+                }
+        }
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(cells ? "box grid" : "box cards", md);
+        if (cells) {
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Stage | Name | Benefit |\n| --- | --- | --- |\n| One | Alpha | Fast |\n"
+                                                             "| Two | Beta | Safe |\n| Three | Gamma | Cheap |"),
+                          1734);
+        } else {
+            RAYOPDF_CHECK(report.tables == 0 && Contains(md, "quick brown"), 1735);
+        }
+    }
+}
+
 // A ruled table with one vertical rule, after its first column, over two body rows: the other
 // columns come from the wide whitespace between them.
 void TestRuledColumnTwoRows() {
@@ -2301,6 +2351,7 @@ int main(int argc, char** argv) {
     TestCellNumbersLatex();
     TestLatticeBesideChart();
     TestCrossingAreas();
+    TestBoxGrid();
     TestRuledColumnTwoRows();
     TestLatticeAcrossFigures();
     TestCodeColumnTable();

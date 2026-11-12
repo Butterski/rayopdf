@@ -569,6 +569,7 @@ public:
 private:
     void CollectWords();
     void SortWords();
+    void BoxGrids();
     void Lattices();
     void RuleStacks();
     void Continue();
@@ -2134,6 +2135,169 @@ float Detector::LabelAbove(const Grid& g) {
     return rule;
 }
 
+// Cells drawn as separate filled boxes with white gutters between them (a slide's table): no edge
+// of one box touches another's, so no lattice forms. Boxes at least two body sizes wide and 0.8
+// high, each holding a word's centre and no other box's (a panel behind them is no cell): filled
+// rectangles, or filled straight-sided shapes of four sides at most whose top and bottom are edges
+// of the page (a box drawn as lines). Those that line up in rows (y-ranges overlapping by half the
+// lower box: a row's boxes fit their own text's height) and columns (x-ranges overlapping by 80 %
+// of the wider box), three rows and two columns at least with a box in 60 % of the slots, rows and
+// columns apart by gutters of 24 points at most, are a grid: its outer box and a rule on each
+// gutter's midline replace the boxes' own sides, and Lattices builds the table. Not when a word
+// inside the grid lies in a gutter (shading on every other row of a table: the rows between are
+// cells too), when the grid is part of a ruled table (shaded header cells: a rule through it runs
+// on past it), or when more stroked or curved shapes lie inside it than it has boxes (a figure's
+// panels, each a plot under its title).
+void Detector::BoxGrids() {
+    constexpr size_t kMaxBoxes = 1024;
+    constexpr float kMaxGutter = 24.0f;
+    struct Box {
+        float x0, y0, x1, y1;
+    };
+    std::vector<Box> boxes;
+    const auto edgeAt = [&](float y, float x0, float x1) {
+        auto it = std::lower_bound(h_.begin(), h_.end(), y - kSnap, [](const Edge& e, float p) { return e.pos < p; });
+        for (; it != h_.end() && it->pos <= y + kSnap; ++it)
+            if (it->a <= x0 + kSnap && it->b >= x1 - kSnap) return true;
+        return false;
+    };
+    for (const Shape& s : page_.shapes) {
+        if (!s.filled || s.curved || (s.kind != ShapeKind::Rect && (s.kind != ShapeKind::Other || s.segments > 4))) continue;
+        const Ruling r = ToFrame(Ruling{s.x0, s.y0, s.x1, s.y1, 0}, dir_);
+        const float w = r.x1 - r.x0, h = r.y1 - r.y0;
+        if (!(w >= 2 * bodySize_ && h >= 0.8f * bodySize_ && std::isfinite(w) && std::isfinite(h))) continue;
+        if (s.kind != ShapeKind::Rect && !(edgeAt(r.y0, r.x0, r.x1) && edgeAt(r.y1, r.x0, r.x1))) continue;
+        bool holds = false;
+        auto it = std::lower_bound(words_.begin(), words_.end(), r.y1 + 20, [](const TWord& q, float y) { return q.base > y; });
+        for (; it != words_.end() && it->base >= r.y0 - 20 && !holds; ++it) {
+            const float cx = (it->x0 + it->x1) / 2, cy = (it->y0 + it->y1) / 2;
+            holds = cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1;
+        }
+        if (!holds) continue;
+        if (boxes.size() >= kMaxBoxes) return;  // fail closed
+        boxes.push_back(Box{r.x0, r.y0, r.x1, r.y1});
+    }
+    const size_t n = boxes.size();
+    if (n < 6) return;
+    const auto area = [&](size_t i) { return (boxes[i].x1 - boxes[i].x0) * (boxes[i].y1 - boxes[i].y0); };
+    std::vector<uint8_t> keep(n, 1);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = 0; j < n && keep[i]; ++j) {
+            if (i == j) continue;
+            const Box &a = boxes[i], &b = boxes[j];
+            const float cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+            const bool same = std::fabs(a.x0 - b.x0) <= 0.5f && std::fabs(a.x1 - b.x1) <= 0.5f && std::fabs(a.y0 - b.y0) <= 0.5f &&
+                              std::fabs(a.y1 - b.y1) <= 0.5f;
+            if (same ? j < i : cx >= a.x0 && cx <= a.x1 && cy >= a.y0 && cy <= a.y1 && area(i) > area(j)) keep[i] = 0;
+        }
+    std::vector<int32_t> rowOf(n), colOf(n), comp(n);
+    for (size_t i = 0; i < n; ++i) rowOf[i] = colOf[i] = comp[i] = static_cast<int32_t>(i);
+    const auto join = [](std::vector<int32_t>& parent, size_t i, size_t j) {
+        const int32_t a = Find(parent, static_cast<int32_t>(i)), b = Find(parent, static_cast<int32_t>(j));
+        if (a != b) parent[static_cast<size_t>(a)] = b;
+    };
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = i + 1; j < n && keep[i]; ++j) {
+            if (!keep[j]) continue;
+            const Box &a = boxes[i], &b = boxes[j];
+            if (Fmin(a.y1, b.y1) - Fmax(a.y0, b.y0) >= 0.5f * Fmin(a.y1 - a.y0, b.y1 - b.y0)) join(rowOf, i, j);
+            if (Fmin(a.x1, b.x1) - Fmax(a.x0, b.x0) >= 0.8f * Fmax(a.x1 - a.x0, b.x1 - b.x0)) join(colOf, i, j);
+        }
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = i + 1; j < n && keep[i]; ++j)
+            if (keep[j] && (Find(rowOf, static_cast<int32_t>(i)) == Find(rowOf, static_cast<int32_t>(j)) ||
+                            Find(colOf, static_cast<int32_t>(i)) == Find(colOf, static_cast<int32_t>(j))))
+                join(comp, i, j);
+    struct Band {
+        int32_t root;
+        float a, b;  // the extent of its boxes
+    };
+    std::vector<Band> rows, cols;
+    std::vector<std::pair<int32_t, int32_t>> slots;
+    bool added = false;
+    for (size_t c = 0; c < n; ++c) {
+        if (!keep[c] || Find(comp, static_cast<int32_t>(c)) != static_cast<int32_t>(c)) continue;
+        rows.clear(), cols.clear(), slots.clear();
+        const auto extend = [](std::vector<Band>& bands, int32_t root, float a, float b) {
+            for (Band& band : bands)
+                if (band.root == root) {
+                    band.a = Fmin(band.a, a), band.b = Fmax(band.b, b);
+                    return;
+                }
+            bands.push_back(Band{root, a, b});
+        };
+        for (size_t i = 0; i < n; ++i) {
+            if (!keep[i] || Find(comp, static_cast<int32_t>(i)) != static_cast<int32_t>(c)) continue;
+            const int32_t r = Find(rowOf, static_cast<int32_t>(i)), k = Find(colOf, static_cast<int32_t>(i));
+            extend(rows, r, boxes[i].y0, boxes[i].y1);
+            extend(cols, k, boxes[i].x0, boxes[i].x1);
+            if (std::find(slots.begin(), slots.end(), std::make_pair(r, k)) == slots.end()) slots.emplace_back(r, k);
+        }
+        if (rows.size() < 3 || cols.size() < 2 || float(slots.size()) < 0.6f * float(rows.size() * cols.size())) continue;
+        std::sort(rows.begin(), rows.end(), [](const Band& p, const Band& q) { return p.b > q.b; });
+        std::sort(cols.begin(), cols.end(), [](const Band& p, const Band& q) { return p.a < q.a; });
+        bool gutters = true;
+        for (size_t k = 0; k + 1 < rows.size() && gutters; ++k) {
+            const float gap = rows[k].a - rows[k + 1].b;
+            gutters = gap >= 0.5f && gap <= kMaxGutter;
+        }
+        for (size_t k = 0; k + 1 < cols.size() && gutters; ++k) {
+            const float gap = cols[k + 1].a - cols[k].b;
+            gutters = gap >= 0.5f && gap <= kMaxGutter;
+        }
+        if (!gutters) continue;
+        const float left = cols.front().a, right = cols.back().b, top = rows.front().b, bottom = rows.back().a;
+        bool inSlots = true;  // every word inside the grid lies in a slot, none in a gutter
+        auto it = std::lower_bound(words_.begin(), words_.end(), top + 20, [](const TWord& q, float y) { return q.base > y; });
+        for (; it != words_.end() && it->base >= bottom - 20 && inSlots; ++it) {
+            const float cx = (it->x0 + it->x1) / 2, cy = (it->y0 + it->y1) / 2;
+            if (!(cx >= left && cx <= right && cy >= bottom && cy <= top)) continue;
+            inSlots = std::any_of(rows.begin(), rows.end(), [&](const Band& b) { return cy >= b.a && cy <= b.b; }) &&
+                      std::any_of(cols.begin(), cols.end(), [&](const Band& b) { return cx >= b.a && cx <= b.b; });
+        }
+        if (!inSlots) continue;
+        // A rule through the grid and on past it, a row's rule on past both sides or a column's past
+        // either end: the grid is part of a ruled table (a band behind a row may jut out on one side).
+        const auto through = [&](const Edge& e, float lo, float hi, float from, float to, bool both) {
+            if (!(e.pos > lo + kSnap && e.pos < hi - kSnap && e.a < to && e.b > from)) return false;
+            const bool before = e.a < from - 2 * kSnap, after = e.b > to + 2 * kSnap;
+            return both ? before && after : before || after;
+        };
+        if (std::any_of(h_.begin(), h_.end(), [&](const Edge& e) { return through(e, bottom, top, left, right, true); }) ||
+            std::any_of(v_.begin(), v_.end(), [&](const Edge& e) { return through(e, left, right, bottom, top, false); }))
+            continue;
+        size_t boxCount = 0, drawn = 0;  // the grid's boxes; the shapes drawn inside it
+        for (size_t i = 0; i < n; ++i) boxCount += keep[i] && Find(comp, static_cast<int32_t>(i)) == static_cast<int32_t>(c);
+        for (const Shape& s : page_.shapes) {
+            if (s.filled && !s.curved) continue;
+            const Ruling r = ToFrame(Ruling{s.x0, s.y0, s.x1, s.y1, 0}, dir_);
+            const float cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
+            drawn += cx > left && cx < right && cy > bottom && cy < top;
+        }
+        if (drawn > boxCount) continue;
+        // Every edge inside the grid or across it (its boxes' sides, a band drawn behind a row) gives
+        // way to the grid's own.
+        const auto across = [&](const Edge& e, bool horizontal) {
+            const float lo = horizontal ? bottom : left, hi = horizontal ? top : right;
+            const float from = horizontal ? left : bottom, to = horizontal ? right : top;
+            return e.pos >= lo - kSnap && e.pos <= hi + kSnap && e.a < to && e.b > from;
+        };
+        h_.erase(std::remove_if(h_.begin(), h_.end(), [&](const Edge& e) { return across(e, true); }), h_.end());
+        v_.erase(std::remove_if(v_.begin(), v_.end(), [&](const Edge& e) { return across(e, false); }), v_.end());
+        h_.push_back(Edge{top, left, right});
+        h_.push_back(Edge{bottom, left, right});
+        for (size_t k = 0; k + 1 < rows.size(); ++k) h_.push_back(Edge{(rows[k].a + rows[k + 1].b) / 2, left, right});
+        v_.push_back(Edge{left, bottom, top});
+        v_.push_back(Edge{right, bottom, top});
+        for (size_t k = 0; k + 1 < cols.size(); ++k) v_.push_back(Edge{(cols[k].b + cols[k + 1].a) / 2, bottom, top});
+        added = true;
+    }
+    if (added) {
+        MergeEdges(h_);
+        MergeEdges(v_);
+    }
+}
+
 void Detector::Lattices() {
     if (h_.size() > kMaxTableEdges || v_.size() > kMaxTableEdges) return;
     const size_t nh = h_.size(), nv = v_.size();
@@ -3563,6 +3727,7 @@ int Detector::Run() {
         return 0;
     }
     CollectEdges(page_, dir_, h_, v_);
+    BoxGrids();
     Lattices();
     RuleStacks();
     if (dir_ == 0) Continue();
