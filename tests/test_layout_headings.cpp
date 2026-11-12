@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the heading rules of src/layout/semantics.cpp on scientific papers: the title
 // above an outline that names the sections only, small capitals, numbering in the outline match,
-// the standard unnumbered sections; the kicker over a slide's title and the titles of a slide's
-// cards. Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849.
+// the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
+// cards and a page's lead line. Pages are built glyph by glyph and converted by the whole
+// pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -371,6 +372,26 @@ void TestCardTitles() {
                   1832);
 }
 
+void TestLeadLine() {
+    // A line in the body's size that opens the page, set apart from the paragraph under it, heads
+    // the page.
+    std::vector<PageData> page{NewPage(1)};
+    AddText(page[0], "Print vs. Digital", 72, 700, 10);
+    AddBody(page[0], 676, 3);
+    AddBody(page[0], 630, 3);
+    std::string md = Run(page);
+    Show("lead line", md);
+    RAYOPDF_CHECK(Contains(md, "# Print vs. Digital\n"), 1833);
+    // One that ends a sentence is a paragraph.
+    std::vector<PageData> sentence{NewPage(1)};
+    AddText(sentence[0], "This page opens with a sentence.", 72, 700, 10);
+    AddBody(sentence[0], 676, 3);
+    AddBody(sentence[0], 630, 3);
+    md = Run(sentence);
+    Show("lead sentence", md);
+    RAYOPDF_CHECK(Contains(md, "This page opens with a sentence.") && !Contains(md, "# This page"), 1834);
+}
+
 } // namespace
 
 int main() {
@@ -383,6 +404,7 @@ int main() {
     TestTitleBlock();
     TestAddresses();
     TestCardTitles();
+    TestLeadLine();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

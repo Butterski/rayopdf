@@ -2152,6 +2152,37 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         if (topmost) k.kind = a.listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
     }
 
+    // A page's lead line: a line in the body's size and face that opens its page, set apart from
+    // the paragraph under it by an em and by more than that paragraph's own leading, heads the
+    // page when nothing else on it does ("Print vs. Digital" over its text). It starts with a
+    // capital or a digit and ends without a sentence's or a clause's punctuation; the paragraph
+    // under it has two lines or more and starts on its left edge.
+    for (size_t r = 0; r + 1 < raws.size(); ++r) {
+        const RawBlock& b = raws[r];
+        const Info& a = infos[b.first];
+        if (r > 0 && infos[raws[r - 1].first].page == a.page) continue;  // not the page's first block
+        if (kinds[r].kind != BlockKind::Paragraph || b.count != 1 || b.note != 0 || b.mono || a.dir != 0 ||
+            (a.flags & (kLineAnchor | kLineTable | kLineFormula | kLineInvisible | kLineAllBold)) || a.chars < 5 ||
+            a.chars > 80 || std::fabs(a.size - body) > 0.05f * body || a.lastCp == '.' || a.lastCp == ',' ||
+            a.lastCp == ';' || a.lastCp == ':')
+            continue;
+        const RawBlock& c = raws[r + 1];
+        const Info& n = infos[c.first];
+        if (n.page != a.page || c.count < 2 || n.dir != 0 || (n.flags & kLineAnchor) ||
+            std::fabs(Fmin(n.u0, c.bodyU0) - a.u0) > body || a.vb - n.vt < body ||
+            a.baseline - n.baseline < 1.8f * (n.baseline - infos[c.first + 1].baseline))
+            continue;
+        bool headed = false;
+        for (size_t q = r + 1; q < raws.size() && infos[raws[q].first].page == a.page && !headed; ++q)
+            headed = kinds[q].kind == BlockKind::Heading;
+        if (headed) continue;
+        const PageData& page = pages[a.page];
+        LineText(page, page.lines[a.line], line);
+        const uint32_t cp = FirstCodePoint(line);
+        if (!((cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7))) continue;
+        kinds[r].kind = BlockKind::Heading;
+    }
+
     // A title block (§6.1): under the title on the first page, blocks centred under it in a
     // smaller size name the authors, their affiliations and the date, up to the first section
     // ("Abstract", "1 Introduction") or the first body paragraph. They head nothing. In a paper's
