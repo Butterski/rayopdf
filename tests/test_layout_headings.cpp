@@ -262,6 +262,64 @@ void TestRunningTextStyle() {
     RAYOPDF_CHECK(Contains(md, "# 1 Introduction\n"), 1823);
 }
 
+// Appends `text` centred on the page's axis (x = 306) in glyphs of `size` points.
+void AddCentred(PageData& page, std::string_view text, float y, float size, uint16_t flags = 0) {
+    AddText(page, text, 306 - 0.25f * size * static_cast<float>(text.size()), y, size, flags);
+}
+
+void TestTitleBlock() {
+    // Authors centred under the title, each over affiliations of lines of many widths, one of them
+    // nearly as wide as the text: the block runs on past the wide affiliations to the abstract.
+    std::vector<PageData> wide{NewPage(1)};
+    AddCentred(wide[0], "A Paper With Wide Affiliations", 740, 17);
+    AddCentred(wide[0], "Grace Hopper", 710, 13);
+    AddCentred(wide[0], "Department of Computer Science and Engineering, University of Somewhere, Some City", 695, 10);
+    AddCentred(wide[0], "Another Institute of Technology", 683, 10);
+    AddCentred(wide[0], "grace@example.org", 671, 10);
+    AddCentred(wide[0], "Ada Lovelace", 645, 13);
+    AddCentred(wide[0], "Analytical Engine Society", 630, 10);
+    AddCentred(wide[0], "Abstract", 600, 11, kGlyphBold);
+    AddBody(wide[0], 585, 3);
+    AddText(wide[0], "1 Introduction", 72, 530, 13, kGlyphBold);
+    AddBody(wide[0], 510, 3);
+    std::string md = Run(wide);
+    Show("wide affiliations", md);
+    RAYOPDF_CHECK(Contains(md, "Ada Lovelace") && !Contains(md, "# Ada Lovelace") && !Contains(md, "# Grace Hopper"), 1824);
+    // A paper's front matter set flush left (JMLR): the authors in bold over their affiliations,
+    // then the abstract.
+    std::vector<PageData> flush{NewPage(1)};
+    AddCentred(flush[0], "Parametric Inference Using Diagrams", 740, 14, kGlyphBold);
+    AddText(flush[0], "Kevin Author", 72, 700, 10, kGlyphBold);
+    AddText(flush[0], "Columbia University, New York, NY.", 72, 688, 10);
+    AddText(flush[0], "Dana Writer", 72, 664, 10, kGlyphBold);
+    AddText(flush[0], "University of Barcelona, Spain.", 72, 652, 10);
+    AddCentred(flush[0], "Abstract", 620, 12, kGlyphBold);
+    AddBody(flush[0], 600, 3);
+    AddText(flush[0], "1. Introduction", 72, 540, 12, kGlyphBold);
+    AddBody(flush[0], 520, 3);
+    md = Run(flush);
+    Show("flush-left front matter", md);
+    RAYOPDF_CHECK(Contains(md, "Kevin Author") && !Contains(md, "# Kevin Author") && !Contains(md, "# Dana Writer"), 1825);
+    // Without an abstract, a flush-left heading under a flush-left title is a section of its own.
+    std::vector<PageData> report{NewPage(1)};
+    AddText(report[0], "Annual Report", 72, 740, 18);
+    AddText(report[0], "Overview", 72, 700, 14, kGlyphBold);
+    AddBody(report[0], 680, 3);
+    md = Run(report);
+    Show("report", md);
+    RAYOPDF_CHECK(Contains(md, "# Overview\n"), 1826);
+    // A title set in two blocks runs on to the authors under it.
+    std::vector<PageData> split{NewPage(1)};
+    AddCentred(split[0], "A Title Set", 740, 14, kGlyphBold);
+    AddCentred(split[0], "In Two Blocks", 700, 14, kGlyphBold);
+    AddCentred(split[0], "Jane Author", 670, 12, kGlyphItalic);
+    AddCentred(split[0], "ABSTRACT", 640, 10, kGlyphBold);
+    AddBody(split[0], 620, 3);
+    md = Run(split);
+    Show("split title", md);
+    RAYOPDF_CHECK(Contains(md, "Jane Author") && !Contains(md, "# Jane Author") && Contains(md, "# In Two Blocks"), 1827);
+}
+
 } // namespace
 
 int main() {
@@ -271,6 +329,7 @@ int main() {
     TestStandardSections();
     TestKicker();
     TestRunningTextStyle();
+    TestTitleBlock();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

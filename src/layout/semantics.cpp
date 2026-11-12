@@ -175,6 +175,16 @@ bool FrontMatter(std::string_view t) {
     return false;
 }
 
+// Whether the first word of `t` (its leading letters, any case) is `lower`.
+bool FirstWordIs(std::string_view t, std::string_view lower) {
+    size_t n = 0;
+    while (n < t.size() && ((t[n] >= 'a' && t[n] <= 'z') || (t[n] >= 'A' && t[n] <= 'Z'))) ++n;
+    if (n != lower.size()) return false;
+    for (size_t i = 0; i < n; ++i)
+        if ((t[i] | 0x20) != lower[i]) return false;
+    return true;
+}
+
 // The depth of a section number opening a heading: "4 Results" 1, "4.3. Ablation" 2,
 // "A.1 Proofs" 2 (an appendix letter only before ".digit"); 0 when none ("2025 Report", "3D").
 int SectionDepth(std::string_view t) {
@@ -2056,7 +2066,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
 
     // A title block (§6.1): under the title on the first page, blocks centred under it in a
     // smaller size name the authors, their affiliations and the date, up to the first section
-    // ("Abstract", "1 Introduction") or the first body paragraph. They head nothing.
+    // ("Abstract", "1 Introduction") or the first body paragraph. They head nothing. In a paper's
+    // front matter (an abstract, its heading or its label, follows the title on its page) the
+    // block may also be set flush left (JMLR, PoS). A body paragraph is justified across its
+    // width, or (outside a paper's front matter) not centred under the title: a centred block of
+    // affiliations as wide as the text, its lines of many widths, is none.
     if (!raws.empty()) {
         const uint32_t page = infos[raws[0].first].page;
         const auto extent = [&](size_t r, float& u0, float& u1) {
@@ -2064,10 +2078,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             for (uint32_t i = raws[r].first; i < raws[r].first + raws[r].count; ++i)
                 u0 = Fmin(u0, infos[i].u0), u1 = Fmax(u1, infos[i].u1);
         };
+        // The title: the page's first heading, set at least as large as every heading before the
+        // first section ("Abstract", "1 Introduction": a paper may set its sections larger).
         size_t title = raws.size();
         float titleSize = 0;
         for (size_t r = 0; r < raws.size() && infos[raws[r].first].page == page; ++r) {
             if (kinds[r].kind != BlockKind::Heading || kinds[r].level > 0) continue;
+            if (title != raws.size()) {
+                const Info& in = infos[raws[r].first];
+                LineText(pages[in.page], pages[in.page].lines[in.line], line);
+                if (FrontMatter(line) || SectionDepth(line) > 0) break;
+            }
             if (title == raws.size()) title = r;
             titleSize = Fmax(titleSize, kinds[r].size);
         }
@@ -2079,24 +2100,44 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             float left = INFINITY, right = -INFINITY;
             for (const Info& in : infos)
                 if (in.page == page && in.dir == 0) left = Fmin(left, in.u0), right = Fmax(right, in.u1);
+            bool abstractAfter = false;
+            for (size_t r = title + 1; r < raws.size() && infos[raws[r].first].page == page && !abstractAfter; ++r) {
+                const Info& in = infos[raws[r].first];
+                LineText(pages[in.page], pages[in.page].lines[in.line], line);
+                abstractAfter = raws[r].take != 0 || FirstWordIs(line, "abstract");
+            }
+            // Every line of block r but its last runs across the block's width [u0, u1].
+            const auto justified = [&](size_t r, float u0, float u1) {
+                for (uint32_t i = raws[r].first; i + 1 < raws[r].first + raws[r].count; ++i)
+                    if (infos[i].u0 > u0 + 0.5f * body || infos[i].u1 < u1 - 0.5f * body) return false;
+                return true;
+            };
+            size_t titleEnd = title;  // the title's last block (a title may be set in several)
             for (size_t r = title + 1; r < raws.size() && infos[raws[r].first].page == page; ++r) {
                 const Info& first = infos[raws[r].first];
                 float u0 = 0, u1 = 0;
                 extent(r, u0, u1);
-                const bool centred = std::fabs((u0 + u1) - (t0 + t1)) <= 4 * body && u0 > left + body && first.dir == 0;
+                const bool axis = std::fabs((u0 + u1) - (t0 + t1)) <= 4 * body && first.dir == 0;
+                const bool centred = axis && u0 > left + body;
                 if (kinds[r].kind != BlockKind::Heading) {
-                    if (raws[r].count >= 3 && (!centred || u1 - u0 >= right - left - 4 * body)) break;
+                    if (raws[r].count >= 3 && (justified(r, u0, u1) || (!axis && !abstractAfter))) break;
                     continue;
                 }
                 // A section starts with its number ("1 Introduction"); a date ends with its year.
                 LineText(pages[first.page], pages[first.page].lines[first.line], line);
                 const bool numbered = !line.empty() && line[0] >= '0' && line[0] <= '9' &&
                                       !(line.back() >= '0' && line.back() <= '9');
-                // Set like the title or larger, it is a title line of its own.
+                // Set like the title or larger, it is a title line of its own: the title's next
+                // block when it follows it on its axis or its left edge, else a title of its own.
                 const bool titleStyle = kinds[r].size > kinds[title].size + 0.25f ||
                                         (kinds[r].size >= kinds[title].size - 0.25f && kinds[r].bold == kinds[title].bold);
-                if (kinds[r].level > 0 || !centred || titleStyle || first.listStart() || first.numbering || numbered ||
-                    FrontMatter(line))
+                if (titleStyle && r == titleEnd + 1 && (axis || std::fabs(u0 - t0) <= body) && !numbered &&
+                    !FrontMatter(line)) {
+                    titleEnd = r;
+                    continue;
+                }
+                if (kinds[r].level > 0 || (!centred && !abstractAfter) || titleStyle || first.listStart() ||
+                    first.numbering || numbered || FrontMatter(line))
                     break;
                 kinds[r].kind = BlockKind::Paragraph;
             }
