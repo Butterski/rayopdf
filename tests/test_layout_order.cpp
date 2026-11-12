@@ -508,6 +508,29 @@ void TestOverlappingHeadRow() {
                   1854);
 }
 
+// A row in the outer tenth of the page, a little larger than the body, set apart by three ems: a
+// journal line at the head or a print stamp at the foot goes (neither in the outer margin nor
+// smaller than the body). A bold title of that size stays.
+void TestWideGapRows() {
+    const auto build = [](const char* row, float y, bool bold) {
+        std::vector<PageData> pages{NewPage()};
+        const size_t from = pages[0].glyphs.size();
+        AddText(pages[0], row, 72, y, 12);
+        if (bold)
+            for (size_t i = from; i < pages[0].glyphs.size(); ++i) pages[0].glyphs[i].flags |= kGlyphBold;
+        // 50 body lines from 681 down to 93: the head row at 730 (7 % from the top, its bottom 727.6)
+        // and the foot row at 51 (7 % from the bottom, its top 60.6) each lie 30 points (3 em) away.
+        AddBody(pages[0], 50, 681, 10);
+        return Run(pages);
+    };
+    std::string md = build("Journal of Testing 12 (2020)", 730, false);
+    RAYOPDF_CHECK(Find(md, "Journal of Testing") == std::string::npos && Find(md, "Body line 0 of") != std::string::npos,
+                  1857);
+    RAYOPDF_CHECK(Find(build("A Study of Testing", 730, true), "A Study of Testing") != std::string::npos, 1858);
+    md = build("Printed: Fri, 19 Aug 2022", 51, false);
+    RAYOPDF_CHECK(Find(md, "Printed:") == std::string::npos && Find(md, "Body line 49 of") != std::string::npos, 1859);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -533,6 +556,7 @@ int main() {
     TestFiveRowMasthead();
     TestCloseFolioRows();
     TestOverlappingHeadRow();
+    TestWideGapRows();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

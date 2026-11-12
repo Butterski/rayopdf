@@ -789,7 +789,8 @@ struct Orderer {
 // or the bottom of a page is a running header, footer or page number when it is set apart from
 // the rest by at least an em of the body size, is no larger than the body, is short, starts with
 // no footnote marker, and either sits in the page's outer margin (kMarginBand) or reads as a page
-// number inside the running band. A second row behind a removed one gets the same test. Pages
+// number inside the running band. A second qualification: a short row in the outer tenth set apart
+// by a wide gap (kWideGapBand). A second row behind a removed one gets the same tests. Pages
 // with fewer than kEdgeMinLines other lines keep everything but publication metadata.
 // The outer 6 % of the page height: Word's headers and footers at 0.5 in sit at about 5 %, LaTeX's
 // page number at 5 %. Body text can start that high too (RayoMD's compact layout at 5 %), hence
@@ -804,6 +805,13 @@ constexpr float kNumberBand = 0.16f;
 constexpr uint32_t kRunningTitleChars = 100;
 // The longest row an /Artifact mark alone makes furniture.
 constexpr uint32_t kMarkedRowChars = 60;
+// The second qualification: the outer 10 % of the page height, a gap of 2.5 body sizes, at most
+// 1.35 times the body size but not within 5 % of it, and 80 characters.
+constexpr float kWideGapBand = 0.10f;
+constexpr float kWideGap = 2.5f;
+constexpr float kWideGapMaxSize = 1.35f;
+constexpr float kWideGapSizeTolerance = 0.05f;
+constexpr uint32_t kWideGapMaxChars = 80;
 
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
     std::vector<uint32_t> lines;
@@ -1010,9 +1018,18 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // the body size (not a display heading), whatever its gap. A head or a foot is a few
             // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
             const bool marked = artifactsTell && artifact && numberBand && largest <= 2 * body && chars <= kMarkedRowChars;
+            // A short row in the outer tenth set apart by a wide gap (a journal line or a print
+            // stamp 4-9 % from the edge, two and a half ems and more from the text), in another size
+            // than the body up to a little larger. A body-size row (a first or last line of text, a
+            // caption, a subfigure label), a bold one larger than the body (a heading), a slide's
+            // title (larger than the body at the head of a landscape page) or a code line is content.
+            const float wideCenter = side == 0 ? h - center : center;
+            const bool wide = wideCenter < h * kWideGapBand && gap >= kWideGap * body && largest <= kWideGapMaxSize * body &&
+                              chars <= kWideGapMaxChars && std::fabs(largest - body) > kWideGapSizeTolerance * body &&
+                              !(largest > body && (bold || (side == 0 && page.width > h))) && !anyMono && !superscript;
             const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
-                                           ((closeFolio || closeNumber) && row < 2)));
+                                           ((closeFolio || closeNumber || wide) && row < 2)));
             // A short row in the running band overlapping the row inside it waits with that row:
             // pieces of one head on offset baselines. Its block must still end in a strong row.
             const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;
