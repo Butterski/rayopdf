@@ -299,6 +299,17 @@ text-layer tool, NID and MHS above docling. (c): 2,209 pages/s warm, 0.931 ms fr
 targets, 25.1 h aggregate, clean; ASan sweeps in three modes clean. (e): reported in the release
 check.
 
+After 0.1.0, master holds six layout steps taken from a comparison with kordoc
+([baselines-2026-11-12](../benchmarks/baselines-2026-11-12.md)) and one found beside it, each
+through the quality gate: lists of contents as text, Office runs' left-out spaces, a slide title's
+kicker, turned chart labels in reading position, the heading-style share counting a style's
+paragraphs, a paper's title block past wide affiliations, set flush left or under a split title,
+and lettered page numbers and address lines. Against 0.1.0 on the development suites: odl overall
+0.8965 → 0.9018 (MHS 0.8404 → 0.8534, NID 0.9177 → 0.9222); READoc arXiv `head_teds` 0.700 →
+0.710 (development) and 0.701 → 0.706 (validation); olmOCR `headers_footers` 0.841 → 0.839 (two
+absent tests whose page numbers the turned labels used to follow); synthetic unchanged; odl
+instructions +0.77 %, warm 2,199 → 2,188 pages/s. Not released; the holdouts were not run.
+
 - **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.1.0
   campaign covered all 24 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).

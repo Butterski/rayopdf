@@ -111,6 +111,9 @@ TOOLS = {
     "docling": ("rayopdf-eval-docling:1", 3, 1,
                 ["docling", "convert", "{in}", "--to", "md", "--no-ocr", "--artifacts-path", "/models", "--output",
                  "/tmp/out", "--device", "cpu", "--image-export-mode", "placeholder", "--num-threads", "{threads}"]),
+    # kordoc's command line reads without OCR unless asked (--ocr); KORDOC_OFFLINE (below) keeps it
+    # from fetching anything, as the harness runs it.
+    "kordoc": ("rayopdf-eval-kordoc:1", 10, 1, ["/opt/kordoc/node_modules/.bin/kordoc", "{in}", "-o", "/tmp/o.md"]),
 }
 REPORT_MS = re.compile(rb'"ms":[0-9.]+')
 
@@ -506,7 +509,8 @@ def cmd_tools(args) -> int:
                             .replace("{threads}", str(threads)) for part in command]
                     options = ["--tmpfs", "/tmp:exec,size=2g", "--entrypoint", "/opt/cmdbench",
                                "-v", f"{work}/cmdbench:/opt/cmdbench:ro", "-v", f"{path}:/in/doc.pdf:ro",
-                               "-v", f"{Path(binary).parent}:/opt/rayopdf:ro", "-e", "HF_HUB_OFFLINE=1"]
+                               "-v", f"{Path(binary).parent}:/opt/rayopdf:ro", "-e", "HF_HUB_OFFLINE=1",
+                               "-e", "KORDOC_OFFLINE=1"]
                     for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                                      "RAYON_NUM_THREADS"):
                         options += ["-e", f"{variable}={threads}"]

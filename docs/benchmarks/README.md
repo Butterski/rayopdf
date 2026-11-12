@@ -11,6 +11,7 @@ against the baselines; each version record compares RayoPDF with them.
 | [baselines-2026-11-05.md](baselines-2026-11-05.md) | The competitors on every suite, the census; the reference for every gate |
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
 | [baselines-readoc-dev-2026-11-10.md](baselines-readoc-dev-2026-11-10.md) | The READoc development split (`readoc-dev`): RayoPDF and the competitors on 300 READoc documents outside the holdout, beside their holdout scores |
+| [baselines-2026-11-12.md](baselines-2026-11-12.md) | kordoc, which claims the top of opendataloader-bench: OCR off on every suite, its default on odl, its speed; what RayoPDF took from it after 0.1.0 |
 | [v0.1.0-2026-11-12.md](v0.1.0-2026-11-12.md) | The release: every suite, core and bundle, both math modes, the holdouts once; READoc tables on the three READoc sets with docling; speed against 0.0.12 |
 | [release-check-2026-11-12.md](release-check-2026-11-12.md) | 0.1.0 against the release bar: quality, speed, the 24-target fuzz campaign, ASan sweeps, footprint |
 | [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | Round 7 and the validation split |
