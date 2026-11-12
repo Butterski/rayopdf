@@ -879,10 +879,17 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
   an empty clip taken off the SSE2 box path (odl places many glyphs under empty clips: +0.3 %).
 - Wall-clock timings were not taken: the machine ran agents throughout the round.
 
-## Ninth round
+## Ninth round (2026-11-12)
 
 ### Steps
 
+- **CPU dispatch** (6.1): `src/common/cpu.h` chooses a kernel at run time in one place
+  (`CpuFeatures()`, `ForceCpuBaseline` for the tests); the inflater's BMI2 choice moved there.
+  Output identical, instructions unchanged (odl -0.001 %).
+- **Dense ToUnicode index** (6.4): a composite font's ToUnicode map, looked up for every glyph,
+  becomes an array from code to entry when its codes span at most 65,536 codes and 16 for each
+  code it maps (`ToUnicodeMap::Index`). Output identical; instructions odl -0.20 %,
+  `multi_column` -0.35 %, SafeDocs -0.11 %; fresh page faults over odl median 164 → 163.
 - **Glyph record 56 → 40 bytes** (2026-11-12): `Glyph` keeps only its box in the direction frame;
   the box on the upright page is that box turned back (`GlyphPageBox`, `layout/page.h`), equal to
   it for direction 0, and an inline image's glyph takes its image's box. Output identical in 4,100
@@ -954,9 +961,8 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
 
 ## Open candidates (measured, not done)
 
-- **Text path:** a dense code index for Type0 ToUnicode maps (about 1.7 M over odl, a few faults a
-  font); the empty-clip flag folded into the SSE2 clip test (about 3 instructions a glyph); line
-  and word texts copied once when contiguous in the page text.
+- **Text path:** the empty-clip flag folded into the SSE2 clip test (about 3 instructions a
+  glyph); line and word texts copied once when contiguous in the page text.
 - **The OCR route's `MeasurePage`** (1.6 % of odl): three attempts to count in the glyph loop cost
   what the pass costs; counts per font slot are untried.
 - **Objects and order:** hex strings read in one pass (13.6 M on `multi_column`, 6 M on odl);
