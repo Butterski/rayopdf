@@ -2,9 +2,10 @@
 
 Read this file before changing the project. RayoPDF is a PDF to Markdown converter, the reverse
 of [RayoMD](https://github.com/Butterski/rayomd): the C++17 engine under `src/` (modules common,
-crypt, pdf, text, image, raster, layout, ocr and cli; the OCR add-on `rayopdf-ocr` is built from
-`src/ocr/addon`), its tests under `tests/`, the evaluation harness under `eval/` and
-`tools/eval.py`, and the research and roadmap under `docs/`.
+crypt, pdf, text, image, raster, layout, api, ocr and cli; the C++ API's public header is
+`include/rayopdf/rayopdf.h`; the OCR add-on `rayopdf-ocr` is built from `src/ocr/addon`), its tests
+under `tests/`, the evaluation harness under `eval/` and `tools/eval.py`, and the research and
+roadmap under `docs/`.
 
 ## Rules
 

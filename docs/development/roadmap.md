@@ -263,6 +263,12 @@ protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error",
 - **Windows:** a static MinGW-w64 build (`tools/dev.py build --config
   windows`); paths and arguments are UTF-8 inside and UTF-16 at the Win32 API; standard streams
   are binary, so the Markdown is byte for byte the Linux build's.
+- **C++ API:** `include/rayopdf/rayopdf.h` (no internal header behind it; module `src/api/`):
+  `RayoPdf::Api::ConvertMemory` and `ConvertFile` with the options of `--convert` (pages,
+  password, format, math, OCR, images, page markers, front matter, page threads), returning a
+  `Status` whose values are the exit codes below (2 aside: options are not parsed), the error,
+  the pages and the `--report` counters as one JSON object; `Version()`. The command line reads
+  and opens its inputs and writes its counters through the same functions.
 
 |Exit code|Meaning|
 |---|---|

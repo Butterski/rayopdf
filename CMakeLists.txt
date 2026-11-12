@@ -71,17 +71,19 @@ function(rayopdf_flags target)
 endfunction()
 
 # One static library per module directory src/<module>/ (every .cpp in it). Dependencies:
-# common <- crypt <- pdf <- text, image <- layout <- the command line; raster (paths and the
-# rasterizer for glyph-shape recovery) <- text. `ocr` is the OCR add-on's
-# own code (pre- and post-processing, protocol server, Tesseract backend; no inference runtime):
-# only the add-on rayopdf-ocr, its tests and its fuzz target link it, never `rayopdf`.
-set(RAYOPDF_MODULES common crypt pdf raster text image layout ocr)
+# common <- crypt <- pdf <- text, image <- layout <- api (the C++ API, its public header under
+# include/) <- the command line; raster (paths and the rasterizer for glyph-shape recovery) <- text.
+# `ocr` is the OCR add-on's own code (pre- and post-processing, protocol server, Tesseract backend;
+# no inference runtime): only the add-on rayopdf-ocr, its tests and its fuzz target link it, never
+# `rayopdf`.
+set(RAYOPDF_MODULES common crypt pdf raster text image layout api ocr)
 set(RAYOPDF_DEPENDS_crypt common)
 set(RAYOPDF_DEPENDS_pdf crypt common)
 set(RAYOPDF_DEPENDS_raster common)
 set(RAYOPDF_DEPENDS_text pdf raster)
 set(RAYOPDF_DEPENDS_image pdf)
 set(RAYOPDF_DEPENDS_layout text image)
+set(RAYOPDF_DEPENDS_api layout)
 set(RAYOPDF_DEPENDS_ocr crypt common)
 foreach(module ${RAYOPDF_MODULES})
     file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/${module}/*.cpp")
@@ -99,6 +101,9 @@ foreach(module ${RAYOPDF_MODULES})
         endif()
     endif()
 endforeach()
+if(TARGET rayopdf_api)
+    target_include_directories(rayopdf_api PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+endif()
 
 # GNU ld (not gold, lld or a PE linker) takes the INSERT scripts below.
 set(RAYOPDF_GNU_LD OFF)
@@ -117,9 +122,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set_source_files_properties(src/layout/lines.cpp PROPERTIES COMPILE_OPTIONS "-fno-tree-slp-vectorize")
 endif()
 
-if(TARGET rayopdf_layout)
+if(TARGET rayopdf_api)
     add_executable(rayopdf src/cli/main.cpp)
-    target_link_libraries(rayopdf PRIVATE rayopdf_layout)
+    target_link_libraries(rayopdf PRIVATE rayopdf_api)
     rayopdf_flags(rayopdf)
     if(RAYOPDF_STATIC)
         if(WIN32 OR APPLE)

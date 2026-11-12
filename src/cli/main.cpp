@@ -23,6 +23,7 @@
 // add-on process (started when a document first needs it), and the add-on answers the same
 // request the same way, so OCR does not change that.
 
+#include "api/convert.h"
 #include "common/batch.h"
 #include "common/file.h"
 #include "common/serve.h"
@@ -59,18 +60,16 @@ namespace {
 
 using namespace RayoPdf;
 
+// Exit codes: 2 for a usage error; the others are the C++ API's Status values (rayopdf/rayopdf.h).
 enum Exit : int {
-    kExitOk = 0,
     kExitUsage = 2,
-    kExitUnreadable = 3,
-    kExitCorrupt = 10,
-    kExitPassword = 11,
-    kExitUnwritable = 12,
-    kExitUnsupported = 13,
 };
+constexpr int kExitOk = static_cast<int>(Api::Status::Ok);
+constexpr int kExitUnreadable = static_cast<int>(Api::Status::Unreadable);
+constexpr int kExitUnwritable = static_cast<int>(Api::Status::Unwritable);
 
-// Inputs larger than this are refused (exit 3): far beyond any document a converter meets.
-constexpr uint64_t kMaxInputBytes = uint64_t(4) << 30;
+using Api::AppendField;
+
 // A batch folder tree: at most this deep below the input folder, and at most this many PDFs.
 constexpr int kMaxFolderDepth = 64;
 constexpr size_t kMaxBatchFiles = size_t(1) << 20;
@@ -343,61 +342,12 @@ void ChooseImageTarget(const std::string& output, const DocumentOptions& documen
     options.imageLinkPrefix = Relative(from, File::AbsolutePath(directory));
 }
 
-// Reads the input (into `buffer` when it is small enough and the caller keeps one, see
-// File::InputFile::Open); an exit code other than kExitOk, with `error`, when it cannot.
-int ReadInput(const std::string& path, File::InputFile& file, std::string& error, std::string* buffer = nullptr) {
-    switch (file.Open(path, kMaxInputBytes, buffer)) {
-        case File::ReadStatus::Ok: return kExitOk;
-        case File::ReadStatus::NotFound: error = "cannot open " + path; break;
-        case File::ReadStatus::NotRegular: error = path + " is not a regular file"; break;
-        case File::ReadStatus::TooLarge: error = path + " is too large"; break;
-        case File::ReadStatus::Failed: error = "cannot read " + path; break;
-    }
-    return kExitUnreadable;
-}
-
-int OpenDocument(const std::string& path, std::string_view bytes, std::string_view password,
-                 std::unique_ptr<Document>& document, std::string& error) {
-    switch (Document::Open(bytes, password, document)) {
-        case OpenStatus::Ok: return kExitOk;
-        case OpenStatus::NotPdf: error = path + " is not a PDF file"; return kExitCorrupt;
-        case OpenStatus::Corrupt: error = path + " is corrupt beyond repair"; return kExitCorrupt;
-        case OpenStatus::TooLarge: error = path + " exceeds a document limit"; return kExitCorrupt;
-        case OpenStatus::PasswordRequired: error = path + " needs a password (--password=PW)"; return kExitPassword;
-        case OpenStatus::Unsupported: break;
-    }
-    error = path + " uses an unsupported encryption";
-    return kExitUnsupported;
-}
-
-void AppendField(std::string& out, const char* key, uint64_t value) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "\"%s\":%" PRIu64, key, value);
-    if (out.size() > 1) out.push_back(',');
-    out += buf;
-}
-
-void AppendField(std::string& out, const char* key, bool value) {
-    if (out.size() > 1) out.push_back(',');
-    out += '"';
-    out += key;
-    out += value ? "\":true" : "\":false";
-}
-
-void AppendField(std::string& out, const char* key, std::string_view value) {
-    if (out.size() > 1) out.push_back(',');
-    out += '"';
-    out += key;
-    out += "\":";
-    Batch::AppendJsonString(out, value);
-}
-
 int Inspect(const std::string& input, std::string_view password) {
     File::InputFile file;
     std::string error;
     std::unique_ptr<Document> document;
-    int code = ReadInput(input, file, error);
-    if (code == kExitOk) code = OpenDocument(input, file.Bytes(), password, document, error);
+    int code = static_cast<int>(Api::ReadInput(input, file, error));
+    if (code == kExitOk) code = static_cast<int>(Api::OpenDocument(input, file.Bytes(), password, document, error));
     if (code != kExitOk) {
         PrintError(error);
         return code;
@@ -440,45 +390,6 @@ int Inspect(const std::string& input, std::string_view password) {
     return kExitOk;
 }
 
-// The record's counters after "ms": the conversion's and the reader's.
-void AppendCounters(std::string& out, const Layout::ConvertReport& r, const DocumentReport& d) {
-    out += ",";
-    AppendField(out, "pages_without_text", static_cast<uint64_t>(r.pagesWithoutText));
-    AppendField(out, "glyphs", r.glyphs);
-    AppendField(out, "unmapped_glyphs", r.unmappedGlyphs);
-    AppendField(out, "guessed_glyphs", r.guessedGlyphs);
-    AppendField(out, "hidden_glyphs", r.hiddenGlyphs);
-    AppendField(out, "headings", static_cast<uint64_t>(r.headings));
-    AppendField(out, "paragraphs", static_cast<uint64_t>(r.paragraphs));
-    AppendField(out, "list_items", static_cast<uint64_t>(r.listItems));
-    AppendField(out, "code_blocks", static_cast<uint64_t>(r.codeBlocks));
-    AppendField(out, "tables", static_cast<uint64_t>(r.tables));
-    AppendField(out, "links", static_cast<uint64_t>(r.links));
-    AppendField(out, "footnotes", static_cast<uint64_t>(r.footnotes));
-    AppendField(out, "images", static_cast<uint64_t>(r.images));
-    AppendField(out, "images_skipped", static_cast<uint64_t>(r.imagesSkipped));
-    AppendField(out, "images_mask_dropped", static_cast<uint64_t>(r.imagesMaskDropped));
-    AppendField(out, "header_footer_lines", static_cast<uint64_t>(r.headerFooterLines));
-    AppendField(out, "content_errors", static_cast<uint64_t>(r.contentErrors));
-    AppendField(out, "structure", std::string_view(Layout::StructureUseName(r.structure)));
-    AppendField(out, "structure_elements", static_cast<uint64_t>(r.structureElements));
-    AppendField(out, "exact", std::string_view(Layout::ExactUseName(r.exact)));
-    AppendField(out, "ocr_pages_routed", static_cast<uint64_t>(r.ocrPagesRouted));
-    AppendField(out, "ocr_pages", static_cast<uint64_t>(r.ocrPages));
-    AppendField(out, "ocr_failures", static_cast<uint64_t>(r.ocrFailures));
-    AppendField(out, "ocr_addon_missing", r.ocrAddonMissing);
-    AppendField(out, "ocr_broken_pages", static_cast<uint64_t>(r.ocrBrokenPages));
-    AppendField(out, "ocr_vector_text_pages", static_cast<uint64_t>(r.ocrVectorTextPages));
-    AppendField(out, "ocr_glyph_fonts", static_cast<uint64_t>(r.ocrGlyphFonts));
-    AppendField(out, "ocr_glyphs", r.ocrGlyphs);
-    AppendField(out, "repaired", d.repaired);
-    AppendField(out, "encrypted", d.encrypted);
-    AppendField(out, "broken_objects", static_cast<uint64_t>(d.brokenObjects));
-    AppendField(out, "salvaged_streams", static_cast<uint64_t>(d.salvagedStreams));
-    AppendField(out, "failed_streams", static_cast<uint64_t>(d.failedStreams));
-    AppendField(out, "limit_hits", static_cast<uint64_t>(d.limitHits));
-}
-
 using Clock = std::chrono::steady_clock;
 
 double MillisecondsSince(Clock::time_point start) {
@@ -517,8 +428,10 @@ struct Source {
 void ConvertSource(const std::string& input, const std::string& output, std::string_view password,
                    const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
                    bool counters, Source& source, std::string* inputBuffer) {
-    int code = ReadInput(input, source.file, record.error, inputBuffer);
-    if (code == kExitOk) code = OpenDocument(input, source.file.Bytes(), password, source.document, record.error);
+    int code = static_cast<int>(Api::ReadInput(input, source.file, record.error, inputBuffer));
+    if (code == kExitOk) {
+        code = static_cast<int>(Api::OpenDocument(input, source.file.Bytes(), password, source.document, record.error));
+    }
     if (code != kExitOk) {
         record.status = "error";
         record.code = code;
@@ -534,7 +447,7 @@ void ConvertSource(const std::string& input, const std::string& output, std::str
     }
     record.pages = static_cast<uint64_t>(report.pages);
     record.bytes = markdown.size();
-    if (counters) AppendCounters(record.counters, report, source.document->Report());
+    if (counters) Api::AppendCounters(record.counters, report, source.document->Report());
 }
 
 // ConvertSource with a source of its own, dropped when the conversion is done.
