@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -54,6 +56,42 @@ struct FigureScratch {
 // The regions MarkFigureText works with, kept by the thread.
 struct FigureMarks {
     std::vector<FigureRegion> regions;
+};
+
+// Chart axes (ChartAxes).
+constexpr float kTickMin = 1.0f;         // a tick is a stroke this long at least,
+constexpr float kTickMax = 8.0f;         // this long at most (kTick, as long as a mark's side),
+constexpr float kTickThick = 1.0f;       // this thick at most,
+constexpr float kTickAspect = 3.0f;      // and this many times longer than thick
+constexpr float kTickRow = 0.6f;         // the ticks of an axis start within this of the one before
+constexpr float kTickTouch = 0.75f;      // a shape this close to a tick's free end holds it
+constexpr float kTickStroke = 1.5f;      // a shape this thin is a stroke, not an area
+constexpr float kTickMinStep = 3.0f;     // ticks this close are no axis's
+constexpr float kTickEven = 0.6f;        // the share of steps that equal the median step, at least
+constexpr float kAxisCell = 8.0f;          // cells of the shape index (larger on a larger page)
+constexpr int kAxisSide = 512;             // index cells per side at most
+constexpr size_t kMaxShapeCells = 256;     // a shape over more cells is looked at by every search
+constexpr size_t kMaxWideShapes = 1024;    // such shapes per page at most (more: no axes)
+constexpr size_t kMaxAxisEntries = size_t(1) << 20;  // index entries per page at most (more: no axes)
+constexpr size_t kMaxTicks = size_t(1) << 15;        // candidate ticks per page at most (more: no axes)
+constexpr size_t kMaxAxes = 256;                     // axes per page at most
+constexpr uint32_t kMaxAxisWork = uint32_t(1) << 23;  // shapes and lines looked at per page at most
+
+// A tick: across `pos` (the x of an upright tick, the y of a level one), along [a, b].
+struct Tick {
+    float pos, a, b;
+    uint32_t shape;
+};
+
+// The working storage of ChartAxes, kept by the thread.
+struct AxisScratch {
+    std::vector<Tick> ticks[2];           // [0] upright (an x axis's), [1] level (a y axis's)
+    std::vector<uint32_t> order;          // ticks by the end they start from
+    std::vector<Tick> free;               // a row's ticks that end free
+    std::vector<float> positions, steps;  // their positions, and the steps between them
+    std::vector<uint64_t> cells;          // the shape index: cell << 32 | shape, ascending
+    std::vector<uint32_t> wide;           // shapes over more than kMaxShapeCells cells
+    std::vector<FigureRegion> lines;      // the lines of text on the upright page
 };
 
 // The index of the lowest set bit of m (m != 0).
@@ -372,6 +410,169 @@ void MarkFigureText(PageData& page) {
                 l.flags |= kLineFigure;
                 break;
             }
+    }
+}
+
+void ChartAxes(const PageData& page, std::vector<FigureRegion>& axes) {
+    axes.clear();
+    AxisScratch& scratch = PerThread<AxisScratch>();
+    const std::vector<Shape>& shapes = page.shapes;
+    const auto finite = [](const Shape& s) {
+        return std::isfinite(s.x0) && std::isfinite(s.y0) && std::isfinite(s.x1) && std::isfinite(s.y1) && s.x1 >= s.x0 &&
+               s.y1 >= s.y0;
+    };
+    for (std::vector<Tick>& ticks : scratch.ticks) ticks.clear();
+    size_t count = 0;
+    for (size_t i = 0; i < shapes.size(); ++i) {
+        // A tick is stroked: a thin filled box is a rule as TeX sets it, or a chart's bar.
+        const Shape& s = shapes[i];
+        if (!s.stroked || !finite(s)) continue;
+        const float w = s.x1 - s.x0, h = s.y1 - s.y0, length = Fmax(w, h), thick = Fmin(w, h);
+        if (thick > kTickThick || length < kTickMin || length > kTickMax || length < kTickAspect * thick) continue;
+        if (++count > kMaxTicks) return;
+        if (h > w) scratch.ticks[0].push_back(Tick{(s.x0 + s.x1) / 2, s.y0, s.y1, static_cast<uint32_t>(i)});
+        else scratch.ticks[1].push_back(Tick{(s.y0 + s.y1) / 2, s.x0, s.x1, static_cast<uint32_t>(i)});
+    }
+    if (count < 3) return;
+    uint32_t work = 0;
+    // No tick inside a line of text, from a little under its baseline (an underscore drawn as a
+    // rule) to an em above it.
+    scratch.lines.clear();
+    for (const Line& l : page.lines) {
+        if (l.chars == 0) continue;
+        float x0 = l.u0, y0 = l.baseline - 0.35f * l.size, x1 = l.u1, y1 = l.baseline + l.size;
+        RectFromFrame(l.dir, x0, y0, x1, y1);
+        scratch.lines.push_back(FigureRegion{x0, y0, x1, y1});
+    }
+    for (std::vector<Tick>& ticks : scratch.ticks) {
+        size_t kept = 0;
+        for (const Tick& t : ticks) {
+            const Shape& s = shapes[t.shape];
+            bool text = false;
+            for (size_t k = 0; k < scratch.lines.size() && !text; ++k) {
+                const FigureRegion& l = scratch.lines[k];
+                text = s.x1 >= l.x0 && s.x0 <= l.x1 && s.y1 >= l.y0 && s.y0 <= l.y1;
+            }
+            work += static_cast<uint32_t>(std::min<size_t>(scratch.lines.size(), kMaxAxisWork));
+            if (work > kMaxAxisWork) return;
+            if (!text) ticks[kept++] = t;
+        }
+        ticks.resize(kept);
+    }
+    if (scratch.ticks[0].size() < 3 && scratch.ticks[1].size() < 3) return;
+    // The shapes a tick's end may touch, by the index cells their boxes (grown by kTickTouch) lie
+    // over; the few over many cells (frames, backgrounds) apart.
+    const float width = page.width, height = page.height;
+    if (!(width > 0) || !(height > 0) || !std::isfinite(width) || !std::isfinite(height)) return;
+    const float cell = Fmax(kAxisCell, Fmax(width, height) / float(kAxisSide));
+    const int nx = std::min(kAxisSide, static_cast<int>(width / cell) + 1);
+    const int ny = std::min(kAxisSide, static_cast<int>(height / cell) + 1);
+    const auto cellOf = [&](float v, int n) {
+        const float c = v / cell;
+        return c <= 0 ? 0 : c >= float(n - 1) ? n - 1 : static_cast<int>(c);
+    };
+    scratch.cells.clear(), scratch.wide.clear();
+    for (uint32_t i = 0; i < shapes.size(); ++i) {
+        const Shape& s = shapes[i];
+        if (!finite(s)) continue;
+        const int c0 = cellOf(s.x0 - kTickTouch, nx), c1 = cellOf(s.x1 + kTickTouch, nx);
+        const int r0 = cellOf(s.y0 - kTickTouch, ny), r1 = cellOf(s.y1 + kTickTouch, ny);
+        if (static_cast<size_t>(c1 - c0 + 1) * static_cast<size_t>(r1 - r0 + 1) > kMaxShapeCells) {
+            if (scratch.wide.size() >= kMaxWideShapes) return;
+            scratch.wide.push_back(i);
+            continue;
+        }
+        for (int r = r0; r <= r1; ++r)
+            for (int c = c0; c <= c1; ++c) {
+                if (scratch.cells.size() >= kMaxAxisEntries) return;
+                scratch.cells.push_back(uint64_t(static_cast<uint32_t>(r * nx + c)) << 32 | i);
+            }
+    }
+    std::sort(scratch.cells.begin(), scratch.cells.end());
+    // Shape j holds the end (x, y) of a tick (upright or level): a stroke across the tick there, a
+    // stroke running on from it (the next piece of a rule), or an area whose side across the tick
+    // passes there. A stroke along the tick past its end (a plot's frame under its first tick)
+    // holds nothing.
+    const auto holds = [&](uint32_t j, uint32_t self, float x, float y, bool upright) {
+        if (j == self) return false;
+        const Shape& s = shapes[j];
+        if (x < s.x0 - kTickTouch || x > s.x1 + kTickTouch || y < s.y0 - kTickTouch || y > s.y1 + kTickTouch) return false;
+        const float w = s.x1 - s.x0, h = s.y1 - s.y0;
+        if (Fmin(w, h) <= kTickStroke) {
+            if (upright) return w > h || std::fabs(s.y0 - y) <= kTickTouch || std::fabs(s.y1 - y) <= kTickTouch;
+            return h >= w || std::fabs(s.x0 - x) <= kTickTouch || std::fabs(s.x1 - x) <= kTickTouch;
+        }
+        return upright ? std::fabs(y - s.y0) <= kTickTouch || std::fabs(y - s.y1) <= kTickTouch
+                       : std::fabs(x - s.x0) <= kTickTouch || std::fabs(x - s.x1) <= kTickTouch;
+    };
+    bool exhausted = false;
+    const auto held = [&](float x, float y, bool upright, uint32_t self) {
+        const uint64_t key = uint64_t(static_cast<uint32_t>(cellOf(y, ny) * nx + cellOf(x, nx))) << 32;
+        for (auto it = std::lower_bound(scratch.cells.begin(), scratch.cells.end(), key);
+             it != scratch.cells.end() && (*it & ~uint64_t(0xFFFFFFFF)) == key; ++it) {
+            if (++work > kMaxAxisWork) return exhausted = true;
+            if (holds(static_cast<uint32_t>(*it), self, x, y, upright)) return true;
+        }
+        for (uint32_t j : scratch.wide) {
+            if (++work > kMaxAxisWork) return exhausted = true;
+            if (holds(j, self, x, y, upright)) return true;
+        }
+        return false;
+    };
+    for (int o = 0; o < 2; ++o) {
+        const std::vector<Tick>& ticks = scratch.ticks[o];
+        if (ticks.size() < 3) continue;
+        for (int end = 0; end < 2; ++end) {
+            const auto key = [&](uint32_t k) { return end == 0 ? ticks[k].a : ticks[k].b; };
+            scratch.order.resize(ticks.size());
+            for (uint32_t k = 0; k < ticks.size(); ++k) scratch.order[k] = k;
+            std::sort(scratch.order.begin(), scratch.order.end(), [&](uint32_t p, uint32_t q) { return key(p) < key(q); });
+            for (size_t i = 0; i < scratch.order.size();) {
+                size_t j = i + 1;
+                while (j < scratch.order.size() && key(scratch.order[j]) - key(scratch.order[j - 1]) <= kTickRow) ++j;
+                const size_t first = i;
+                i = j;
+                if (j - first < 3) continue;
+                // The row's ticks that end free, at the end away from the axis.
+                scratch.free.clear();
+                for (size_t k = first; k < j; ++k) {
+                    const Tick& t = ticks[scratch.order[k]];
+                    const float other = end == 0 ? t.b : t.a;
+                    const bool hold = o == 0 ? held(t.pos, other, true, t.shape) : held(other, t.pos, false, t.shape);
+                    if (exhausted) {
+                        axes.clear();
+                        return;
+                    }
+                    if (!hold) scratch.free.push_back(t);
+                }
+                if (scratch.free.size() < 3) continue;
+                // Three positions at least, most steps between them alike.
+                std::vector<float>& positions = scratch.positions;
+                positions.clear();
+                for (const Tick& t : scratch.free) positions.push_back(t.pos);
+                std::sort(positions.begin(), positions.end());
+                size_t distinct = 1;
+                for (size_t k = 1; k < positions.size(); ++k)
+                    if (positions[k] - positions[distinct - 1] >= 0.1f) positions[distinct++] = positions[k];
+                positions.resize(distinct);
+                if (positions.size() < 3) continue;
+                std::vector<float>& steps = scratch.steps;
+                steps.clear();
+                for (size_t k = 1; k < positions.size(); ++k) steps.push_back(positions[k] - positions[k - 1]);
+                std::nth_element(steps.begin(), steps.begin() + static_cast<std::ptrdiff_t>(steps.size() / 2), steps.end());
+                const float median = steps[steps.size() / 2];
+                if (median < kTickMinStep) continue;
+                const float within = Fmax(0.5f, 0.03f * median);
+                size_t even = 0;
+                for (float s : steps) even += std::fabs(s - median) <= within;
+                if (even < 2 || float(even) < kTickEven * float(steps.size())) continue;
+                float lo = INFINITY, hi = -INFINITY;
+                for (const Tick& t : scratch.free) lo = Fmin(lo, t.a), hi = Fmax(hi, t.b);
+                if (o == 0) axes.push_back(FigureRegion{positions.front(), lo, positions.back(), hi});
+                else axes.push_back(FigureRegion{lo, positions.front(), hi, positions.back()});
+                if (axes.size() >= kMaxAxes) return;
+            }
+        }
     }
 }
 

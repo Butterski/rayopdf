@@ -529,6 +529,54 @@ void TestLatticeInFigure() {
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| alpha | 0.51 |"), 876);
 }
 
+// A heat map: a grid of filled cells, a count in each, with tick marks along its left side and
+// under it (a chart's axes, one tick a row and a column) and category labels beside the ticks.
+// The counts are the chart's text: no table, the counts and labels kept. The same grid without
+// ticks is a table.
+void TestHeatMapAxes() {
+    for (const bool ticks : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddProse(page, 72, 450, 740, 3);
+        const char* const counts[4][3] = {
+            {"16510", "0", "928"}, {"0", "583", "10676"}, {"33254", "0", "1511"}, {"95335", "581", "0"}};
+        const char* const rows[] = {"B101", "B102", "B103", "B104"};
+        const char* const cols[] = {"Low", "Medium", "High"};
+        const auto stroke = [&](float x0, float y0, float x1, float y1) {
+            Shape s;
+            s.x0 = x0, s.y0 = y0, s.x1 = x1, s.y1 = y1;
+            s.kind = ShapeKind::Line, s.stroked = true, s.segments = 1;
+            page.shapes.push_back(s);
+            page.rulings.push_back(Ruling{x0, y0, x1, y1, kRulingStroke});
+        };
+        for (int r = 0; r < 4; ++r) {
+            const float y1 = 640 - 20.0f * float(r);
+            for (int c = 0; c < 3; ++c) {
+                const float x0 = 200 + 50.0f * float(c);
+                Shape cell;
+                cell.x0 = x0, cell.y0 = y1 - 20, cell.x1 = x0 + 50, cell.y1 = y1;
+                cell.kind = ShapeKind::Rect, cell.filled = true, cell.segments = 4;
+                page.shapes.push_back(cell);
+                page.rulings.push_back(Ruling{x0, y1 - 20, x0 + 50, y1, kRulingFill});
+                AddText(page, counts[r][c], x0 + 25 - 2.5f * float(std::strlen(counts[r][c])), y1 - 14);
+            }
+            if (ticks) stroke(196, y1 - 10, 200, y1 - 10);
+            AddText(page, rows[r], 172, y1 - 14);
+        }
+        for (int c = 0; c < 3; ++c) {
+            const float x = 225 + 50.0f * float(c);
+            if (ticks) stroke(x, 556, x, 560);
+            AddText(page, cols[c], x - 2.5f * float(std::strlen(cols[c])), 544);
+        }
+        AddProse(page, 72, 450, 500, 3);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(ticks ? "heat map" : "grid of counts", md);
+        if (ticks) RAYOPDF_CHECK(report.tables == 0 && Contains(md, "33254") && Contains(md, "B103"), 1738);
+        else RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| 33254 |"), 1739);
+    }
+}
+
 // A ruling of a lattice running on past its top rule makes no empty row above the table.
 void TestLatticeRulingPastTop() {
     std::vector<PageData> pages{NewPage()};
@@ -2329,6 +2377,7 @@ int main(int argc, char** argv) {
     TestFigureText();
     TestFigureCorners();
     TestLatticeInFigure();
+    TestHeatMapAxes();
     TestLatticeRulingPastTop();
     TestLatticeTwoLineRow();
     TestAuthorBlock();

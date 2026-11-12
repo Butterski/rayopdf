@@ -536,6 +536,7 @@ struct TableScratch {
     std::vector<int> textyColumns, cellColumns, gridColumns;
     std::vector<float> widths;
     std::vector<float> middles;  // WordColumns: the gaps' middles (ColumnOf's bounds)
+    std::vector<FigureRegion> axes;  // DropChartText: the page's chart axes
 };
 constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
 
@@ -613,6 +614,7 @@ private:
     void RowsBelow(Grid& g);
     void JoinStripes();
     void RepeatedHeaders();
+    void DropChartText();
     void Commit();
     bool Contents(const Grid& g) const;
     void MarkUsed(const Grid& g);
@@ -3630,6 +3632,27 @@ void Detector::RepeatedHeaders() {
     }
 }
 
+// A grid standing on a chart's axis (its tick marks within two ems, across the axis or along it)
+// holds the chart's text: tick labels, an axis title, a legend, the values on its bars or in the
+// cells of a heat map. No table; its words stay lines of text.
+void Detector::DropChartText() {
+    if (grids_.empty()) return;
+    std::vector<FigureRegion>& axes = scratch_.axes;
+    ChartAxes(page_, axes);
+    if (axes.empty()) return;
+    const float reach = 2 * bodySize_;
+    for (FigureRegion& a : axes) {
+        const Ruling r = ToFrame(Ruling{a.x0 - reach, a.y0 - reach, a.x1 + reach, a.y1 + reach, 0}, dir_);
+        a = FigureRegion{r.x0, r.y0, r.x1, r.y1};
+    }
+    const auto onAxis = [&](const Grid& g) {
+        for (const FigureRegion& a : axes)
+            if (Overlaps(g, a.x0, a.y0, a.x1, a.y1)) return true;
+        return false;
+    };
+    grids_.erase(std::remove_if(grids_.begin(), grids_.end(), onAxis), grids_.end());
+}
+
 void Detector::Commit() {
     for (Grid& g : grids_) {
         if (g.cells.empty()) ComputeSpans(g);
@@ -3818,6 +3841,7 @@ int Detector::Run() {
     const float close = Fmax(0.6f, 2.5f * wordSpace_);
     if (close < 1.0f) Borderless(close);
     if (dir_ == 0) RepeatedHeaders();
+    DropChartText();
     Commit();
     return restored_;
 }

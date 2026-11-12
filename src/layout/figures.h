@@ -36,4 +36,11 @@ void FigureRegions(PageData& page, std::vector<FigureRegion>& regions);
 // it: a figure's own text (tick labels, legends, axis titles, the labels of a diagram).
 void MarkFigureText(PageData& page);
 
+// The axes of the page's charts, each the box of its tick marks on the upright page: three ticks
+// at least, short thin strokes across the axis that start on one line, end free (no stroke runs
+// on from that end or crosses it, as the pieces of a table's rules do), stand evenly spaced, and
+// lie outside the lines of text (an underscore drawn as a rule). None when the page has more
+// candidate ticks or shapes than the search may look at (fail closed).
+void ChartAxes(const PageData& page, std::vector<FigureRegion>& axes);
+
 } // namespace RayoPdf::Layout
