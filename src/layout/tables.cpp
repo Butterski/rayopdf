@@ -2183,34 +2183,100 @@ void Detector::BoxGrids() {
     const size_t n = boxes.size();
     if (n < 6) return;
     const auto area = [&](size_t i) { return (boxes[i].x1 - boxes[i].x0) * (boxes[i].y1 - boxes[i].y0); };
+    // Box i gives way to a smaller box whose centre it holds, and to an earlier box at its place
+    // (each side within half a point). The boxes that may make it give way are looked up by their
+    // centres (those in i's x-range) and by their left edges (those within a point of i's: a float
+    // difference of half a point at most is a real one under a point, and rounding keeps the
+    // order), not by trying every other box.
+    const auto yields = [&](size_t i, size_t j) {
+        const Box &a = boxes[i], &b = boxes[j];
+        const float cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+        const bool same = std::fabs(a.x0 - b.x0) <= 0.5f && std::fabs(a.x1 - b.x1) <= 0.5f && std::fabs(a.y0 - b.y0) <= 0.5f &&
+                          std::fabs(a.y1 - b.y1) <= 0.5f;
+        return same ? j < i : cx >= a.x0 && cx <= a.x1 && cy >= a.y0 && cy <= a.y1 && area(i) > area(j);
+    };
+    std::vector<float> centre(n);
+    std::vector<uint32_t> byCentre(n), byLeft(n);
+    for (size_t i = 0; i < n; ++i) {
+        centre[i] = (boxes[i].x0 + boxes[i].x1) / 2;
+        byCentre[i] = byLeft[i] = static_cast<uint32_t>(i);
+    }
+    std::sort(byCentre.begin(), byCentre.end(), [&](uint32_t p, uint32_t q) { return centre[p] < centre[q]; });
+    std::sort(byLeft.begin(), byLeft.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 < boxes[q].x0; });
     std::vector<uint8_t> keep(n, 1);
-    for (size_t i = 0; i < n; ++i)
-        for (size_t j = 0; j < n && keep[i]; ++j) {
-            if (i == j) continue;
-            const Box &a = boxes[i], &b = boxes[j];
-            const float cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-            const bool same = std::fabs(a.x0 - b.x0) <= 0.5f && std::fabs(a.x1 - b.x1) <= 0.5f && std::fabs(a.y0 - b.y0) <= 0.5f &&
-                              std::fabs(a.y1 - b.y1) <= 0.5f;
-            if (same ? j < i : cx >= a.x0 && cx <= a.x1 && cy >= a.y0 && cy <= a.y1 && area(i) > area(j)) keep[i] = 0;
-        }
+    for (size_t i = 0; i < n; ++i) {
+        const Box& a = boxes[i];
+        auto c = std::lower_bound(byCentre.begin(), byCentre.end(), a.x0, [&](uint32_t j, float x) { return centre[j] < x; });
+        for (; c != byCentre.end() && centre[*c] <= a.x1 && keep[i]; ++c)
+            if (*c != i && yields(i, *c)) keep[i] = 0;
+        const float from = a.x0 - 1.0f, to = a.x0 + 1.0f;
+        auto l = std::lower_bound(byLeft.begin(), byLeft.end(), from, [&](uint32_t j, float x) { return boxes[j].x0 < x; });
+        for (; l != byLeft.end() && boxes[*l].x0 <= to && keep[i]; ++l)
+            if (*l != i && yields(i, *l)) keep[i] = 0;
+    }
     std::vector<int32_t> rowOf(n), colOf(n), comp(n);
     for (size_t i = 0; i < n; ++i) rowOf[i] = colOf[i] = comp[i] = static_cast<int32_t>(i);
     const auto join = [](std::vector<int32_t>& parent, size_t i, size_t j) {
         const int32_t a = Find(parent, static_cast<int32_t>(i)), b = Find(parent, static_cast<int32_t>(j));
         if (a != b) parent[static_cast<size_t>(a)] = b;
     };
+    // Rows and columns: boxes whose y-ranges (x-ranges) overlap enough, found by a sweep over the
+    // kept boxes in order of their lower (left) edges, each paired with those starting inside it
+    // (an overlap is a positive length). Only the sets matter here, not which box roots them.
+    std::vector<uint32_t> sweep;
     for (size_t i = 0; i < n; ++i)
-        for (size_t j = i + 1; j < n && keep[i]; ++j) {
-            if (!keep[j]) continue;
-            const Box &a = boxes[i], &b = boxes[j];
-            if (Fmin(a.y1, b.y1) - Fmax(a.y0, b.y0) >= 0.5f * Fmin(a.y1 - a.y0, b.y1 - b.y0)) join(rowOf, i, j);
-            if (Fmin(a.x1, b.x1) - Fmax(a.x0, b.x0) >= 0.8f * Fmax(a.x1 - a.x0, b.x1 - b.x0)) join(colOf, i, j);
+        if (keep[i]) sweep.push_back(static_cast<uint32_t>(i));
+    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].y0 < boxes[q].y0; });
+    for (size_t k = 0; k < sweep.size(); ++k)
+        for (size_t m = k + 1; m < sweep.size() && boxes[sweep[m]].y0 <= boxes[sweep[k]].y1; ++m) {
+            const Box &a = boxes[sweep[k]], &b = boxes[sweep[m]];
+            if (Fmin(a.y1, b.y1) - Fmax(a.y0, b.y0) >= 0.5f * Fmin(a.y1 - a.y0, b.y1 - b.y0)) join(rowOf, sweep[k], sweep[m]);
         }
+    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 < boxes[q].x0; });
+    for (size_t k = 0; k < sweep.size(); ++k)
+        for (size_t m = k + 1; m < sweep.size() && boxes[sweep[m]].x0 <= boxes[sweep[k]].x1; ++m) {
+            const Box &a = boxes[sweep[k]], &b = boxes[sweep[m]];
+            if (Fmin(a.x1, b.x1) - Fmax(a.x0, b.x0) >= 0.8f * Fmax(a.x1 - a.x0, b.x1 - b.x0)) join(colOf, sweep[k], sweep[m]);
+        }
+    // Groups: box i joins each later box of its row or its column, in the order of their indices
+    // (the order fixes which box roots a group, and so the order the groups are tried in). The
+    // members of row root r, in order of their indices: rowMembers[rowFrom[r], rowFrom[r + 1]);
+    // rowAt[i] is box i's place there (columns likewise).
+    for (size_t i = 0; i < n; ++i) {
+        rowOf[i] = Find(rowOf, static_cast<int32_t>(i));  // each box points at its root from here on
+        colOf[i] = Find(colOf, static_cast<int32_t>(i));
+    }
+    std::vector<uint32_t> rowFrom(n + 1, 0), colFrom(n + 1, 0), rowMembers(n), colMembers(n), rowAt(n), colAt(n);
     for (size_t i = 0; i < n; ++i)
-        for (size_t j = i + 1; j < n && keep[i]; ++j)
-            if (keep[j] && (Find(rowOf, static_cast<int32_t>(i)) == Find(rowOf, static_cast<int32_t>(j)) ||
-                            Find(colOf, static_cast<int32_t>(i)) == Find(colOf, static_cast<int32_t>(j))))
-                join(comp, i, j);
+        if (keep[i]) rowFrom[static_cast<size_t>(rowOf[i]) + 1]++, colFrom[static_cast<size_t>(colOf[i]) + 1]++;
+    for (size_t i = 0; i < n; ++i) rowFrom[i + 1] += rowFrom[i], colFrom[i + 1] += colFrom[i];
+    {
+        std::vector<uint32_t> rowFill(rowFrom.begin(), rowFrom.end() - 1), colFill(colFrom.begin(), colFrom.end() - 1);
+        for (size_t i = 0; i < n; ++i)
+            if (keep[i]) {
+                const size_t r = static_cast<size_t>(rowOf[i]), k = static_cast<size_t>(colOf[i]);
+                rowAt[i] = rowFill[r], rowMembers[rowFill[r]++] = static_cast<uint32_t>(i);
+                colAt[i] = colFill[k], colMembers[colFill[k]++] = static_cast<uint32_t>(i);
+            }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (!keep[i]) continue;
+        uint32_t p = rowAt[i] + 1, q = colAt[i] + 1;
+        const uint32_t pEnd = rowFrom[static_cast<size_t>(rowOf[i]) + 1], qEnd = colFrom[static_cast<size_t>(colOf[i]) + 1];
+        while (p < pEnd || q < qEnd) {
+            const uint32_t a = p < pEnd ? rowMembers[p] : UINT32_MAX, b = q < qEnd ? colMembers[q] : UINT32_MAX;
+            const uint32_t j = a < b ? a : b;
+            p += a == j, q += b == j;
+            join(comp, i, j);
+        }
+    }
+    // A group of fewer than four boxes fills fewer than 60 % of the six slots of three rows by two
+    // columns.
+    std::vector<uint32_t> groupSize(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        comp[i] = Find(comp, static_cast<int32_t>(i));
+        groupSize[static_cast<size_t>(comp[i])] += keep[i];
+    }
     struct Band {
         int32_t root;
         float a, b;  // the extent of its boxes
@@ -2219,7 +2285,7 @@ void Detector::BoxGrids() {
     std::vector<std::pair<int32_t, int32_t>> slots;
     bool added = false;
     for (size_t c = 0; c < n; ++c) {
-        if (!keep[c] || Find(comp, static_cast<int32_t>(c)) != static_cast<int32_t>(c)) continue;
+        if (!keep[c] || comp[c] != static_cast<int32_t>(c) || groupSize[c] < 4) continue;
         rows.clear(), cols.clear(), slots.clear();
         const auto extend = [](std::vector<Band>& bands, int32_t root, float a, float b) {
             for (Band& band : bands)
@@ -2230,8 +2296,8 @@ void Detector::BoxGrids() {
             bands.push_back(Band{root, a, b});
         };
         for (size_t i = 0; i < n; ++i) {
-            if (!keep[i] || Find(comp, static_cast<int32_t>(i)) != static_cast<int32_t>(c)) continue;
-            const int32_t r = Find(rowOf, static_cast<int32_t>(i)), k = Find(colOf, static_cast<int32_t>(i));
+            if (!keep[i] || comp[i] != static_cast<int32_t>(c)) continue;
+            const int32_t r = rowOf[i], k = colOf[i];
             extend(rows, r, boxes[i].y0, boxes[i].y1);
             extend(cols, k, boxes[i].x0, boxes[i].x1);
             if (std::find(slots.begin(), slots.end(), std::make_pair(r, k)) == slots.end()) slots.emplace_back(r, k);
@@ -2269,8 +2335,8 @@ void Detector::BoxGrids() {
         if (std::any_of(h_.begin(), h_.end(), [&](const Edge& e) { return through(e, bottom, top, left, right, true); }) ||
             std::any_of(v_.begin(), v_.end(), [&](const Edge& e) { return through(e, left, right, bottom, top, false); }))
             continue;
-        size_t boxCount = 0, drawn = 0;  // the grid's boxes; the shapes drawn inside it
-        for (size_t i = 0; i < n; ++i) boxCount += keep[i] && Find(comp, static_cast<int32_t>(i)) == static_cast<int32_t>(c);
+        const size_t boxCount = groupSize[c];  // the grid's boxes
+        size_t drawn = 0;                      // the shapes drawn inside it
         for (const Shape& s : page_.shapes) {
             if (s.filled && !s.curved) continue;
             const Ruling r = ToFrame(Ruling{s.x0, s.y0, s.x1, s.y1, 0}, dir_);
