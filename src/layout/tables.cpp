@@ -306,6 +306,37 @@ bool PageNumber(std::string_view t) {
     return (digits && t.size() <= 4) || roman;
 }
 
+// The value of a page reference (PageNumber), roman numerals (all of one case) by their value; -1
+// for anything else. `roman` says which kind of number it is.
+int PageValue(std::string_view t, bool& roman) {
+    if (!PageNumber(t)) return -1;
+    roman = !(t[0] >= '0' && t[0] <= '9');
+    int total = 0;
+    if (!roman) {
+        for (char c : t) total = total * 10 + (c - '0');
+        return total;
+    }
+    const bool upper = t[0] < 'a';
+    for (char c : t)
+        if ((c < 'a') != upper) return -1;
+    const auto digit = [](char c) {
+        switch (c | 0x20) {
+        case 'i': return 1;
+        case 'v': return 5;
+        case 'x': return 10;
+        case 'l': return 50;
+        case 'c': return 100;
+        case 'd': return 500;
+        default: return 1000;
+        }
+    };
+    for (size_t k = 0; k < t.size(); ++k) {
+        const int v = digit(t[k]), next = k + 1 < t.size() ? digit(t[k + 1]) : 0;
+        total += v < next ? -v : v;
+    }
+    return total;
+}
+
 // An e-mail address: a name of letters, digits and . _ + - (braces and commas for a group of
 // names), an at sign, then a domain of letters, digits, dots and hyphens that ends in a dot and two
 // letters at least; a footnote mark (*, a symbol such as ∗ or †) and one closing punctuation mark
@@ -580,6 +611,7 @@ private:
     void RowsBelow(Grid& g);
     void JoinStripes();
     void Commit();
+    bool Contents(const Grid& g) const;
     void MarkUsed(const Grid& g);
     std::string_view WordText(const TWord& w, std::string& scratch) const;
     const WordChars& Chars(const TWord& w) const;  // w is one of words_
@@ -3235,7 +3267,86 @@ bool Detector::HeaderAtColumns(const std::vector<Row>& rows, const std::vector<u
     return true;
 }
 
+// A list of contents set as a table, ruled or not: in three rows at least a page reference (a
+// number, or a roman numeral in front matter) alone in the last column, never going down the
+// column, with an entry's words before it in four such rows of five; two columns, or three whose
+// first holds section numbers only. Ascending numbers beside names are a data table as well (counts,
+// ranks), so it also takes a sign of contents: a "Contents" line above it on the page, leader dots
+// after an entry, front matter in roman numerals, or five references at least that step unevenly.
+bool Detector::Contents(const Grid& g) const {
+    const int cols = g.Cols();
+    if (cols < 2 || cols > 3) return false;
+    std::vector<std::string> last(static_cast<size_t>(g.Rows()));
+    std::vector<uint8_t> entry(static_cast<size_t>(g.Rows()), 0);
+    std::string scratch;
+    bool leaders = false;
+    auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
+    const auto above = it;  // the words above the grid
+    const auto contentsTitle = [&]() {
+        for (auto w = words_.begin(); w != above; ++w) {
+            if (w->removed) continue;
+            std::string_view t = WordText(*w, scratch);
+            if (t.size() != 8) continue;
+            std::string folded(t);
+            for (char& c : folded) c = static_cast<char>(c | 0x20);
+            if (folded == "contents") return true;
+        }
+        return false;
+    };
+    Locator locate(g);
+    for (; it != words_.end() && it->base >= g.y0; ++it) {
+        const TWord& w = *it;
+        int r = 0, c = 0;
+        if (w.removed || !locate.Find((w.x0 + w.x1) / 2, (w.y0 + w.y1) / 2, r, c)) continue;
+        const Span& cell = g.cells[static_cast<size_t>(g.owner[static_cast<size_t>(r * cols + c)])];
+        const std::string_view t = WordText(w, scratch);
+        if (cell.c + cell.cs != cols) {
+            if (cols == 3 && cell.c == 0) {
+                for (char ch : t)
+                    if (!((ch >= '0' && ch <= '9') || ch == '.')) return false;
+                continue;
+            }
+            entry[static_cast<size_t>(r)] = entry[static_cast<size_t>(r)] || Chars(w).letters > 0;
+            leaders = leaders || t.find("....") != std::string_view::npos || t.find("\xE2\x80\xA6\xE2\x80\xA6") != std::string_view::npos;
+            continue;
+        }
+        std::string& text = last[static_cast<size_t>(cell.r)];
+        if (text.size() > 8) return false;
+        if (!text.empty()) text.push_back(' ');
+        text += t;
+    }
+    int refs = 0, entries = 0, previous = -1, step = -1;
+    bool previousRoman = false, roman = false, uneven = false;
+    for (size_t r = 0; r < last.size(); ++r) {
+        if (last[r].empty()) continue;
+        bool isRoman = false;
+        const int page = PageValue(last[r], isRoman);
+        if (page < 0 || (previous >= 0 && isRoman == previousRoman && page < previous)) return false;
+        if (previous >= 0 && isRoman == previousRoman) {
+            uneven = uneven || (step >= 0 && page - previous != step);
+            step = page - previous;
+        }
+        previous = page, previousRoman = isRoman, roman = roman || isRoman, refs++;
+        entries += entry[r];
+    }
+    if (refs < 3 || entries * 5 < refs * 4) return false;
+    return leaders || roman || (refs >= 5 && uneven) || contentsTitle();
+}
+
 void Detector::Commit() {
+    for (Grid& g : grids_)
+        if (g.cells.empty()) ComputeSpans(g);
+    // A list of contents stays lines of text; its words are free again.
+    for (size_t gi = grids_.size(); gi-- > 0;) {
+        const Grid& g = grids_[gi];
+        if (!Contents(g)) continue;
+        for (size_t i = 0; i < words_.size(); ++i) {
+            const TWord& w = words_[i];
+            const float cx = (w.x0 + w.x1) / 2, cy = (w.y0 + w.y1) / 2;
+            if (cx >= g.x0 && cx <= g.x1 && cy >= g.y0 && cy <= g.y1) wordUsed_[i] = 0;
+        }
+        grids_.erase(grids_.begin() + static_cast<std::ptrdiff_t>(gi));
+    }
     // The continuation for the next page: the lowest upright table, when no text follows it on
     // this page but running footers.
     if (dir_ == 0) continuation_.valid = false;
@@ -3253,8 +3364,6 @@ void Detector::Commit() {
         }
     }
     if (grids_.empty()) return;
-    for (Grid& g : grids_)
-        if (g.cells.empty()) ComputeSpans(g);
     // Which grid and cell each glyph of each line falls in; lines mostly inside a grid move there.
     struct Piece {
         uint32_t grid, cell, line;

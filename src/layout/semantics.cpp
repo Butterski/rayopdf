@@ -1878,8 +1878,18 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 if (!t.empty() && (t[0] == '-' || (t[0] >= '0' && t[0] <= '9'))) lowerLead = false;
             }
         }
+        // A part title among the entries of a list of contents (an entry within two blocks before it
+        // and after it on its page) is an entry too, not a heading.
+        const auto amongContents = [&]() {
+            bool before = false, after = false;
+            for (size_t q = r >= 2 ? r - 2 : 0; q < r; ++q)
+                before = before || (infos[raws[q].first].pageRef && infos[raws[q].first].page == first.page);
+            for (size_t q = r + 1; q < raws.size() && q <= r + 2; ++q)
+                after = after || (infos[raws[q].first].pageRef && infos[raws[q].first].page == first.page);
+            return before && after;
+        };
         const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer && !first.pageRef &&
-                                first.dir != 1 && first.dir != 2 && !lowerLead;
+                                first.dir != 1 && first.dir != 2 && !lowerLead && !amongContents();
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
         // Captions are set apart like headings but title no section; display math set large (an

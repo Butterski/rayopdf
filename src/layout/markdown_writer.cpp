@@ -162,6 +162,9 @@ private:
     // nothing because no `*` or `_` of its kind stands raw before it. Literal stars ("0.05**")
     // stay as they are.
     void DropNeedlessEscapes(size_t from);
+    // Leader dots set one by one (". . . . 17" after an entry of a list of contents) fill space and
+    // make no words: in out_ from `from`, four dots and more a space apart become one run of dots.
+    void JoinLeaderDots(size_t from);
     // LaTeX mode: the inline formulas of the collected glyphs (mathRun_).
     void FindFormulas();
     // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
@@ -974,6 +977,7 @@ void Writer::Inline(const Block& block, bool styles) {
     runs_.clear();
     if (math_ == MathMode::Latex ? InlinePlain<true>(block, styles) : InlinePlain<false>(block, styles)) {
         DropNeedlessEscapes(from);
+        JoinLeaderDots(from);
         return;
     }
     runs_.clear();  // InlinePlain's, out_ cut back
@@ -1143,6 +1147,28 @@ void Writer::Inline(const Block& block, bool styles) {
     // No trailing spaces.
     while (!out_.empty() && out_.back() == ' ') out_.pop_back();
     DropNeedlessEscapes(from);
+    JoinLeaderDots(from);
+}
+
+void Writer::JoinLeaderDots(size_t from) {
+    // Most text holds no run: nothing moves before the first.
+    size_t r = out_.find(". . . .", from);
+    if (r == std::string::npos) return;
+    const size_t n = out_.size();
+    size_t w = r;
+    while (r < n) {
+        if (out_[r] == '.') {
+            size_t e = r + 1, dots = 1;
+            while (e + 1 < n && out_[e] == ' ' && out_[e + 1] == '.') e += 2, dots++;
+            if (dots >= 4) {
+                for (size_t d = 0; d < dots; ++d) out_[w++] = '.';
+                r = e;
+                continue;
+            }
+        }
+        out_[w++] = out_[r++];
+    }
+    out_.resize(w);
 }
 
 uint32_t Writer::ScriptForms(const Word& w, uint32_t k, uint32_t stop) {

@@ -2099,6 +2099,62 @@ void TestWordBox() {
     RAYOPDF_CHECK(end == 2 && box.u0 == 0 && box.u1 == 2 && box.vb == 0 && box.vt == 1 && !box.nan, 861);
 }
 
+// A list of contents (entries, each with its page number at the right) is lines of text, not a
+// table: ruled as a word processor's table (rules under the rows, a rule before the page column),
+// or set without rules with front matter in roman numerals and a part title among the entries,
+// which is an entry too, not a heading; leader dots set a space apart are written as one run. Two
+// columns whose numbers go down are a table still.
+void TestContentsLists() {
+    std::vector<PageData> pages{NewPage(), NewPage(2), NewPage(3)};
+    AddText(pages[0], "Table of Contents", 72, 640, 16, kGlyphBold);
+    const char* const ruled[4][2] = {{"Executive Summary", "4"}, {"Legal Framework", "6"},
+                                     {"Election Administration", "11"}, {"Civil Society Engagement", "15"}};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 600 - 20.0f * float(r);
+        AddText(pages[0], ruled[r][0], 76, y);
+        AddText(pages[0], ruled[r][1], 304, y);
+        HLine(pages[0], 72, 340, y - 6);
+        VLine(pages[0], 300, y - 6, y + 12);
+    }
+    AddProse(pages[0], 72, 400, 480, 3);
+    AddText(pages[1], "Contents", 72, 640, 16, kGlyphBold);
+    const char* const plain[6][2] = {{"Acknowledgments", "v"}, {"Introduction . . . . . . .", "1"}, {"", ""},
+                                     {"Section 1.1: Types of Variables", "3"}, {"Section 1.2: Descriptive Statistics", "5"},
+                                     {"Section 1.3: Missing Data", "6"}};
+    for (int r = 0; r < 6; ++r) {
+        const float y = 600 - 18.0f * float(r);
+        if (r == 2) {
+            AddText(pages[1], "Part I. Exploring Your Data", 72, y, 11, kGlyphBold);
+            continue;
+        }
+        AddText(pages[1], plain[r][0], 72, y);
+        AddText(pages[1], plain[r][1], 380, y);
+    }
+    AddText(pages[2], "Regional Counts", 72, 640, 16, kGlyphBold);
+    const char* const counts[4][2] = {{"North", "42"}, {"South", "31"}, {"East", "17"}, {"West", "9"}};
+    AddText(pages[2], "Region", 76, 600, 10, kGlyphBold);
+    AddText(pages[2], "Count", 204, 600, 10, kGlyphBold);
+    HLine(pages[2], 72, 260, 612);
+    HLine(pages[2], 72, 260, 594);
+    for (int r = 0; r < 4; ++r) {
+        const float y = 580 - 16.0f * float(r);
+        AddText(pages[2], counts[r][0], 76, y);
+        AddText(pages[2], counts[r][1], 204, y);
+    }
+    HLine(pages[2], 72, 260, 510);
+    AddProse(pages[2], 72, 400, 480, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("contents lists", md);
+    RAYOPDF_CHECK(report.tables == 1, 1723);
+    RAYOPDF_CHECK(Contains(md, "Legal Framework") && !Contains(md, "| Legal Framework"), 1724);
+    RAYOPDF_CHECK(Contains(md, "Part I. Exploring Your Data") && !Contains(md, "# Part I") &&
+                      !Contains(md, "| Introduction"),
+                  1725);
+    RAYOPDF_CHECK(Contains(md, "| North | 42 |"), 1726);
+    RAYOPDF_CHECK(Contains(md, "Introduction .......") && !Contains(md, ". . ."), 1727);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2177,6 +2233,7 @@ int main(int argc, char** argv) {
     TestSmallerLabelRows();
     TestHeaderAboveRules();
     TestCloseNumberColumns();
+    TestContentsLists();
     std::puts("test_layout_tables: ok");
     return 0;
 }
