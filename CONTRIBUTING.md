@@ -121,7 +121,9 @@ the build image, packages them twice to check the bytes repeat, and makes a **dr
 with the four core archives and `SHA256SUMS`: `rayopdf-$V-linux-x64-static.tar.gz`,
 `rayopdf-$V-windows-x64.zip`, and the C++ API's `rayopdf-lib-$V-linux-x64.tar.gz` and
 `rayopdf-lib-$V-windows-x64.zip` (`librayopdf.a`, which those builds' `rayopdf_bundle` target
-merges from the modules, with its header and example).
+merges from the modules, with its header and example). Its `container` job builds the image of
+`packaging/container/Dockerfile` from the Linux archive, checks that it prints its version and
+converts a one-page PDF, and pushes it as `ghcr.io/butterski/rayopdf:$V` and `:latest`.
 
 The OCR add-on's archives need the `rayopdf-ocr:1` image (inference runtimes and models; its
 build takes about 50 minutes), so they are built locally from the tagged commit and attached to

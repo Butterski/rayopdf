@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # A tag v<VERSION> builds the core archives (tools/package.py: the binaries and the C++ API's
-# library archives) and makes a draft release with them and SHA256SUMS. Run by hand (`gh workflow
-# run release.yml`) it is a dry run: the same archives as workflow artifacts, no release. The OCR
-# add-on's archives need the rayopdf-ocr:1 image and are built and attached locally:
-# CONTRIBUTING.md § Versions and releases.
+# library archives) and makes a draft release with them and SHA256SUMS, and builds the container
+# image from the Linux archive, checks it and pushes it to ghcr.io. Run by hand (`gh workflow run
+# release.yml`) it is a dry run: the same archives as workflow artifacts and the image checked, no
+# release and no push. The OCR add-on's archives need the rayopdf-ocr:1 image and are built and
+# attached locally: CONTRIBUTING.md § Versions and releases.
 name: Release
 
 on:
@@ -90,3 +91,68 @@ jobs:
               --notes "Core archives of commit $GITHUB_SHA, built by the Release workflow; SHA256SUMS lists their checksums. The OCR add-on's archives are built and attached by hand (CONTRIBUTING.md, Versions and releases)." \
               rayopdf-*.tar.gz rayopdf-*.zip SHA256SUMS
           fi
+
+  container:
+    name: Container image
+    needs: archives
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: rayopdf-core-archives
+          path: dist
+      - name: Build the image from the linux-x64-static archive
+        run: |
+          version="$(cat VERSION)"
+          tar -xzf "dist/rayopdf-$version-linux-x64-static.tar.gz" -C dist
+          docker build -f packaging/container/Dockerfile --build-arg VERSION="$version" \
+            -t "ghcr.io/butterski/rayopdf:$version" "dist/rayopdf-$version-linux-x64-static"
+      - name: Smoke test
+        run: |
+          version="$(cat VERSION)"
+          image="ghcr.io/butterski/rayopdf:$version"
+          out="$(docker run --rm "$image" --version)"
+          if [ "$out" != "rayopdf $version" ]; then
+            echo "::error::--version says '$out', expected 'rayopdf $version'"
+            exit 1
+          fi
+          mkdir smoke
+          python3 - smoke/t.pdf <<'EOF'
+          import sys
+          text = b"BT /F1 24 Tf 72 700 Td (Hello from the container) Tj ET"
+          objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+                     b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                     b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R"
+                     b" /Resources << /Font << /F1 5 0 R >> >> >>",
+                     b"<< /Length %d >>\nstream\n%s\nendstream" % (len(text), text),
+                     b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+          pdf = b"%PDF-1.4\n"
+          offsets = []
+          for number, body in enumerate(objects, 1):
+              offsets.append(len(pdf))
+              pdf += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+          xref = len(pdf)
+          pdf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+          pdf += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+          pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+          open(sys.argv[1], "wb").write(pdf)
+          EOF
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/smoke:/w" "$image" --convert t.pdf t.md
+          grep -q "Hello from the container" smoke/t.md
+      - name: Push to ghcr.io
+        if: github.ref_type == 'tag'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat VERSION)"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag "ghcr.io/butterski/rayopdf:$version" ghcr.io/butterski/rayopdf:latest
+          docker push "ghcr.io/butterski/rayopdf:$version"
+          docker push ghcr.io/butterski/rayopdf:latest

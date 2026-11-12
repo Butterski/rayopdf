@@ -392,6 +392,17 @@ g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread
 ./a.out paper.pdf > paper.md
 ```
 
+### Container image
+
+`ghcr.io/butterski/rayopdf` holds the static binary alone (no shell), run as user 65532 in `/w`.
+Mount the folder with the PDFs on `/w`; `-u` runs it as you, so that it may write there and the
+files it writes are yours:
+
+```sh
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" ghcr.io/butterski/rayopdf:VERSION \
+    --convert paper.pdf paper.md
+```
+
 <p align="right"><a href="#readme-top">back to top ↑</a></p>
 
 ## Boundaries

@@ -286,7 +286,9 @@ LICENSE, NOTICE, VERSION and `third_party/licenses/`, with fixed times and owner
 `SHA256SUMS`. The C++ API's `rayopdf-lib-VERSION-linux-x64.tar.gz` and
 `rayopdf-lib-VERSION-windows-x64.zip` hold the same documents with `include/rayopdf/rayopdf.h`,
 `lib/librayopdf.a` (the modules merged by the static and Windows builds' `rayopdf_bundle` target)
-and `example.cpp`.
+and `example.cpp`. The container image `ghcr.io/butterski/rayopdf:VERSION`
+(`packaging/container/Dockerfile`, built by the Release workflow from the Linux archive) holds
+the static binary alone on an empty base, run as user 65532 in `/w`.
 
 ### D8 Limits
 
@@ -317,7 +319,7 @@ Each milestone ends with:
 |M4 Semantics|Headings (outline, then style clusters, then numbering), lists (glyph and vector bullets, enumerators, task lists), code, quotes and alerts, rules, emphasis, links, footnotes, image extraction, Unicode math.|odl MHS ≥ docling. Synthetic construct F1 ≥ 0.95 on the untagged development producers and ≥ 0.90 on the holdout. Heading-level accuracy ≥ 0.95. READoc `head_teds` ≥ the best measured tool.|
 |M5 Tables|Ruled lattice tables from vector edges; spans written as HTML; borderless tables detected only above a confidence threshold, otherwise text plus an uncertainty comment.|odl TEDS ≥ best text-layer, with the gap to docling reported. Synthetic TEDS ≥ 0.95. olmOCR `table_tests` ≥ best text-layer.|
 |M6 Tagged|Structure tree, RoleMap, ParentTree, the four validation criteria of [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-primary-signal), Alt and ActualText, artifacts.|Construct F1 on tagged producers ≥ 0.98, and ≥ the untagged path's on the same fixtures.|
-|M7 Product|Final command line, `--report`, `--batch`, `--serve --json`, `--workers`, Windows build, performance campaign (hot-section linker script `hot.ld`, A/B runs with byte-identical Markdown), packaging: core archives, the C++ API's library archives.|The release bar above.|
+|M7 Product|Final command line, `--report`, `--batch`, `--serve --json`, `--workers`, Windows build, performance campaign (hot-section linker script `hot.ld`, A/B runs with byte-identical Markdown), packaging: core archives, the C++ API's library archives, the container image.|The release bar above.|
 |M8 OCR/ML gate|Measure M1, M2, M3, R, S and Q1–Q3 of [OCR/ML §6.2](../research/ocr-ml.md#62-measurements) on the census, odl and olmOCR, including olmOCR's `old_scans*` categories.|The decision is written to `docs/development/ocr_ml_decision.md`. R < 0.1 % → no OCR. 0.1–5 % and mostly Latin or Cyrillic → optional external `tesseract`. ≥ 5 %, or CJK, or a need for OCR on Windows with nothing installed → linked PP-OCRv6 through ONNX Runtime minimal or ncnn. Table ML only if Q2 ≥ 0.10 TEDS after M5. Reading-order or heading ML only if Q1 ≥ 0.03 or Q3 ≥ 0.05.|
 
 **M8 prior (baseline census, SafeDocs `0000.zip`, 996 PDFs, 8,905 pages examined).**
