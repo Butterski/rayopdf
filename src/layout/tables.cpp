@@ -1546,11 +1546,13 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     int group = -1;
     std::vector<Progression> numbers(static_cast<size_t>(nrows) * static_cast<size_t>(cols));
     std::string scratch;
+    bool numbersOnly = true;  // every word a plain number, no label row
     for (size_t r = rowBegin; r < rowEnd; ++r) {
         if (group + 1 < nrows && starts[static_cast<size_t>(group + 1)] == r) ++group;
         if (labels && (*labels)[r]) {
             if (g.labelRow.empty()) g.labelRow.assign(static_cast<size_t>(nrows), 0);
             g.labelRow[static_cast<size_t>(group)] = 1;
+            numbersOnly = false;
             continue;
         }
         uint64_t emails = 0;  // the columns of the line holding an e-mail address
@@ -1565,7 +1567,9 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             // matrix set in display math.
             float value = 0;
             const size_t cell = static_cast<size_t>(group * cols + columns[k - base]);
-            if (t.numberish && ParseNumber(WordText(w, scratch), value) && numbers[cell].Add(value)) return;
+            const bool number = t.numberish && ParseNumber(WordText(w, scratch), value);
+            if (number && numbers[cell].Add(value)) return;
+            numbersOnly = numbersOnly && number;
             if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
             // The word before it in the row, when only a word space apart: one cell's text, unless
             // the word starts where its column's text starts (labels set a word space apart, each at
@@ -1599,6 +1603,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             }
         }
     }
+    // In a turned frame, rows of plain numbers alone are the tick labels of a plot's turned axis.
+    if (dir_ != 0 && numbersOnly) return;
     MarkUsed(g);
     grids_.push_back(std::move(g));
 }
@@ -2465,6 +2471,7 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
     std::vector<uint8_t> started(static_cast<size_t>(g.Rows()), 0);
     std::vector<Progression> numbers(g.cells.size());
     bool axis = false;
+    bool numbersOnly = true;  // every word a plain number
     std::string scratch;
     auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
     Locator locate(g);
@@ -2487,7 +2494,9 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
         float value = 0;
         const WordChars& t = Chars(w);
         if (!Numeric(t)) label[cell] = 1;
-        if (t.numberish && ParseNumber(WordText(w, scratch), value)) axis = numbers[cell].Add(value) || axis;
+        const bool number = t.numberish && ParseNumber(WordText(w, scratch), value);
+        if (number) axis = numbers[cell].Add(value) || axis;
+        numbersOnly = numbersOnly && number;
         for (int k = 1; k < cols; ++k) {
             const float x = g.xs[static_cast<size_t>(k)];
             if (g.vb[static_cast<size_t>(r * (cols + 1) + k)] && w.x0 < x - 1 && w.x1 > x + 1) crossing++;
@@ -2497,7 +2506,8 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
     // in lowercase), is no table of one column.
     if (column && (2 * mono > inside || 3 * lowerStarts >= static_cast<uint32_t>(g.Rows()))) return false;
     // Four numbers in one cell, evenly stepped (0 0.2 0.4 0.6): a chart's axis inside its frame.
-    if (axis) return drawing();
+    // In a turned frame, cells of plain numbers alone are the tick labels of a plot's turned axis.
+    if (axis || (dir_ != 0 && numbersOnly && inside > 0)) return drawing();
     uint32_t nonEmpty = 0, most = 0;
     for (uint32_t f : filled) nonEmpty += f > 0, most = std::max(most, f);
     if (inside == 0 || nonEmpty < 2) return false;

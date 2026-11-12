@@ -1234,6 +1234,48 @@ void TestTurnedTable() {
     RAYOPDF_CHECK(Contains(md, "| Country | 2021 | 2022 |\n| --- | --- | --- |\n| Austria | 1237 | 1329 |"), 597);
 }
 
+// Rows of evenly stepped plain numbers set upwards between rules (a plot's turned tick labels over
+// its frame and reference lines): no table, the numbers stay text. Set upwards too, a header row
+// of words over rows of numbers between rules is a table.
+void TestTurnedTickLabels() {
+    for (const bool header : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        // A rule across the frame from u0 to u1 at v is, on the page, the line x = -v.
+        const auto rule = [&](float v, float u0, float u1) { VLine(page, -v, u0, u1); };
+        if (header) {
+            rule(-100, 72, 352);
+            AddTurnedText(page, "Year", 80, -112);
+            AddTurnedText(page, "Value", 200, -112);
+            rule(-117, 72, 352);
+            const char* const rows[3][2] = {{"2019", "12.5"}, {"2020", "13.1"}, {"2021", "14.0"}};
+            float v = -130;
+            for (const auto& row : rows) {
+                AddTurnedText(page, row[0], 80, v);
+                AddTurnedText(page, row[1], 200, v);
+                v -= 14;
+            }
+            rule(-164, 72, 352);
+        } else {
+            const char* const ticks[] = {"\xE2\x88\x92" "0.6", "\xE2\x88\x92" "0.4", "\xE2\x88\x92" "0.2", "0.0",
+                                         "0.2", "0.4", "0.6"};
+            rule(-100, 72, 352);
+            for (const float v : {-112.0f, -130.0f, -144.0f, -158.0f})
+                for (int i = 0; i < 7; ++i) AddTurnedText(page, ticks[i], 80 + 40.0f * float(i), v);
+            rule(-117, 72, 352);
+            rule(-164, 72, 352);
+        }
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("turned tick labels", md);
+        if (header) {
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Year | Value |\n| --- | --- |\n| 2019 | 12.5 |"), 1731);
+        } else {
+            RAYOPDF_CHECK(report.tables == 0 && Contains(md, "0.4") && !Contains(md, "| --- |"), 1730);
+        }
+    }
+}
+
 // A chart's frame drawn as a grid, its axis ticks in one cell: no table.
 void TestChartFrame() {
     std::vector<PageData> pages{NewPage()};
@@ -2241,6 +2283,7 @@ int main(int argc, char** argv) {
     TestPairsHeaderAndContents();
     TestLatticeTitleRow();
     TestTurnedTable();
+    TestTurnedTickLabels();
     TestChartFrame();
     TestFormGrid();
     TestWideHeaderLabels();
