@@ -2,8 +2,8 @@
 // Core tests of the heading rules of src/layout/semantics.cpp on scientific papers: the title
 // above an outline that names the sections only, small capitals, numbering in the outline match,
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
-// cards and a page's lead line. Pages are built glyph by glyph and converted by the whole
-// pipeline. Exit codes 1800-1849.
+// cards, a page's lead line and an italic subtitle under a heading. Pages are built glyph by
+// glyph and converted by the whole pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -392,6 +392,40 @@ void TestLeadLine() {
     RAYOPDF_CHECK(Contains(md, "This page opens with a sentence.") && !Contains(md, "# This page"), 1834);
 }
 
+// The Markdown line that starts with `#` and holds `part`, or an empty view.
+std::string_view HeadingWith(const std::string& md, std::string_view part) {
+    for (size_t at = 0; at < md.size();) {
+        size_t end = md.find('\n', at);
+        if (end == std::string::npos) end = md.size();
+        const std::string_view l(md.data() + at, end - at);
+        if (!l.empty() && l[0] == '#' && l.find(part) != std::string_view::npos) return l;
+        at = end + 1;
+    }
+    return {};
+}
+
+void TestSubtitle() {
+    // An italic line under a heading in its size completes it: one heading.
+    std::vector<PageData> page{NewPage(1)};
+    AddText(page[0], "1. Shipping as a vector", 72, 700, 12, kGlyphBold);
+    AddText(page[0], "List of ports in Appendix 3", 72, 676, 12, kGlyphBold | kGlyphItalic);
+    AddBody(page[0], 650, 3);
+    std::string md = Run(page);
+    Show("italic subtitle", md);
+    RAYOPDF_CHECK(HeadingWith(md, "Shipping as a vector").find("List of ports in Appendix 3") != std::string_view::npos, 1835);
+    // A larger line under a chapter's label is a heading of its own.
+    std::vector<PageData> chapter{NewPage(1)};
+    AddText(chapter[0], "Chapter 3", 72, 740, 20);
+    AddText(chapter[0], "Numerical differentiation", 72, 700, 24, kGlyphItalic);
+    AddBody(chapter[0], 660, 3);
+    md = Run(chapter);
+    Show("chapter title", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "Chapter 3").empty() &&
+                      HeadingWith(md, "Chapter 3").find("Numerical") == std::string_view::npos &&
+                      !HeadingWith(md, "Numerical differentiation").empty(),
+                  1836);
+}
+
 } // namespace
 
 int main() {
@@ -405,6 +439,7 @@ int main() {
     TestAddresses();
     TestCardTitles();
     TestLeadLine();
+    TestSubtitle();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

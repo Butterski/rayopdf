@@ -2263,6 +2263,53 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
     }
 
+    // An italic subtitle under a heading ("1. Shipping as a vector" over "List of ports in
+    // Appendix 3" in italics) completes it: a heading right under another on its page, within 1.5
+    // times the upper one's size, its lines all italic where the upper one's are not, set no larger
+    // (a quarter point aside) and neither numbered nor enumerated, joins it as one heading at the
+    // upper one's level.
+    {
+        size_t kept = 0;
+        for (size_t r = 0; r < raws.size(); ++r) {
+            if (kept > 0) {
+                RawBlock& h = raws[kept - 1];
+                Classified& hk = kinds[kept - 1];
+                const RawBlock& s = raws[r];
+                const Classified& sk = kinds[r];
+                const Info& above = infos[h.first + h.count - 1];
+                const Info& n = infos[s.first];
+                bool join = hk.kind == BlockKind::Heading && sk.kind == BlockKind::Heading && !hk.runIn && !sk.runIn &&
+                            h.take == 0 && s.take == 0 && h.first + h.count == s.first && n.page == above.page &&
+                            n.dir == above.dir && n.baseline < above.baseline && above.vb - n.vt <= 1.5f * hk.size &&
+                            sk.size <= hk.size + 0.25f && !n.numbering && n.marker != Marker::Number &&
+                            n.marker != Marker::Roman && n.marker != Marker::Letter;
+                bool upperItalic = true;
+                for (uint32_t i = h.first; i < h.first + h.count && join && upperItalic; ++i)
+                    upperItalic = (infos[i].flags & kLineAllItalic) != 0;
+                join = join && !upperItalic;
+                for (uint32_t i = s.first; i < s.first + s.count && join; ++i) join = (infos[i].flags & kLineAllItalic) != 0;
+                if (join) {
+                    LineText(pages[n.page], pages[n.page].lines[n.line], line);
+                    join = SectionDepth(line) == 0;
+                }
+                if (join) {
+                    h.count += s.count;
+                    h.right = Fmax(h.right, s.right);
+                    h.bodyU0 = Fmin(h.bodyU0, s.bodyU0);
+                    hk.chars += sk.chars;
+                    continue;
+                }
+            }
+            raws[kept] = raws[r];
+            kinds[kept] = kinds[r];
+            alertTitle[kept] = alertTitle[r];
+            ++kept;
+        }
+        raws.resize(kept);
+        kinds.resize(kept);
+        alertTitle.resize(kept);
+    }
+
     // Block quotes set by indentation alone (LaTeX's quote and quotation, algorithms §6.5): a
     // body-size paragraph inset by two em or more on both sides of the body paragraph nearest to
     // it on its page, its lines (after the first) flush on one left edge. One line alone counts
