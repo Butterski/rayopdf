@@ -15,6 +15,7 @@
 #include "layout/ocr_client.h"
 #include "layout/ocr_layer.h"
 #include "layout/ocr_route.h"
+#include "layout/ocr_tables.h"
 #include "layout/pipeline.h"
 #include "pdf/document.h"
 
@@ -531,6 +532,30 @@ void TestRuledGridText() {
     // The grid alone holds no text.
     const std::string empty = RuledGrid(false);
     RAYOPDF_CHECK(!LooksLikeText(reinterpret_cast<const uint8_t*>(empty.data()), 600, 300), 1751);
+}
+
+void TestImageRulings() {
+    // The grid's 4 horizontal and 5 vertical rules, in page points (2 pixels a point).
+    OcrCanvas canvas;
+    canvas.x0 = 100, canvas.y0 = 0, canvas.x1 = 400, canvas.y1 = 150, canvas.scale = 2;
+    canvas.width = 600, canvas.height = 300;
+    canvas.pixels = RuledGrid(true);
+    std::vector<Ruling> rulings;
+    ImageRulings(canvas, rulings);
+    RAYOPDF_CHECK(rulings.size() == 9, 1754);
+    if (rulings.size() == 9) {
+        const Ruling& top = rulings[0];
+        RAYOPDF_CHECK(top.x0 == 101 && top.x1 == 399 && top.y0 == 148 && top.y1 == 149, 1754);
+        const Ruling& left = rulings[4];
+        RAYOPDF_CHECK(left.x0 == 101 && left.x1 == 102 && left.y0 == 1 && left.y1 == 149, 1754);
+    }
+    // A filled block is no rule.
+    canvas.pixels.assign(size_t(600) * 300, static_cast<char>(0xFF));
+    for (uint32_t y = 100; y < 200; ++y)
+        for (uint32_t x = 100; x < 500; ++x) canvas.pixels[size_t(y) * 600 + x] = 0;
+    rulings.clear();
+    ImageRulings(canvas, rulings);
+    RAYOPDF_CHECK(rulings.empty(), 1754);
 }
 
 void TestCanvas() {
@@ -1173,6 +1198,7 @@ int main() {
     TestBrokenAndVector();
     TestLooksLikeText();
     TestRuledGridText();
+    TestImageRulings();
     TestCanvas();
     TestOcrGlyphs();
     TestOcrTypography();

@@ -40,6 +40,7 @@ uint32_t Decode(const std::string& text, size_t at, size_t& length) {
     return cp;
 }
 
+// A point of the upright page in the frame of baseline direction `dir` (FromFrame's inverse).
 void ToFrame(uint8_t dir, float x, float y, float& u, float& v) {
     switch (dir) {
     case 1: u = y, v = -x; break;
