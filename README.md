@@ -164,9 +164,9 @@ median page) through its own command line, as a fresh process on one pinned core
 %%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2ea44f"}}}}%%
 xychart-beta
     title "One page to Markdown, in ms (lower is better)"
-    x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown", "PyMuPDF", "docling"]
+    x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown"]
     y-axis "Milliseconds" 0 --> 9500
-    bar [0.98, 16.9, 27.1, 45.2, 1074, 1236, 4749, 9490]
+    bar [0.98, 16.9, 27.1, 45.2, 1074, 1236]
 ```
 
 | Tool | Version | One page | A 33-page report | Peak memory | Writes |
