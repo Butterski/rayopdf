@@ -92,16 +92,18 @@ Fail-closed rejections: 1 password required (exit 11) and 3 corrupt beyond repai
 
 ## (e) Footprint
 
-Archives as `tools/package.py` builds them from the tagged commit (byte for byte the same on a
-second run; the core archives are rebuilt by the Release workflow with the same bytes):
+The published archives (`SHA256SUMS` of the release). The Release workflow built the two core
+archives on the tag; `tools/package.py` at the tagged commit gives the same bytes locally (checked
+2026-11-12: equal SHA-256). The figures in the tagged copy of this record were taken one commit
+earlier and differ by a few bytes, from the archive entries' time, which is the commit's.
 
 | artifact | Linux x64 (static) | Windows x64 |
 |---|---|---|
 | `rayopdf` | 3,465,072 B | 4,448,726 B |
 | `rayopdf-ocr` (add-on) | 7,688,848 B | 7,883,513 B |
-| core archive | 1,746,036 B | 1,701,139 B |
-| add-on archive (with small, tiny and orientation models) | 36,073,338 B | 35,913,497 B |
-| script pack archive (optional) | 21,102,214 B | 21,100,233 B |
+| core archive | 1,746,034 B | 1,701,139 B |
+| add-on archive (with small, tiny and orientation models) | 36,073,347 B | 35,913,497 B |
+| script pack archive (optional) | 21,102,185 B | 21,100,233 B |
 
 Peak RSS per document of `rayopdf --convert` (static), measured with `wait4` from a small parent,
 add-on not installed:
