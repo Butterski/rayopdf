@@ -901,6 +901,7 @@ bool AtBottom(const std::vector<Info>& infos, uint32_t begin, uint32_t end, uint
 }
 
 constexpr uint64_t kRuleChecks = uint64_t(1) << 22;  // shapes RuleBetween may look at per document
+constexpr uint64_t kCardChecks = uint64_t(1) << 22;  // lines and blocks card titles may look at per document
 
 // A horizontal rule (at most 3 points high) between two lines of one page that runs under both
 // of them: the edge of a frame or a separator. Shapes looked at count against `budget`; once it
@@ -1813,6 +1814,61 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         LineText(pages[in.page], pages[in.page].lines[in.line], line);
         alertTitle[r] = AlertOf(line);
     }
+    // Card titles (a slide's or a brochure's boxes): short lines set larger or in bold side by
+    // side on one baseline, each right over a column of text, title their columns, where a table's
+    // header row over its cells (rowPeer) heads nothing. A line stands over a column when the
+    // nearest block below it on its page whose left edge is within one body size of its own starts
+    // within 2.5 times its size below it and holds two lines or 40 characters of body-size text.
+    // Fails closed (no title) once kCardChecks runs out.
+    std::vector<uint8_t> cardTitle(raws.size(), 0);
+    {
+        // The raws and the infos of page p: [rawFrom[p], rawFrom[p + 1]), [infoFrom[p], infoFrom[p + 1]).
+        std::vector<uint32_t> rawFrom(pages.size() + 1, 0), infoFrom(pages.size() + 1, 0);
+        for (const RawBlock& b : raws) rawFrom[infos[b.first].page + 1]++;
+        for (const Info& in : infos) infoFrom[in.page + 1]++;
+        for (size_t p = 0; p < pages.size(); ++p) rawFrom[p + 1] += rawFrom[p], infoFrom[p + 1] += infoFrom[p];
+        uint64_t budget = kCardChecks;
+        const auto overColumn = [&](const Info& t) {
+            const uint32_t from = rawFrom[t.page], to = rawFrom[t.page + 1];
+            if (to - from > budget) return false;
+            budget -= to - from;
+            size_t below = to;
+            for (size_t q = from; q < to; ++q) {
+                const Info& top = infos[raws[q].first];
+                if (top.dir != t.dir || (top.flags & kLineAnchor) || raws[q].note != 0 || !(top.baseline < t.vb)) continue;
+                if (std::fabs(Fmin(top.u0, raws[q].bodyU0) - t.u0) > body) continue;
+                if (below == to || top.vt > infos[raws[below].first].vt) below = q;
+            }
+            if (below == to || t.vb - infos[raws[below].first].vt > 2.5f * t.size) return false;
+            const RawBlock& c = raws[below];
+            uint32_t lines = 0, chars = 0;
+            for (uint32_t i = c.first; i < c.first + c.count && i < c.first + 64; ++i)
+                if (std::fabs(infos[i].size - body) <= 0.1f * body) lines++, chars += infos[i].chars;
+            return lines >= 2 || chars >= 40;
+        };
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const RawBlock& b = raws[r];
+            const Info& a = infos[b.first];
+            if (b.count != 1 || !a.rowPeer || a.chars > 40 || (a.flags & kLineAnchor) ||
+                !(a.size >= 1.1f * body || (a.flags & kLineAllBold)))
+                continue;
+            const uint32_t from = infoFrom[a.page], to = infoFrom[a.page + 1];
+            if (to - from > budget) continue;
+            budget -= to - from;
+            bool columns = overColumn(a);
+            // Its peers: the lines rowPeer paired it with.
+            for (uint32_t i = from; i < to && columns; ++i) {
+                const Info& o = infos[i];
+                if (i == b.first || !o.rowPeer || o.dir != a.dir ||
+                    std::fabs(o.baseline - a.baseline) > 0.3f * Fmax(a.size, o.size) ||
+                    std::fabs(o.size - a.size) > 0.03f * Fmax(a.size, o.size) || o.chars > 60 || o.numbering ||
+                    ((o.flags ^ a.flags) & kLineAllBold) || (o.flags & kLineAnchor) || !(o.u0 > a.u1 || o.u1 < a.u0))
+                    continue;
+                columns = overColumn(o);
+            }
+            cardTitle[r] = columns;
+        }
+    }
     for (size_t r = 0; r < raws.size(); ++r) {
         const RawBlock& b = raws[r];
         const Info& first = infos[b.first];
@@ -1919,8 +1975,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 after = after || (infos[raws[q].first].pageRef && infos[raws[q].first].page == first.page);
             return before && after;
         };
-        const bool shortBlock = b.count <= 3 && chars <= 160 && letter && !first.rowPeer && !first.pageRef &&
-                                first.dir != 1 && first.dir != 2 && !lowerLead && !amongContents();
+        const bool shortBlock = b.count <= 3 && chars <= 160 && letter && (!first.rowPeer || cardTitle[r]) &&
+                                !first.pageRef && first.dir != 1 && first.dir != 2 && !lowerLead && !amongContents();
         const Info& last = infos[b.first + b.count - 1];
         const bool unpunctuated = !last.endsTerminal && last.lastCp != ',';
         // Captions are set apart like headings but title no section; display math set large (an

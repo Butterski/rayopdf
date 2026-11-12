@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the heading rules of src/layout/semantics.cpp on scientific papers: the title
 // above an outline that names the sections only, small capitals, numbering in the outline match,
-// the standard unnumbered sections; and the kicker over a slide's title. Pages are built glyph by
-// glyph and converted by the whole pipeline. Exit codes 1800-1849.
+// the standard unnumbered sections; the kicker over a slide's title and the titles of a slide's
+// cards. Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -339,6 +339,38 @@ void TestAddresses() {
     RAYOPDF_CHECK(Contains(md, "# 2 Meet @ Noon\n"), 1830);
 }
 
+void TestCardTitles() {
+    // Three titles set larger on one baseline, each over a column of text: they title their
+    // columns, though they are row peers.
+    std::vector<PageData> cards{NewPage(1)};
+    const char* const kTitles[] = {"Our Purpose", "Our Mission", "What We Do"};
+    for (int c = 0; c < 3; ++c) {
+        const float x = 72 + 180.0f * c;
+        AddText(cards[0], kTitles[c], x, 700, 13);
+        AddText(cards[0], "Text of the card that says what", x, 680, 10);
+        AddText(cards[0], "the title above it is about and", x, 668, 10);
+        AddText(cards[0], "goes on for a third line here.", x, 656, 10);
+    }
+    std::string md = Run(cards);
+    Show("card titles", md);
+    RAYOPDF_CHECK(Contains(md, "# Our Purpose\n") && Contains(md, "# Our Mission\n") && Contains(md, "# What We Do\n"), 1831);
+    // Labels over numbers are a table's header row: no headings.
+    std::vector<PageData> figures{NewPage(1)};
+    const char* const kLabels[] = {"Revenue", "Profit", "Growth"};
+    const char* const kNumbers[] = {"1,234", "567", "8.9%"};
+    for (int c = 0; c < 3; ++c) {
+        const float x = 72 + 180.0f * c;
+        AddText(figures[0], kLabels[c], x, 700, 13);
+        AddText(figures[0], kNumbers[c], x, 680, 10);
+    }
+    AddBody(figures[0], 640, 4);
+    md = Run(figures);
+    Show("labels over numbers", md);
+    RAYOPDF_CHECK(Contains(md, "Revenue") && !Contains(md, "# Revenue") && !Contains(md, "# Profit") &&
+                      !Contains(md, "# Growth"),
+                  1832);
+}
+
 } // namespace
 
 int main() {
@@ -350,6 +382,7 @@ int main() {
     TestRunningTextStyle();
     TestTitleBlock();
     TestAddresses();
+    TestCardTitles();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }
