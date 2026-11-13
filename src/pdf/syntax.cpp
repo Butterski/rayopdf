@@ -404,49 +404,52 @@ bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
     const char* const data = c.data.data();
     const size_t size = c.data.size();
     const size_t first = c.pos + 1;  // after '<'
-    // To the closing '>', every byte a hex digit or white space; the digits counted.
-    size_t at = first;
-    size_t digits = 0;
-    for (;;) {
-        if (at >= size) {
-            c.pos = size;
-            return false;
-        }
-        const uint8_t kind = kScan.hex[static_cast<unsigned char>(data[at++])];
-        if (kind < 16) {
-            digits++;
-        } else if (kind == ScanTables::kHexEnd) {
-            break;
-        } else if (kind == ScanTables::kHexOther) {
-            c.pos = at;
-            return false;
-        }
+    const unsigned char* const p = reinterpret_cast<const unsigned char*>(data);
+    // The closing '>' found first, its bytes then checked and decoded in one pass into room for
+    // every byte a digit (white space leaves some unused).
+    const void* const close = first < size ? std::memchr(data + first, '>', size - first) : nullptr;
+    if (!close) {
+        // No end: false at the first byte neither a hex digit nor white space, or at the end.
+        size_t at = first;
+        while (at < size && kScan.hex[p[at]] != ScanTables::kHexOther) at++;
+        c.pos = at < size ? at + 1 : size;
+        return false;
     }
-    c.pos = at;
+    const size_t end = static_cast<size_t>(static_cast<const char*>(close) - data);
     // Two digits a byte; an odd last digit is its byte's high half.
-    const size_t bytes = (digits + 1) / 2;
-    if (bytes == 0) {
+    const size_t room = (end - first + 1) / 2;
+    if (room == 0) {
+        c.pos = end + 1;
         out = {};
         return true;
     }
-    if (bytes > UINT32_MAX) return false;
-    char* const block = static_cast<char*>(b.arena.Allocate(bytes));
-    if (!block) return false;
+    if (room > UINT32_MAX) {
+        c.pos = end + 1;
+        return false;
+    }
+    char* const block = static_cast<char*>(b.arena.Allocate(room));
+    if (!block) {
+        c.pos = end + 1;
+        return false;
+    }
     size_t n = 0;
-    if (digits == at - 1 - first) {
-        // No white space: the digits in pairs.
-        const unsigned char* const p = reinterpret_cast<const unsigned char*>(data + first);
-        for (size_t k = 0; k + 1 < digits; k += 2) {
-            block[n++] = static_cast<char>(kScan.hex[p[k]] << 4 | kScan.hex[p[k + 1]]);
-        }
-        if (digits % 2 != 0) block[n++] = static_cast<char>(kScan.hex[p[digits - 1]] << 4);
-        out = std::string_view(block, bytes);
-        return true;
+    size_t i = first;
+    // The digits in pairs while no white space comes (a value of 16 or more is no digit).
+    for (; i + 1 < end; i += 2) {
+        const uint8_t high = kScan.hex[p[i]], low = kScan.hex[p[i + 1]];
+        if ((high | low) >= 16) break;
+        block[n++] = static_cast<char>(high << 4 | low);
     }
     int high = -1;
-    for (size_t i = first; i + 1 < at; ++i) {
-        const int d = kScan.hex[static_cast<unsigned char>(data[i])];
-        if (d >= 16) continue;  // white space
+    for (; i < end; ++i) {
+        const uint8_t d = kScan.hex[p[i]];
+        if (d >= 16) {
+            if (d == ScanTables::kHexOther) {
+                c.pos = i + 1;
+                return false;
+            }
+            continue;  // white space
+        }
         if (high < 0) {
             high = d;
         } else {
@@ -455,7 +458,12 @@ bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
         }
     }
     if (high >= 0) block[n++] = static_cast<char>(high << 4);
-    out = std::string_view(block, bytes);
+    c.pos = end + 1;
+    if (n == 0) {
+        out = {};
+        return true;
+    }
+    out = std::string_view(block, n);
     return true;
 }
 
