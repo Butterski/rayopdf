@@ -133,7 +133,7 @@ Docker and Python 3.10 or newer.
 
 ```sh
 python3 tools/dev.py image                    # the build image, once
-python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable
+python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable (profile-guided)
 python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
 ./build/static/rayopdf --convert input.pdf output.md
 ```

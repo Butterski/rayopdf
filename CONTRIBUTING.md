@@ -124,7 +124,8 @@ git tag v$V && git push origin v$V
 ```
 
 The tag starts two workflows. CI runs every configuration, ThreadSanitizer and Windows included.
-Release stops unless the tag is `v<VERSION>`, builds `--config static` and `--config windows` in
+Release stops unless the tag is `v<VERSION>`, builds `--config static` (profile-guided: an
+instrumented build converts `tools/pgo_corpus.py`'s PDFs first) and `--config windows` in
 the build image, `--config wheel` in `rayopdf-wheel:1` and `--config wasm` in `rayopdf-wasm:1`,
 packages them twice to check the bytes repeat, and makes a **draft** release with the seven core
 packages and `SHA256SUMS`: `rayopdf-$V-linux-x64-static.tar.gz`, `rayopdf-$V-windows-x64.zip`,

@@ -1015,6 +1015,20 @@ open candidates' own groups).
   |---|---|---|
   |hex strings (`perf(pdf): hex strings read in one pass`)|Hex strings read in one pass: the closing `>` found with `memchr`, the bytes checked and decoded in one pass into room for a byte per two bytes of the string|odl -0.103 %, syn6 -0.248 %, `multi_column` -0.126 %, SafeDocs -0.061 %, `tables` -0.029 %|
 
+- **Profile-guided builds** (7.3): the `static` config (the linux-x64-static release and the
+  harness's `cli` binary) is now built with GCC's profile feedback from 300 generated PDFs
+  (`tools/pgo_corpus.py`, written into `build/pgo` at build time, never committed); the plain build
+  stays as `static-plain` (§ Rerunning). Against the plain static build of the same commit
+  (`6c9b541`), byte-identical (G-bytes 0 of 1,302 differ), user instructions (`instr.sh`): odl
+  -1.28 %, heavy10 +0.07 %, syn6 -2.78 %, SafeDocs +0.23 %, `multi_column` -0.77 %, `tables`
+  -0.76 %, `arxiv_math` -0.85 % (measured on `a632716`). Times on CPU 3, 2026-11-14 00:29-00:31
+  UTC, load about 4 from unrelated services: warm odl images off (`bench.py warm`, three runs) 2,188
+  / 2,188 / 2,187 → 2,270 / 2,271 / 2,270 pages/s (+3.8 % each run), median 0.375 → 0.361 ms/page,
+  p95 0.701 → 0.708; fresh odl images off (`bench.py fresh`, 12 rotated rounds) 0.906 → 0.900 ms
+  median (paired -0.6 %), page faults median 151 → 153, CPU time 0.864 → 0.859 ms. The binary grew
+  from 3,700,016 to 3,996,560 bytes. The decision's bar (warm odl +2 %, fresh no worse, identical
+  output) was met: the static build is profile-guided from this round on.
+
 ### Result (`p10-base` against the round's two steps)
 
 User instructions, `--batch --workers=1`, images off (`arxiv_math` with `--math=latex`), CPU 9; the
@@ -1068,8 +1082,6 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
   the sanitizer sweeps and tests cover the rest).
 - **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
   same peak RSS, but freed memory stays with the process (wall time only, not measured in round 10).
-- **Profile-guided builds:** +3 to +4 % warm with identical output, once a training set can live
-  in the repository.
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
   wavelet pass; ICT and RGB interleave per row. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or
   band at a time for bounded RSS.
@@ -1095,6 +1107,7 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 ```sh
 python3 tools/dev.py image && docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker   # once
 python3 tools/dev.py build --config static --dir perf-static   # then copy build/perf-static/rayopdf away: NEW
+python3 tools/dev.py build --config static-plain   # the same without a profile (A/B instruction counts)
 E=benchmark-output/eval; O=$E/data/odl-bench/pdfs
 python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O --set none=--images=none \
     --set images= --set nostruct=--no-structure
@@ -1126,3 +1139,17 @@ python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/be
   `abbench.py`).
 - A `-g` build for profiles needs `-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=gold`: with `src/hot.ld` GNU
   ld drops the line information of the functions it places.
+- **Profile-guided static build (`--config static`):** three stages in the build image. GCC builds
+  an instrumented static binary (`-fprofile-generate -fprofile-update=single`) in
+  `build/static-gen`; it converts the 300 PDFs `tools/pgo_corpus.py` writes to `build/pgo`
+  (standard-14 text, two columns, ruled and borderless tables, running heads and page numbers, hex
+  strings, inline images, object streams; the same bytes on every run) with `--batch --workers=1`,
+  whose normal exit writes the profile to `build/static-gen/profile`; then `build/static` is built
+  from scratch with `-fprofile-use -fprofile-partial-training -Wno-missing-profile
+  -Wno-stringop-overflow -Wno-array-bounds` (with the profile GCC 13 warns inside libstdc++'s
+  `vector<unsigned char>::_M_fill_insert`, a false positive). `-fprofile-prefix-path` names each
+  object relative to its build directory, so the two directories share the profile. `--dir NAME`
+  uses `build/NAME-gen` for the first stage. The output is the same bytes as `static-plain`'s
+  (check with `bench.py identical`); only speed and code layout change. GCC puts the functions the
+  profile finds hot or never run into `.text.hot.*` and `.text.unlikely.*`; `tools/hot_sections.py`
+  takes those names from the static build's link map like any other.
