@@ -7,8 +7,8 @@ builds those images, lays out files on the host, starts containers and writes th
 
 Usage:
   python3 tools/eval.py all [--resume]
-  python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
-  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs,doclaynet]
+  python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,omni,pdftotext,...]
+  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs,doclaynet,omni]
   python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE | --profile default|declared] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
@@ -20,20 +20,22 @@ Usage:
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
 pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, kordoc (OCR off),
 kordoc-ocr (kordoc's default, OCR models present), cli. Suites: synthetic, odl, olmocr,
-olmocr-math, readoc, readoc-dev, readoc-val, readoc-dev2, doclaynet-dev, doclaynet-val, scanned,
-olmocr-scans, multiscript. olmocr-math is olmOCR's arxiv_math category alone, converted and
-scored for cli only (its declared profile is --math=latex). doclaynet-dev and doclaynet-val
-(`fetch --only doclaynet`: DocLayNet's val and test pages) score the roles of the pages' text
-cells in cli's JSON output, for cli only; doclaynet-val is aggregate only. The scanned suite is
-built from the synthetic corpus by `corpus --suite scanned`; olmocr-scans comes with `fetch
---only olmocr`; multiscript (image-only pages in 9 scripts) is rendered by `corpus --suite
-multiscript`. Four disjoint READoc sets, numbers of one order per subset (arXiv, GitHub): readoc
-is the holdout (1-150, 300 documents, aggregate scores only, once per release candidate);
-readoc-dev is the development split (151-300, `fetch --only readoc-dev`), scored per document
-too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is the validation split (301-600,
-600 documents, `fetch --only readoc-val`), aggregate scores only, checked at every quality
-landing; readoc-dev2 is a second development split (601-900, up to 600 documents, `fetch --only
-readoc-dev2`), scored per document like readoc-dev.
+olmocr-math, readoc, readoc-dev, readoc-val, readoc-dev2, doclaynet-dev, doclaynet-val,
+omni-dev, omni-val, scanned, olmocr-scans, multiscript. olmocr-math is olmOCR's arxiv_math
+category alone, converted and scored for cli only (its declared profile is --math=latex).
+doclaynet-dev and doclaynet-val (`fetch --only doclaynet`: DocLayNet's val and test pages) score
+the roles of the pages' text cells in cli's JSON output, for cli only; doclaynet-val is aggregate
+only. omni-dev and omni-val (`images --only omni`, then `fetch --only omni`: OmniParseBench's
+.pdf pages in two halves) are graded by its unit tests on cli's JSON output, for cli only;
+omni-val is aggregate only. The scanned suite is built from the synthetic corpus by `corpus
+--suite scanned`; olmocr-scans comes with `fetch --only olmocr`; multiscript (image-only pages in
+9 scripts) is rendered by `corpus --suite multiscript`. Four disjoint READoc sets, numbers of one
+order per subset (arXiv, GitHub): readoc is the holdout (1-150, 300 documents, aggregate scores
+only, once per release candidate); readoc-dev is the development split (151-300, `fetch --only
+readoc-dev`), scored per document too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is
+the validation split (301-600, 600 documents, `fetch --only readoc-val`), aggregate scores only,
+checked at every quality landing; readoc-dev2 is a second development split (601-900, up to 600
+documents, `fetch --only readoc-dev2`), scored per document like readoc-dev.
 The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
 --profile default runs `rayopdf --convert {in} {out}`; --profile declared adds the suite's
@@ -45,6 +47,7 @@ can run side by side on disjoint CPUs; it must leave the timing CPU (3) out.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime
 import hashlib
 import http.client
@@ -57,6 +60,7 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -84,18 +88,20 @@ TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # olmocr-math: olmOCR's arxiv_math category alone, for cli in its declared profile (--math=latex).
 # doclaynet-dev, doclaynet-val: DocLayNet pages (its val and test splits) scored by the roles of
 # their text cells (eval/scorer/doclaynet.py); development and validation (aggregate only).
+# omni-dev, omni-val: OmniParseBench's PDF pages, halves of its pages by the SHA-256 of their id,
+# graded by its unit tests (`opb grade`); development and validation (aggregate only).
 TEXT_SUITES = ["synthetic", "odl", "olmocr", "olmocr-math", "readoc", "readoc-dev", "readoc-val",
-               "readoc-dev2", "doclaynet-dev", "doclaynet-val"]
+               "readoc-dev2", "doclaynet-dev", "doclaynet-val", "omni-dev", "omni-val"]
 # Suites converted and scored for cli alone (`all` converts no cli run and skips them): only cli
-# writes the boxes the DocLayNet scorer reads.
-CLI_SUITES = ["olmocr-math", "doclaynet-dev", "doclaynet-val"]
+# writes the boxes the DocLayNet and OmniParseBench scorers read.
+CLI_SUITES = ["olmocr-math", "doclaynet-dev", "doclaynet-val", "omni-dev", "omni-val"]
 # multiscript: image-only pages in Cyrillic, Hangul, Arabic, Hebrew, Devanagari, Kannada, Tamil,
 # Latin and a mix, upright and turned (eval/producers/multiscript.py); development only.
 SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
-IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
+IMAGES = ["producers", "scorer", "olmocr", "readoc", "omni"] + [t for t in TOOLS if t not in TOOL_IMAGE]
 DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs",
-            "doclaynet"]
+            "doclaynet", "omni"]
 # Each benchmark's declared profile: the cli options it is measured with (roadmap D6).
 PROFILES = REPO / "eval" / "profiles.json"
 
@@ -141,11 +147,18 @@ DOCLAYNET_ZIPS = {"core": ("DocLayNet_core.zip", "52242220284e12538949c5b06eb277
 # its train pages (never a suite; eval/train/).
 DOCLAYNET_SPLITS = {"dev": "val", "val": "test", "train": "train"}
 DOCLAYNET_TRAIN = 20_000
+# OmniParseBench (Datalab; its tests CC BY 4.0, each source's licence in licenses/README.md),
+# pinned to the dataset's revision on 2026-11-13. Its .png pages (scans and photos) are for the
+# bundle's records; the core suites take its .pdf pages.
+OMNI_DATASET = "datalab-to/omni_parse_bench"
+OMNI_REVISION = "d70182b9f901d1660a27e60bf6be6d6e6ea83013"
+OMNI_MAX_BYTES = 3 * GIB
 # Bytes each dataset needs while it is fetched (READoc holds one 1.2 GB zip until its selection
 # is extracted).
 DATASET_NEED = {"odl": GIB // 2, "olmocr": GIB // 2, "readoc": 3 * GIB // 2,
                 "readoc-dev": 3 * GIB // 2, "readoc-val": 3 * GIB // 2,
-                "readoc-dev2": 3 * GIB // 2, "safedocs": 3 * GIB // 2, "doclaynet": 5 * GIB}
+                "readoc-dev2": 3 * GIB // 2, "safedocs": 3 * GIB // 2, "doclaynet": 5 * GIB,
+                "omni": 3 * GIB}
 FULL_RUN_NEED = 25 * GIB
 
 SPEED_SYNTHETIC = [f"{p}/{f}" for p in ("rayomd", "xelatex", "libreoffice")
@@ -325,6 +338,8 @@ def suite_root(root: Path, suite: str) -> Path:
         "olmocr-scans": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
         "doclaynet-dev": root / "data" / "doclaynet" / "dev",
         "doclaynet-val": root / "data" / "doclaynet" / "val",
+        "omni-dev": root / "data" / "omni" / "pages",
+        "omni-val": root / "data" / "omni" / "pages",
     }[suite]
 
 
@@ -345,6 +360,9 @@ def suite_ids(root: Path, suite: str) -> list[str]:
         return [item["id"] for item in multiscript_items(root) if item["valid"]]
     if suite in ("odl", "doclaynet-dev", "doclaynet-val"):
         ids = pdf_ids(base)
+    elif suite in ("omni-dev", "omni-val"):
+        selection = read_json(root / "data" / "omni" / "selection.json", {})
+        ids = sorted(selection.get("splits", {}).get(suite.split("-", 1)[1], {}).get("pdf", []))
     elif suite == "olmocr":
         ids = [i for cat in OLMOCR_CATEGORIES for i in pdf_ids(base, cat)]
     elif suite == "olmocr-math":
@@ -427,6 +445,9 @@ def dataset_present(data: Path, name: str) -> bool:
                 and (repo / "src" / "evaluator.py").is_file())
     if name == "doclaynet":
         return (data / "doclaynet" / "selection.json").is_file()
+    if name == "omni":
+        return all((data / "omni" / f).is_file()
+                   for f in ("selection.json", "manifest-dev.parquet", "manifest-val.parquet"))
     if name == "olmocr":
         bench = data / "olmOCR-bench" / "bench_data"
         return (len(list((bench / "pdfs").glob("*/*.pdf"))) == OLMOCR_PDFS
@@ -748,6 +769,95 @@ def fetch_doclaynet(data: Path) -> None:
     log(f"doclaynet: {selection['counts']}")
 
 
+def omni_listing() -> list[dict]:
+    """The files of OmniParseBench at OMNI_REVISION, from the Hub's tree listing (paged)."""
+    url = (f"https://huggingface.co/api/datasets/{OMNI_DATASET}/tree/{OMNI_REVISION}"
+           "?recursive=1")
+    files: list[dict] = []
+    while url:
+        with urllib.request.urlopen(url, timeout=120) as answer:
+            page = json.loads(answer.read())
+            link = answer.headers.get("Link") or ""
+        files += [entry for entry in page if entry.get("type") == "file"]
+        found = re.search(r'<([^>]+)>;\s*rel="next"', link)
+        url = found.group(1) if found else None
+    return files
+
+
+def omni_download(entry: dict, target: Path) -> str:
+    """One file of the dataset into `target` (kept when a former fetch left it whole); its SHA-256,
+    checked against the listing's size and LFS hash when it has one. Tried up to 8 times: a 429 or
+    5xx answer waits for its Retry-After (else 30 s more each time), other errors 10 s more each
+    time."""
+    url = f"https://huggingface.co/datasets/{OMNI_DATASET}/resolve/{OMNI_REVISION}/{entry['path']}"
+    lfs = (entry.get("lfs") or {}).get("oid")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and target.stat().st_size == entry.get("size"):
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if not lfs or lfs == digest:
+            return digest
+    for attempt in range(8):
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            with urllib.request.urlopen(url, timeout=300) as answer, target.open("wb") as out:
+                while chunk := answer.read(1 << 20):
+                    digest.update(chunk)
+                    out.write(chunk)
+                    size += len(chunk)
+            if size != entry.get("size", size) or (lfs and lfs != digest.hexdigest()):
+                raise OSError(f"{entry['path']}: {size} bytes, SHA-256 {digest.hexdigest()}, not as listed")
+            return digest.hexdigest()
+        except (OSError, http.client.HTTPException) as exc:
+            if attempt == 7:
+                raise SystemExit(f"omni: {entry['path']}: {exc}") from None
+            wait = 10 * (attempt + 1)
+            if isinstance(exc, urllib.error.HTTPError) and (exc.code == 429 or exc.code >= 500):
+                after = exc.headers.get("Retry-After", "") if exc.headers else ""
+                wait = int(after) if after.isdigit() else 30 * (attempt + 1)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def fetch_omni(data: Path) -> None:
+    """OmniParseBench at OMNI_REVISION: its manifest, licence notes, pages and gold tests into
+    data/omni/ (refused past OMNI_MAX_BYTES), downloaded 4 at a time; selection.json with the
+    revision, every file's SHA-256 and the splits: page ids sorted by their SHA-256, the first half
+    dev, the rest val (each split's .pdf pages are its suite, its .png pages bundle-only). Then
+    eval/scorer/omni_split.py writes each split's manifest of .pdf pages (manifest-dev.parquet,
+    manifest-val.parquet) in the omni image: `images --only omni` comes first."""
+    out = data / "omni"
+    out.mkdir(parents=True, exist_ok=True)
+    wanted = [entry for entry in omni_listing()
+              if entry["path"] in ("manifest.parquet", "licenses/README.md")
+              or (entry["path"].startswith("pages/") and entry["path"].endswith((".pdf", ".png")))
+              or (entry["path"].startswith("gold/") and entry["path"].endswith(".json"))]
+    total = sum(entry.get("size", 0) for entry in wanted)
+    if total > OMNI_MAX_BYTES:
+        raise SystemExit(f"omni: the files take {total} bytes, past the {OMNI_MAX_BYTES} allowed")
+    log(f"omni: {len(wanted)} files, {total / 2**20:.0f} MiB")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        digests = dict(zip((entry["path"] for entry in wanted),
+                           pool.map(lambda entry: omni_download(entry, out / entry["path"]), wanted)))
+    pages = {Path(path).stem: Path(path).suffix for path in digests if path.startswith("pages/")}
+    ids = sorted(pages, key=lambda page: hashlib.sha256(page.encode()).hexdigest())
+    half = (len(ids) + 1) // 2
+    splits = {}
+    for split, chosen in (("dev", ids[:half]), ("val", ids[half:])):
+        splits[split] = {"pdf": sorted(p for p in chosen if pages[p] == ".pdf"),
+                         "png": sorted(p for p in chosen if pages[p] == ".png")}
+    write_json(out / "selection.json", {
+        "schema": 1, "dataset": OMNI_DATASET, "revision": OMNI_REVISION,
+        "rule": "page ids sorted by the SHA-256 of the id: the first half dev, the rest val; a split's "
+                ".pdf pages are its suite (omni-dev, omni-val), its .png pages bundle-only",
+        "roles": {"dev": "development", "val": "validation, aggregate only"},
+        "counts": {split: {kind: len(v) for kind, v in s.items()} for split, s in splits.items()},
+        "splits": splits, "sha256": dict(sorted(digests.items()))})
+    run(docker_cmd(tag("omni"), ["python3", "/opt/eval/scorer/omni_split.py", "--dataset", "/data"],
+                   mounts=[(REPO / "eval" / "scorer", "/opt/eval/scorer", True), (out, "/data", False)]))
+    log(f"omni: {json.dumps(read_json(out / 'selection.json')['counts'])}")
+
+
 def cmd_fetch(args) -> int:
     data: Path = args.root / "data"
     data.mkdir(parents=True, exist_ok=True)
@@ -765,7 +875,8 @@ def cmd_fetch(args) -> int:
         log(f"fetch {name}")
         {"odl": fetch_odl, "olmocr": fetch_olmocr, "readoc": fetch_readoc,
          "readoc-dev": fetch_readoc_dev, "readoc-val": fetch_readoc_val,
-         "readoc-dev2": fetch_readoc_dev2, "safedocs": fetch_safedocs, "doclaynet": fetch_doclaynet}[name](data)
+         "readoc-dev2": fetch_readoc_dev2, "safedocs": fetch_safedocs, "doclaynet": fetch_doclaynet,
+         "omni": fetch_omni}[name](data)
     return 0
 
 
@@ -1080,6 +1191,47 @@ def score_doclaynet(root: Path, tools: list[str], suite: str) -> None:
         log(f"{suite}/{tool}: scored")
 
 
+def score_omni(root: Path, tools: list[str], suite: str) -> int:
+    """OmniParseBench's unit tests on each tool's JSON output (eval/scorer/omni_predict.py, then
+    `opb grade` with the split's manifest): scores/<suite>/<tool>.json with the headline score and
+    the text, tables and layout families; for omni-dev also the test lines (<tool>-tests.jsonl).
+    Returns the number of tools left without a score."""
+    split = suite.split("-", 1)[1]
+    out = root / "scores" / suite
+    out.mkdir(parents=True, exist_ok=True)
+    ids = suite_ids(root, suite)
+    failed = 0
+    for tool in tools:
+        work = reset_dir(out / "work" / tool)
+        write_list(work / "ids.txt", ids)
+        script = ("python3 /opt/eval/scorer/omni_predict.py --pred /pred --ids /work/ids.txt "
+                  "--out /work/run/predictions && "
+                  f"opb grade /work/run --dataset /data --manifest manifest-{split}.parquet > /work/grade.json")
+        run(docker_cmd(tag("omni"), ["sh", "-ec", script],
+                       mounts=[(REPO / "eval" / "scorer", "/opt/eval/scorer", True),
+                               (root / "data" / "omni", "/data", True),
+                               (root / "runs" / tool / suite, "/pred", True), (work, "/work", False)]),
+            check=False, stdout_path=out / f"{tool}.log")
+        summary = read_json(work / "run" / "unit_tests" / "summary.json")
+        if not summary or summary.get("score") is None:
+            failed += 1
+            log(f"{suite}/{tool}: not scored, see {out / f'{tool}.log'}")
+            continue
+        families = summary.get("families", {})
+        metrics = {"headline": summary["score"]}
+        for family in ("text", "tables", "layout"):
+            metrics[family] = families.get(family, {}).get("score")
+        write_json(out / f"{tool}.json", {"schema": 1, "pages": len(ids), "metrics": metrics,
+                                          "families": families})
+        if suite not in AGGREGATE_ONLY:
+            tests = work / "run" / "unit_tests" / "scores.jsonl"
+            if tests.is_file():
+                shutil.copyfile(tests, out / f"{tool}-tests.jsonl")
+        shutil.rmtree(work)
+        log(f"{suite}/{tool}: scored {metrics}")
+    return failed
+
+
 def score_multiscript(root: Path, tools: list[str]) -> None:
     """CER and word F1 of each tool's Markdown against the item's text (eval/scorer/ocr_text.py)."""
     out = root / "scores" / "multiscript"
@@ -1119,6 +1271,8 @@ def cmd_score(args) -> int:
         score_olmocr(args.root, tools, args.suite, ["arxiv_math"])
     elif args.suite in ("doclaynet-dev", "doclaynet-val"):
         score_doclaynet(args.root, tools, args.suite)
+    elif args.suite in ("omni-dev", "omni-val"):
+        return 1 if score_omni(args.root, tools, args.suite) else 0
     else:
         return 1 if score_readoc(args.root, tools, args.suite) else 0
     return 0
@@ -1582,7 +1736,25 @@ def report(root: Path) -> str:
     lines += report_readoc(root, "readoc-dev2")
     lines += report_olmocr_math(root)
     lines += report_doclaynet(root)
+    lines += report_omni(root)
     return "\n".join(lines) + "\n"
+
+
+def report_omni(root: Path) -> list[str]:
+    """Section 18: OmniParseBench's unit tests on its PDF pages."""
+    keys = ["headline", "text", "tables", "layout"]
+    lines = ["## 18. OmniParseBench", "",
+             f"`{OMNI_DATASET}` at `{OMNI_REVISION[:12]}`, its .pdf pages halved by the SHA-256 of their "
+             "id (`data/omni/selection.json`), graded by `opb grade` (omni-parse-bench 1.5.0): the share "
+             "of each family's tests passed and their mean, the headline. Only cli writes the blocks the "
+             "layout tests read, so only cli is scored. omni-val is validation data: aggregate only.", ""]
+    rows = []
+    for suite in ("omni-dev", "omni-val"):
+        for tool in TOOLS:
+            result = read_json(root / "scores" / suite / f"{tool}.json")
+            if result:
+                rows.append([suite, tool, str(result["pages"])] + [result["metrics"].get(k) for k in keys])
+    return lines + (table(["suite", "tool", "pages"] + keys, rows) if rows else ["Not scored.", ""])
 
 
 def report_doclaynet(root: Path) -> list[str]:

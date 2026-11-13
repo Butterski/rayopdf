@@ -35,6 +35,8 @@ harness answers each condition:
 |readoc-dev2|`data/READoc-data/dev2`|up to 600 further multi-page PDFs of READoc: `arxiv/<stem>` and `github/<stem>`, up to 300 each|`data/READoc-data/dev2-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |doclaynet-dev|`data/doclaynet/dev`|6,489 single-page PDFs: DocLayNet's val split|DocLayNet's COCO boxes (`data/doclaynet/coco/val.json`) and text cells (`<stem>.json`)|development, `cli` only (§ DocLayNet)|
 |doclaynet-val|`data/doclaynet/val`|4,999 single-page PDFs: DocLayNet's test split|`data/doclaynet/coco/test.json` and the text cells|**validation**, aggregate only, `cli` only (§ DocLayNet)|
+|omni-dev|`data/omni/pages`|1,074 single-page PDFs: half of OmniParseBench's PDF pages|its unit tests (`gold/<id>.json`)|development, `cli` only (§ OmniParseBench)|
+|omni-val|`data/omni/pages`|1,075 single-page PDFs: the other half|its unit tests|**validation**, aggregate only, `cli` only (§ OmniParseBench)|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 |multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
@@ -70,6 +72,37 @@ cells that are not furniture), `furniture_f1` (positive: furniture; predicted po
 kept), and `heading_f1`, `list_f1`, `footnote_f1`, `table_f1` over the kept cells. Only `cli`
 writes boxes, so the suites score RayoPDF alone and `all` does not run them. `doclaynet-dev`'s
 score file has per-page counts; `doclaynet-val` is aggregate only, like `readoc-val`.
+
+### OmniParseBench
+
+[OmniParseBench](https://huggingface.co/datasets/datalab-to/omni_parse_bench) (Datalab;
+`omni-parse-bench` 1.5.0 grades it) holds 2,937 single pages, each with unit tests on two outputs:
+the page as HTML (text present or absent, reading order, table cells, math) and its layout
+blocks (a test names the kind of the block that covers a place on the page). Its tests are
+CC BY 4.0, those converted from olmOCR-bench and fr-bench-pdf2md keep ODC-BY 1.0 and MIT; each
+source's licence is in `data/omni/licenses/README.md`. Two sources ask for non-commercial use
+(the Ohio Department of Transportation drawings of `large_format` and `tiny_plans`, and three
+Copiste d'un jour pages of `handwriting_samples`): they are only scored here, never copied into
+the repository or used to design or train anything. `images --only omni` builds
+`rayopdf-eval-omni:1` (the grader with pyarrow), then `fetch --only omni` downloads the dataset at
+its pinned revision (1.45 GB: `manifest.parquet`, `pages/`, `gold/`; each file checked against the
+Hub's SHA-256), sorts the page ids by the SHA-256 of the id and takes the first half as `dev`, the
+rest as `val`. Each split's 788 `.png` pages (scans and photos: 395 and 393) are kept for the
+bundle's records; its `.pdf` pages are the suite, and `eval/scorer/omni_split.py` writes their
+manifests (`manifest-dev.parquet`, `manifest-val.parquet`). `data/omni/selection.json` records the
+revision, the rule, the counts and every file's SHA-256.
+
+`eval/scorer/omni_predict.py` turns RayoPDF's JSON output (`--format=json --images=none`, the
+suites' declared profile) into the grader's predictions: the HTML from the blocks (headings
+`<hN>`, paragraphs and footnotes `<p>`, list items in `<ul>` or `<ol>`, code `<pre>`, tables from
+their cells) and one layout block per output block (its box as fractions of the page from the
+top left, its type as the grader's label: heading, table, list, code, footnote, figure for an
+image, text for the rest), the text without Markdown markup. `opb grade` then gives the share of
+each family's tests passed (`text`, `tables`, `layout`) and their mean, the headline score.
+Several suites of the dataset are olmOCR-bench's pages (`olmo_*`), so `omni-val` shares pages
+with the `olmocr` development suite: it guards against overfitting OmniParseBench's other sources
+and its test kinds, not olmOCR's pages. `omni-dev`'s score files keep the test lines
+(`<tool>-tests.jsonl`); `omni-val` is aggregate only.
 
 ### READoc development and validation splits
 
@@ -481,14 +514,15 @@ images.json                 image ids, sizes and versions.json of every image
 corpus/                     <producer>/<fixture>.pdf, corpus.json
 scanned/                    s300|s200/<producer>/<fixture>.pdf, scanned.json (about 0.8 GB)
 multiscript/                pdf/<id>.pdf, pgm/<id>/p<N>.pgm, gt/, multiscript.json
-data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, doclaynet/, odl-pages.json
+data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, doclaynet/, omni/, odl-pages.json
 suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
 scores/{olmocr,olmocr-math,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
 scores/{readoc-dev,readoc-dev2}/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
 scores/readoc-val/<tool>-<subset>.json,
-scores/multiscript/<tool>.json (and .md, the tables), scores/{doclaynet-dev,doclaynet-val}/<tool>.json
+scores/multiscript/<tool>.json (and .md, the tables), scores/{doclaynet-dev,doclaynet-val}/<tool>.json,
+scores/{omni-dev,omni-val}/<tool>.json (and <tool>.log; omni-dev also <tool>-tests.jsonl)
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
 report.md
@@ -531,6 +565,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |synthetic, olmocr|none (the default)|
 |olmocr-math, readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex`|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
+|omni-dev, omni-val|`--format=json --images=none` (the adapter builds the HTML and the layout blocks from the blocks)|
 
 `convert --tool cli --profile declared` appends a suite's options to `rayopdf --convert {in}
 {out}` (a suite without an entry is an error). The quality gate measures the declared profiles
@@ -550,7 +585,7 @@ These are AGENTS.md rules 4–8:
   Third-party numbers are marked "reproduced" or "claimed".
 - Never inspect per-document outputs of the `weasyprint` producer, the scanned items made from
   it, or the `readoc` suite while designing converter heuristics; use aggregate scores only. The
-  validation splits `readoc-val` and `doclaynet-val` are aggregate only in the same way.
+  validation splits `readoc-val`, `doclaynet-val` and `omni-val` are aggregate only in the same way.
   Tagged and untagged producers are reported separately.
 - No AGPL or GPL code or data in the repository (PyMuPDF/MuPDF, Poppler, marker): they run as
   black boxes in images. READoc's code is run from a clone and never copied.
