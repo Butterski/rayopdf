@@ -2,6 +2,7 @@
 #include "layout/semantics.h"
 
 #include "common/minmax.h"
+#include "common/robust.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
 
@@ -2530,12 +2531,53 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
 
     // Heading levels (§6.1). Outline levels where the outline matched; a heading the outline
     // missed takes the level of the last matched heading of its style, else sits one below the
-    // last matched heading. Without the outline: style keys ranked by size (bold first), below
-    // them bold body-size lines. A run-in heading the outline missed sits one below the last
-    // heading set on a line of its own (below the deepest one before any), whatever its style.
+    // last matched heading. Without the outline: styles ranked by size (bold first), below them
+    // bold body-size lines. A run-in heading the outline missed sits one below the last heading
+    // set on a line of its own (below the deepest one before any), whatever its style.
+    //
+    // A style's size for its rank is the cluster of its size among the distinct sizes of the
+    // headings ranked (docs/research/layout-math.md §2): in log space, weighted by characters,
+    // clustered by Fisher's exact 1-D k-means with k chosen by BIC (at most 6 clusters, a
+    // cluster's variance at least 0.0004, so that sizes within about 2 % of each other fall
+    // together). More distinct sizes than the clustering takes keep the half-point size keys.
+    std::vector<int> rankKey(raws.size(), -1);
+    {
+        std::vector<std::pair<float, uint32_t>> sizes;  // the distinct sizes ranked, with their characters
+        for (const Classified& k : kinds)
+            if (k.kind == BlockKind::Heading && k.styleKey >= 0 && k.level == 0) sizes.emplace_back(k.size, k.chars);
+        std::sort(sizes.begin(), sizes.end());
+        size_t distinct = 0;
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            if (distinct > 0 && sizes[distinct - 1].first == sizes[i].first)
+                sizes[distinct - 1].second += sizes[i].second;
+            else
+                sizes[distinct++] = sizes[i];
+        }
+        sizes.resize(distinct);
+        float logSize[Robust::kMaxClusterPoints];
+        uint32_t weight[Robust::kMaxClusterPoints];
+        uint8_t cluster[Robust::kMaxClusterPoints];
+        int clusters = 0;
+        if (!sizes.empty() && sizes.size() <= Robust::kMaxClusterPoints && sizes.front().first > 0) {
+            for (size_t i = 0; i < sizes.size(); ++i)
+                logSize[i] = std::log(sizes[i].first), weight[i] = std::max<uint32_t>(1, sizes[i].second);
+            clusters = Robust::FisherClusters(logSize, weight, sizes.size(), 6, 0.0004f, cluster);
+        }
+        for (size_t r = 0; r < raws.size(); ++r) {
+            const Classified& k = kinds[r];
+            if (k.kind != BlockKind::Heading || k.styleKey < 0) continue;
+            rankKey[r] = k.styleKey;
+            if (clusters == 0 || k.level != 0) continue;
+            const size_t at = static_cast<size_t>(
+                std::lower_bound(sizes.begin(), sizes.end(), std::make_pair(k.size, uint32_t(0))) - sizes.begin());
+            if (at < sizes.size() && sizes[at].first == k.size) rankKey[r] = cluster[at] * 2 + (k.bold ? 1 : 0);
+        }
+    }
     std::vector<int> styleKeys;
-    for (const Classified& k : kinds)
-        if (k.kind == BlockKind::Heading && k.styleKey >= 0 && k.level == 0) styleKeys.push_back(k.styleKey);
+    for (size_t r = 0; r < raws.size(); ++r) {
+        const Classified& k = kinds[r];
+        if (k.kind == BlockKind::Heading && k.styleKey >= 0 && k.level == 0) styleKeys.push_back(rankKey[r]);
+    }
     std::sort(styleKeys.begin(), styleKeys.end(), std::greater<int>());
     styleKeys.erase(std::unique(styleKeys.begin(), styleKeys.end()), styleKeys.end());
     std::vector<int> levelOf(raws.size(), 0);
@@ -2569,7 +2611,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             }
             if (k.styleKey >= 0) {
                 const int rank =
-                    static_cast<int>(std::find(styleKeys.begin(), styleKeys.end(), k.styleKey) - styleKeys.begin());
+                    static_cast<int>(std::find(styleKeys.begin(), styleKeys.end(), rankKey[r]) - styleKeys.begin());
                 levelOf[r] = std::min(rank + 1, 6);
             } else {
                 levelOf[r] = std::min(static_cast<int>(styleKeys.size()) + 1, 6);
