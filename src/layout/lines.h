@@ -24,8 +24,10 @@ constexpr float kGutterCandidate = 0.6f;   // a wider gap may be a column gutter
 constexpr float kMarkerGap = 4.0f;         // a list marker joins the text this far to its right
 
 // Fills page.lines and page.lineGlyphs from page.glyphs, and page.hiddenGlyphs. Lines come
-// unordered; OrderLines orders them.
-void BuildLines(PageData& page);
+// unordered; OrderLines orders them. `mathScripts` (--math=latex) also joins a script's own
+// script to its line: a lone fragment of math-font glyphs at 0.87 of the size of a script glyph
+// of the line or smaller, its baseline from 0.6 em below to 0.9 em above the line's.
+void BuildLines(PageData& page, bool mathScripts = false);
 
 // Run-in headings (LaTeX \paragraph, the fourth and fifth levels of many templates): in an ordered
 // line, a bold run that starts it, ends without punctuation and is set off from the text after it

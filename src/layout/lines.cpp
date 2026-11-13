@@ -5,6 +5,7 @@
 #include "common/minmax.h"
 #include "common/per_thread.h"
 #include "common/utf8.h"
+#include "layout/math.h"
 #include "text/bidi.h"
 
 #include <algorithm>
@@ -1178,7 +1179,7 @@ void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t
 
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
-void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
+void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
     GlyphVector& glyphs = page.glyphs;
     PlaceScratch& place = PerThread<PlaceScratch>();
 
@@ -1306,16 +1307,33 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
     }
 
     // A small fragment left alone (a superscript or subscript out of content order) joins the
-    // full-size line it sits in (algorithms §4.4, MuPDF's 0.8 em baseline tolerance).
+    // full-size line it sits in (algorithms §4.4, MuPDF's 0.8 em baseline tolerance). With
+    // `mathScripts`, a lone fragment of math-font glyphs (the 2 of e^{x^2}, set above the line's
+    // ink) joins a line holding a script glyph it is 0.87 of the size of or smaller, its baseline
+    // from 0.6 em below to 0.9 em above the line's.
     std::vector<std::vector<uint32_t>> extra;  // fragments added to groups, by group, rarely used
     std::vector<uint32_t>& extraOf = place.extraOf;
     extraOf.assign(groups.size(), kEmpty);
+    // The size of the largest script glyph of fragment `f` in a line of size `lineSize` (0 for none).
+    const auto scriptSize = [&](const Fragment& f, float lineSize) {
+        float most = 0;
+        for (uint32_t k = f.begin; k < f.end; ++k) {
+            const Glyph& g = glyphs[vis[k]];
+            if (!(g.flags & kGlyphSpace) && g.size < 0.87f * lineSize) most = M::Max(most, g.size);
+        }
+        return most;
+    };
     for (size_t s = 0; s < groups.size(); ++s) {
         Group& small = groups[s];
         if (small.count != 1) continue;
         const Fragment& f = frags[members[small.first]];
         if (f.end - f.begin > 12) continue;
         const float center = (small.vb + small.vt) / 2;
+        bool mathFragment = mathScripts;
+        for (uint32_t k = f.begin; k < f.end && mathFragment; ++k) {
+            const Glyph& g = glyphs[vis[k]];
+            mathFragment = (g.flags & kGlyphSpace) || (g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0);
+        }
         // Groups are sorted by baseline, descending, per direction: look at neighbours only.
         size_t best = kEmpty;
         for (size_t d = 1; d <= 8; ++d) {
@@ -1325,8 +1343,17 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
                 if (o >= groups.size()) continue;
                 const Group& line = groups[o];
                 if (line.merged || line.dir != small.dir || line.size < small.size / 0.87f) continue;
-                if (center < line.vb || center > line.vt) continue;
                 if (small.u0 < line.u0 - 0.3f * line.size || small.u0 - line.u1 > 0.6f * line.size) continue;
+                if (center < line.vb || center > line.vt) {
+                    const float dv = small.baseline - line.baseline;
+                    if (!mathFragment || dv > 0.9f * line.size || dv < -0.6f * line.size) continue;
+                    float script = 0;
+                    for (uint32_t m = line.first; m < line.first + line.count; ++m)
+                        script = M::Max(script, scriptSize(frags[members[m]], line.size));
+                    if (extraOf[o] != kEmpty)
+                        for (uint32_t m : extra[extraOf[o]]) script = M::Max(script, scriptSize(frags[m], line.size));
+                    if (!(small.size <= 0.87f * script)) continue;
+                }
                 best = o;
             }
             if (best != kEmpty) break;
@@ -1647,7 +1674,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis) {
 
 } // namespace
 
-void BuildLines(PageData& page) {
+void BuildLines(PageData& page, bool mathScripts) {
     page.lines.clear();
     page.lineGlyphs.clear();
     GlyphVector& glyphs = page.glyphs;
@@ -1669,9 +1696,9 @@ void BuildLines(PageData& page) {
     PlaceScratch& place = PerThread<PlaceScratch>();
     std::vector<uint32_t>& vis = place.vis;
     if (CollectAndFold(page, vis, keepInvisible))
-        PlaceGlyphs<FiniteMinMax>(page, vis);
+        PlaceGlyphs<FiniteMinMax>(page, vis, mathScripts);
     else
-        PlaceGlyphs<CheckedMinMax>(page, vis);
+        PlaceGlyphs<CheckedMinMax>(page, vis, mathScripts);
     if (glyphs.size() > kKeptGlyphs) place = PlaceScratch();
 
     DropLineNumbers(page);

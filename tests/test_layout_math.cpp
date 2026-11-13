@@ -3,7 +3,8 @@
 // placed by hand (scripts, fractions, radicals, operators with limits, matrices, cases, accents,
 // alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback, binomials,
 // over- and undersets, braces), inline formula runs, and whole pages through ConvertPages in both
-// math modes. Exit codes 1550-1599 and 2205-2212.
+// math modes (scripts of scripts out of content order). Exit codes 1550-1599, 2205-2212 and
+// 2215-2216.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -531,6 +532,41 @@ void TestConstructs() {
         RAYOPDF_CHECK(s.find("\\overbrace") == std::string::npos, 2212);
     }
 }
+
+// A script's own script drawn as a run of its own (out of content order) joins its line in LaTeX
+// mode: e^{x^2} from three runs, the 2 above the line's ink (glyph boxes as tight as x-heights);
+// a small line 0.7 em under the baseline stays apart.
+void TestNestedScripts() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic};
+    const auto glyph = [&](const char* text, float x, float y, float size) {
+        Glyph g;
+        g.u0 = x, g.u1 = x + 0.5f * size, g.vb = y - 0.2f * size, g.vt = y + 0.45f * size, g.v = y;
+        g.size = size;
+        g.font = 1;
+        g.flags = kGlyphItalic;
+        g.text = static_cast<uint32_t>(page.text.size());
+        page.text.append(text);
+        g.textLength = static_cast<uint16_t>(std::string_view(text).size());
+        page.glyphs.push_back(g);
+        return g.u1;
+    };
+    float x = AddText(page, "The value ", 72, 700, 10);
+    const float e = glyph("e", x, 700, 10);
+    const float xs = glyph("x", e, 703.6f, 7);
+    AddText(page, " grows fast and the text goes on.", xs + 3, 700, 10);
+    glyph("2", xs, 708.5f, 5);  // its ink 0.75 pt above the line's (x's ascent): a line of its own before
+    glyph("1", x, 693, 5);
+    AddText(page, "A second paragraph starts here after a gap.", 72, 660, 10);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    if (latex.find("$e^{x^{2}}$ grows fast") == std::string::npos || latex.find("_{1}") != std::string::npos)
+        std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find("The value $e^{x^{2}}$ grows fast") != std::string::npos, 2215);
+    RAYOPDF_CHECK(latex.find("_{1}") == std::string::npos && latex.find("1") != std::string::npos, 2216);
+}
 } // namespace
 
 int main() {
@@ -547,6 +583,7 @@ int main() {
     TestNumbersText();
     TestPages();
     TestConstructs();
+    TestNestedScripts();
     std::puts("test_layout_math: ok");
     return 0;
 }

@@ -66,13 +66,13 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
             }
             PageData& page = pages[job - reads];
             if (math == MathMode::Latex) PrepareMathGlyphs(page);
-            BuildLines(page);
+            BuildLines(page, math == MathMode::Latex);
         });
     } else {
         if (document) repaired = document->read(document->context);
         for (PageData& page : pages) {
             if (math == MathMode::Latex) PrepareMathGlyphs(page);
-            BuildLines(page);
+            BuildLines(page, math == MathMode::Latex);
         }
     }
     // A structure tree that passes the checks decides blocks and order (D5, layout/structure.h).
