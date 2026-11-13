@@ -8,7 +8,7 @@ builds those images, lays out files on the host, starts containers and writes th
 Usage:
   python3 tools/eval.py all [--resume]
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
-  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs]
+  python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs,doclaynet]
   python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE | --profile default|declared] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
@@ -20,17 +20,19 @@ Usage:
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
 pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, kordoc (OCR off),
 kordoc-ocr (kordoc's default, OCR models present), cli. Suites: synthetic, odl, olmocr,
-olmocr-math, readoc, readoc-dev, readoc-val, readoc-dev2, scanned, olmocr-scans, multiscript.
-olmocr-math is olmOCR's arxiv_math category alone, converted and scored for cli only (its
-declared profile is --math=latex). The scanned suite is built from the synthetic corpus by
-`corpus --suite scanned`; olmocr-scans comes with `fetch --only olmocr`; multiscript (image-only
-pages in 9 scripts) is rendered by `corpus --suite multiscript`. Four disjoint READoc sets,
-numbers of one order per subset (arXiv, GitHub): readoc is the holdout (1-150, 300 documents,
-aggregate scores only, once per release candidate); readoc-dev is the development split
-(151-300, `fetch --only readoc-dev`), scored per document too
-(scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is the validation split (301-600, 600
-documents, `fetch --only readoc-val`), aggregate scores only, checked at every quality landing;
-readoc-dev2 is a second development split (601-900, up to 600 documents, `fetch --only
+olmocr-math, readoc, readoc-dev, readoc-val, readoc-dev2, doclaynet-dev, doclaynet-val, scanned,
+olmocr-scans, multiscript. olmocr-math is olmOCR's arxiv_math category alone, converted and
+scored for cli only (its declared profile is --math=latex). doclaynet-dev and doclaynet-val
+(`fetch --only doclaynet`: DocLayNet's val and test pages) score the roles of the pages' text
+cells in cli's JSON output, for cli only; doclaynet-val is aggregate only. The scanned suite is
+built from the synthetic corpus by `corpus --suite scanned`; olmocr-scans comes with `fetch
+--only olmocr`; multiscript (image-only pages in 9 scripts) is rendered by `corpus --suite
+multiscript`. Four disjoint READoc sets, numbers of one order per subset (arXiv, GitHub): readoc
+is the holdout (1-150, 300 documents, aggregate scores only, once per release candidate);
+readoc-dev is the development split (151-300, `fetch --only readoc-dev`), scored per document
+too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is the validation split (301-600,
+600 documents, `fetch --only readoc-val`), aggregate scores only, checked at every quality
+landing; readoc-dev2 is a second development split (601-900, up to 600 documents, `fetch --only
 readoc-dev2`), scored per document like readoc-dev.
 The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
@@ -45,6 +47,8 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import http.client
+import io
 import json
 import os
 import re
@@ -52,6 +56,8 @@ import shutil
 import statistics
 import subprocess
 import sys
+import time
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -76,16 +82,20 @@ TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # readoc-val: 600 further READoc documents; validation, aggregate only.
 # readoc-dev2: up to 600 READoc documents after those; a second development split.
 # olmocr-math: olmOCR's arxiv_math category alone, for cli in its declared profile (--math=latex).
+# doclaynet-dev, doclaynet-val: DocLayNet pages (its val and test splits) scored by the roles of
+# their text cells (eval/scorer/doclaynet.py); development and validation (aggregate only).
 TEXT_SUITES = ["synthetic", "odl", "olmocr", "olmocr-math", "readoc", "readoc-dev", "readoc-val",
-               "readoc-dev2"]
-# Suites converted and scored for cli alone (`all` converts no cli run and skips them).
-CLI_SUITES = ["olmocr-math"]
+               "readoc-dev2", "doclaynet-dev", "doclaynet-val"]
+# Suites converted and scored for cli alone (`all` converts no cli run and skips them): only cli
+# writes the boxes the DocLayNet scorer reads.
+CLI_SUITES = ["olmocr-math", "doclaynet-dev", "doclaynet-val"]
 # multiscript: image-only pages in Cyrillic, Hangul, Arabic, Hebrew, Devanagari, Kannada, Tamil,
 # Latin and a mix, upright and turned (eval/producers/multiscript.py); development only.
 SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
 IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
-DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs"]
+DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs",
+            "doclaynet"]
 # Each benchmark's declared profile: the cli options it is measured with (roadmap D6).
 PROFILES = REPO / "eval" / "profiles.json"
 
@@ -115,16 +125,27 @@ READOC_DEV2_PER_SUBSET = 300
 # Per suite: the folders of the PDFs and of their ground truth under data/READoc-data.
 READOC_DIRS = {"readoc": ("sel", "sel-gt"), "readoc-dev": ("dev", "dev-gt"),
                "readoc-val": ("val", "val-gt"), "readoc-dev2": ("dev2", "dev2-gt")}
-# Suites scored by suite_e2e.py's aggregate alone (no per-document scores are written).
-READOC_AGGREGATE_ONLY = ["readoc", "readoc-val"]
+# Suites whose per-document outputs and scores are never looked at (AGENTS.md rule 7): READoc's
+# are scored by suite_e2e.py's aggregate alone, DocLayNet's without per-page values.
+AGGREGATE_ONLY = ["readoc", "readoc-val", "doclaynet-val", "omni-val"]
 SAFEDOCS_URL = ("https://digitalcorpora.s3.amazonaws.com/corpora/files/"
                 "CC-MAIN-2021-31-PDF-UNTRUNCATED/zipfiles/0000-0999/0000.zip")
 SAFEDOCS_SIZE = 1_266_879_273
+# DocLayNet 1.0.0 (CDLA-Permissive-1.0): the core archive holds the COCO annotations (and page
+# images, not read), the extra one each page's PDF and its text cells (JSON/<stem>.json, boxes in
+# the 1025 px COCO image). Pinned by S3 ETag and size (2026-11-13); read by range requests.
+DOCLAYNET_URL = "https://codait-cos-dax.s3.us.cloud-object-storage.appdomain.cloud/dax-doclaynet/1.0.0/"
+DOCLAYNET_ZIPS = {"core": ("DocLayNet_core.zip", "52242220284e12538949c5b06eb2777c-448", 30_012_083_650),
+                  "extra": ("DocLayNet_extra.zip", "56a63e0408a7076bceaac038ab9842ca-120", 8_008_878_198)}
+# Our splits from DocLayNet's: development its val, validation its test, and a training set of
+# its train pages (never a suite; eval/train/).
+DOCLAYNET_SPLITS = {"dev": "val", "val": "test", "train": "train"}
+DOCLAYNET_TRAIN = 20_000
 # Bytes each dataset needs while it is fetched (READoc holds one 1.2 GB zip until its selection
 # is extracted).
 DATASET_NEED = {"odl": GIB // 2, "olmocr": GIB // 2, "readoc": 3 * GIB // 2,
                 "readoc-dev": 3 * GIB // 2, "readoc-val": 3 * GIB // 2,
-                "readoc-dev2": 3 * GIB // 2, "safedocs": 3 * GIB // 2}
+                "readoc-dev2": 3 * GIB // 2, "safedocs": 3 * GIB // 2, "doclaynet": 5 * GIB}
 FULL_RUN_NEED = 25 * GIB
 
 SPEED_SYNTHETIC = [f"{p}/{f}" for p in ("rayomd", "xelatex", "libreoffice")
@@ -302,6 +323,8 @@ def suite_root(root: Path, suite: str) -> Path:
         "readoc-dev2": root / "data" / "READoc-data" / READOC_DIRS["readoc-dev2"][0],
         "scanned": root / "scanned",
         "olmocr-scans": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
+        "doclaynet-dev": root / "data" / "doclaynet" / "dev",
+        "doclaynet-val": root / "data" / "doclaynet" / "val",
     }[suite]
 
 
@@ -320,7 +343,7 @@ def suite_ids(root: Path, suite: str) -> list[str]:
         return [item["id"] for item in scanned_items(root) if item["valid"]]
     if suite == "multiscript":
         return [item["id"] for item in multiscript_items(root) if item["valid"]]
-    if suite == "odl":
+    if suite in ("odl", "doclaynet-dev", "doclaynet-val"):
         ids = pdf_ids(base)
     elif suite == "olmocr":
         ids = [i for cat in OLMOCR_CATEGORIES for i in pdf_ids(base, cat)]
@@ -402,6 +425,8 @@ def dataset_present(data: Path, name: str) -> bool:
         repo = data / "odl-bench"
         return (len(list((repo / "pdfs").glob("*.pdf"))) == 200
                 and (repo / "src" / "evaluator.py").is_file())
+    if name == "doclaynet":
+        return (data / "doclaynet" / "selection.json").is_file()
     if name == "olmocr":
         bench = data / "olmOCR-bench" / "bench_data"
         return (len(list((bench / "pdfs").glob("*/*.pdf"))) == OLMOCR_PDFS
@@ -591,6 +616,138 @@ def fetch_safedocs(data: Path) -> None:
         raise SystemExit(f"safedocs: {target} has {size} bytes, expected {SAFEDOCS_SIZE}")
 
 
+class RangeFile(io.RawIOBase):
+    """A seekable, read-only file over an HTTP URL that answers range requests. A read outside
+    the buffer fetches `readahead` bytes from the position (more when the read asks for more) in
+    one `Range: bytes=a-b` request, tried up to 3 times; the answer's Content-Range must name that
+    range. Reads in ascending order are served from the buffer until they pass its end."""
+
+    def __init__(self, url: str, size: int, readahead: int = 1 << 20) -> None:
+        super().__init__()
+        self.url, self.size, self.readahead = url, size, readahead
+        self.position = 0
+        self.start, self.buffer = 0, b""
+        self.requests = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        self.position = {io.SEEK_SET: 0, io.SEEK_CUR: self.position, io.SEEK_END: self.size}[whence] + offset
+        return self.position
+
+    def fetch(self, first: int, last: int) -> bytes:
+        request = urllib.request.Request(self.url, headers={"Range": f"bytes={first}-{last}"})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=300) as answer:
+                    data = answer.read()
+                    named = answer.headers.get("Content-Range")
+                if named != f"bytes {first}-{last}/{self.size}" or len(data) != last - first + 1:
+                    raise OSError(f"asked for bytes {first}-{last}, got {named} with {len(data)} bytes")
+                self.requests += 1
+                return data
+            except (OSError, http.client.HTTPException) as exc:
+                if attempt == 2:
+                    raise SystemExit(f"{self.url}: {exc}") from None
+                log(f"range request failed ({exc}); trying again")
+                time.sleep(10 * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    def readinto(self, target) -> int:
+        view = memoryview(target).cast("B")
+        if self.position >= self.size or not len(view):
+            return 0
+        end = min(self.size, self.position + len(view))
+        if not (self.start <= self.position and end <= self.start + len(self.buffer)):
+            last = min(self.size, max(end, self.position + self.readahead)) - 1
+            self.buffer, self.start = self.fetch(self.position, last), self.position
+        data = self.buffer[self.position - self.start:end - self.start]
+        view[:len(data)] = data
+        self.position += len(data)
+        return len(data)
+
+
+def doclaynet_archive(name: str, readahead: int) -> zipfile.ZipFile:
+    """One of DocLayNet's archives, read in place: its pins checked by a HEAD request, then its
+    central directory read by range requests (the archive is not downloaded)."""
+    file, etag, size = DOCLAYNET_ZIPS[name]
+    url = DOCLAYNET_URL + file
+    with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60) as answer:
+        headers = answer.headers
+    for field, found, expected in (("ETag", (headers.get("ETag") or "").strip('"'), etag),
+                                   ("Content-Length", headers.get("Content-Length"), str(size)),
+                                   ("Accept-Ranges", headers.get("Accept-Ranges"), "bytes")):
+        if found != expected:
+            raise SystemExit(f"DocLayNet changed upstream: {field} of {file} is {found}, pinned {expected}")
+    return zipfile.ZipFile(RangeFile(url, size, readahead))
+
+
+def copy_member(archive: zipfile.ZipFile, member: str, target: Path) -> str:
+    """Extracts `member` to `target`; its SHA-256."""
+    digest = hashlib.sha256()
+    with archive.open(member) as src, target.open("wb") as dst:
+        while chunk := src.read(1 << 20):
+            digest.update(chunk)
+            dst.write(chunk)
+    return digest.hexdigest()
+
+
+def fetch_doclaynet(data: Path) -> None:
+    """DocLayNet without downloading its archives (38 GB): the COCO annotations from the core
+    archive into data/doclaynet/coco/, then the PDF and text cells (JSON) of each selected page
+    from the extra archive into data/doclaynet/<split>/, in the order the archive holds them so
+    that one request serves neighbours. Selected: every page of DocLayNet's val split (our dev)
+    and test split (our val) and the DOCLAYNET_TRAIN train pages with the smallest SHA-256 of
+    their file name, each with precedence 0 (the page's first annotation)."""
+    out = data / "doclaynet"
+    coco = out / "coco"
+    coco.mkdir(parents=True, exist_ok=True)
+    # 32 MiB a request: a request takes seconds to start, and the members read are dense.
+    core = doclaynet_archive("core", 32 << 20)
+    selection = {"schema": 1, "dataset": "DocLayNet 1.0.0", "licence": "CDLA-Permissive-1.0",
+                 "archives": {name: {"file": file, "etag": etag, "size": size}
+                              for name, (file, etag, size) in DOCLAYNET_ZIPS.items()},
+                 "rule": (f"COCO images with precedence 0: dev = DocLayNet's val split, val = its test split, "
+                          f"train = the {DOCLAYNET_TRAIN} train images with the smallest SHA-256 of "
+                          "file_name; each page's PDF/<stem>.pdf and JSON/<stem>.json"),
+                 "roles": {"dev": "development", "val": "validation, aggregate only",
+                           "train": "training data only, never a suite"},
+                 "coco": {}, "counts": {}, "sha256": {}}
+    stems: dict[str, list[str]] = {}
+    for split, theirs in DOCLAYNET_SPLITS.items():
+        target = coco / f"{theirs}.json"
+        selection["coco"][theirs] = copy_member(core, f"COCO/{theirs}.json", target)
+        images = [im["file_name"] for im in read_json(target)["images"] if im.get("precedence", 0) == 0]
+        if split == "train":
+            images = sorted(images, key=lambda f: hashlib.sha256(f.encode()).hexdigest())[:DOCLAYNET_TRAIN]
+        stems[split] = sorted(Path(f).stem for f in images)
+        log(f"doclaynet {split}: {len(stems[split])} pages of DocLayNet's {theirs} split")
+    core.close()
+    extra = doclaynet_archive("extra", 32 << 20)
+    members = []
+    for split, names in stems.items():
+        (out / split).mkdir(parents=True, exist_ok=True)
+        for stem in names:
+            for kind, suffix in (("PDF", "pdf"), ("JSON", "json")):
+                info = extra.getinfo(f"{kind}/{stem}.{suffix}")
+                members.append((info.header_offset, info.filename, out / split / f"{stem}.{suffix}"))
+    for count, (_, member, target) in enumerate(sorted(members), 1):
+        selection["sha256"][str(target.relative_to(out))] = copy_member(extra, member, target)
+        if count % 5000 == 0:
+            log(f"doclaynet: {count}/{len(members)} files")
+    extra.close()
+    selection["counts"] = {split: len(names) for split, names in stems.items()}
+    write_json(out / "selection.json", selection)
+    log(f"doclaynet: {selection['counts']}")
+
+
 def cmd_fetch(args) -> int:
     data: Path = args.root / "data"
     data.mkdir(parents=True, exist_ok=True)
@@ -608,7 +765,7 @@ def cmd_fetch(args) -> int:
         log(f"fetch {name}")
         {"odl": fetch_odl, "olmocr": fetch_olmocr, "readoc": fetch_readoc,
          "readoc-dev": fetch_readoc_dev, "readoc-val": fetch_readoc_val,
-         "readoc-dev2": fetch_readoc_dev2, "safedocs": fetch_safedocs}[name](data)
+         "readoc-dev2": fetch_readoc_dev2, "safedocs": fetch_safedocs, "doclaynet": fetch_doclaynet}[name](data)
     return 0
 
 
@@ -883,7 +1040,7 @@ def score_readoc(root: Path, tools: list[str], suite: str) -> int:
                 src = runs / sub / gt.name
                 (work / sub / gt.name).write_bytes(src.read_bytes() if src.is_file() else b"")
             mounts = [(data, "/data", True), (work, "/work", True), (out, "/out", False)]
-            if suite in READOC_AGGREGATE_ONLY:
+            if suite in AGGREGATE_ONLY:
                 argv = ["python", "/data/READoc/src/evaluation/suite_e2e.py",
                         "--gold_dir", f"/data/READoc-data/{gt_name}/{sub}",
                         "--pred_dir", f"/work/{sub}", "--result_json", f"/out/{tool}-{sub}.json"]
@@ -903,6 +1060,24 @@ def score_readoc(root: Path, tools: list[str], suite: str) -> int:
                 log(f"{suite}/{tool}/{sub}: not scored, see {out / f'{tool}-{sub}.log'}")
         shutil.rmtree(work)
     return failed
+
+
+def score_doclaynet(root: Path, tools: list[str], suite: str) -> None:
+    """The roles each tool's JSON output gives DocLayNet's text cells (eval/scorer/doclaynet.py);
+    per-page counts for the development split only."""
+    split = suite.split("-", 1)[1]
+    out = root / "scores" / suite
+    out.mkdir(parents=True, exist_ok=True)
+    for tool in tools:
+        argv = ["python3", "/opt/eval/scorer/doclaynet.py", "--coco", f"/data/coco/{DOCLAYNET_SPLITS[split]}.json",
+                "--pages", f"/data/{split}", "--pred", "/pred", "--out", f"/out/{tool}.json"]
+        if suite not in AGGREGATE_ONLY:
+            argv.append("--per-page")
+        run(docker_cmd(tag("scorer"), argv,
+                       mounts=[(REPO / "eval" / "scorer", "/opt/eval/scorer", True),
+                               (root / "data" / "doclaynet", "/data", True),
+                               (root / "runs" / tool / suite, "/pred", True), (out, "/out", False)]))
+        log(f"{suite}/{tool}: scored")
 
 
 def score_multiscript(root: Path, tools: list[str]) -> None:
@@ -942,6 +1117,8 @@ def cmd_score(args) -> int:
         score_olmocr(args.root, tools, args.suite)
     elif args.suite == "olmocr-math":
         score_olmocr(args.root, tools, args.suite, ["arxiv_math"])
+    elif args.suite in ("doclaynet-dev", "doclaynet-val"):
+        score_doclaynet(args.root, tools, args.suite)
     else:
         return 1 if score_readoc(args.root, tools, args.suite) else 0
     return 0
@@ -1404,7 +1581,25 @@ def report(root: Path) -> str:
               "document's scores are in `scores/readoc-dev2/<tool>-<subset>-docs.json`.", ""]
     lines += report_readoc(root, "readoc-dev2")
     lines += report_olmocr_math(root)
+    lines += report_doclaynet(root)
     return "\n".join(lines) + "\n"
+
+
+def report_doclaynet(root: Path) -> list[str]:
+    """Section 17: the DocLayNet suites' role metrics (eval/scorer/doclaynet.py)."""
+    keys = ["text_kept", "furniture_f1", "heading_f1", "list_f1", "footnote_f1", "table_f1"]
+    lines = ["## 17. DocLayNet roles", "",
+             "Character-weighted roles of DocLayNet's text cells in the JSON output "
+             "(`eval/scorer/doclaynet.py`): the kept share of body text, furniture left out, and "
+             "headings, list items, footnotes and tables among the kept cells. Only cli writes "
+             "boxes, so only cli is scored. doclaynet-val is validation data: aggregate only.", ""]
+    rows = []
+    for suite in ("doclaynet-dev", "doclaynet-val"):
+        for tool in TOOLS:
+            result = read_json(root / "scores" / suite / f"{tool}.json")
+            if result:
+                rows.append([suite, tool, str(result["pages"])] + [result["metrics"].get(k) for k in keys])
+    return lines + (table(["suite", "tool", "pages"] + keys, rows) if rows else ["Not scored.", ""])
 
 
 def report_olmocr_math(root: Path) -> list[str]:

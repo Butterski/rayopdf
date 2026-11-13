@@ -8,6 +8,8 @@
     "readoc": "--math=latex",
     "readoc-dev": "--math=latex",
     "readoc-dev2": "--math=latex",
-    "readoc-val": "--math=latex"
+    "readoc-val": "--math=latex",
+    "doclaynet-dev": "--format=json --images=none",
+    "doclaynet-val": "--format=json --images=none"
   }
 }

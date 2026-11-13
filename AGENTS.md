@@ -40,8 +40,9 @@ roadmap under `docs/`.
    `readoc` suite (the 300 READoc documents of `data/READoc-data/selection.json`) while
    designing converter heuristics; use aggregate scores only. The validation split
    `readoc-val` (600 further READoc documents, `selection-val.json`) is aggregate-only in the
-   same way, and every quality landing is checked against it. `readoc-dev` (300 other READoc
-   documents, `selection-dev.json`) is a development suite: inspect it freely. RayoMD producers
+   same way, and every quality landing is checked against it; so is `doclaynet-val`
+   (DocLayNet's test split). `readoc-dev` (300 other READoc documents, `selection-dev.json`) and
+   `doclaynet-dev` are development suites: inspect them freely. RayoMD producers
    never use `--embed-source`. Tagged and untagged producers are always reported separately.
    Every quality landing passes the strict gate (`qgate.sh`): no gated metric may fall more than
    0.0001 below its best since the last rebase, and each suite is measured with its declared

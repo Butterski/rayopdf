@@ -33,6 +33,8 @@ harness answers each condition:
 |readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |readoc-val|`data/READoc-data/val`|600 further multi-page PDFs of READoc: `arxiv/<stem>` 300, `github/<stem>` 300|`data/READoc-data/val-gt/<subset>/<stem>.md`|**validation**, aggregate only (§ READoc development split)|
 |readoc-dev2|`data/READoc-data/dev2`|up to 600 further multi-page PDFs of READoc: `arxiv/<stem>` and `github/<stem>`, up to 300 each|`data/READoc-data/dev2-gt/<subset>/<stem>.md`|development (§ READoc development split)|
+|doclaynet-dev|`data/doclaynet/dev`|6,489 single-page PDFs: DocLayNet's val split|DocLayNet's COCO boxes (`data/doclaynet/coco/val.json`) and text cells (`<stem>.json`)|development, `cli` only (§ DocLayNet)|
+|doclaynet-val|`data/doclaynet/val`|4,999 single-page PDFs: DocLayNet's test split|`data/doclaynet/coco/test.json` and the text cells|**validation**, aggregate only, `cli` only (§ DocLayNet)|
 |scanned|`scanned/`|the valid items of `scanned/scanned.json`: 398 image-only PDFs (1,020 pages) made from the 199 valid synthetic items, `s300/<producer>/<fixture>` and `s200/<producer>/<fixture>`|`eval/fixtures/md/<fixture>.md`|OCR development; items made from the `weasyprint` producer are the holdout|
 |olmocr-scans|`data/olmOCR-bench/bench_data/pdfs`|134 single-page scans: `old_scans` 98, `old_scans_math` 36|the benchmark's JSONL unit tests (`old_scans.jsonl`, `old_scans_math.jsonl`)|OCR development|
 |multiscript|`multiscript/pdf/`|63 image-only PDFs (64 pages): text in 9 scripts, upright and turned (§ Multiscript suite)|`multiscript/gt/<id>.md` (the fixture text)|OCR development (scripts and orientation); no holdout|
@@ -40,6 +42,34 @@ harness answers each condition:
 Suite ids are paths relative to the suite root without `.pdf`. READoc's selection: the ground-truth
 stems of each subset (`<subset>_ground_truth/*.md`) sorted by the SHA-256 of the stem, first 150
 whose PDF is in `<subset>.zip`; `data/READoc-data/selection.json` records it.
+
+### DocLayNet
+
+[DocLayNet](https://github.com/DS4SD/DocLayNet) 1.0.0 (licence CDLA-Permissive-1.0) annotates
+80,863 single pages of financial reports, manuals, scientific articles, laws, patents and
+tenders with 11 region categories, and ships each page's PDF and its text cells (text and box).
+`fetch --only doclaynet` reads its two archives in place by HTTP range requests, pinned by S3
+ETag and size (a HEAD request that differs stops it): the COCO annotations of the core archive
+(30 GB, of which only `COCO/*.json` is read) into `data/doclaynet/coco/`, and each selected
+page's `PDF/<stem>.pdf` and `JSON/<stem>.json` from the extra archive (8 GB) into
+`data/doclaynet/<split>/`. Selected, among the COCO images with `precedence` 0: `dev` =
+DocLayNet's val split (6,489 pages), `val` = its test split (4,999), and `train` = the 20,000
+train images with the smallest SHA-256 of their file name (training data for the small models of
+roadmap M9, never a suite). `data/doclaynet/selection.json` records the pins, the rule, the
+counts and every file's SHA-256.
+
+`eval/scorer/doclaynet.py` scores the roles RayoPDF's JSON output (`--format=json`, the suites'
+declared profile) gives the pages' text cells. A cell's gold role is the category of the smallest
+COCO box holding its centre (Page-header and Page-footer: furniture; Section-header and Title:
+heading; List-item, Footnote, Table; Picture is not scored; Text, Caption and Formula: body
+text); it weighs its non-space characters. COCO boxes and cells are in the 1025 px square image
+and map to PDF points with the page's size W, H (x · W/1025; y flipped, · H/1025). A cell is kept
+when its centre lies in the box of an output block that is no image; its predicted role is the
+type of the smallest such block. Metrics, pooled over the pages: `text_kept` (kept share of the
+cells that are not furniture), `furniture_f1` (positive: furniture; predicted positive: not
+kept), and `heading_f1`, `list_f1`, `footnote_f1`, `table_f1` over the kept cells. Only `cli`
+writes boxes, so the suites score RayoPDF alone and `all` does not run them. `doclaynet-dev`'s
+score file has per-page counts; `doclaynet-val` is aggregate only, like `readoc-val`.
 
 ### READoc development and validation splits
 
@@ -451,14 +481,14 @@ images.json                 image ids, sizes and versions.json of every image
 corpus/                     <producer>/<fixture>.pdf, corpus.json
 scanned/                    s300|s200/<producer>/<fixture>.pdf, scanned.json (about 0.8 GB)
 multiscript/                pdf/<id>.pdf, pgm/<id>/p<N>.pgm, gt/, multiscript.json
-data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, odl-pages.json
+data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, safedocs/, doclaynet/, odl-pages.json
 suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
 scores/{olmocr,olmocr-math,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
 scores/{readoc-dev,readoc-dev2}/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
 scores/readoc-val/<tool>-<subset>.json,
-scores/multiscript/<tool>.json (and .md, the tables)
+scores/multiscript/<tool>.json (and .md, the tables), scores/{doclaynet-dev,doclaynet-val}/<tool>.json
 speed/<tool>.json           and speed/<tool>/ with the raw runs
 census/                     census.jsonl, summary.json
 report.md
@@ -500,6 +530,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |odl|`--images=none --furniture=keep --plain --tables=html`|
 |synthetic, olmocr|none (the default)|
 |olmocr-math, readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex`|
+|doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
 
 `convert --tool cli --profile declared` appends a suite's options to `rayopdf --convert {in}
 {out}` (a suite without an entry is an error). The quality gate measures the declared profiles
@@ -518,7 +549,8 @@ These are AGENTS.md rules 4–8:
 - Benchmark claims are dated and scoped (hardware, versions, threads, warm or fresh process).
   Third-party numbers are marked "reproduced" or "claimed".
 - Never inspect per-document outputs of the `weasyprint` producer, the scanned items made from
-  it, or the `readoc` suite while designing converter heuristics; use aggregate scores only.
+  it, or the `readoc` suite while designing converter heuristics; use aggregate scores only. The
+  validation splits `readoc-val` and `doclaynet-val` are aggregate only in the same way.
   Tagged and untagged producers are reported separately.
 - No AGPL or GPL code or data in the repository (PyMuPDF/MuPDF, Poppler, marker): they run as
   black boxes in images. READoc's code is run from a clone and never copied.
