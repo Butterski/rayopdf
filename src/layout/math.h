@@ -17,8 +17,11 @@
 // of the fonts' encodings, math_tables.h). Fraction bars (filled rules) split numerators from
 // denominators, a radical sign with the rule over its radicand makes \sqrt (with an index set
 // small above its left), large operators take the rows centred above and below them as limits,
-// tall delimiters (or delimiter pieces U+239B-23AD) around rows make matrices and cases, and on
-// each baseline smaller glyphs raised or lowered after a base are its scripts (recursively).
+// a relation or arrow takes a smaller run centred over or under it (\overset, \underset), a
+// horizontal brace (⏞, ⏟) the run it spans and its smaller label (\overbrace, \underbrace),
+// tall delimiters (or delimiter pieces U+239B-23AD) around rows make matrices and cases (two rows
+// in parentheses as far apart as TeX sets a display binomial: \binom), and on each baseline
+// smaller glyphs raised or lowered after a base are its scripts (recursively).
 // Accents over a base become \hat, \bar, \tilde, \dot, \vec; upright letter runs become function
 // names (\sin) or \text; Unicode becomes KaTeX's commands, and mathematical alphanumerics their
 // alphabet (𝐀 → \mathbf{A}, ℝ → \mathbb{R}, 𝒮 → \mathcal{S}). Anything the rebuild cannot place

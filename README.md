@@ -272,11 +272,12 @@ superscript and subscript characters (`mc²`, `x₀`), or as `<sup>`/`<sub>` whe
 characters has no such form; raised or lowered text (`H<sub>2</sub>O`) is `<sup>`/`<sub>` too.
 `--math=latex` writes them as LaTeX instead, rebuilt from the glyphs' positions: inline formulas
 as `$…$`, displayed ones as `$$…$$` (an equation number follows as `(n)`), with fractions,
-radicals, scripts, limits, matrices and cases; a formula it cannot rebuild stays Unicode text, a
-number in a table cell (`−0.1`, `308±6`) stays text as in the default mode, and a `$` of the text
-is written `\$` where it could open a formula (`$8,000` stays as it is). A tagged PDF's formula
-whose alternate text is LaTeX (a command, `^` or `_`, balanced braces) is written as that text,
-as `$$…$$` when the formula is a block of its own.
+radicals, scripts, limits, matrices, cases, binomials, `\overset`/`\underset` and
+`\overbrace`/`\underbrace`; a formula it cannot rebuild stays Unicode text, a number in a table
+cell (`−0.1`, `308±6`) stays text as in the default mode, and a `$` of the text is written `\$`
+where it could open a formula (`$8,000` stays as it is). A tagged PDF's formula whose alternate
+text is LaTeX (a command, `^` or `_`, balanced braces) is written as that text, as `$$…$$` when
+the formula is a block of its own.
 
 `--report` prints one JSON record of the document: `input`, `output`, `status` (`ok`, `skipped`
 or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,

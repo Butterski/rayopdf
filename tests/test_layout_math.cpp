@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the LaTeX math output (layout/math.h, --math=latex): formulas rebuilt from glyphs
 // placed by hand (scripts, fractions, radicals, operators with limits, matrices, cases, accents,
-// alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback), inline
-// formula runs, and whole pages through ConvertPages in both math modes. Exit codes 1550-1599.
+// alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback, binomials,
+// over- and undersets, braces), inline formula runs, and whole pages through ConvertPages in both
+// math modes. Exit codes 1550-1599 and 2205-2212.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -458,6 +459,78 @@ void TestPages() {
     RAYOPDF_CHECK(unicode.find("Its square y\xC2\xB2 is no tag.") != std::string::npos, 1598);
 }
 
+// \binom, \overset / \underset and \overbrace / \underbrace, each with a case that keeps the
+// output it had.
+void TestConstructs() {
+    // Two rows between cmex10 parentheses 30 pt high, at baselines `top` and `bottom`.
+    const auto stacked = [](float top, float bottom) {
+        Formula f;
+        f.Add("(", 0, 14, 10, kExtension, 0, 0.8f);
+        f.Add("n", 10, top);
+        f.Add("k", 10, bottom);
+        f.Add(")", 18, 14, 10, kExtension, 0, 0.8f);
+        return f.Latex();
+    };
+    // Baselines 1.36 em apart, as TeX sets a display binomial (ink 0.39 em apart).
+    Expect(stacked(6.8f, -6.8f), "\\binom{n}{k}", 2205);
+    // Baselines 1.2 em apart, a \baselineskip: a column vector (ink 0.23 em apart).
+    Expect(stacked(6, -6), "\\begin{pmatrix}n\\\\k\\end{pmatrix}", 2206);
+    {
+        // "def" at 7 pt centred over the =.
+        Formula f;
+        f.Add("x", 0, 0);
+        f.Add("=", 5, 0, 10, kText);
+        f.Add("def", 2.25f, 7, 7);
+        f.Add("y", 10, 0);
+        Expect(f.Latex(), "x\\overset{def}{=}y", 2207);
+    }
+    {
+        // A raised 2 right after the =: its superscript.
+        Formula f;
+        f.Add("x", 0, 0);
+        f.Add("=", 5, 0, 10, kText);
+        f.Add("2", 10, 4, 7, kText);
+        f.Add("y", 16, 0);
+        Expect(f.Latex(), "x=^{2}y", 2208);
+    }
+    {
+        // n at 7 pt centred under the arrow; at 10 pt it is the arrow's subscript.
+        for (const float size : {7.0f, 10.0f}) {
+            Formula f;
+            f.Add("x", 0, 0);
+            f.Add("\xE2\x86\x92", 5, 0, 10, kSymbol);
+            f.Add("n", 7.5f - 0.25f * size, -6, size);
+            f.Add("y", 10, 0);
+            if (size < 8)
+                Expect(f.Latex(), "x\\underset{n}{\\rightarrow}y", 2209);
+            else
+                Expect(f.Latex(), "x\\rightarrow_{n}y", 2210);
+        }
+    }
+    {
+        // ⏞ over a+b with n over it, ⏟ under a+b with n under it.
+        Formula over;
+        over.Add("a+b", 0, 0, 10, kItalic);
+        over.Add("\xE2\x8F\x9E", 0.5f, 9, 10, kText, 0, 1.4f);
+        over.Add("n", 5.75f, 15, 7);
+        Formula under;
+        under.Add("a+b", 0, 0, 10, kItalic);
+        under.Add("\xE2\x8F\x9F", 0.5f, -7, 10, kText, 0, 1.4f);
+        under.Add("n", 5.75f, -14, 7);
+        const std::string o = over.Latex(), u = under.Latex();
+        if (o != "\\overbrace{a+b}^{n}" || u != "\\underbrace{a+b}_{n}")
+            std::fprintf(stderr, "code 2211: got \"%s\" and \"%s\"\n", o.c_str(), u.c_str());
+        RAYOPDF_CHECK(o == "\\overbrace{a+b}^{n}" && u == "\\underbrace{a+b}_{n}", 2211);
+        // A brace over 70 % of what it overlaps is no \overbrace.
+        Formula shortBrace;
+        shortBrace.Add("a+b", 0, 0, 10, kItalic);
+        shortBrace.Add("\xE2\x8F\x9E", 0, 9, 10, kText, 0, 0.7f);
+        shortBrace.Add("n", 2, 15, 7);
+        const std::string s = shortBrace.Latex();
+        if (s.find("\\overbrace") != std::string::npos) std::fprintf(stderr, "code 2212: got \"%s\"\n", s.c_str());
+        RAYOPDF_CHECK(s.find("\\overbrace") == std::string::npos, 2212);
+    }
+}
 } // namespace
 
 int main() {
@@ -473,6 +546,7 @@ int main() {
     TestInline();
     TestNumbersText();
     TestPages();
+    TestConstructs();
     std::puts("test_layout_math: ok");
     return 0;
 }

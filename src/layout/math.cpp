@@ -419,6 +419,7 @@ enum class Kind : uint8_t {
     Radical,
     Piece,     // a delimiter piece
     Prime,
+    Brace,     // a horizontal brace over or under a run (⏞, ⏟)
 };
 
 struct Atom {
@@ -709,6 +710,8 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
         a.kind = Kind::Binary;
     } else if (letter == ',' || letter == ';') {
         a.kind = Kind::Punct;
+    } else if (letter == 0x23DE || letter == 0x23DF) {
+        a.kind = Kind::Brace;
     }
     return true;
 }
@@ -956,7 +959,8 @@ void FindRows(const std::vector<Item>& items, float em, std::vector<RowBand>& ro
     std::vector<const Item*>& full = PerThread<BuilderScratch>().full;
     full.clear();
     for (const Item& it : items) {
-        if (it.tall || it.kind == Kind::BigOp || it.kind == Kind::Accent || it.kind == Kind::Piece || it.kind == Kind::Radical)
+        if (it.tall || it.kind == Kind::BigOp || it.kind == Kind::Accent || it.kind == Kind::Piece || it.kind == Kind::Radical ||
+            it.kind == Kind::Brace)
             continue;
         if (it.size < 0.85f * em) continue;
         full.push_back(&it);
@@ -1142,6 +1146,28 @@ bool Builder::Matrix(std::vector<Item>& body, const Item& open, const Item* clos
     else if (o == "|" && c == "|") env = "vmatrix";
     else if (o == "\\|" && c == "\\|") env = "Vmatrix";
     else return Fail(MathStatus::Unsure);
+    // A binomial coefficient: one column of two rows inside parentheses, close together (their ink
+    // 0.6 em apart at most) with no rule between them, their baselines as far apart as TeX sets a
+    // display binomial's (numerator and denominator shifts σ8 + σ11 = 0.677 + 0.686 = 1.363 em),
+    // 1.3 to 1.45 em; a matrix's rows stand a \baselineskip apart, 1.2 em.
+    const float baselines = rows.size() == 2 ? rows[0].v - rows[1].v : 0;
+    if (env == "pmatrix" && columns.size() == 1 && rows.size() == 2 && rows[0].bottom - rows[1].top <= 0.6f * em &&
+        baselines >= 1.3f * em && baselines <= 1.45f * em) {
+        bool rule = false;
+        for (const MathRule& r : in_.rules)
+            rule = rule || (r.u1 > columns[0].first && r.u0 < columns[0].second && r.v1 > rows[1].top - 0.1f * em &&
+                            r.v0 < rows[0].bottom + 0.1f * em);
+        if (!rule) {
+            std::string top, bottom;
+            if (!Layout(cells[0][0], depth + 1, top) || !Layout(cells[1][0], depth + 1, bottom)) return false;
+            out.append("\\binom{");
+            out.append(top);
+            out.append("}{");
+            out.append(bottom);
+            out.push_back('}');
+            return true;
+        }
+    }
     out.append("\\begin{");
     out.append(env);
     out.push_back('}');
@@ -1193,7 +1219,8 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     bool any = false;
     float lastV = 0;
     for (const Item& a : items) {
-        if (a.structure || a.tall || a.kind == Kind::BigOp || a.kind == Kind::Accent || a.size < 0.85f * em) continue;
+        if (a.structure || a.tall || a.kind == Kind::BigOp || a.kind == Kind::Accent || a.kind == Kind::Brace || a.size < 0.85f * em)
+            continue;
         if (any && a.v == lastV) continue;
         any = true, lastV = a.v;
         float weight = 0;
@@ -1277,14 +1304,71 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         if (!b.accent.empty()) return Fail(MathStatus::Unsure);
         b.accent = acc.latex;
     }
-    // Large operators and function names with limits centred above and below them.
+    // Limits, function words and joined symbols, each per item.
     std::vector<std::string> texts(3 * n);
     std::string* const lower = texts.data();
     std::string* const upper = lower + n;
+    std::string* const words = upper + n;
+    uint8_t* const wordPart = role + n;
+    // Horizontal braces (⏞ U+23DE, ⏟ U+23DF) spanning 80 % of the run they stand over (under), with
+    // a smaller label beyond them: \overbrace{run}^{label}, \underbrace{run}_{label}.
+    for (size_t i = 0; i < n; ++i) {
+        const Item& brace = items[i];
+        if (role[i] == 3 || brace.kind != Kind::Brace || brace.atom < 0) continue;
+        const uint32_t cp = atoms_[static_cast<uint32_t>(brace.atom)].cp;
+        const bool over = cp == 0x23DE;
+        // 1: in the run, 2: in the label, 0: neither.
+        const auto side = [&](size_t k) {
+            const Item& it = items[k];
+            if (k == i || role[k] == 3 || Fmin(it.u1, brace.u1) - Fmax(it.u0, brace.u0) <= 0.1f * em) return 0;
+            if (over ? it.v < brace.v - 0.2f * em : it.v > brace.v + 0.2f * em) return 1;
+            if (over ? it.v > brace.v + 0.2f * em : it.v < brace.v - 0.2f * em) return 2;
+            return 0;
+        };
+        float u0 = INFINITY, u1 = -INFINITY, size = 0, labelSize = 0;
+        size_t first = n, labels = 0;
+        for (size_t k = 0; k < n; ++k) {
+            const int s = side(k);
+            if (s == 1) {
+                u0 = Fmin(u0, items[k].u0), u1 = Fmax(u1, items[k].u1), size = Fmax(size, items[k].size);
+                if (first == n) first = k;
+            } else if (s == 2) {
+                ++labels;
+                labelSize = Fmax(labelSize, items[k].size);
+            }
+        }
+        if (first == n || labels == 0 || labelSize >= 0.9f * size || brace.u1 - brace.u0 < 0.8f * (u1 - u0)) continue;
+        std::vector<Item> run, label;
+        for (size_t k = 0; k < n; ++k) {
+            const int s = side(k);
+            if (s == 0) continue;
+            if (k == first) {
+                run.push_back(items[k]);
+                continue;
+            }
+            (s == 1 ? run : label).push_back(std::move(items[k]));
+            role[k] = 3;
+        }
+        role[i] = 3;
+        std::string runText, labelText;
+        if (!Layout(run, depth + 1, runText) || !Layout(label, depth + 1, labelText)) return false;
+        Item& head = items[first];
+        words[first] = (over ? "\\overbrace{" : "\\underbrace{") + runText + (over ? "}^{" : "}_{") + labelText + "}";
+        role[first] = 0;
+        head.atom = -1;
+        head.accent.clear();
+        head.kind = Kind::Ord;
+        head.tall = false;
+        head.u0 = Fmin(u0, brace.u0), head.u1 = Fmax(u1, brace.u1);
+    }
+    // Large operators and function names with limits centred above and below them; a relation or
+    // an arrow with a smaller run (0.8 of its size at most) centred over or under it (\overset,
+    // \underset).
     for (size_t i = 0; i < n; ++i) {
         const Item& op = items[i];
         const bool word = op.atom >= 0 && atoms_[static_cast<uint32_t>(op.atom)].upright;
-        if (role[i] != 0 || (op.kind != Kind::BigOp && !word)) continue;
+        const bool relation = op.kind == Kind::Relation && op.atom >= 0;
+        if (role[i] != 0 || (op.kind != Kind::BigOp && !word && !relation)) continue;
         std::vector<Item> below, above;
         for (int side = 0; side < 2; ++side) {
             std::vector<Item>& part = side == 0 ? below : above;
@@ -1294,7 +1378,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
                 const Item& it = items[k];
                 const float cx = (it.u0 + it.u1) / 2;
                 if (cx < op.u0 - 0.1f * em || cx > op.u1 + 0.1f * em) continue;
-                if (side == 0 ? it.v < Fmin(mainV - 0.45f * em, op.bottom + 0.1f * em) : it.v > Fmax(mainV + 0.65f * em, op.top - 0.2f * em))
+                if (relation ? role[k] == (side == 0 ? 2 : 1) && it.size <= 0.8f * op.size
+                             : side == 0 ? it.v < Fmin(mainV - 0.45f * em, op.bottom + 0.1f * em)
+                                         : it.v > Fmax(mainV + 0.65f * em, op.top - 0.2f * em))
                     picked.push_back(k);
             }
             // Grown along the limit's baseline to the glyphs beside it.
@@ -1302,6 +1388,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
                 const Item& seed = items[picked[grow]];
                 for (size_t k = 0; k < n; ++k) {
                     if (k == i || role[k] == 0 || role[k] == 3) continue;
+                    if (relation && (role[k] != (side == 0 ? 2 : 1) || items[k].size > 0.8f * op.size)) continue;
                     if (std::find(picked.begin(), picked.end(), k) != picked.end()) continue;
                     const Item& it = items[k];
                     if (std::fabs(it.v - seed.v) > 0.5f * seed.size + 0.1f * em) continue;
@@ -1314,7 +1401,19 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             float u0 = INFINITY, u1 = -INFINITY;
             for (size_t k : picked) u0 = Fmin(u0, items[k].u0), u1 = Fmax(u1, items[k].u1);
             const float centre = (u0 + u1) / 2, opCentre = (op.u0 + op.u1) / 2;
-            if (std::fabs(centre - opCentre) > 0.25f * Fmax(u1 - u0, op.u1 - op.u0) + 0.2f * em) continue;
+            if (relation) {
+                // Centred within 0.3 em, with no rule between the run and the relation.
+                if (std::fabs(centre - opCentre) > 0.3f * em) continue;
+                float near = side == 0 ? -INFINITY : INFINITY;
+                for (size_t k : picked) near = side == 0 ? Fmax(near, items[k].v) : Fmin(near, items[k].v);
+                bool rule = false;
+                for (const MathRule& r : in_.rules)
+                    rule = rule || (r.u1 > op.u0 && r.u0 < op.u1 &&
+                                    (side == 0 ? r.v1 > near && r.v0 < op.v : r.v0 < near && r.v1 > op.v + 0.25f * op.size));
+                if (rule) continue;
+            } else if (std::fabs(centre - opCentre) > 0.25f * Fmax(u1 - u0, op.u1 - op.u0) + 0.2f * em) {
+                continue;
+            }
             for (size_t k : picked) {
                 part.push_back(std::move(items[k]));  // consumed: no later step reads its texts
                 role[k] = 3;
@@ -1325,8 +1424,6 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         if (word && below.empty() && above.empty()) continue;
     }
     // Upright letter runs: function names and text.
-    std::string* const words = upper + n;
-    uint8_t* const wordPart = role + n;
     for (size_t i = 0; i < n; ++i) {
         if (role[i] != 0 || items[i].atom < 0 || !atoms_[static_cast<uint32_t>(items[i].atom)].upright) continue;
         size_t end = i + 1, prev = i;
@@ -1496,6 +1593,18 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             accented.push_back('}');
             built = std::move(accented);
             token = built;
+        }
+        if (b.kind == Kind::Relation && (!lower[i].empty() || !upper[i].empty())) {
+            // \underset{below}{\overset{above}{R}}: the relation keeps its spacing.
+            std::string stacked;
+            if (!lower[i].empty()) stacked += "\\underset{" + lower[i] + "}{";
+            if (!upper[i].empty()) stacked += "\\overset{" + upper[i] + "}{";
+            stacked.append(token);
+            if (!upper[i].empty()) stacked.push_back('}');
+            if (!lower[i].empty()) stacked.push_back('}');
+            built = std::move(stacked);
+            token = built;
+            lower[i].clear(), upper[i].clear();
         }
         AppendToken(out, token);
         lastU1 = b.u1;
