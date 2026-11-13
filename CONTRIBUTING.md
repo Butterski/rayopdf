@@ -103,8 +103,11 @@ python3 tools/bench.py tools --bin NEW --doc NAME=DOC.pdf               # agains
 
 ## Generated tables
 
-`src/text/*_data.cpp` and `src/layout/math_data.cpp` are written by `tools/gen_*_tables.py` only.
-After changing a generator, regenerate and check: `python3 tools/gen_<name>_tables.py --check`.
+`src/text/*_data.cpp`, `src/layout/math_data.cpp` and `src/layout/model_data.cpp` are written by
+`tools/gen_*_tables.py` only. `model_data.cpp` holds the small models' decision trees from the
+trained dumps `eval/models/<name>.json` and `<name>.meta.json` (written by `eval/train/<name>.py`,
+docs/development/evaluation.md § Training data of the small models). After changing a generator
+or a model, regenerate and check: `python3 tools/gen_<name>_tables.py --check`.
 
 ## Versions and releases
 

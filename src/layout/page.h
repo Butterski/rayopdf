@@ -202,6 +202,10 @@ enum : uint16_t {
     // Page furniture kept by Furniture::Keep (layout/convert.h): a line RemoveRunningLines marks,
     // kept as text. It heads nothing and makes no block with lines that are not furniture.
     kLineFurniture = 1u << 13,
+    // A row the edge-row model takes for page furniture (layout/model.h, RemoveRunningLines): read
+    // as text by every stage, so that no other line's role changes; ConvertPages leaves out the
+    // paragraphs and headings it alone makes.
+    kLineEdgeModel = 1u << 14,
 };
 constexpr uint16_t kLineAnchor = kLineTableAnchor | kLineImage;  // lines with no glyphs
 

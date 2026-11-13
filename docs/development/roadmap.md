@@ -74,7 +74,11 @@ Source: [algorithms §7](../research/algorithms.md#7-speed-engineering), RayoMD
 
 - The core is our own code.
 - Generated tables come from permissive sources: the Adobe Glyph List and Adobe cmap-resources
-  (BSD-3-Clause), and the standard-14 font widths from pdf.js (Apache-2.0).
+  (BSD-3-Clause), and the standard-14 font widths from pdf.js (Apache-2.0). The small models of
+  M9 are generated tables too: decision trees trained by `eval/train/*.py` on DocLayNet
+  (CDLA-Permissive-1.0) and RayoPDF's own generated tables, compiled into
+  `src/layout/model_data.cpp` by `tools/gen_model_tables.py`; nothing is downloaded or read at run
+  time.
 - libdeflate (MIT) is only a test oracle, as in RayoMD; no product links it.
 - Any new permissive library (MIT, BSD, Apache-2.0, zlib) needs a measured justification.
 - No GPL or AGPL code in anything shipped.
@@ -118,7 +122,8 @@ Source: [algorithms §1.3, §1.4, §3.3](../research/algorithms.md).
 3. **Font and Unicode resolution**, in the order of [algorithms §3.1](../research/algorithms.md#31-priority-order-spec--engines).
 4. **Words and lines:** MuPDF's size-relative thresholds plus PDFBox's duplicate-glyph handling.
 5. **Page layout:** XY-Cut++ geometry with Breuel's rules as the validator; headers and footers
-   are removed first.
+   are removed first (rules, then the edge-row model of M9 on the rows they keep at a page's
+   edge).
 6. **Cross-page document semantics:** headings, lists, paragraphs continued across pages and
    columns, footnotes.
 7. **Writers:** the Markdown writer and the image writer.
@@ -313,7 +318,8 @@ vectors of the decisions small models may learn (`src/layout/features.h`): every
 furniture rules examine in the outer tenth of a page, `{"page","box":[x0,y0,x1,y1],"text","f":[16
 values],"rules":0|1}` with whether the rules removed it, or every column gap of a candidate
 borderless table run, `{"page","box":[x0,x1],"f":[12 values],"rules":0|1}` with whether the run
-became a table. Conversions without it compute no features; the output never changes.
+became a table. The rules' decisions are reported, not the edge-row model's (M9); the output is
+that of the same conversion without `--features`.
 
 `--no-exact` converts the pages of a RayoMD PDF that carries its source (D5 step 1,
 `src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).
@@ -445,7 +451,7 @@ Each milestone ends with:
 |M6 Tagged|Structure tree, RoleMap, ParentTree, the four validation criteria of [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-primary-signal), Alt and ActualText, artifacts.|Construct F1 on tagged producers ≥ 0.98, and ≥ the untagged path's on the same fixtures.|
 |M7 Product|Final command line, `--report`, `--batch`, `--serve --json`, `--workers`, Windows build, performance campaign (hot-section linker script `hot.ld`, A/B runs with byte-identical Markdown), packaging: core archives, the C++ API's library archives, the container image.|The release bar above.|
 |M8 OCR/ML gate|Measure M1, M2, M3, R, S and Q1–Q3 of [OCR/ML §6.2](../research/ocr-ml.md#62-measurements) on the census, odl and olmOCR, including olmOCR's `old_scans*` categories.|The decision is written to `docs/development/ocr_ml_decision.md`. R < 0.1 % → no OCR. 0.1–5 % and mostly Latin or Cyrillic → optional external `tesseract`. ≥ 5 %, or CJK, or a need for OCR on Windows with nothing installed → linked PP-OCRv6 through ONNX Runtime minimal or ncnn. Table ML only if Q2 ≥ 0.10 TEDS after M5. Reading-order or heading ML only if Q1 ≥ 0.03 or Q3 ≥ 0.05.|
-|M9 Small models|Decision trees in the core for single decisions the rules make: edge rows as page furniture, borderless table column gaps. They learn from the features `rayopdf --features` writes, trained by `eval/train/*.py` on DocLayNet's train selection and RayoPDF's generated tables, and would be compiled into the binary as generated tables (no download, deterministic). Vision models stay in the OCR add-on.|A model ships only when the strict gate passes, a gated metric rises by ≥ 0.002, odl instructions grow ≤ 0.5 %, the generated model data is ≤ 256 KiB, two trainings give byte-identical dumps, and it learns only from DocLayNet's train subset and RayoPDF's generated tables. The decision is written to `docs/development/ocr_ml_decision.md`.|
+|M9 Small models|Gradient-boosted decision trees in the core, compiled into `src/layout/model_data.cpp` by `tools/gen_model_tables.py` from dumps `eval/train/*.py` writes (no download, deterministic): the edge-row furniture model (16 features of `src/layout/features.h`, trained on DocLayNet's train selection), applied to the rows the furniture rules keep; the borderless table-gap model as a prototype. Vision models only in the OCR add-on, as candidates.|A model ships only when the strict gate passes, a gated metric rises by ≥ 0.002, odl instructions grow ≤ 0.5 %, generated model data is ≤ 256 KiB, two trainings give byte-identical dumps, and it is trained only on the DocLayNet train subset and RayoPDF's generated tables; decided in `docs/development/ocr_ml_decision.md`.|
 
 **M8 prior (baseline census, SafeDocs `0000.zip`, 996 PDFs, 8,905 pages examined).**
 `R_upper` = 12.4 % of examined pages: 8.9 % `image_only` and 3.4 % `broken`. This is an upper
@@ -496,10 +502,12 @@ release check.
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn
   as images since 0.2.0; open: Hebrew, Kannada and Arabic quality.
-- **M9 Small models:** two prototypes measured, none shipped
+- **M9 Small models:** two prototypes measured, none shipped in 0.3.0
   ([decision](ocr_ml_decision.md#small-models-in-the-core-m9)): the edge-row model lowered
   DocLayNet validation `heading_f1` beyond the gate's epsilon; the table-gap model had no
-  negative examples to learn from.
+  negative examples to learn from. The edge-row model is in the core again with local removals:
+  its rows count as text in every decision and only the blocks they alone make are left out; its
+  gate result decides.
 
 ## Engineering conventions
 

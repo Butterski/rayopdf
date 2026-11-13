@@ -601,10 +601,11 @@ These are AGENTS.md rules 4–8:
 
 The small models of plan M9 (edge rows as page furniture, borderless table column gaps) learn
 from the converter's own decisions, written by its developer mode `rayopdf --features
-edge-rows|table-gaps IN.pdf OUT.jsonl` (roadmap D7, `src/layout/features.h`). Nothing here is
-committed: the files live under the harness root, and no model has passed M9
-([ocr_ml_decision.md](ocr_ml_decision.md#small-models-in-the-core-m9)), so the repository holds
-none.
+edge-rows|table-gaps IN.pdf OUT.jsonl` (roadmap D7, `src/layout/features.h`). The training data
+lives under the harness root and is never committed. A model that ships (AGENTS.md rule 1) is
+copied from `<root>/models/` into `eval/models/` (the edge-row model, `edge_rows.json` and
+`edge_rows.meta.json`), and `python3 tools/gen_model_tables.py` compiles it into
+`src/layout/model_data.cpp` (roadmap M9).
 
 ```sh
 python3 tools/eval.py images --only train                     # rayopdf-eval-train:1 (LightGBM, NumPy)
@@ -617,7 +618,7 @@ python3 tools/eval.py train --kind table-gaps                  # models/table_ga
 
 - `train-data` runs the static binary of `--bin-dir` in the `cli` image without network. Edge
   rows come from DocLayNet's train selection (training) and doclaynet-dev (early stopping and the
-  threshold τ only); the holdout doclaynet-val is never read. Table gaps come from
+  thresholds τ and τ_p only); the holdout doclaynet-val is never read. Table gaps come from
   `gentables`: `eval/fixtures/gen_tables.py` (stdlib, seed 0) writes 400 GFM tables of 3-8
   columns and 4-20 rows with unique cell texts and a `<id>.cells.json` each, rendered by
   xelatex, typst, rayomd, rayomd-tech, chromium-untagged and context; `pdftotext -bbox` (producers
@@ -633,7 +634,9 @@ python3 tools/eval.py train --kind table-gaps                  # models/table_ga
   of fixtures whose SHA-256 of id is 0 modulo 5. Each `.meta.json` holds the data's SHA-256, the
   parameters, the image's versions, metrics, 64 check vectors with their raw scores and the
   thresholds (edge rows: τ maximising doclaynet-dev furniture F1 over rows the rules keep, at most
-  1.35 body sizes; table gaps: τ_hi and τ_lo at precision 0.98).
+  1.35 body sizes, and τ_p, the smallest threshold in steps of 0.001 whose precision over those
+  rows reaches 0.98, with its precision, recall and F1; the engine uses τ_p; table gaps: τ_hi and
+  τ_lo at precision 0.98).
 
 ## Deviations from the original plan
 

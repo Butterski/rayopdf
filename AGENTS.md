@@ -12,7 +12,8 @@ evaluation harness under `eval/` and `tools/eval.py`, and the research and roadm
 ## Rules
 
 1. Never commit generated material: PDFs, downloaded data, corpora, images, or anything under
-   `benchmark-output/`.
+   `benchmark-output/`, except trained model dumps `eval/models/*.json` and `*.meta.json`,
+   written only by `eval/train/*.py` from pinned data with a fixed seed.
 
 2. Every own source file starts with an SPDX line: `# SPDX-License-Identifier: Apache-2.0` in
    Python, Dockerfile and shell files (after the shebang line where there is one), or
@@ -66,9 +67,10 @@ evaluation harness under `eval/` and `tools/eval.py`, and the research and roadm
     finding's minimized input goes to `tests/fuzz/regressions/<target>/`. Tests build the PDFs they
     read in memory.
 
-11. Generated tables (`src/text/*_data.cpp`, `src/layout/math_data.cpp`) are written only by
-    `tools/gen_*_tables.py`. After changing a generator, regenerate, and check that every
-    generated file matches with `python3 tools/gen_<name>_tables.py --check`.
+11. Generated tables (`src/text/*_data.cpp`, `src/layout/math_data.cpp`,
+    `src/layout/model_data.cpp`) are written only by `tools/gen_*_tables.py`. After changing a
+    generator or a model of `eval/models/`, regenerate, and check that every generated file
+    matches with `python3 tools/gen_<name>_tables.py --check`.
 
 12. `README.md` keeps the H2 headings `Status`, `Usage` and `License`: `tools/package.py`
     (`README_SECTIONS`) copies them into the release archives and stops if one is missing. Each

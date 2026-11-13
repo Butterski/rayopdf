@@ -29,8 +29,9 @@ constexpr float kRunningBand = 0.12f;
 
 // Marks running headers, footers and page numbers on `pages` with kLineRemoved; how many lines:
 // band lines whose repetition key recurs across the document, page numbers that count up from page
-// to page (from four pages), and furniture at a single page's edges. `sink` (layout/features.h)
-// gets the edge rows examined in the outer tenth of each page.
+// to page (from four pages), and furniture at a single page's edges. The rules decide, and the
+// edge-row model (layout/model.h) removes rows they keep in the outer tenth of a page. `sink`
+// (layout/features.h) gets the edge rows examined there, with the rules' decisions.
 int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink = nullptr);
 
 // Fills page.order with the lines not removed, in reading order: upright text first, then each

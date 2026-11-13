@@ -11,9 +11,30 @@
 #include "layout/structure.h"
 #include "layout/tables.h"
 
+#include <algorithm>
+
 namespace RayoPdf::Layout {
 
 namespace {
+
+// Leaves out the paragraphs and headings made only of rows the edge-row model took for furniture
+// (kLineEdgeModel). Those rows took part in every earlier decision as text, as without the model,
+// so no other block changes; a row inside a block with other lines stays. Returns the lines left
+// out.
+uint32_t DropEdgeModelBlocks(const std::vector<PageData>& pages, BlockList& list) {
+    uint32_t dropped = 0;
+    const auto own = [&](const Block& b) {
+        if ((b.kind != BlockKind::Paragraph && b.kind != BlockKind::Heading) || b.count == 0) return false;
+        for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+            const BlockLine& bl = list.lines[i];
+            if (!(pages[bl.page].lines[bl.line].flags & kLineEdgeModel)) return false;
+        }
+        dropped += b.count;
+        return true;
+    };
+    list.blocks.erase(std::remove_if(list.blocks.begin(), list.blocks.end(), own), list.blocks.end());
+    return dropped;
+}
 
 // The tables, reading order, run-in headings and (`math` Latex) display formulas of every page on
 // the threads of `pool`, as the loop of ConvertPages does them one page after another: each page's
@@ -115,7 +136,8 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     const bool tree = report.structure == StructureUse::Used;
     // Kept furniture: no running line, edge row or margin line is removed (a used tree still leaves
     // out its artifacts). The lines the rules would remove stay as text marked kLineFurniture:
-    // they head nothing and make no block with the text.
+    // they head nothing and make no block with the text. Rows only the edge-row model takes for
+    // furniture (kLineEdgeModel) stay plain text.
     const bool keepFurniture = output && output->furniture == Furniture::Keep;
     const FeatureSink* features = output ? output->features : nullptr;
     if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages, features);
@@ -151,6 +173,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     BlockList blocks;
     BuildBlocks(pages, outline, unmapped, blocks);
     if (tree) tagged.Blocks(pages, blocks);
+    if (!tree && !keepFurniture) report.headerFooterLines += DropEdgeModelBlocks(pages, blocks);
     if (output && output->quotes == Quotes::Ascii) {
         std::string scratch;
         for (PageData& page : pages) AsciiQuotes(page, scratch);

@@ -316,6 +316,33 @@ doclaynet-val furniture_f1 0.4753 → 0.4781 and olmOCR `headers_footers` 0.8486
 0.002 the criteria ask for, but doclaynet-val heading_f1 fell 0.69590 → 0.69562 (−0.00028, the
 gate's epsilon is 0.0001): not shipped.
 
+**Edge rows, local removals (after 0.3.0, awaiting the gate).** The same trees and τ_p. A first
+retry left out rows the semantics would make headings or captions; the gate still measured
+doclaynet-val heading_f1 0.695899 → 0.695616 (−0.00028), so the drop came from another way. On
+DocLayNet's train selection (the model's own training pages, read only to see what a removal does
+to the rest of a page), removing a "Table of Contents" link row of 1.15 body sizes at the head of
+three SEC filings turned 298 characters of body text elsewhere on the page into headings: the
+removed line no longer counted in the page's statistics. Now the model's rows are not removed
+from the page but marked (`kLineEdgeModel`): they take part as text in every later decision (reading
+order, tables, body size, styles, heading levels), and only the paragraphs and headings they alone
+make are left out at the end (`ConvertPages`); a model row inside a block with other lines stays.
+A row that reads as a caption ("Fig. 4. …") is never taken (readoc-dev2 2212.05909: two figure
+captions at a page's foot that READoc's ground truth holds); the rest of the first retry's guard
+changed nothing once removals were local and is gone. Every block other than those left out is
+byte-identical to master's: 0 pages with any other change of 100 changed doclaynet-dev pages, 54
+omni-dev pages and 522 changed pages of the DocLayNet train selection (heading_f1 0.682837 →
+0.683691, furniture_f1 0.600240 → 0.606688 there). Against master 601c079 in the declared
+profiles: changed outputs in 100 of 6,489 doclaynet-dev pages, 0 of 200 odl documents
+(`--furniture=keep`), 5 of 1,269 olmOCR pages, 1 of 522 `olmocr-math` pages, 1 of 300 readoc-dev
+documents (1206.0456: a "Table of Contents" line READoc's ground truth does not hold), 0 of 600
+readoc-dev2, 0 of 234 synthetic PDFs, 54 of 1,074 omni-dev pages (mostly "Page N of M" lines of
+PubMed Central pages); each change only leaves blocks out. doclaynet-dev furniture_f1 0.594556 →
+0.596594 (+0.0020), heading_f1 0.741168 → 0.741215, text_kept 0.987438 → 0.987436, the other
+roles unchanged; olmOCR `headers_footers` 0.848606 → 0.849934 (+0.0013), the other categories
+unchanged; omni-dev unchanged. Tests 2254 (a row the model takes is left out and the rest of the
+output is that of `--furniture=keep` less the row's block) and 2255 (a caption under a figure,
+scored furniture, stays).
+
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
 candidate gap was a column boundary (3,884 of 3,884 in training, 1,109 of 1,109 in validation):

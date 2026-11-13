@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Feature vectors of the decisions small models may learn (plan M9: edge rows as page furniture,
-// borderless table column gaps), reported to a sink as the rules make those decisions. A
-// conversion without a sink (every conversion but `rayopdf --features`, the developer mode that
-// writes them as JSON Lines for eval/train/) computes none of them.
+// borderless table column gaps), reported to a sink as the rules make those decisions; the
+// developer mode `rayopdf --features` writes them as JSON Lines for eval/train/. The edge-row
+// features also feed the edge-row model (layout/model.h) of every conversion that drops furniture;
+// table-gap features are computed for a sink only.
 #pragma once
 
 #include <cstdint>

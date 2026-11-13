@@ -5,6 +5,7 @@
 #include "common/per_thread.h"
 #include "layout/features.h"
 #include "layout/lines.h"
+#include "layout/model.h"
 
 #include <algorithm>
 #include <cmath>
@@ -814,20 +815,18 @@ constexpr float kWideGapMaxSize = 1.35f;
 constexpr float kWideGapSizeTolerance = 0.05f;
 constexpr uint32_t kWideGapMaxChars = 80;
 
-// The edge rows RemoveEdgeRows examines in the outer kWideGapBand, for a FeatureSink (layout/
-// features.h): each row's features, box and text, and its edge line, whose flag tells at the end
-// of the page whether the rules removed it.
-struct EdgeReport {
-    const FeatureSink* sink = nullptr;
-    const std::unordered_map<std::string, KeyCount>* counts = nullptr;
-    int pages = 0;
-    struct Row {
-        uint32_t line = 0;
-        float features[kEdgeRowFeatures] = {};
-        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        std::string text;
-    };
-    std::vector<Row> rows;
+// The edge rows RemoveEdgeRows examines in the outer kWideGapBand, kept until the page's rules are
+// done: a row the rules keep may still be furniture by the edge-row model (layout/model.h), and a
+// FeatureSink (layout/features.h, `rayopdf --features`) gets every row with the rules' decision.
+// Both read the row's features from one place, RemoveEdgeRows' `features`.
+struct EdgeRow {
+    uint32_t begin = 0, count = 0;  // the row's lines: lines[begin, begin + count) of RemoveEdgeRows
+    uint32_t edge = 0;              // its edge line (an index of page.lines)
+    int side = 0;                   // 0 top, 1 bottom
+    float wideCenter = 0, gap = 0, largest = 0, rowLeft = 0, rowRight = 0;
+    uint32_t chars = 0;
+    bool bold = false;
+    bool rules = false;  // removed by the rules
 };
 
 // A line set between two like dashes ("- 12 -", "– Seite 3 von 9 –"): a decorated page number, whose
@@ -838,7 +837,16 @@ bool DashWrapped(const PageData& page, const Line& line, std::string_view first)
     return (last.flags & kGlyphSpaceBefore) && page.GlyphText(last) == first;
 }
 
-int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key, EdgeReport* report) {
+struct EdgeRows {
+    const FeatureSink* sink = nullptr;  // null: no features reported
+    const std::unordered_map<std::string, KeyCount>* counts = nullptr;
+    int pages = 0;
+    std::vector<EdgeRow> rows;  // the page's, reused from page to page
+    std::string lookup;         // a band-prefixed running key
+};
+
+int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key, EdgeRows& edges) {
+    edges.rows.clear();
     std::vector<uint32_t> lines;
     lines.reserve(page.lines.size());
     for (uint32_t i = 0; i < page.lines.size(); ++i) {
@@ -1062,51 +1070,16 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool wide = wideCenter < h * kWideGapBand && gap >= kWideGap * body && largest <= kWideGapMaxSize * body &&
                               chars <= kWideGapMaxChars && std::fabs(largest - body) > kWideGapSizeTolerance * body &&
                               !(largest > body && (bold || (side == 0 && page.width > h))) && !anyMono && !superscript;
-            if (report && wideCenter < h * kWideGapBand) {
-                EdgeReport::Row& out = report->rows.emplace_back();
-                out.line = lines[side == 0 ? first : last - 1];
-                rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
-                                lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
-                std::sort(rowLines.begin(), rowLines.end(),
-                          [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
-                float y0 = INFINITY, y1 = -INFINITY;
-                uint32_t artifactChars = 0;
-                bool italic = true;
-                for (uint32_t li : rowLines) {
-                    const Line& l = page.lines[li];
-                    if (!out.text.empty()) out.text.push_back(' ');
-                    AppendLineText(page, l, out.text);
-                    y0 = Fmin(y0, l.vb), y1 = Fmax(y1, l.vt);
-                    if (l.flags & kLineArtifact) artifactChars += l.chars;
-                    italic = italic && (l.flags & kLineAllItalic);
-                }
-                RunningKey(out.text, key);
-                float digitShare = 0, capitalShare = 0;
-                bool endsInDigit = false;
-                TextShares(out.text, digitShare, capitalShare, endsInDigit);
-                float holding = 0;
-                if (report->pages > 1 && !key.empty()) {
-                    const auto found = report->counts->find((side == 0 ? "T" : "B") + key);
-                    if (found != report->counts->end()) holding = float(found->second.total) / float(report->pages - 1);
-                }
-                float* f = out.features;
-                f[0] = wideCenter / h;
-                f[1] = float(side);
-                f[2] = gap / body;
-                f[3] = largest / body;
-                f[4] = float(chars);
-                f[5] = digitShare;
-                f[6] = bold ? 1 : 0;
-                f[7] = italic ? 1 : 0;
-                f[8] = IsPageNumberKey(key) ? 1 : 0;
-                f[9] = chars ? float(artifactChars) / float(chars) : 0;
-                f[10] = ((rowLeft + rowRight) / 2 - page.width / 2) / page.width;
-                f[11] = (rowRight - rowLeft) / Fmax(textRight - textLeft, 1.0f);
-                f[12] = float(lines.size());
-                f[13] = holding;
-                f[14] = capitalShare;
-                f[15] = endsInDigit ? 1 : 0;
-                out.x0 = rowLeft, out.y0 = y0, out.x1 = rowRight, out.y1 = y1;
+            if (wideCenter < h * kWideGapBand) {
+                EdgeRow& out = edges.rows.emplace_back();
+                out.begin = static_cast<uint32_t>(side == 0 ? first : last - count);
+                out.count = static_cast<uint32_t>(count);
+                out.edge = lines[side == 0 ? first : last - 1];
+                out.side = side;
+                out.wideCenter = wideCenter, out.gap = gap, out.largest = largest;
+                out.rowLeft = rowLeft, out.rowRight = rowRight;
+                out.chars = chars;
+                out.bold = bold;
             }
             const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
@@ -1149,12 +1122,81 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 last = start;
         }
     }
-    if (report) {
-        for (const EdgeReport::Row& row : report->rows) {
-            report->sink->edgeRow(report->sink->context, static_cast<uint32_t>(page.number), row.features, row.x0,
-                                  row.y0, row.x1, row.y1, row.text, (page.lines[row.line].flags & kLineRemoved) != 0);
+    // The features of an examined row (layout/features.h), its box, and its text left to right in
+    // `text`.
+    const auto features = [&](const EdgeRow& row, float* f, float* box) {
+        rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(row.begin),
+                        lines.begin() + static_cast<std::ptrdiff_t>(row.begin + row.count));
+        std::sort(rowLines.begin(), rowLines.end(), [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
+        text.clear();
+        float y0 = INFINITY, y1 = -INFINITY;
+        uint32_t artifactChars = 0;
+        bool italic = true;
+        for (uint32_t li : rowLines) {
+            const Line& l = page.lines[li];
+            if (!text.empty()) text.push_back(' ');
+            AppendLineText(page, l, text);
+            y0 = Fmin(y0, l.vb), y1 = Fmax(y1, l.vt);
+            if (l.flags & kLineArtifact) artifactChars += l.chars;
+            italic = italic && (l.flags & kLineAllItalic);
         }
-        report->rows.clear();
+        RunningKey(text, key);
+        float digitShare = 0, capitalShare = 0;
+        bool endsInDigit = false;
+        TextShares(text, digitShare, capitalShare, endsInDigit);
+        float holding = 0;
+        if (edges.pages > 1 && !key.empty()) {
+            edges.lookup.assign(row.side == 0 ? "T" : "B");
+            edges.lookup += key;
+            const auto found = edges.counts->find(edges.lookup);
+            if (found != edges.counts->end()) holding = float(found->second.total) / float(edges.pages - 1);
+        }
+        f[0] = row.wideCenter / h;
+        f[1] = float(row.side);
+        f[2] = row.gap / body;
+        f[3] = row.largest / body;
+        f[4] = float(row.chars);
+        f[5] = digitShare;
+        f[6] = row.bold ? 1 : 0;
+        f[7] = italic ? 1 : 0;
+        f[8] = IsPageNumberKey(key) ? 1 : 0;
+        f[9] = row.chars ? float(artifactChars) / float(row.chars) : 0;
+        f[10] = ((row.rowLeft + row.rowRight) / 2 - page.width / 2) / page.width;
+        f[11] = (row.rowRight - row.rowLeft) / Fmax(textRight - textLeft, 1.0f);
+        f[12] = float(lines.size());
+        f[13] = holding;
+        f[14] = capitalShare;
+        f[15] = endsInDigit ? 1 : 0;
+        box[0] = row.rowLeft, box[1] = y0, box[2] = row.rowRight, box[3] = y1;
+    };
+    // The rules' decisions first (a row's edge line tells), then the sink's records and the
+    // edge-row model (layout/model.h): a row the rules kept, at most kEdgeRowSizeLimit body sizes,
+    // whose raw score reaches kEdgeRowRawTau (probability kEdgeRowTau) is furniture, unless fewer
+    // than kEdgeMinLines other lines would stay on the page (the rules' guard of sparse pages) or it
+    // reads as a caption ("Fig. 4. ..."; a figure's caption at the foot is no furniture). Its lines
+    // are marked kLineEdgeModel, not removed: they take part in every later decision as text, and
+    // only the blocks they alone make are left out of the output (layout/pipeline.cpp), so the
+    // model's removals change nothing about the other lines.
+    for (EdgeRow& row : edges.rows) row.rules = (page.lines[row.edge].flags & kLineRemoved) != 0;
+    size_t staying = 0;  // the page's upright lines not removed
+    for (uint32_t i : lines) staying += !(page.lines[i].flags & kLineRemoved);
+    float f[kEdgeRowFeatures], box[4];
+    for (const EdgeRow& row : edges.rows) {
+        size_t rowStaying = 0;
+        for (uint32_t k = row.begin; k < row.begin + row.count; ++k) rowStaying += !(page.lines[lines[k]].flags & kLineRemoved);
+        const bool candidate = !row.rules && double(row.largest / body) <= kEdgeRowSizeLimit &&
+                               staying - rowStaying >= kEdgeMinLines;
+        if (!candidate && !edges.sink) continue;
+        features(row, f, box);
+        if (edges.sink)
+            edges.sink->edgeRow(edges.sink->context, static_cast<uint32_t>(page.number), f, box[0], box[1], box[2], box[3],
+                                text, row.rules);
+        if (!candidate || RawScore(kEdgeRowModel, f) < kEdgeRowRawTau || IsCaption(text)) continue;
+        for (uint32_t k = row.begin; k < row.begin + row.count; ++k) {
+            Line& l = page.lines[lines[k]];
+            if (!(l.flags & kLineRemoved)) l.flags |= kLineEdgeModel;
+        }
+        staying -= rowStaying;
     }
     return removed;
 }
@@ -1407,13 +1449,12 @@ int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
         for (; i < sizeChars.size() && sizeChars[i].first == size; ++i) chars += sizeChars[i].second;
         weigh(size, chars);
     }
-    EdgeReport edges;
-    edges.sink = sink;
+    EdgeRows edges;
+    edges.sink = sink && sink->edgeRow ? sink : nullptr;
     edges.counts = &counts;
     edges.pages = n;
-    EdgeReport* report = sink && sink->edgeRow ? &edges : nullptr;
     for (PageData& page : pages) {
-        removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key, report);
+        removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key, edges);
         removed += RemoveMarginLines(page);
     }
     return removed;

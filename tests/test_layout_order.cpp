@@ -532,8 +532,8 @@ void TestWideGapRows() {
 
 // A lone page number at the foot, centred on the text: set between two dashes ("- 7 -", whose first
 // dash is no list marker), or set apart from double-spaced text by less than its line spacing plus a
-// quarter em but more than half an em. Both go; a list item "- 7" at the foot stays, and so does a
-// flush-left number at the same gap.
+// quarter em but more than half an em. Both go; a list item "- 7" under the text, flush with it,
+// stays, and so does a flush-left number at the same gap.
 void TestFootPageNumbers() {
     // 25 body lines of 10 points, `step` points apart, from 700 down; the text runs from 72 to 307.
     const auto build = [](const char* number, float x, float y, float step) {
@@ -552,7 +552,7 @@ void TestFootPageNumbers() {
     // Single spacing: the last line at 412; "- 7 -" at 30, in the outer margin, is far below it.
     md = build("- 7 -", 180, 30, 12);
     RAYOPDF_CHECK(Find(md, "7 -") == std::string::npos && Find(md, "Body line 24 of") != std::string::npos, 1882);
-    RAYOPDF_CHECK(Find(build("- 7", 180, 30, 12), "- 7\n") != std::string::npos, 1883);
+    RAYOPDF_CHECK(Find(build("- 7", 72, 98, 24), "- 7\n") != std::string::npos, 1883);
 }
 
 // Two columns of running text, each ending in smaller notes (a numbered note, a marked one): the

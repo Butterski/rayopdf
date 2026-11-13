@@ -31,6 +31,10 @@ This repository includes third-party material:
   contributors, licensed under the MIT License (src/symbols.js, src/macros.js; src/metrics/
   mapping.pl, which KaTeX adapted from MathJax-dev under the Apache License 2.0). See
   third_party/licenses/katex.txt.
+- src/layout/model_data.cpp (generated from eval/models/edge_rows.json) holds an edge-row model
+  trained on DocLayNet (https://github.com/DS4SD/DocLayNet, IBM Research), which is licensed
+  under the Community Data License Agreement - Permissive - Version 1.0; the model holds no
+  DocLayNet data. See third_party/licenses/doclaynet.txt.
 - src/image/checksum_x86.cpp is derived from zlib-ng (https://github.com/zlib-ng/zlib-ng,
   commit 6727d88: arch/x86/crc32_pclmulqdq_tpl.h, crc32_pclmulqdq.c, adler32_avx2.c and
   adler32_avx2_p.h), Copyright 1995-2011 Mark Adler, 2013 Intel Corporation, 2016 Marian

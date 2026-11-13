@@ -6,13 +6,15 @@ Labels: a row examined by the furniture rules (`rayopdf --features edge-rows`, w
 furniture (1) when at least half of its box lies in DocLayNet's Page-header and Page-footer boxes,
 mapped from the 1025 px COCO image to PDF points as eval/scorer/doclaynet.py maps them. Trained on
 the DocLayNet train selection; doclaynet-dev (DocLayNet's val split) only stops the boosting early
-and chooses the threshold τ. The holdout doclaynet-val is never read.
+and chooses the thresholds: τ (best furniture F1 over the rows the rules keep) and τ_p (the
+smallest threshold whose precision over those rows reaches 0.98, the one the engine uses). The
+holdout doclaynet-val is never read.
 
 LightGBM binary: num_leaves 15, max_depth 5, learning_rate 0.1, up to 60 trees with early
 stopping after 10 rounds on dev, min_data_in_leaf 50, no bagging or feature sampling,
 deterministic, row-wise, one thread, seed 0: two runs give the same bytes. Writes
 <out>/edge_rows.json (booster.dump_model()) and <out>/edge_rows.meta.json (selection SHA-256,
-parameters, versions, metrics, 64 check vectors with their raw scores, τ).
+parameters, versions, metrics, 64 check vectors with their raw scores, τ and τ_p).
 
 Usage (tools/eval.py train runs it):
   python3 /opt/eval/train/edge_rows.py --data /data/doclaynet --features /features --out /out
@@ -35,6 +37,7 @@ PARAMS = {"objective": "binary", "num_leaves": 15, "max_depth": 5, "learning_rat
           "force_row_wise": True, "num_threads": 1, "seed": 0, "verbose": -1}
 ROUNDS, PATIENCE = 60, 10
 SIZE_LIMIT = 1.35  # the model may remove only rows at most this many body sizes
+PRECISION = 0.98   # τ_p's least precision over the rows the rules keep
 
 
 def furniture_boxes(coco: dict) -> dict[str, list[list[float]]]:
@@ -78,6 +81,12 @@ def f1(truth: numpy.ndarray, predicted: numpy.ndarray) -> float:
     return 2 * tp / (2 * tp + fp + fn) if tp else 0.0
 
 
+def precision_recall(truth: numpy.ndarray, predicted: numpy.ndarray) -> tuple[float, float]:
+    tp = float(numpy.sum(truth & predicted))
+    positive, relevant = float(numpy.sum(predicted)), float(numpy.sum(truth))
+    return (tp / positive if positive else 0.0), (tp / relevant if relevant else 0.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -113,8 +122,19 @@ def main() -> int:
         score = f1(truth[kept], probability[kept] >= tau)
         if score > best_f1:
             best_tau, best_f1 = float(tau), score
+    # τ_p: the smallest threshold (steps of 0.001) at which at least PRECISION of the kept rows the
+    # model would remove are furniture.
+    tau_p = None
+    for tau in numpy.round(numpy.arange(0.500, 0.9995, 0.001), 3):
+        precision, recall = precision_recall(truth[kept], probability[kept] >= tau)
+        if precision >= PRECISION:
+            tau_p = float(tau)
+            break
+    if tau_p is None:
+        raise SystemExit(f"edge_rows: no threshold below 1 reaches precision {PRECISION} on dev")
     rules_only = rd.astype(bool)
     combined = rules_only | (kept & (probability >= best_tau))
+    combined_p = rules_only | (kept & (probability >= tau_p))
 
     model = booster.dump_model(num_iteration=booster.best_iteration)
     selection = (args.data / "selection.json").read_bytes()
@@ -130,13 +150,19 @@ def main() -> int:
         "best_iteration": int(booster.best_iteration),
         "versions": versions,
         "tau": best_tau,
+        "tau_precision": tau_p,
+        "precision_target": PRECISION,
         "size_limit": SIZE_LIMIT,
         "metrics": {
             "train_rows": int(len(yt)), "train_furniture": int(yt.sum()),
             "dev_rows": int(len(yd)), "dev_furniture": int(yd.sum()),
             "dev_kept_f1_at_tau": round(best_f1, 6),
+            "dev_kept_precision_at_tau_precision": round(precision, 6),
+            "dev_kept_recall_at_tau_precision": round(recall, 6),
+            "dev_kept_f1_at_tau_precision": round(f1(truth[kept], probability[kept] >= tau_p), 6),
             "dev_rules_f1": round(f1(truth, rules_only), 6),
             "dev_rules_plus_model_f1": round(f1(truth, combined), 6),
+            "dev_rules_plus_model_f1_at_tau_precision": round(f1(truth, combined_p), 6),
             "dev_binary_logloss": round(float(booster.best_score["dev"]["binary_logloss"]), 6),
         },
         "checks": checks,

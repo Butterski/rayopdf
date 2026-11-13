@@ -5,9 +5,9 @@
 The layout mirrors RayoMD's releases: one archive per platform, holding one folder of the
 archive's name with the binary, README.md (the user part of the repository's README: status,
 usage and licence, with links made absolute), LICENSE, NOTICE, VERSION and, under
-third_party/licenses/, the licences of what that archive holds (LICENSES: the core's data tables
-and zlib-ng's checksum kernels in the core archives, ncnn and the models in the add-on's, the
-script pack's models in its own).
+third_party/licenses/, the licences of what that archive holds (LICENSES: the core's data tables,
+its edge-row model's training data and zlib-ng's checksum kernels in the core archives, ncnn and
+the models in the add-on's, the script pack's models in its own).
 Every entry has the same fixed time (SOURCE_DATE_EPOCH, else the time of the HEAD commit), owner
 0 and fixed permissions, and the entries are sorted, so the same binaries give the same bytes.
 SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
@@ -135,11 +135,12 @@ def readme_excerpt(version: str, repository: str) -> bytes:
 
 
 # third_party/licenses/ by the archive that holds the licensed material (NOTICE names each):
-# rayopdf carries the data tables generated into src/text and src/layout; rayopdf-ocr links ncnn
+# rayopdf carries the data tables generated into src/text and src/layout (among them the edge-row
+# model of src/layout/model_data.cpp, trained on DocLayNet); rayopdf-ocr links ncnn
 # and none of those tables, and ships the PP-OCRv6 tiers and the orientation classifier; the
 # script pack holds PaddleOCR recognisers only.
 LICENSES = {
-    "core": ("agl-aglfn.txt", "cmap-resources.txt", "katex.txt", "unicode.txt", "zlib-ng.txt"),
+    "core": ("agl-aglfn.txt", "cmap-resources.txt", "doclaynet.txt", "katex.txt", "unicode.txt", "zlib-ng.txt"),
     "ocr": ("ncnn.txt", "paddleocr-scripts.txt", "pp-ocrv6.txt"),
     "ocr-scripts": ("paddleocr-scripts.txt",),
 }
