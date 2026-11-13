@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "declared": {
+    "odl": "--images=none --furniture=keep --plain --tables=html",
+    "synthetic": "",
+    "olmocr": "",
+    "olmocr-math": "--math=latex",
+    "readoc": "--math=latex",
+    "readoc-dev": "--math=latex",
+    "readoc-dev2": "--math=latex",
+    "readoc-val": "--math=latex"
+  }
+}

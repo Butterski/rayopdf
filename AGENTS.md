@@ -43,6 +43,9 @@ roadmap under `docs/`.
    same way, and every quality landing is checked against it. `readoc-dev` (300 other READoc
    documents, `selection-dev.json`) is a development suite: inspect it freely. RayoMD producers
    never use `--embed-source`. Tagged and untagged producers are always reported separately.
+   Every quality landing passes the strict gate (`qgate.sh`): no gated metric may fall more than
+   0.0001 below its best since the last rebase, and each suite is measured with its declared
+   options (`eval/profiles.json`).
 
 8. Never copy AGPL or GPL code or data into the repository (PyMuPDF/MuPDF, Poppler, marker).
    They run as black boxes inside images only. READoc's code has no licence: run it from a

@@ -198,6 +198,17 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
   else in the default mode. 0.1.0 was released with one key open, READoc arXiv `table_teds`
   (decided 2026-11-11, after the key had been held to docling's number under (b)).
+- Benchmark profiles (decided 2026-11-13). The default output is the faithful one: page
+  furniture left out, emphasis, links and scripts as Markdown, tables GFM unless a span needs
+  HTML, formulas as Unicode. Benchmarks' ground truths contradict each other on some of these
+  conventions (odl keeps running headers and writes no inline markup and HTML tables; olmOCR's
+  `headers_footers` wants furniture absent; `arxiv_math` and READoc arXiv write LaTeX), so each
+  benchmark is measured with one fixed, published set of options, its declared profile in
+  `eval/profiles.json`: odl `--images=none --furniture=keep --plain --tables=html`, olmOCR
+  `arxiv_math` (the `olmocr-math` suite) and READoc `--math=latex`, the others the default. Version
+  records show the default row beside the declared row where they differ; the quality gate
+  measures the declared rows only, and no gated metric may fall more than 0.0001 below its best
+  (AGENTS.md rule 7).
 - Optional additions to the Markdown (decided 2026-11-12; off by default, the default output
   byte-identical): `--page-markers` writes `<!-- page N -->` (N the page's number in the file) as
   a block of its own before the first block of each page, and markers for pages with no block of

@@ -28,6 +28,7 @@ harness answers each condition:
 |synthetic|`corpus/`|the valid items of `corpus/corpus.json`|`eval/fixtures/md/<fixture>.md`|development; the `weasyprint` producer is the holdout|
 |odl|`data/odl-bench/pdfs`|200 single-page PDFs|`data/odl-bench/ground-truth/markdown`|development|
 |olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development|
+|olmocr-math|`data/olmOCR-bench/bench_data/pdfs`|the 522 `arxiv_math` PDFs of `olmocr`, converted by `cli` alone in its declared profile (`--math=latex`)|`arxiv_math.jsonl`|development|
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
 |readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |readoc-val|`data/READoc-data/val`|600 further multi-page PDFs of READoc: `arxiv/<stem>` 300, `github/<stem>` 300|`data/READoc-data/val-gt/<subset>/<stem>.md`|**validation**, aggregate only (§ READoc development split)|
@@ -275,12 +276,14 @@ accuracy.
 `python -m olmocr.bench.benchmark --dir /work/bench_data --candidate <tool> --skip_baseline` in
 `rayopdf-eval-olmocr:1` (olmocr 0.4.27). The work directory holds `pdfs/<category>` links for the
 scored suite's categories only (the benchmark requires a candidate file for every PDF under
-`pdfs/`): the 5 born-digital categories for `olmocr`, `old_scans` and `old_scans_math` for
-`olmocr-scans`; their JSONLs; and `<tool>/<category>/<name>_pg1_repeat1.md`. Reported: pass rate
-per JSONL (tests passed / tests); for `olmocr` also the mean of the 4 born-digital JSONLs without
-`arxiv_math`, for `olmocr-scans` the mean of its 2 JSONLs. Markdown syntax is ignored by these
-tests; text presence/absence, reading order, table cell neighbourhood and KaTeX-rendered math are
-checked.
+`pdfs/`): the 5 born-digital categories for `olmocr`, `arxiv_math` alone for `olmocr-math`,
+`old_scans` and `old_scans_math` for `olmocr-scans`; their JSONLs; and
+`<tool>/<category>/<name>_pg1_repeat1.md`. Reported: pass rate per JSONL (tests passed / tests);
+for `olmocr` also the mean of the 4 born-digital JSONLs without `arxiv_math`, for `olmocr-scans`
+the mean of its 2 JSONLs. Markdown syntax is ignored by these tests; text presence/absence,
+reading order, table cell neighbourhood and KaTeX-rendered math are checked. `arxiv_math` tests
+formulas as LaTeX, so RayoPDF's default (Unicode) output fails nearly all of them: its number is
+the `olmocr-math` suite's, in the declared profile.
 
 ### READoc
 
@@ -350,7 +353,7 @@ where OCR is the point, the scanned suites and odl, on which kordoc reports its 
 |tesseract|Tesseract 5.5.0 (Debian `tesseract-ocr=5.5.0-1+b1`, `tesseract-ocr-eng`/`-osd=1:4.1.0-2`), Poppler 25.03.0 (`poppler-utils=25.03.0-5+deb13u4`), base `python:3.13-slim` pinned by digest|Apache-2.0 (Poppler GPL)|`pdftoppm -r 300 -gray -png`, then `tesseract <page> out -l eng --psm 1 --dpi 300` per page, single-threaded (`OMP_THREAD_LIMIT=1`), `OMP_NUM_THREADS` pages at a time; plain text, pages joined by blank lines; `versions.json` records the model SHA-256|fresh-process|
 |kordoc|kordoc 4.24.66 (npm, exact), Node v22.23.5, pdfjs-dist 4.10.38; `versions.json` records the resolved npm tree|MIT|`node /opt/kordoc/run.mjs` (`eval/competitors/kordoc_run.mjs`): `parse(buffer, { ocr: false })` and its `markdown`, as kordoc's `bench/odl-bench.mjs` calls it; `KORDOC_OFFLINE=1`|fresh-process|
 |kordoc-ocr|the kordoc image: onnxruntime-node 1.31.1 and kordoc's PP-OCRv5 models (`det.onnx`, `rec_korean.onnx` and its dictionary, fetched by `kordoc check-ocr-models` at image build into `/opt/kordoc/models`)|MIT; models Apache-2.0|`parse(buffer)` without options: kordoc's default, which OCRs pages without a text layer and large images when its models are present|fresh-process|
-|cli|any binary|–|`--cmd` template, binary dir mounted at `/opt/tool`|fresh-process|
+|cli|any binary|–|`--cmd` template, or for RayoPDF `--profile default` or `declared` (§ Benchmark profiles); binary dir mounted at `/opt/tool`|fresh-process|
 
 marker and MinerU are not run locally (6–54 s/page on CPU per odl-bench). Their odl-bench
 predictions shipped with the benchmark are rescored; their olmOCR numbers are cited as claimed.
@@ -425,7 +428,7 @@ python3 tools/eval.py corpus [--producers A,B] [--only FIXTURES] [--jobs 6]
 python3 tools/eval.py corpus --suite scanned [--only PRODUCER/FIXTURE,...] [--jobs 6]
 python3 tools/eval.py corpus --suite multiscript [--jobs 6]
 python3 tools/eval.py score --selftest
-python3 tools/eval.py convert --tool T --suite S
+python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE | --profile default|declared] [--bin-dir DIR]
 python3 tools/eval.py score --suite S [--tools A,B]
 python3 tools/eval.py speed --tool T
 python3 tools/eval.py census
@@ -452,7 +455,7 @@ data/                       odl-bench/, olmOCR-bench/, READoc/, READoc-data/, sa
 suites/<suite>/list.txt     the ids of the last conversion of that suite
 runs/<tool>/<suite>/        <id>.md, results.jsonl, meta.json, batch.json
 scores/{synthetic,scanned}/<tool>.json, scores/odl/{work,stored}/,
-scores/{olmocr,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
+scores/{olmocr,olmocr-math,olmocr-scans}/<tool>.log, scores/readoc/<tool>-<subset>.json,
 scores/{readoc-dev,readoc-dev2}/<tool>-<subset>.json and <tool>-<subset>-docs.json (per document),
 scores/readoc-val/<tool>-<subset>.json,
 scores/multiscript/<tool>.json (and .md, the tables)
@@ -476,9 +479,32 @@ python3 tools/eval.py speed --tool cli --bin-dir build/static --cmd 'rayopdf --c
 python3 tools/eval.py report
 ```
 
+`--profile default` is the same command as `--cmd 'rayopdf --convert {in} {out}'`; `--profile
+declared` measures RayoPDF the way a benchmark is gated (§ Benchmark profiles).
+
 The `cli` timing is fresh-process through Python's `subprocess.run` (see Speed and memory). Save
 a version's report as `docs/benchmarks/v<version>-<date>.md` and add it to the
 [benchmark index](../benchmarks/README.md).
+
+## Benchmark profiles
+
+Benchmarks' ground truths contradict each other on some conventions: odl's Markdown has no
+running headers removed, no emphasis or links and its tables as HTML, olmOCR's `headers_footers`
+tests want page furniture absent, and `arxiv_math` and READoc arXiv write formulas as LaTeX.
+RayoPDF's default output stays faithful to the page (roadmap D6); each benchmark is measured with
+one fixed, published set of options, its declared profile, in `eval/profiles.json`
+(`"declared": {suite: options}`):
+
+|Suite|Declared options|
+|---|---|
+|odl|`--images=none --furniture=keep --plain --tables=html`|
+|synthetic, olmocr|none (the default)|
+|olmocr-math, readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex`|
+
+`convert --tool cli --profile declared` appends a suite's options to `rayopdf --convert {in}
+{out}` (a suite without an entry is an error). The quality gate measures the declared profiles
+only (AGENTS.md rule 7); version records show the default row beside the declared row where they
+differ.
 
 ## Hygiene
 

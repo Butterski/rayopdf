@@ -10,7 +10,7 @@ Usage:
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,pdftotext,...]
   python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs]
   python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
-  python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE] [--bin-dir DIR]
+  python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE | --profile default|declared] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
   python3 tools/eval.py score --suite S [--tools a,b]
   python3 tools/eval.py speed --tool T [--cmd TEMPLATE] [--bin-dir DIR]
@@ -19,19 +19,23 @@ Usage:
 
 Every subcommand takes --root (default benchmark-output/eval). Tools: pdftotext, markitdown,
 pymupdf, opendataloader, liteparse, edgeparse, docling, docling-ocr, tesseract, kordoc (OCR off),
-kordoc-ocr (kordoc's default, OCR models present), cli. Suites:
-synthetic, odl, olmocr, readoc, readoc-dev, readoc-val, readoc-dev2, scanned, olmocr-scans,
-multiscript. The scanned suite is built from the synthetic corpus by `corpus --suite scanned`;
-olmocr-scans comes with `fetch --only olmocr`; multiscript (image-only pages in 9 scripts) is
-rendered by `corpus --suite multiscript`. Four disjoint READoc sets, numbers of one order per
-subset (arXiv, GitHub): readoc is the holdout (1-150, 300 documents, aggregate scores only, once
-per release candidate); readoc-dev is the development split (151-300, `fetch --only
-readoc-dev`), scored per document too (scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val
-is the validation split (301-600, 600 documents, `fetch --only readoc-val`), aggregate scores
-only, checked at every quality landing; readoc-dev2 is a second development split (601-900, up
-to 600 documents, `fetch --only readoc-dev2`), scored per document like readoc-dev.
+kordoc-ocr (kordoc's default, OCR models present), cli. Suites: synthetic, odl, olmocr,
+olmocr-math, readoc, readoc-dev, readoc-val, readoc-dev2, scanned, olmocr-scans, multiscript.
+olmocr-math is olmOCR's arxiv_math category alone, converted and scored for cli only (its
+declared profile is --math=latex). The scanned suite is built from the synthetic corpus by
+`corpus --suite scanned`; olmocr-scans comes with `fetch --only olmocr`; multiscript (image-only
+pages in 9 scripts) is rendered by `corpus --suite multiscript`. Four disjoint READoc sets,
+numbers of one order per subset (arXiv, GitHub): readoc is the holdout (1-150, 300 documents,
+aggregate scores only, once per release candidate); readoc-dev is the development split
+(151-300, `fetch --only readoc-dev`), scored per document too
+(scores/readoc-dev/<tool>-<subset>-docs.json); readoc-val is the validation split (301-600, 600
+documents, `fetch --only readoc-val`), aggregate scores only, checked at every quality landing;
+readoc-dev2 is a second development split (601-900, up to 600 documents, `fetch --only
+readoc-dev2`), scored per document like readoc-dev.
 The cli tool scores any converter binary: --bin-dir DIR is mounted at /opt/tool and
 --cmd is a template with {in} and {out}, for example --cmd 'rayopdf --convert {in} {out}'.
+--profile default runs `rayopdf --convert {in} {out}`; --profile declared adds the suite's
+options from eval/profiles.json (each benchmark's declared profile, roadmap D6).
 RAYOPDF_EVAL_CPUS replaces the work cpuset (default 0-2,4,6-8,10), so that several conversions
 can run side by side on disjoint CPUs; it must leave the timing CPU (3) out.
 """
@@ -71,13 +75,19 @@ TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # readoc-dev: 300 READoc documents the holdout (readoc) did not take; development only.
 # readoc-val: 600 further READoc documents; validation, aggregate only.
 # readoc-dev2: up to 600 READoc documents after those; a second development split.
-TEXT_SUITES = ["synthetic", "odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2"]
+# olmocr-math: olmOCR's arxiv_math category alone, for cli in its declared profile (--math=latex).
+TEXT_SUITES = ["synthetic", "odl", "olmocr", "olmocr-math", "readoc", "readoc-dev", "readoc-val",
+               "readoc-dev2"]
+# Suites converted and scored for cli alone (`all` converts no cli run and skips them).
+CLI_SUITES = ["olmocr-math"]
 # multiscript: image-only pages in Cyrillic, Hangul, Arabic, Hebrew, Devanagari, Kannada, Tamil,
 # Latin and a mix, upright and turned (eval/producers/multiscript.py); development only.
 SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
 IMAGES = ["producers", "scorer", "olmocr", "readoc"] + [t for t in TOOLS if t not in TOOL_IMAGE]
 DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs"]
+# Each benchmark's declared profile: the cli options it is measured with (roadmap D6).
+PROFILES = REPO / "eval" / "profiles.json"
 
 ODL_URL = "https://github.com/opendataloader-project/opendataloader-bench"
 ODL_COMMIT = "7af1d8f4d0c09f51ea1a5c6ba5f66e993286d109"
@@ -285,6 +295,7 @@ def suite_root(root: Path, suite: str) -> Path:
         "synthetic": root / "corpus",
         "odl": root / "data" / "odl-bench" / "pdfs",
         "olmocr": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
+        "olmocr-math": root / "data" / "olmOCR-bench" / "bench_data" / "pdfs",
         "readoc": root / "data" / "READoc-data" / READOC_DIRS["readoc"][0],
         "readoc-dev": root / "data" / "READoc-data" / READOC_DIRS["readoc-dev"][0],
         "readoc-val": root / "data" / "READoc-data" / READOC_DIRS["readoc-val"][0],
@@ -313,6 +324,8 @@ def suite_ids(root: Path, suite: str) -> list[str]:
         ids = pdf_ids(base)
     elif suite == "olmocr":
         ids = [i for cat in OLMOCR_CATEGORIES for i in pdf_ids(base, cat)]
+    elif suite == "olmocr-math":
+        ids = pdf_ids(base, "arxiv_math")
     elif suite == "olmocr-scans":
         ids = [i for cat in OLMOCR_SCAN_CATEGORIES for i in pdf_ids(base, cat)]
     else:
@@ -679,13 +692,32 @@ def tool_mounts(tool: str, bin_dir: str | None) -> list[tuple[Path, str, bool]]:
     return mounts
 
 
+def profile_cmd(suite: str, profile: str) -> str:
+    """The cli command of `suite` in `profile`: `rayopdf --convert {in} {out}`, and in the
+    declared profile the suite's options from eval/profiles.json after it."""
+    cmd = "rayopdf --convert {in} {out}"
+    if profile == "default":
+        return cmd
+    declared = read_json(PROFILES, {}).get("declared", {})
+    if suite not in declared:
+        raise SystemExit(f"no declared profile for {suite}")
+    return f"{cmd} {declared[suite]}".rstrip()
+
+
 def cmd_convert(args) -> int:
     root: Path = args.root
+    cmd = args.cmd
+    if args.profile:
+        if args.tool != "cli":
+            raise SystemExit("--profile is for --tool cli")
+        cmd = profile_cmd(args.suite, args.profile)
+    elif args.tool == "cli" and not cmd:
+        raise SystemExit("--tool cli needs --cmd or --profile")
     ids = suite_ids(root, args.suite)
     list_dir = root / "suites" / args.suite
     write_list(list_dir / "list.txt", ids)
     out = reset_dir(root / "runs" / args.tool / args.suite)
-    argv = tool_argv(args.tool, "/list/list.txt", "/out", [], args.cmd)
+    argv = tool_argv(args.tool, "/list/list.txt", "/out", [], cmd)
     mounts = [(suite_root(root, args.suite), "/in", True), (list_dir, "/list", True),
               (out, "/out", False)] + tool_mounts(args.tool, args.bin_dir)
     run(docker_cmd(tool_tag(args.tool), argv, mounts=mounts, env={"OMP_NUM_THREADS": "4"}))
@@ -789,10 +821,13 @@ def score_odl(root: Path, tools: list[str], force: bool) -> None:
                        mounts=[(stored, "/stored", False), (odl, "/odl", True)]))
 
 
-def score_olmocr(root: Path, tools: list[str], suite: str) -> None:
-    """olmOCR-bench scorer over the born-digital (olmocr) or scanned (olmocr-scans) categories."""
-    categories, jsonls = ((OLMOCR_CATEGORIES, OLMOCR_JSONL) if suite == "olmocr"
-                          else (OLMOCR_SCAN_CATEGORIES, OLMOCR_SCAN_JSONL))
+def score_olmocr(root: Path, tools: list[str], suite: str, categories: list[str] = OLMOCR_CATEGORIES) -> None:
+    """olmOCR-bench scorer over `categories` of the born-digital suites (olmocr; olmocr-math with
+    arxiv_math alone), or over the scanned categories (olmocr-scans)."""
+    if suite == "olmocr-scans":
+        categories, jsonls = OLMOCR_SCAN_CATEGORIES, OLMOCR_SCAN_JSONL
+    else:
+        jsonls = {c: OLMOCR_JSONL[c] for c in categories}
     dataset = root / "data" / "olmOCR-bench" / "bench_data"
     out = root / "scores" / suite
     out.mkdir(parents=True, exist_ok=True)
@@ -905,6 +940,8 @@ def cmd_score(args) -> int:
         score_multiscript(args.root, tools)
     elif args.suite in ("olmocr", "olmocr-scans"):
         score_olmocr(args.root, tools, args.suite)
+    elif args.suite == "olmocr-math":
+        score_olmocr(args.root, tools, args.suite, ["arxiv_math"])
     else:
         return 1 if score_readoc(args.root, tools, args.suite) else 0
     return 0
@@ -1366,7 +1403,25 @@ def report(root: Path) -> str:
               "holdout, the development or the validation split. Development data: each "
               "document's scores are in `scores/readoc-dev2/<tool>-<subset>-docs.json`.", ""]
     lines += report_readoc(root, "readoc-dev2")
+    lines += report_olmocr_math(root)
     return "\n".join(lines) + "\n"
+
+
+def report_olmocr_math(root: Path) -> list[str]:
+    """olmOCR's arxiv_math category converted by cli in its declared profile (eval/profiles.json)."""
+    declared = read_json(PROFILES, {}).get("declared", {}).get("olmocr-math", "")
+    lines = ["## 16. olmOCR arxiv_math in its declared mode", "",
+             f"cli with `{declared}` (its declared profile, `eval/profiles.json`); the other tools' "
+             "arxiv_math pass rates are in section 5.", ""]
+    path = root / "scores" / "olmocr-math" / "cli.log"
+    if not path.is_file():
+        return lines + ["Not scored.", ""]
+    text = path.read_text(encoding="utf-8", errors="replace")
+    rate = parse_olmocr_log(text).get("arxiv_math")
+    if rate is None:
+        return lines + ["The summary could not be parsed; its final block:", "", "```", olmocr_summary_block(text),
+                        "```", ""]
+    return lines + table(["tool", "arxiv_math"], [["cli", rate]])
 
 
 def report_readoc(root: Path, suite: str) -> list[str]:
@@ -1573,7 +1628,7 @@ def cmd_all(args) -> int:
             write_json(root / "all-failures.json", failures)
 
     def ns(**kw) -> argparse.Namespace:
-        base = {"root": root, "only": None, "producers": None, "jobs": 6, "cmd": None,
+        base = {"root": root, "only": None, "producers": None, "jobs": 6, "cmd": None, "profile": None,
                 "bin_dir": None, "selftest": False, "suite": None, "tools": None, "force": False,
                 "limit": None, "tool": None}
         base.update(kw)
@@ -1598,14 +1653,20 @@ def cmd_all(args) -> int:
     else:
         step("corpus --suite multiscript", cmd_corpus, ns(suite="multiscript"))
     step("score --selftest", cmd_score, ns(selftest=True))
+    # The third-party tools; cli runs are made apart (with a binary and a profile), and the suites
+    # of cli alone (CLI_SUITES) are scored here only when one is there.
     for tool in TOOLS[:-1]:
         # The OCR reference tools run on the scanned suites (and those OCR_TOOL_SUITES adds).
         for suite in OCR_TOOL_SUITES.get(tool, []) + SCAN_SUITES if tool in OCR_TOOLS else SUITES:
+            if suite in CLI_SUITES:
+                continue
             if args.resume and run_complete(root, tool, suite):
                 log(f"=== convert {tool}/{suite}: complete, skipped (--resume)")
                 continue
             step(f"convert --tool {tool} --suite {suite}", cmd_convert, ns(tool=tool, suite=suite))
     for suite in SUITES:
+        if suite in CLI_SUITES and not available_tools(root, suite, None):
+            continue
         step(f"score --suite {suite}", cmd_score, ns(suite=suite))
     for tool in TOOLS[:-1]:
         if tool in OCR_TOOLS:
@@ -1653,7 +1714,11 @@ def main() -> int:
     p = add("convert", cmd_convert, "convert one suite with one tool")
     p.add_argument("--tool", required=True, choices=TOOLS)
     p.add_argument("--suite", required=True, choices=SUITES)
-    p.add_argument("--cmd", help="cli only: command template with {in} and {out}")
+    command = p.add_mutually_exclusive_group()
+    command.add_argument("--cmd", help="cli only: command template with {in} and {out}")
+    command.add_argument("--profile", choices=["default", "declared"],
+                         help="cli only: `rayopdf --convert {in} {out}`, with the suite's options from "
+                              "eval/profiles.json for declared")
     p.add_argument("--bin-dir", help="cli only: host directory mounted at /opt/tool")
     p = add("score", cmd_score, "score conversions of one suite, or run the scorer self-test")
     p.add_argument("--selftest", action="store_true")
