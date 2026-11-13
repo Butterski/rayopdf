@@ -222,6 +222,15 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `important`, `warning`, `caution`, on an alert's first block); last `markdown`, the bytes the
   Markdown output writes for the block, so that the blocks' `markdown` occur in that output in
   order. `--page-markers` and `--front-matter` have no effect on it (the metadata is always there).
+- Output options for conventions on which benchmarks' ground truths contradict each other
+  (decided 2026-11-13; off by default, the default output byte-identical): `--plain` writes no
+  inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts
+  without `<sup>`/`<sub>` tags, Unicode script forms kept; footnote references as their number,
+  definitions as `N text`; escapes and blocks as always); `--tables=html` writes every table as
+  HTML (`--tables=auto`, the default: GFM unless a span needs HTML); `--furniture=keep` removes no
+  running header, footer, page number or margin line (`--furniture=drop`, the default, removes
+  them; a structure tree that is used still leaves out its artifacts). Each changes the JSON
+  output's `markdown` and cells the same way.
 
 ### D7 Command line
 
@@ -230,6 +239,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
         [--format=markdown|json] [--page-markers] [--front-matter]
+        [--furniture=drop|keep] [--plain] [--tables=auto|html]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
 rayopdf --serve --json [options] [--workers=N]
@@ -245,8 +255,11 @@ protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error",
 "error"?, "pages", "bytes", "ms", <counters>, "markdown"? | "json"?}`, one JSON object a line;
 `code` is the exit code the document alone would give.
 
-- **`--format=json`**, **`--page-markers`** and **`--front-matter`** choose what is written (D6):
-  the JSON document instead of Markdown, page markers in the Markdown, front matter before it.
+- **`--format=json`**, **`--page-markers`**, **`--front-matter`**, **`--plain`**,
+  **`--tables=html`** and **`--furniture=keep`** choose what is written (D6): the JSON document
+  instead of Markdown, page markers in the Markdown, front matter before it, text without inline
+  markup, every table as HTML, page furniture kept. A RayoMD payload is not used with any of
+  them except `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
   hidden ones and links to folders excepted, mirrored) to `NAME.md` (`NAME.json` with
   `--format=json`) and `NAME-images/` under the output folder, sorted by their UTF-8 paths. Two

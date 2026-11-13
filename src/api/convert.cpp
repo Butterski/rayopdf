@@ -33,6 +33,9 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
     out.format = options.format == Format::Json ? Layout::OutputFormat::Json : Layout::OutputFormat::Markdown;
     out.pageMarkers = options.pageMarkers;
     out.frontMatter = options.frontMatter;
+    out.furniture = options.furniture == Furniture::Keep ? Layout::Furniture::Keep : Layout::Furniture::Drop;
+    out.plain = options.plain;
+    out.tables = options.tables == Tables::Html ? Layout::TableFormat::Html : Layout::TableFormat::Auto;
     out.pageWorkers = options.workers;
     return out;
 }

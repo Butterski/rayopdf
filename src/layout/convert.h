@@ -23,6 +23,14 @@ constexpr unsigned kDefaultPageWorkers = 4;
 // blocks with their pages, boxes and Markdown; layout/markdown_writer.h WriteJson).
 enum class OutputFormat : uint8_t { Markdown, Json };
 
+// Page furniture (running headers, footers, page numbers and margin lines; layout/reading_order.h):
+// left out (the default), or kept as text where it stands. A structure tree that is used still
+// leaves out what it marks as artifacts.
+enum class Furniture : uint8_t { Drop, Keep };
+
+// Tables as GFM pipe tables unless a span needs HTML (the default), or every table as HTML.
+enum class TableFormat : uint8_t { Auto, Html };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -44,6 +52,12 @@ struct ConvertOptions {
     // Markdown only: YAML front matter from the document's /Info first (layout/metadata.h), unless
     // a verified RayoMD payload that has its own is written.
     bool frontMatter = false;
+    Furniture furniture = Furniture::Drop;
+    // Text without inline markup: no emphasis, code spans, strikethrough, links (their text stays),
+    // <sup>/<sub> tags (their text stays) or footnote marks ("[^1]" is written "1", a definition
+    // "1 text"). Escapes and the block structure (headings, lists, tables) are written as always.
+    bool plain = false;
+    TableFormat tables = TableFormat::Auto;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
     // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
     // may run on, at most kDefaultPageWorkers, each started only once the pages read so far are
@@ -78,7 +92,8 @@ enum class ExactUse : uint8_t {
     None,         // the file claims no payload
     Used,         // the payload passed both checks and is the Markdown written
     Pages,        // not used: a page range was asked for and the payload is the whole document
-    Format,       // not used: the output asked for (JSON, page markers) needs the pages' layout
+    Format,       // not used: the output asked for (JSON, page markers, plain text, HTML tables, kept
+                  // furniture) needs the pages' layout
     Unsupported,  // rejected: another profile version or encoding
     Corrupt,      // rejected: the file or the profile's objects are not as the profile writes them
     Integrity,    // rejected: the payload's SHA-256 or length does not match its packet

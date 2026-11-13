@@ -131,9 +131,11 @@ uint32_t ScriptForm(uint32_t cp, bool sup) {
 
 class Writer {
 public:
-    Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math)
+    Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math,
+           bool plain)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
-          boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math) {}
+          boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math),
+          plainOutput_(plain) {}
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
@@ -216,6 +218,8 @@ private:
     bool italicIsBody_ = false;
     bool monoIsBody_ = false;  // the document is typeset in a monospace font (BlockList::monoDocument)
     MathMode math_ = MathMode::Unicode;
+    // WriteSettings::plain: scripts without <sup>/<sub> tags, footnote references as their number.
+    bool plainOutput_ = false;
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
     std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
@@ -1103,9 +1107,13 @@ void Writer::Inline(const Block& block, bool styles) {
                 while (supEnd < end && refs_[supEnd].script == kScriptSup) ++supEnd;
                 if (const uint32_t number = NoteNumber(refs_[k], supEnd - k)) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
-                    out_.append("[^");
-                    out_.append(std::to_string(number));
-                    out_.push_back(']');
+                    if (plainOutput_) {
+                        out_.append(std::to_string(number));
+                    } else {
+                        out_.append("[^");
+                        out_.append(std::to_string(number));
+                        out_.push_back(']');
+                    }
                     blockStart = false;
                     k = supEnd;
                     continue;
@@ -1141,8 +1149,12 @@ void Writer::Inline(const Block& block, bool styles) {
                 for (uint32_t j = k; j < runEnd; ++j)
                     for (char c : Text(refs_[j])) out_.push_back(c == '`' ? '\'' : c);
             } else {
-                if (script == kScriptSup) out_.append("<sup>");
-                if (script == kScriptSub) out_.append("<sub>");
+                // Plain text: a script's text without its tag, so a run at the block's start is
+                // escaped as one.
+                const bool tags = !plainOutput_;
+                const bool start = blockStart && (script == kScriptNone || !tags);
+                if (tags && script == kScriptSup) out_.append("<sup>");
+                if (tags && script == kScriptSub) out_.append("<sub>");
                 // The run's text goes straight into out_. AppendEscaped writes text without the
                 // characters it escapes as it is, so only a run with one of them, or one at the
                 // start of the block, is taken out again and escaped.
@@ -1158,15 +1170,15 @@ void Writer::Inline(const Block& block, bool styles) {
                         for (const char c : t) escapes |= MayEscape(c);
                     }
                 }
-                bool plain = !(blockStart && script == kScriptNone) && !escapes;
+                bool plain = !start && !escapes;
                 if (latex && plain) plain = std::string_view(out_).substr(mark).find('$') == std::string_view::npos;
                 if (!plain) {
                     other_.assign(out_, mark, std::string::npos);
                     out_.resize(mark);
-                    AppendEscaped(other_, blockStart && script == kScriptNone);
+                    AppendEscaped(other_, start);
                 }
-                if (script == kScriptSup) out_.append("</sup>");
-                if (script == kScriptSub) out_.append("</sub>");
+                if (tags && script == kScriptSup) out_.append("</sup>");
+                if (tags && script == kScriptSub) out_.append("</sub>");
             }
             blockStart = false;
             k = runEnd;
@@ -1429,8 +1441,9 @@ void Writer::Code(const Block& block, const std::string& prefix) {
 } // namespace
 
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bool repaired, std::string& out,
-                   WriteCounts& counts, MathMode math, bool pageMarkers, std::vector<WrittenBlock>* written) {
-    Writer writer(pages, list, out, counts, math);
+                   WriteCounts& counts, MathMode math, const WriteSettings& settings, std::vector<WrittenBlock>* written) {
+    Writer writer(pages, list, out, counts, math, settings.plain);
+    const bool styles = !settings.plain;
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
     int contentColumn[9] = {};
     const Block* previous = nullptr;
@@ -1450,7 +1463,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
     };
     for (const Block& block : list.blocks) {
         if (block.kind != BlockKind::Comment && block.count == 0) continue;
-        if (pageMarkers)
+        if (settings.pageMarkers)
             markPagesTo(block.kind == BlockKind::Comment ? static_cast<int>(block.number)
                                                          : pages[list.lines[block.first].page].number);
         if (!out.empty()) {
@@ -1511,7 +1524,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             out += prefix;
             if (block.listParagraph) out.append(static_cast<size_t>(contentColumn[std::min<int>(block.depth, 8)]), ' ');
             if (math == MathMode::Latex && writer.Display(block)) break;
-            writer.Inline(block, true);
+            writer.Inline(block, styles);
             break;
         }
         case BlockKind::ListItem: {
@@ -1526,7 +1539,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             contentColumn[depth] = indent + static_cast<int>(marker.size()) + 1;
             for (int d = depth + 1; d < 9; ++d) contentColumn[d] = contentColumn[depth] + 2 * (d - depth);
             if (block.task) out += block.task == 2 ? "[x] " : "[ ] ";
-            writer.Inline(block, true);
+            writer.Inline(block, styles);
             break;
         }
         case BlockKind::Code:
@@ -1535,10 +1548,11 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             break;
         case BlockKind::Footnote: {
             counts.footnotes++;
-            out += "[^";
+            // Plain text: "N text" without the reference's brackets and colon.
+            if (styles) out += "[^";
             out += std::to_string(block.number);
-            out += "]: ";
-            writer.Inline(block, true);
+            out += styles ? "]: " : " ";
+            writer.Inline(block, styles);
             // An HTML endnote's back link (↩, maybe with the text-style selector U+FE0E) is no text.
             for (const std::string_view link : {"\xE2\x86\xA9\xEF\xB8\x8E", "\xE2\x86\xA9"}) {
                 if (out.size() >= link.size() && out.compare(out.size() - link.size(), link.size(), link) == 0) {
@@ -1551,9 +1565,9 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
         }
         case BlockKind::Table: {
             // D6: GFM unless a cell spans rows, or columns below the header rows, then HTML
-            // (layout/tables.h). A table broken across pages is one table from its parts, each its
-            // anchor line then its cell lines. GFM cells are inline Markdown, cut back out of `out`
-            // after the writer appends them.
+            // (layout/tables.h); every table HTML with WriteSettings::htmlTables. A table broken
+            // across pages is one table from its parts, each its anchor line then its cell lines.
+            // GFM cells are inline Markdown, cut back out of `out` after the writer appends them.
             parts.clear();
             partFirst.clear();
             bool html = false;
@@ -1566,6 +1580,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 html = html || TableNeedsHtml(page, page.tables[line.first]);
             }
             if (parts.empty()) break;
+            html = html || settings.htmlTables;
             counts.tables++;
             if (html && !written) {
                 WriteHtmlTable(parts, out);
@@ -1590,7 +1605,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                     sub.first = partFirst[p] + 1 + (cell.first - table.firstLine);
                     sub.count = cell.count;
                     const size_t mark = out.size();
-                    writer.Inline(sub, true);
+                    writer.Inline(sub, styles);
                     text.assign(out, mark, std::string::npos);
                     out.resize(mark);
                 }
@@ -1665,7 +1680,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 written->pop_back();
         }
     }
-    if (pageMarkers) markPagesTo(pages.empty() ? 0 : pages.back().number);
+    if (settings.pageMarkers) markPagesTo(pages.empty() ? 0 : pages.back().number);
     if (!out.empty()) out.push_back('\n');
 }
 
@@ -1723,10 +1738,13 @@ const char* BlockTypeName(BlockKind kind) {
 } // namespace
 
 void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool repaired,
-               const DocumentMetadata* metadata, std::string& out, WriteCounts& counts, MathMode math) {
+               const DocumentMetadata* metadata, std::string& out, WriteCounts& counts, MathMode math,
+               const WriteSettings& settings) {
     std::string markdown;
     std::vector<WrittenBlock> written;
-    WriteMarkdown(pages, list, false, markdown, counts, math, false, &written);
+    WriteSettings blocks = settings;
+    blocks.pageMarkers = false;
+    WriteMarkdown(pages, list, false, markdown, counts, math, blocks, &written);
     out += "{\"rayopdf\":\"" RAYOPDF_VERSION "\",\"schema\":1,\"repaired\":";
     out += repaired ? "true" : "false";
     out += ",\"metadata\":{";

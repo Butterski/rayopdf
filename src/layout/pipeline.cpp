@@ -81,7 +81,10 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         report.structureElements = static_cast<uint32_t>(structure->nodes.size());
     }
     const bool tree = report.structure == StructureUse::Used;
-    if (!tree) report.headerFooterLines += RemoveRunningLines(pages);
+    // Kept furniture: no running line, edge row or margin line is removed (a used tree still leaves
+    // out its artifacts).
+    const bool keepFurniture = output && output->furniture == Furniture::Keep;
+    if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages);
     if (images) PlaceImages(pages, *images, report);
     std::vector<uint8_t> unmapped(pages.size(), 0);
     const bool parallel = pool && !tree && !pages.empty();
@@ -109,10 +112,16 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     BuildBlocks(pages, outline, unmapped, blocks);
     if (tree) tagged.Blocks(pages, blocks);
     WriteCounts counts;
+    WriteSettings settings;
+    if (output) {
+        settings.pageMarkers = output->pageMarkers;
+        settings.plain = output->plain;
+        settings.htmlTables = output->tables == TableFormat::Html;
+    }
     if (output && output->format == OutputFormat::Json)
-        WriteJson(pages, blocks, repaired, output->metadata, markdown, counts, math);
+        WriteJson(pages, blocks, repaired, output->metadata, markdown, counts, math, settings);
     else
-        WriteMarkdown(pages, blocks, repaired, markdown, counts, math, output && output->pageMarkers);
+        WriteMarkdown(pages, blocks, repaired, markdown, counts, math, settings);
     report.headings += counts.headings;
     report.paragraphs += counts.paragraphs;
     report.listItems += counts.listItems;

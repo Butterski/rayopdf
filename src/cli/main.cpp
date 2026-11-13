@@ -5,6 +5,7 @@
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json] [--page-markers] [--front-matter]
+//                                   [--furniture=drop|keep] [--plain] [--tables=auto|html]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -116,6 +117,12 @@ void PrintUsage(std::FILE* out) {
         "  --page-markers     <!-- page N --> before the Markdown of each page\n"
         "  --front-matter     YAML front matter from the document's information (title, author,\n"
         "                     dates, pages) before the Markdown\n"
+        "  --furniture=MODE   drop (default): leave out running headers, footers and page numbers;\n"
+        "                     keep: write them as text where they stand\n"
+        "  --plain            no inline markup: no emphasis, code spans or links (their text\n"
+        "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
+        "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"
+        "                     table as HTML\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"
@@ -264,6 +271,28 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
         options.convert.pageMarkers = true;
     } else if (arg == "--front-matter") {
         options.convert.frontMatter = true;
+    } else if (StartsWith(arg, "--furniture=")) {
+        const std::string_view mode = arg.substr(12);
+        if (mode == "drop") {
+            options.convert.furniture = Layout::Furniture::Drop;
+        } else if (mode == "keep") {
+            options.convert.furniture = Layout::Furniture::Keep;
+        } else {
+            error = "--furniture takes drop or keep: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
+    } else if (arg == "--plain") {
+        options.convert.plain = true;
+    } else if (StartsWith(arg, "--tables=")) {
+        const std::string_view mode = arg.substr(9);
+        if (mode == "auto") {
+            options.convert.tables = Layout::TableFormat::Auto;
+        } else if (mode == "html") {
+            options.convert.tables = Layout::TableFormat::Html;
+        } else {
+            error = "--tables takes auto or html: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
     } else {
         return FlagStatus::Unknown;
     }

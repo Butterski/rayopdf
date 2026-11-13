@@ -7,7 +7,8 @@
 // 900-949, common 950-999 and 1680-1699, CPU dispatch 1650-1679, OCR routing 1200-1249, OCR add-on
 // 1250-1299 and 1500-1549, exact recovery 1300-1349, glyph-shape recovery 1350-1399, OCR text
 // structure 1400-1449, text fonts 1450-1479, LaTeX math 1550-1599, pages on several threads
-// 1600-1649, OCR image tables 1750-1799, headings 1800-1849, C++ API 1950-1999).
+// 1600-1649, OCR image tables 1750-1799, headings 1800-1849, C++ API 1950-1999, output formats
+// 2000-2049).
 // An exit status has 8 bits, so codes past 255 leave the process as code % 256, and as 1 when that
 // would be 0.
 #pragma once

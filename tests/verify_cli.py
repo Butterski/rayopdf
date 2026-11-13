@@ -4,8 +4,9 @@
 --report, encrypted input, --convert with several page workers (the same Markdown and record as
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
-with 1 and 4 workers), and the output options (--format=json, --page-markers, --front-matter). It
-builds the PDFs it needs in a temporary directory (none are committed) and never times anything.
+with 1 and 4 workers), and the output options (--format=json, --page-markers, --front-matter,
+--furniture, --plain, --tables). It builds the PDFs it needs in a temporary directory (none are
+committed) and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -337,8 +338,9 @@ def check_page_workers(c: Checker, work: Path) -> None:
 
 def check_output_features(c: Checker, work: Path, hello: str) -> None:
     """--format=json (one object, schema 1, every block's Markdown in the Markdown output in order;
-    --batch writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page) and
-    --front-matter (YAML first, with the page count)."""
+    --batch writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page),
+    --front-matter (YAML first, with the page count) and --furniture, --plain and --tables (taken by
+    --convert and in serve requests; a bad value is a usage error)."""
     pages = str(work / "pages.pdf")
     markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
     r = c.run("--convert", pages, str(work / "pages.json"), "--format=json")
@@ -368,6 +370,16 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
             front.endswith(markdown), repr(front[:200]))
     r = c.run("--convert", pages, "-", "--format=json", "--page-markers", "--front-matter")
     c.check("json ignores markers and front matter", r.returncode == 0 and r.stdout == (work / "pages.json").read_bytes())
+    for flag in ("--furniture=keep", "--furniture=drop", "--plain", "--tables=html", "--tables=auto"):
+        r = c.run("--convert", pages, "-", flag)
+        c.check(f"output option {flag}", r.returncode == 0 and b"page" in r.stdout.lower(), repr(r.stderr[:200]))
+    for flag in ("--furniture=hide", "--tables=gfm", "--plain=yes"):
+        c.check(f"bad output option {flag}", c.run("--convert", pages, "-", flag).returncode == 2)
+    requests = (json.dumps({"id": 1, "input": hello, "args": ["--plain", "--tables=html", "--furniture=keep"]}) +
+                "\n" + json.dumps({"id": 2, "input": hello, "args": ["--tables=gfm"]}) + "\n").encode()
+    lines = records(c.run("--serve", "--json", stdin=requests).stdout)
+    c.check("serve takes the output options", len(lines) == 3 and "Hello World" in lines[1].get("markdown", "") and
+            lines[2].get("code") == 2 and "--tables" in lines[2].get("error", ""), repr(lines)[:300])
 
     source = work / "json-in"
     source.mkdir()

@@ -22,6 +22,10 @@ enum class Math : uint8_t { Unicode, Latex };
 // OCR through the rayopdf-ocr add-on: never; where the text layer fails (when the add-on is found);
 // every page image and large image.
 enum class Ocr : uint8_t { Off, Auto, Force };
+// Page furniture (running headers, footers, page numbers): left out, or kept as text.
+enum class Furniture : uint8_t { Drop, Keep };
+// Tables as GFM pipe tables unless a span needs HTML, or every table as HTML.
+enum class Tables : uint8_t { Auto, Html };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -45,6 +49,9 @@ struct Options {
     bool exact = true;                       // a verified RayoMD source payload is written as it is
     bool pageMarkers = false;                // Markdown: <!-- page N --> before each page's blocks
     bool frontMatter = false;                // Markdown: YAML front matter from the document's information
+    Furniture furniture = Furniture::Drop;   // page furniture left out or kept
+    bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
+    Tables tables = Tables::Auto;            // Html: every table as HTML
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic
 };

@@ -91,15 +91,19 @@ Options go after the output path, in any order:
 | Structured JSON instead of Markdown | `--format=json` (schema: [references/json.md](references/json.md)) |
 | A comment before each page's text | `--page-markers` (`<!-- page N -->`; a list or quote across a page break is split there) |
 | The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `pages`) |
+| Text without inline markup | `--plain` (no `**`, `*`, `` ` ``, links, `<sup>`/`<sub>` or `[^n]`; their text stays) |
+| Every table as HTML | `--tables=html` (default `auto`: pipe tables unless a span needs HTML) |
+| Keep running headers, footers and page numbers | `--furniture=keep` (default `drop`) |
 | Encrypted PDF | `--password=PW` |
 | Ignore the tags of a tagged PDF | `--no-structure` (layout analysis only) |
 | Links as plain text | `--no-annotations` |
 | Re-read a PDF RayoMD made from Markdown | `--no-exact` (by default its embedded, verified Markdown source is written as it is) |
 | OCR | `--ocr=auto` (default), `off`, `force`; `--ocr-addon=PATH` (section 4) |
 
-`--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0: check
-`rayopdf --help` lists them. `--front-matter` and `--page-markers` have no effect with
-`--format=json`, whose `metadata` and per-block `page` carry the same information.
+`--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0, and
+`--plain`, `--tables` and `--furniture` not before 0.3.0: check `rayopdf --help` lists them.
+`--front-matter` and `--page-markers` have no effect with `--format=json`, whose `metadata` and
+per-block `page` carry the same information.
 
 Examples:
 
@@ -170,10 +174,11 @@ Check `status` is `"ok"` (`"error"`: `error` says why) and `pages` is plausible,
 - `structure`: `used` when a tagged PDF's structure tree decided the blocks; other values (`none`,
   `broken`, `role-cycle`, `coverage`, `generic`, `order`) mean layout analysis did.
 - `exact`: `used` when the PDF carried its RayoMD Markdown source and that was written as it is;
-  `pages` when a page range kept it from being used; `format` when `--format=json` or
-  `--page-markers` asked for the pages' layout; `off` with `--no-exact`; other values name why a
-  payload was rejected.
-- `header_footer_lines`: running heads, page numbers and similar lines left out of the text.
+  `pages` when a page range kept it from being used; `format` when `--format=json`,
+  `--page-markers`, `--plain`, `--tables=html` or `--furniture=keep` asked for the pages' layout;
+  `off` with `--no-exact`; other values name why a payload was rejected.
+- `header_footer_lines`: running heads, page numbers and similar lines left out of the text (0
+  with `--furniture=keep`).
 
 `rayopdf --inspect file.pdf [--password=PW]` prints the document's structure without converting
 it (`version`, `pages`, `encrypted`, `repaired`, `tagged`, `title`, `producer`, `first_page` size,

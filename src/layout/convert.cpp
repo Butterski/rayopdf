@@ -197,17 +197,21 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     images.linkPrefix = options.imageLinkPrefix;
     images.pool = pool.get();
     images.pageWorkers = options.pageWorkers;
-    // JSON and page markers: what the writer writes instead of plain Markdown.
+    // JSON, page markers, plain text, HTML tables and kept furniture: what the writer writes
+    // instead of the default Markdown.
     const bool json = options.format == OutputFormat::Json;
     DocumentMetadata metadata;
     OutputSettings output;
     output.format = options.format;
     output.pageMarkers = options.pageMarkers;
+    output.furniture = options.furniture;
+    output.plain = options.plain;
+    output.tables = options.tables;
     output.metadata = &metadata;
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure, json ? &metadata : nullptr};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,
-                 options.math, pool.get(), &read, json || options.pageMarkers ? &output : nullptr);
+                 options.math, pool.get(), &read, &output);
     return conversion;
 }
 
@@ -220,7 +224,10 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         const int count = document.PageCount();
         if (options.firstPage > 1 || (options.lastPage > 0 && options.lastPage < count)) use = ExactUse::Pages;
     }
-    if (use == ExactUse::Used && (options.format != OutputFormat::Markdown || options.pageMarkers)) use = ExactUse::Format;
+    // JSON, page markers, plain text, HTML tables and kept furniture need the pages' layout.
+    if (use == ExactUse::Used && (options.format != OutputFormat::Markdown || options.pageMarkers || options.plain ||
+                                  options.tables == TableFormat::Html || options.furniture == Furniture::Keep))
+        use = ExactUse::Format;
     std::unique_ptr<Conversion> conversion;
     if (use == ExactUse::Used) {
         // The check converts the pages without writing images or running OCR, with Unicode math;

@@ -250,6 +250,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
                                 [--math=unicode|latex] [--workers=N]
                                 [--format=markdown|json] [--page-markers] [--front-matter]
+                                [--furniture=drop|keep] [--plain] [--tables=auto|html]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -312,6 +313,25 @@ rayopdf --convert paper.pdf paper.md --front-matter
 
 Both apply to Markdown only; the JSON output always carries the metadata.
 
+### Plain text, HTML tables and page furniture
+
+Three options change conventions on which readers and benchmarks disagree; the defaults keep the
+output faithful to the page.
+
+- `--plain` writes the text without inline markup: no emphasis, code spans, strikethrough or links
+  (the link text stays), no `<sup>`/`<sub>` tags (their text stays; Unicode script forms such as
+  `x₀` too), footnote references as their number (`text.1`) and footnote definitions as `1 text`.
+  Headings, lists, tables and escapes are written as always.
+- `--tables=html` writes every table as an HTML `<table>`; by default a table is a pipe table
+  unless a cell spanning rows, or columns below the header rows, needs HTML.
+- `--furniture=keep` keeps running headers, footers and page numbers as text where they stand;
+  by default they are left out. A tagged PDF whose structure tree is used still leaves out what the
+  tree marks as artifacts.
+
+```sh
+rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep
+```
+
 ### Exact recovery of RayoMD PDFs
 
 A PDF that [RayoMD](https://github.com/Butterski/rayomd) exported with `--embed-source` carries
@@ -324,7 +344,8 @@ detects damage, not forgery, and the comparison does not cover punctuation, Mark
 link targets beyond that allowance. The profile carries no images: the source's image links stay
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
-with `--format=json` or `--page-markers`, which need the pages' layout), or why the payload was
+with `--format=json`, `--page-markers`, `--plain`, `--tables=html` or `--furniture=keep`, which
+need the pages' layout), or why the payload was
 rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`,
 `mismatch`. `--no-exact` always converts the pages.
 
@@ -373,7 +394,7 @@ an integer, sent back as it came), `output` (a Markdown file; without it the rec
 Markdown as `markdown`, or with `--format=json` the JSON object as `json`, and no images are
 written) and `args` (flags of `--convert`: `--password`, `--pages`, `--images`, `--no-exact`,
 `--no-annotations`, `--no-structure`, `--math`, `--ocr`, `--ocr-addon`, `--format`,
-`--page-markers`, `--front-matter`, over those
+`--page-markers`, `--front-matter`, `--furniture`, `--plain`, `--tables`, over those
 the session started with). A malformed request gets an error record (code 2) and the session goes
 on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
 converted N at a time, and the answers still come in request order.

@@ -53,23 +53,33 @@ struct WrittenBlock {
     std::vector<WrittenCell> cells;
 };
 
-// Appends the Markdown of `blocks` to `out`; `repaired` puts the repair comment first.
-// `pageMarkers`: before a block whose page (its first line's; a comment's `number`) comes after
-// the last page marked, `<!-- page N -->` (N: PageData::number) as a block of its own for each
-// page up to it, and after the last block one for each page left; a marker ends a list or block
-// quote that runs across the page break. `written`, when given, receives every block written, in
-// order.
+// How WriteMarkdown writes. `pageMarkers`: before a block whose page (its first line's; a
+// comment's `number`) comes after the last page marked, `<!-- page N -->` (N: PageData::number) as
+// a block of its own for each page up to it, and after the last block one for each page left; a
+// marker ends a list or block quote that runs across the page break. `plain`: no inline markup
+// (emphasis, code spans, strikethrough, links: their text stays; <sup>/<sub>: their text stays,
+// Unicode script forms too), footnote references as their bare number and definitions as
+// "N text". `htmlTables`: every table as HTML, not only those whose spans need it.
+struct WriteSettings {
+    bool pageMarkers = false;
+    bool plain = false;
+    bool htmlTables = false;
+};
+
+// Appends the Markdown of `blocks` to `out`; `repaired` puts the repair comment first. `written`,
+// when given, receives every block written, in order.
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired, std::string& out,
-                   WriteCounts& counts, MathMode math = MathMode::Unicode, bool pageMarkers = false,
+                   WriteCounts& counts, MathMode math = MathMode::Unicode, const WriteSettings& settings = {},
                    std::vector<WrittenBlock>* written = nullptr);
 
 // Appends the blocks as one compact JSON line (schema 1) to `out`:
 // {"rayopdf":VERSION,"schema":1,"repaired":bool,"metadata":{non-empty fields},"pages":[{"page",
 // "width","height"}...],"blocks":[{"type","page","boxes":[{"page","bbox":[x0,y0,x1,y1]}...],
 // ...,"markdown"}...]}. Boxes are in page points, origin at the lower left; `metadata` null
-// writes an empty object. `counts` as WriteMarkdown counts.
+// writes an empty object. `counts` as WriteMarkdown counts; each block's Markdown as WriteMarkdown
+// writes it with `settings` (page markers aside).
 void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
                const DocumentMetadata* metadata, std::string& out, WriteCounts& counts,
-               MathMode math = MathMode::Unicode);
+               MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
 
 } // namespace RayoPdf::Layout
