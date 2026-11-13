@@ -501,6 +501,8 @@ Status Decoder::SymbolDictionary(const Header& h, const uint8_t* d, size_t n) {
         if (value(dh, ints_.iadh, v) != Code::Value) return Status::Corrupt;
         height += v;
         if (!budget_.Spend(kSymbolWork)) return Status::TooLarge;  // a class may hold no symbol
+        // Decoding on past the end of the data is decoding filler: the dictionary is cut short.
+        if (!huffman && mq_.Exhausted()) return Status::Corrupt;
         if (height < 0 || height > 0xFFFFFFFFll) return Status::Corrupt;
         int64_t width = 0;
         int64_t totalWidth = 0;
@@ -514,6 +516,7 @@ Status Decoder::SymbolDictionary(const Header& h, const uint8_t* d, size_t n) {
             totalWidth += width;
             if (width < 0 || width > 0xFFFFFFFFll || totalWidth > 0xFFFFFFFFll) return Status::Corrupt;
             if (!budget_.Spend(kSymbolWork)) return Status::TooLarge;
+            if (!huffman && mq_.Exhausted()) return Status::Corrupt;
             if (huffman && !refagg) {
                 widths_.push_back(static_cast<uint32_t>(width));
                 decoded++;
@@ -926,15 +929,16 @@ Status Decoder::GenericRegion(const Header& h, const uint8_t* d, size_t n) {
     if (mmr) {
         size_t used = 0;
         status = DecodeMmr(d + pos, end - pos, region_, used, budget_);
-        // Damaged MMR data: the rows before the damage are placed, then decoding stops.
-        if (status == Status::Corrupt) {
-            const Status placed = Place(h, region_, info, h.type != kIntermediateGeneric);
-            return placed != Status::Ok ? placed : Status::Corrupt;
-        }
     } else {
         generic_.assign(kGenericContexts, 0);
         mq_.Start(d + pos, end - pos);
         status = DecodeGeneric(mq_, generic_.data(), gp, region_, budget_);
+    }
+    // Damaged data (MMR codes that do not decode, arithmetic data that ends long before the
+    // region): the rows before the damage are placed, then decoding stops.
+    if (status == Status::Corrupt) {
+        const Status placed = Place(h, region_, info, h.type != kIntermediateGeneric);
+        return placed != Status::Ok ? placed : Status::Corrupt;
     }
     if (status != Status::Ok) return status;
     return Place(h, region_, info, h.type != kIntermediateGeneric);

@@ -83,8 +83,10 @@ bool NominalAt(int t, const int* at) {
     return at[0] == (t == 1 ? 3 : 2) && at[1] == -1;
 }
 
+// Decodes `out`'s rows, top to bottom; false when the decoder ran out of data first (the rows
+// from there on stay 0).
 template <int T, bool kNominal>
-void GenericRows(MqDecoder& mq, Context* contexts, const GenericParams& params, const AtPixel* at, int atCount,
+bool GenericRows(MqDecoder& mq, Context* contexts, const GenericParams& params, const AtPixel* at, int atCount,
                  Bitmap& out) {
     const uint32_t width = out.width;
     const size_t stride = out.stride;
@@ -93,6 +95,7 @@ void GenericRows(MqDecoder& mq, Context* contexts, const GenericParams& params, 
     const size_t skipStride = params.skip != nullptr ? params.skip->stride : 0;
     uint32_t ltp = 0;
     for (uint32_t y = 0; y < out.height; y++) {
+        if (mq.Exhausted()) return false;
         uint8_t* row = out.data.data() + size_t(y) * stride;
         if (params.tpgdon) {
             ltp ^= mq.Decode(contexts[kSltpContext[T]]);
@@ -147,6 +150,7 @@ void GenericRows(MqDecoder& mq, Context* contexts, const GenericParams& params, 
             row[xb] = static_cast<uint8_t>(byte);
         }
     }
+    return true;
 }
 
 } // namespace
@@ -242,17 +246,18 @@ Status DecodeGeneric(MqDecoder& mq, Context* contexts, const GenericParams& para
         else if (a.dy == 0 && a.dx >= kWindowLeft && a.dx <= -1) a.window = 0;
     }
     const bool nominal = NominalAt(t, params.at);
+    bool whole;
     switch (t * 2 + (nominal ? 1 : 0)) {
-    case 0: GenericRows<0, false>(mq, contexts, params, at, atCount, out); break;
-    case 1: GenericRows<0, true>(mq, contexts, params, at, atCount, out); break;
-    case 2: GenericRows<1, false>(mq, contexts, params, at, atCount, out); break;
-    case 3: GenericRows<1, true>(mq, contexts, params, at, atCount, out); break;
-    case 4: GenericRows<2, false>(mq, contexts, params, at, atCount, out); break;
-    case 5: GenericRows<2, true>(mq, contexts, params, at, atCount, out); break;
-    case 6: GenericRows<3, false>(mq, contexts, params, at, atCount, out); break;
-    default: GenericRows<3, true>(mq, contexts, params, at, atCount, out); break;
+    case 0: whole = GenericRows<0, false>(mq, contexts, params, at, atCount, out); break;
+    case 1: whole = GenericRows<0, true>(mq, contexts, params, at, atCount, out); break;
+    case 2: whole = GenericRows<1, false>(mq, contexts, params, at, atCount, out); break;
+    case 3: whole = GenericRows<1, true>(mq, contexts, params, at, atCount, out); break;
+    case 4: whole = GenericRows<2, false>(mq, contexts, params, at, atCount, out); break;
+    case 5: whole = GenericRows<2, true>(mq, contexts, params, at, atCount, out); break;
+    case 6: whole = GenericRows<3, false>(mq, contexts, params, at, atCount, out); break;
+    default: whole = GenericRows<3, true>(mq, contexts, params, at, atCount, out); break;
     }
-    return Status::Ok;
+    return whole ? Status::Ok : Status::Corrupt;
 }
 
 Status DecodeMmr(const uint8_t* data, size_t size, Bitmap& out, size_t& used, Budget& budget) {
@@ -291,9 +296,10 @@ namespace {
 // template 0: bit 0 (-1, 0), 1 (1, -1), 2 (0, -1), 3 RA1, then reference (1, 1), (0, 1), (-1, 1),
 // (1, 0), (0, 0), (-1, 0), (1, -1), (0, -1), 12 RA2; template 1: (-1, 0), (1, -1), (0, -1),
 // (-1, -1), then reference (1, 1), (0, 1), (1, 0), (0, 0), (-1, 0), (0, -1). The SLTP context
-// (figures 14, 15) is the reference pixel (0, 0) alone.
+// (figures 14, 15) is the reference pixel (0, 0) alone. False when the decoder ran out of data
+// before the last row (the rows from there on stay 0).
 template <int T, bool kNominal>
-void RefinementRows(MqDecoder& mq, Context* contexts, const RefinementParams& p, Bitmap& out) {
+bool RefinementRows(MqDecoder& mq, Context* contexts, const RefinementParams& p, Bitmap& out) {
     const View cur = ViewOf(out);
     const View& ref = p.reference;
     const size_t stride = out.stride;
@@ -304,6 +310,7 @@ void RefinementRows(MqDecoder& mq, Context* contexts, const RefinementParams& p,
     const auto load = [&](const uint8_t* r, int64_t bit) { return r != nullptr ? Get8(r, ref.stride, bit) : 0u; };
     uint32_t ltp = 0;
     for (uint32_t y = 0; y < out.height; y++) {
+        if (mq.Exhausted()) return false;
         if (p.tpgron) ltp ^= mq.Decode(contexts[sltp]);
         uint8_t* row = out.data.data() + size_t(y) * stride;
         const uint8_t* above = y >= 1 ? row - stride : nullptr;
@@ -359,6 +366,7 @@ void RefinementRows(MqDecoder& mq, Context* contexts, const RefinementParams& p,
             r2 <<= 1;
         }
     }
+    return true;
 }
 
 } // namespace
@@ -367,14 +375,15 @@ Status DecodeRefinement(MqDecoder& mq, Context* contexts, const RefinementParams
                         Budget& budget) {
     if (!budget.Spend(uint64_t(out.width) * out.height)) return Status::TooLarge;
     if (out.width == 0 || out.height == 0) return Status::Ok;
+    bool whole;
     if (params.templateId != 0) {
-        RefinementRows<1, false>(mq, contexts, params, out);
+        whole = RefinementRows<1, false>(mq, contexts, params, out);
     } else if (params.at[0] == -1 && params.at[1] == -1 && params.at[2] == -1 && params.at[3] == -1) {
-        RefinementRows<0, true>(mq, contexts, params, out);
+        whole = RefinementRows<0, true>(mq, contexts, params, out);
     } else {
-        RefinementRows<0, false>(mq, contexts, params, out);
+        whole = RefinementRows<0, false>(mq, contexts, params, out);
     }
-    return Status::Ok;
+    return whole ? Status::Ok : Status::Corrupt;
 }
 
 // ---------------------------------------------------------------- text regions
@@ -430,6 +439,7 @@ Status DecodeText(const TextParams& p, MqDecoder& mq, IntDecoders& ints, Context
         int64_t curS = firstS;
         for (;;) {
             if (!budget.Spend(kInstanceWork)) return Status::TooLarge;
+            if (!huffman && mq.Exhausted()) return Status::Corrupt;
             int64_t curT = 0;
             if (strips > 1) {
                 if (huffman) curT = reader->ReadBits(p.logStrips);

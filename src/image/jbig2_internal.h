@@ -92,16 +92,25 @@ using Context = uint8_t;
 // T.800 C.3); bytes past the end of the data read as 0xFF, as a marker would.
 class MqDecoder {
 public:
+    // Reads of the end of the data (a marker, or past the last byte) after which the decoder is
+    // exhausted: decoding well-formed data meets the end a couple of times at most (BYTEIN of
+    // its last bits); a region that goes on decoding is decoding filler, not data.
+    static constexpr uint32_t kEndReads = 8;
+
     void Start(const uint8_t* data, size_t size) {
         data_ = data;
         size_ = size;
         pos_ = 0;
+        endReads_ = 0;
         c_ = uint32_t(Byte(0)) << 16;
         ByteIn();
         c_ <<= 7;
         ct_ -= 7;
         a_ = 0x8000;
     }
+
+    // True once the decoder has read the end of its data more than kEndReads times.
+    bool Exhausted() const { return endReads_ > kEndReads; }
 
     RAYOPDF_HOT_INLINE uint32_t Decode(Context& cx) {
         const QeEntry& e = kQeTable[cx >> 1];
@@ -148,6 +157,7 @@ private:
             if (next > 0x8F) {
                 c_ += 0xFF00;
                 ct_ = 8;
+                endReads_++;
             } else {
                 pos_++;
                 c_ += next << 9;
@@ -175,6 +185,7 @@ private:
     uint32_t c_ = 0;
     uint32_t a_ = 0;
     int ct_ = 0;
+    uint32_t endReads_ = 0;
 };
 
 // An arithmetic integer decoder's contexts (annex A.2): 512 of them.

@@ -24,8 +24,11 @@
 // patterns, intermediate regions, the page, retained statistics, gray-scale values) together at
 // most 2^22 + maxPixels / 2 bytes; decoding work (pixels decoded or drawn, symbols, instances,
 // segments, statistics reset, tables parsed) draws on a budget of 2^22 + 8 * maxPixels units, so
-// data that never ends a loop (an arithmetic decoder reads 0xFF past the end) stops with TooLarge;
-// at most kMaxSegments segments, kMaxReferences segment references, kMaxSymbols symbols per
+// data that never ends a loop stops with TooLarge. An arithmetic decoder that has read the end of
+// its data more than MqDecoder::kEndReads times (well-formed data: two at most) decodes filler:
+// its generic or refinement region keeps the rows decoded until then (a page's generic region is
+// placed with them), and its region, dictionary or text region ends the stream as damaged. At
+// most kMaxSegments segments, kMaxReferences segment references, kMaxSymbols symbols per
 // dictionary or text region, no recursion (an aggregate symbol is a text region of the
 // dictionary's symbols, decoded in place). Speed: about 5 ms per megapixel (release, one core).
 #pragma once

@@ -403,6 +403,8 @@ void TestArithmetic() {
     for (int i = 0; i < 256; i++)
         if (mq.Decode(cx)) out[size_t(i / 8)] = static_cast<char>(out[size_t(i / 8)] | (0x80 >> (i % 8)));
     RAYOPDF_CHECK(out == decisions, 1100);
+    // Well-formed data: decoding all of it reads the end at most a couple of times.
+    RAYOPDF_CHECK(!mq.Exhausted(), 1125);
     MqEncoder e;
     Context ecx = 0;
     for (int i = 0; i < 256; i++) e.Encode(ecx, (uint8_t(decisions[size_t(i / 8)]) >> (7 - i % 8)) & 1u);
@@ -624,6 +626,31 @@ void TestGeneric() {
         // The marker missing: corrupt before the page has anything; the page so far is kept.
         std::string cut = s.substr(0, s.size() - 11 - 6);
         RAYOPDF_CHECK(Run(cut, info, rows) == Jbig2::Result::Ok && info.damaged && info.height == 0, 1116);
+    }
+
+    // Arithmetic data cut to half their length: the rows decoded before the data ran out are
+    // placed, the rest of the region stays white, and the page is damaged (decoding on would
+    // decode filler).
+    {
+        const int at[8] = {3, -1, -3, -1, 2, -2, -2, -2};
+        const Image img = RandomImage(64, 40, 35);
+        std::string data = GenericData(img, 0, 0, 0, 0, false, at);
+        data.resize(26 + (data.size() - 26) / 2);  // region info, flags and AT pixels, half the data
+        std::string s;
+        Segment(s, 0, 48, {}, PageInfo(64, 40, 0));
+        Segment(s, 1, 39, {}, data);
+        Segment(s, 2, 49, {}, "");
+        Jbig2::Info info;
+        std::string rows;
+        const bool ok = Run(s, info, rows) == Jbig2::Result::Ok && info.damaged && info.width == 64 &&
+                        info.height == 40 && rows.size() == 8 * 40;
+        bool kept = ok;
+        for (int y = 0; kept && y < 10; y++)
+            for (int x = 0; kept && x < 64; x++)
+                kept = ((uint8_t(rows[size_t(y) * 8 + size_t(x) / 8]) >> (7 - x % 8)) & 1u) == (img.Get(x, y) ^ 1u);
+        bool white = ok;
+        for (size_t i = 39 * 8; white && i < rows.size(); i++) white = uint8_t(rows[i]) == 0xFF;
+        RAYOPDF_CHECK(kept && white, 1126);
     }
 
     // The 12 AT pixels of EXTTEMPLATE: not read.
