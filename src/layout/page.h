@@ -199,6 +199,9 @@ enum : uint16_t {
     // those of the formula's lines in reading order; it makes a block of its own.
     kLineFormula = 1u << 11,
     kLineFigure = 1u << 12,   // stands in or beside a figure region (layout/figures.h): a figure's own text
+    // Page furniture kept by Furniture::Keep (layout/convert.h): a line RemoveRunningLines marks,
+    // kept as text. It heads nothing and makes no block with lines that are not furniture.
+    kLineFurniture = 1u << 13,
 };
 constexpr uint16_t kLineAnchor = kLineTableAnchor | kLineImage;  // lines with no glyphs
 

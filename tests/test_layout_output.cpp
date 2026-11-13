@@ -195,6 +195,54 @@ void TestFurniture() {
                   2003);
 }
 
+// Three pages under a bold running head in about the body's size, the first opening with a title.
+std::vector<PageData> BoldRunningPages() {
+    std::vector<PageData> pages;
+    for (int p = 1; p <= 3; ++p) {
+        pages.push_back(NewPage(p));
+        PageData& page = pages.back();
+        AddText(page, "Jailed for Doing Business", 72, 760, 10, kGlyphBold);
+        float y = 700;
+        if (p == 1) {
+            AddText(page, "Executive Summary", 72, y, 24);
+            y = 650;
+        }
+        for (int i = 0; i < 4; ++i, y -= 13)
+            AddText(page, "Rules of trade weigh on firms in line " + std::to_string(i) + " of page " + std::to_string(p) + ",",
+                    72, y, 10.5f);
+    }
+    return pages;
+}
+
+// One page under a head the producer marked as an artifact, larger than the body.
+std::vector<PageData> MarkedHeadPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    AddText(page, "MOHAVE COMMUNITY COLLEGE BIO181", 72, 745, 14, kGlyphArtifact);
+    float y = 700;
+    for (int i = 1; i <= 6; ++i, y -= 24)
+        AddText(page, std::to_string(i) + ". Place the tubes in the rack and spin them for three minutes.", 72, y, 10);
+    return pages;
+}
+
+// Kept furniture is text, never a heading, and no block with the text under it.
+void TestKeptFurnitureText() {
+    OutputSettings settings;
+    settings.furniture = Furniture::Keep;
+    const std::string dropped = Run(MarkedHeadPage, OutputSettings());
+    const std::string marked = Run(MarkedHeadPage, settings);
+    Show("marked head dropped", dropped);
+    Show("marked head kept", marked);
+    RAYOPDF_CHECK(!Contains(dropped, "MOHAVE") && !Contains(marked, "# MOHAVE") &&
+                      Contains(marked, "MOHAVE COMMUNITY COLLEGE BIO181\n\n1. Place the tubes"),
+                  2016);
+    const std::string running = Run(BoldRunningPages, settings);
+    Show("kept bold running head", running);
+    RAYOPDF_CHECK(Count(running, "Jailed for Doing Business") == 3 && !Contains(running, "# Jailed") &&
+                      Contains(running, "# Executive Summary"),
+                  2015);
+}
+
 // A RayoMD PDF with its source: the output options need the pages, so the payload is not used.
 void TestExactFormat() {
     Test::ProfilePdf spec;
@@ -417,6 +465,7 @@ int main() {
     TestPlain();
     TestHtmlTables();
     TestFurniture();
+    TestKeptFurnitureText();
     TestExactFormat();
     TestChunks();
     TestInspect();

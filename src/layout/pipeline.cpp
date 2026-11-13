@@ -83,10 +83,17 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     }
     const bool tree = report.structure == StructureUse::Used;
     // Kept furniture: no running line, edge row or margin line is removed (a used tree still leaves
-    // out its artifacts).
+    // out its artifacts). The lines the rules would remove stay as text marked kLineFurniture:
+    // they head nothing and make no block with the text.
     const bool keepFurniture = output && output->furniture == Furniture::Keep;
     const FeatureSink* features = output ? output->features : nullptr;
     if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages, features);
+    if (!tree && keepFurniture && RemoveRunningLines(pages) > 0) {
+        for (PageData& page : pages)
+            for (Line& line : page.lines)
+                if (line.flags & kLineRemoved)
+                    line.flags = static_cast<uint16_t>((line.flags & ~kLineRemoved) | kLineFurniture);
+    }
     if (images) PlaceImages(pages, *images, report);
     std::vector<uint8_t> unmapped(pages.size(), 0);
     const bool parallel = pool && !tree && !pages.empty();

@@ -825,6 +825,7 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
                float firstPitch) {
     if (next.page != last.page || next.dir != last.dir) return false;
     if (next.label || last.label) return false;
+    if ((next.flags ^ last.flags) & kLineFurniture) return false;  // kept furniture and the text
     // A section number set apart from its title ("1.5.   Migrant Workers") joins it.
     if (b.count == 1 && last.numbering && std::fabs(last.baseline - next.baseline) <= 0.3f * last.size &&
         next.u0 > last.u1 && next.u0 - last.u1 <= 4 * last.size && std::fabs(next.size - last.size) <= 0.15f * last.size)
@@ -1965,7 +1966,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             k.kind = BlockKind::Table;
             continue;
         }
-        if (first.flags & (kLineTable | kLineFormula)) continue;
+        // Kept page furniture (kLineFurniture) stays a paragraph: a running head titles nothing.
+        if (first.flags & (kLineTable | kLineFormula | kLineFurniture)) continue;
         if (b.mono && !monoDocument) {
             k.kind = BlockKind::Code;
             continue;
@@ -2225,8 +2227,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const Info& a = infos[b.first];
         if (r > 0 && infos[raws[r - 1].first].page == a.page) continue;  // not the page's first block
         if (kinds[r].kind != BlockKind::Paragraph || b.count != 1 || b.note != 0 || b.mono || a.dir != 0 ||
-            (a.flags & (kLineAnchor | kLineTable | kLineFormula | kLineInvisible | kLineAllBold)) || a.chars < 5 ||
-            a.chars > 80 || std::fabs(a.size - body) > 0.05f * body || a.lastCp == '.' || a.lastCp == ',' ||
+            (a.flags & (kLineAnchor | kLineTable | kLineFormula | kLineInvisible | kLineAllBold | kLineFurniture)) ||
+            a.chars < 5 || a.chars > 80 || std::fabs(a.size - body) > 0.05f * body || a.lastCp == '.' || a.lastCp == ',' ||
             a.lastCp == ';' || a.lastCp == ':')
             continue;
         const RawBlock& c = raws[r + 1];
@@ -2340,8 +2342,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         if (k.kind != BlockKind::Paragraph || raws[r].count != 1 || n.kind != BlockKind::Heading) continue;
         const Info& a = infos[raws[r].first];
         const Info& b = infos[raws[r + 1].first];
-        if (b.page != a.page || a.dir != 0 || b.dir != 0 || !(a.size >= 2.5f * body) || !(n.size >= kTitleSize * body) ||
-            !(a.baseline > b.baseline) || a.vb - b.vt > 2 * a.size)
+        if (b.page != a.page || a.dir != 0 || b.dir != 0 || (a.flags & kLineFurniture) || !(a.size >= 2.5f * body) ||
+            !(n.size >= kTitleSize * body) || !(a.baseline > b.baseline) || a.vb - b.vt > 2 * a.size)
             continue;
         const PageData& page = pages[a.page];
         LineText(page, page.lines[a.line], line);
