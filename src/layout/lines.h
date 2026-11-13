@@ -42,6 +42,10 @@ void LineText(const PageData& page, const Line& line, std::string& out, uint32_t
 // LineText appended to `out`.
 void AppendLineText(const PageData& page, const Line& line, std::string& out, uint32_t skip = 0);
 
+// A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
+// "TABLE IV"), in any letter case.
+bool IsCaption(std::string_view t);
+
 // Calls use(text) with the texts of `line`'s glyphs [k0, k1) in order, a run of glyphs whose texts
 // follow each other in the page text as one piece: the same bytes as glyph by glyph.
 template <class Use>

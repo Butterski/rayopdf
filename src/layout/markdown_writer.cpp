@@ -265,21 +265,27 @@ void Writer::CollectWords(const Block& block) {
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
         const uint32_t lineFirst = n;
+        bool carriedSpace = false;  // a soft hyphen left out had the word break before it
         for (uint32_t k = ref.skip; k < line.count; ++k) {
             const uint32_t gi = page.lineGlyphs[line.first + k];
             const Glyph& g = page.glyphs[gi];
             const std::string_view text = page.GlyphText(g);
-            // Soft hyphens are invisible except at a line break.
-            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) continue;
+            // Soft hyphens are invisible except at a line break; a word break before one stays.
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) {
+                carriedSpace = carriedSpace || (g.flags & kGlyphSpaceBefore) != 0;
+                continue;
+            }
             const uint16_t f = g.flags;
-            bool newWord = n == 0 || (f & kGlyphSpaceBefore) || k == ref.skip;
-            if (k == ref.skip && joinNext) newWord = false;
+            const bool lineStart = n == lineFirst;  // the line's first glyph written
+            bool newWord = n == 0 || (f & kGlyphSpaceBefore) || carriedSpace || lineStart;
+            carriedSpace = false;
+            if (lineStart && joinNext) newWord = false;
             if (newWord) {
                 Word w;
                 w.first = n;
                 w.spaceBefore = n != 0;
                 // CJK text has no word spaces: a line break between two CJK characters joins them.
-                if (w.spaceBefore && k == ref.skip && IsCjk(FirstOf(text)) && IsCjk(LastOf(Text(refs[n - 1]))))
+                if (w.spaceBefore && lineStart && IsCjk(FirstOf(text)) && IsCjk(LastOf(Text(refs[n - 1]))))
                     w.spaceBefore = false;
                 word = static_cast<uint32_t>(words_.size());
                 words_.push_back(w);
@@ -845,15 +851,23 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
+        bool lineStart = true;      // no glyph of this line written yet
+        bool carriedSpace = false;  // a soft hyphen left out had the word break before it
         for (uint32_t k = ref.skip; k < line.count; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             const std::string_view text = page.GlyphText(g);
-            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) continue;
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) {
+                carriedSpace = carriedSpace || (g.flags & kGlyphSpaceBefore) != 0;
+                continue;
+            }
             if (IsSuperscript(g, line) || IsSubscript(g, line)) return abandon();
-            const bool lineStart = k == ref.skip;
-            if (lineStart ? !joinNext : (!any || (g.flags & kGlyphSpaceBefore))) {
+            const bool spaced = (g.flags & kGlyphSpaceBefore) || carriedSpace;
+            carriedSpace = false;
+            const bool starts = lineStart;
+            lineStart = false;
+            if (starts ? !joinNext : (!any || spaced)) {
                 bool spaceBefore = any;
-                if (spaceBefore && lineStart && IsCjk(FirstOf(text)) && IsCjk(LastOf(last))) spaceBefore = false;
+                if (spaceBefore && starts && IsCjk(FirstOf(text)) && IsCjk(LastOf(last))) spaceBefore = false;
                 if (any) finishWord();
                 if (spaceBefore) out_.push_back(' ');
                 any = true;
@@ -921,6 +935,8 @@ bool Writer::PlainHeading(const Block& block) {
         const Line& line = page.lines[ref.line];
         size_t wordAt = other_.size();
         const uint32_t end = block.number != 0 ? std::min(block.number, line.count) : line.count;
+        bool lineStart = true;      // no glyph of this line written yet
+        bool carriedSpace = false;  // a soft hyphen left out had the word break before it
         for (uint32_t k = ref.skip; k < end; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             std::string_view text = page.GlyphText(g);
@@ -928,12 +944,19 @@ bool Writer::PlainHeading(const Block& block) {
                 const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
                 if (MayBeFormula(font, g.flags, text)) return false;
             }
-            // A soft hyphen shows only at a line's end, as a hyphen.
+            // A soft hyphen shows only at a line's end, as a hyphen; a word break before it stays.
             if (text == "\xC2\xAD") {
-                if (k + 1 < line.count) continue;
+                if (k + 1 < line.count) {
+                    carriedSpace = carriedSpace || (g.flags & kGlyphSpaceBefore) != 0;
+                    continue;
+                }
                 text = "-";
             }
-            if (k == ref.skip ? (!joinNext && !other_.empty()) : (g.flags & kGlyphSpaceBefore) != 0) {
+            const bool spaced = (g.flags & kGlyphSpaceBefore) || carriedSpace;
+            carriedSpace = false;
+            const bool starts = lineStart;
+            lineStart = false;
+            if (starts ? (!joinNext && !other_.empty()) : spaced) {
                 other_.push_back(' ');
                 wordAt = other_.size();
             }

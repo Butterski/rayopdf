@@ -530,6 +530,32 @@ void TestWideGapRows() {
     RAYOPDF_CHECK(Find(md, "Printed:") == std::string::npos && Find(md, "Body line 49 of") != std::string::npos, 1859);
 }
 
+// Two columns of running text, each ending in smaller notes (a numbered note, a marked one): the
+// body runs on from the first column to the second, the notes come after it. A caption at the foot
+// of a column is no note and stays where it is read.
+void TestNotesAfterColumns() {
+    const auto build = [](const char* leftFoot) {
+        std::vector<PageData> pages{NewPage()};
+        for (int i = 0; i < 20; ++i) {
+            AddText(pages[0], "Left body line " + std::to_string(i) + " runs on here.", 72, 380.0f - 12 * i, 10);
+            AddText(pages[0], "Right body line " + std::to_string(i) + " runs on too.", 320, 380.0f - 12 * i, 10);
+        }
+        AddText(pages[0], leftFoot, 72, 120, 8);
+        AddText(pages[0], "goes on in a second line of notes.", 72, 110, 8);
+        AddText(pages[0], "\xE2\x80\xA0The right note says what it says,", 320, 120, 8);
+        AddText(pages[0], "and its second line ends it here.", 320, 110, 8);
+        return Run(pages);
+    };
+    std::string md = build("1 The left note tells its source and");
+    RAYOPDF_CHECK(Find(md, "Right body line 0") != std::string::npos && Find(md, "1 The left note") != std::string::npos &&
+                      Find(md, "The right note") != std::string::npos && Find(md, "Right body line 19") < Find(md, "1 The left note") &&
+                      Find(md, "1 The left note") < Find(md, "The right note"),
+                  1860);
+    md = build("Figure 3. A caption under the column and");
+    RAYOPDF_CHECK(Find(md, "Figure 3. A caption") != std::string::npos && Find(md, "Figure 3. A caption") < Find(md, "Right body line 0"),
+                  1861);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -556,6 +582,7 @@ int main() {
     TestCloseFolioRows();
     TestOverlappingHeadRow();
     TestWideGapRows();
+    TestNotesAfterColumns();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

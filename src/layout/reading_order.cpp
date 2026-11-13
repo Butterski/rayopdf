@@ -1321,6 +1321,78 @@ void PlaceTurnedLines(PageData& page) {
     order.swap(placed);
 }
 
+// Notes at the foot of a page's columns are read after the body of every column: the body runs on
+// from one column to the next, its notes come after it. A run of notes is a maximal run of upright
+// lines in the order, going down its column, set at most 0.9 times the size of the line read just
+// before it, which stands right above the run in its column; the run ends its column (the next
+// line in the order starts higher on the page, or the order ends), lies in the page's lower half,
+// holds no caption, and has a line that starts with a note number (one to three digits and a
+// space) or a note mark (*, †, ‡). The runs move, in their order, after the page's other lines
+// when a line that is no note follows the first of them. Notes may well hold more of a page's
+// characters than its body (a book's page of scholarly notes).
+void DeferNotes(PageData& page) {
+    std::vector<uint32_t>& order = page.order;
+    if (order.size() < 4) return;
+    std::vector<uint8_t> note(order.size(), 0);
+    std::string text;
+    bool any = false;
+    size_t firstRun = order.size();
+    for (size_t k = 1; k < order.size();) {
+        const Line& start = page.lines[order[k]];
+        const Line& before = page.lines[order[k - 1]];
+        const float small = 0.9f * before.size;
+        if (start.dir != 0 || before.dir != 0 || !(start.size <= small)) {
+            ++k;
+            continue;
+        }
+        // The run goes down its column: it ends where the order jumps up the page (a new column).
+        size_t end = k + 1;
+        while (end < order.size() && page.lines[order[end]].dir == 0 && page.lines[order[end]].size <= small &&
+               page.lines[order[end]].vt <= page.lines[order[end - 1]].vt + 0.5f * before.size)
+            ++end;
+        const Line& last = page.lines[order[end - 1]];
+        // Running text above it: at least three lines of its size read down its column before it.
+        uint32_t above = 1;
+        for (size_t j = k - 1; j > 0 && above < 3; --j) {
+            const Line& a = page.lines[order[j - 1]];
+            const Line& b = page.lines[order[j]];
+            if (a.dir != 0 || std::fabs(a.size - before.size) > 0.05f * before.size || a.vt < b.vt || a.vb - b.vt > 1.5f * before.size ||
+                !(a.u0 < b.u1 && b.u0 < a.u1))
+                break;
+            above++;
+        }
+        bool qualifies = above >= 3 && before.vb >= start.vt - 2 * before.size && before.u0 < start.u1 && start.u0 < before.u1 &&
+                         (end == order.size() || page.lines[order[end]].vt > last.vt) && start.vt < page.height / 2;
+        bool numbered = false;
+        for (size_t j = k; j < end && qualifies; ++j) {
+            LineText(page, page.lines[order[j]], text);
+            if (IsCaption(text)) qualifies = false;
+            size_t digits = 0;
+            while (digits < text.size() && digits < 4 && text[digits] >= '0' && text[digits] <= '9') ++digits;
+            if ((digits >= 1 && digits <= 3 && digits < text.size() && text[digits] == ' ') || text.rfind("*", 0) == 0 ||
+                text.rfind("\xE2\x80\xA0", 0) == 0 || text.rfind("\xE2\x80\xA1", 0) == 0)
+                numbered = true;
+        }
+        if (qualifies && numbered) {
+            for (size_t j = k; j < end; ++j) note[j] = 1;
+            any = true;
+            if (firstRun == order.size()) firstRun = k;
+        }
+        k = end;
+    }
+    if (!any) return;
+    bool bodyAfter = false;
+    for (size_t k = firstRun; k < order.size() && !bodyAfter; ++k) bodyAfter = !note[k];
+    if (!bodyAfter) return;
+    std::vector<uint32_t> placed;
+    placed.reserve(order.size());
+    for (size_t k = 0; k < order.size(); ++k)
+        if (!note[k]) placed.push_back(order[k]);
+    for (size_t k = 0; k < order.size(); ++k)
+        if (note[k]) placed.push_back(order[k]);
+    order.swap(placed);
+}
+
 } // namespace
 
 void OrderLines(PageData& page) {
@@ -1342,6 +1414,7 @@ void OrderLines(PageData& page) {
                      page.order.end());
     page.lines.resize(lineCount);
     PlaceTurnedLines(page);
+    DeferNotes(page);
     // Images join the text's order without changing it: before the first line read below their
     // top edge that shares their horizontal extent (the text after them in their column, or after
     // a full-width figure), else before the first line read below their top edge anywhere, else

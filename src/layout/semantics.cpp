@@ -104,28 +104,6 @@ bool IsTerminal(uint32_t cp) {
            cp == 0xFF01 || cp == 0xFF1F;
 }
 
-// A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
-// "TABLE IV"), in any letter case.
-bool IsCaption(std::string_view t) {
-    static const std::string_view kLabels[] = {"figure ", "fig. ", "table ", "chart ", "exhibit ", "graph ", "diagram "};
-    for (const std::string_view label : kLabels) {
-        if (t.size() < label.size() + 1) continue;
-        bool same = true;
-        for (size_t i = 0; i < label.size() && same; ++i) {
-            char c = t[i];
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-            same = c == label[i];
-        }
-        if (!same) continue;
-        const char c = t[label.size()];
-        const char d = t.size() > label.size() + 1 ? t[label.size() + 1] : ' ';
-        if (c >= '0' && c <= '9') return true;
-        // "A1", "A.2", "IV", "S3"
-        return c >= 'A' && c <= 'Z' && ((d >= '0' && d <= '9') || d == '.' || d == ':' || d == ' ' || d == 'V' || d == 'I');
-    }
-    return false;
-}
-
 // A float's caption: a caption whose label and number no lowercase word follows ("Table 1 shows
 // …" opens a sentence of the body).
 bool IsFloatCaption(std::string_view t) {
@@ -253,6 +231,61 @@ bool MathSymbol(std::string_view t) {
             return true;
     }
     return false;
+}
+
+// A date alone on its line ("June 2023", "12 March 2021", "March 12, 2021", "Mon, 3 Jan 2022",
+// "2023-06-01", "06/01/2023"): English month and weekday names (whole or cut to three letters,
+// with an optional "."), day numbers 1-31, years of four digits; at least a month and a number, or
+// a numeric date of three parts. A date dates a document and titles nothing.
+bool DateLine(std::string_view t) {
+    static const char* const kMonths[] = {"january", "february", "march", "april", "may", "june", "july",
+                                          "august", "september", "october", "november", "december"};
+    static const char* const kDays[] = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"};
+    const auto named = [](std::string_view w, const char* const* names, size_t n) {
+        if (!w.empty() && w.back() == '.') w.remove_suffix(1);
+        if (w.size() < 3) return false;
+        for (size_t i = 0; i < n; ++i) {
+            const std::string_view name = names[i];
+            if (w.size() != 3 && w.size() != name.size() && !(w.size() == 4 && name.size() > 4)) continue;
+            if (w.size() > name.size()) continue;
+            bool same = true;
+            for (size_t k = 0; k < w.size() && same; ++k) same = (static_cast<unsigned char>(w[k]) | 0x20) == name[k];
+            if (same) return true;
+        }
+        return false;
+    };
+    uint32_t months = 0, numbers = 0, words = 0, numeric = 0;
+    size_t at = 0;
+    while (at < t.size() && words < 8) {
+        while (at < t.size() && (t[at] == ' ' || t[at] == ',')) ++at;
+        size_t end = at;
+        while (end < t.size() && t[end] != ' ' && t[end] != ',') ++end;
+        if (end == at) break;
+        const std::string_view w = t.substr(at, end - at);
+        at = end;
+        words++;
+        bool digits = true;
+        uint32_t parts = 1, run = 0, value = 0;
+        for (const char c : w) {
+            if (c >= '0' && c <= '9') {
+                run++, value = value * 10 + static_cast<uint32_t>(c - '0');
+            } else if ((c == '-' || c == '/' || c == '.') && run > 0) {
+                parts++, run = 0;
+            } else {
+                digits = false;
+            }
+        }
+        if (digits && parts == 3 && run > 0) {
+            numeric++;
+        } else if (digits && parts == 1 && ((w.size() <= 2 && value >= 1 && value <= 31) || (w.size() == 4 && value >= 1000))) {
+            numbers++;
+        } else if (named(w, kMonths, 12)) {
+            months++;
+        } else if (!named(w, kDays, 7)) {
+            return false;
+        }
+    }
+    return at >= t.size() && ((months == 1 && numbers >= 1 && numbers <= 2) || (numeric == 1 && months == 0 && numbers == 0));
 }
 
 // Text that titles nothing: display math (an equation, with "=" and fewer than two words of three
@@ -711,16 +744,19 @@ bool AbstractLabel(const PageData& page, const Line& line, uint32_t& take, uint3
 // Small capitals (§6.1): a block whose letters are all capitals in two sizes on one baseline, the
 // larger where the source has a capital and the smaller where it has a lower-case letter (a
 // font's small capitals made by scaling its capitals, as LaTeX's Times and word processors do).
-// Returns the size below which its capitals are lower-case letters; 0 when it is not set so: a
-// lower-case letter, a script or an image in it, fewer than three small capitals, small capitals
-// of several sizes, or of less than 60 % or more than 92 % of the large ones.
+// Both sizes stand on one line: lines of capitals each in a size of its own (a display title's
+// "SEAGRASS" over "IN SOUTH FLORIDA") are no small capitals. Returns the size below which its
+// capitals are lower-case letters; 0 when it is not set so: a lower-case letter, a script or an
+// image in it, fewer than three small capitals, small capitals of several sizes, or of less than
+// 60 % or more than 92 % of the large ones.
 float SmallCapsSize(const std::vector<PageData>& pages, const std::vector<Info>& infos, const RawBlock& b) {
     float large = 0, smallMin = INFINITY, smallMax = 0;
     uint32_t smalls = 0;
-    for (int pass = 0; pass < 2; ++pass) {
-        for (uint32_t i = b.first; i < b.first + b.count; ++i) {
-            const PageData& page = pages[infos[i].page];
-            const Line& line = page.lines[infos[i].line];
+    for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+        const PageData& page = pages[infos[i].page];
+        const Line& line = page.lines[infos[i].line];
+        float lineLarge = 0;
+        for (int pass = 0; pass < 2; ++pass) {
             for (uint32_t k = 0; k < line.count; ++k) {
                 const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
                 const std::string_view t = page.GlyphText(g);
@@ -730,11 +766,12 @@ float SmallCapsSize(const std::vector<PageData>& pages, const std::vector<Info>&
                     if (IsLower(cp) || (g.flags & kGlyphImage) || IsSuperscript(g, line) || IsSubscript(g, line)) return 0;
                     for (const char c : t)
                         if (c >= 'a' && c <= 'z') return 0;
-                    if (capital) large = Fmax(large, g.size);
-                } else if (capital && g.size <= 0.92f * large) {
-                    if (std::fabs(g.v - line.baseline) > 0.05f * large) return 0;
+                    if (capital) lineLarge = Fmax(lineLarge, g.size);
+                } else if (capital && g.size <= 0.92f * lineLarge) {
+                    if (std::fabs(g.v - line.baseline) > 0.05f * lineLarge) return 0;
                     smallMin = Fmin(smallMin, g.size), smallMax = Fmax(smallMax, g.size);
                     smalls++;
+                    large = Fmax(large, lineLarge);
                 }
             }
         }
@@ -1826,12 +1863,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         LineText(pages[in.page], pages[in.page].lines[in.line], line);
         alertTitle[r] = AlertOf(line);
     }
-    // Card titles (a slide's or a brochure's boxes): short lines set larger or in bold side by
-    // side on one baseline, each right over a column of text, title their columns, where a table's
-    // header row over its cells (rowPeer) heads nothing. A line stands over a column when the
-    // nearest block below it on its page whose left edge is within one body size of its own starts
-    // within 2.5 times its size below it and holds two lines or 40 characters of body-size text.
-    // Fails closed (no title) once kCardChecks runs out.
+    // Card titles (a slide's or a brochure's boxes): short blocks of one or two lines set larger or
+    // in bold side by side on one baseline, most of them right over a column of text, title their
+    // columns, where a table's header row over its cells (rowPeer) heads nothing. A block stands
+    // over a column when the nearest block below it on its page whose left edge is within one
+    // body size of its own starts within 2.5 times its size below its first line and holds two
+    // lines or 40 characters, in any size. Fails closed (no title) once kCardChecks runs out.
     std::vector<uint8_t> cardTitle(raws.size(), 0);
     {
         // The raws and the infos of page p: [rawFrom[p], rawFrom[p + 1]), [infoFrom[p], infoFrom[p + 1]).
@@ -1839,6 +1876,10 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         for (const RawBlock& b : raws) rawFrom[infos[b.first].page + 1]++;
         for (const Info& in : infos) infoFrom[in.page + 1]++;
         for (size_t p = 0; p < pages.size(); ++p) rawFrom[p + 1] += rawFrom[p], infoFrom[p + 1] += infoFrom[p];
+        // The raw block each info starts, or kNoRaw.
+        constexpr uint32_t kNoRaw = UINT32_MAX;
+        std::vector<uint32_t> rawOf(infos.size(), kNoRaw);
+        for (size_t r = 0; r < raws.size(); ++r) rawOf[raws[r].first] = static_cast<uint32_t>(r);
         uint64_t budget = kCardChecks;
         const auto overColumn = [&](const Info& t) {
             const uint32_t from = rawFrom[t.page], to = rawFrom[t.page + 1];
@@ -1854,31 +1895,37 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (below == to || t.vb - infos[raws[below].first].vt > 2.5f * t.size) return false;
             const RawBlock& c = raws[below];
             uint32_t lines = 0, chars = 0;
-            for (uint32_t i = c.first; i < c.first + c.count && i < c.first + 64; ++i)
-                if (std::fabs(infos[i].size - body) <= 0.1f * body) lines++, chars += infos[i].chars;
+            for (uint32_t i = c.first; i < c.first + c.count && i < c.first + 64; ++i) lines++, chars += infos[i].chars;
             return lines >= 2 || chars >= 40;
+        };
+        const auto titleLike = [&](uint32_t r) {
+            const RawBlock& b = raws[r];
+            const Info& a = infos[b.first];
+            uint32_t chars = 0;
+            for (uint32_t i = b.first; i < b.first + b.count; ++i) chars += infos[i].chars;
+            return b.count <= 2 && a.rowPeer && a.chars <= 40 && chars <= 80 && !(a.flags & kLineAnchor) &&
+                   (a.size >= 1.1f * body || (a.flags & kLineAllBold));
         };
         for (size_t r = 0; r < raws.size(); ++r) {
             const RawBlock& b = raws[r];
             const Info& a = infos[b.first];
-            if (b.count != 1 || !a.rowPeer || a.chars > 40 || (a.flags & kLineAnchor) ||
-                !(a.size >= 1.1f * body || (a.flags & kLineAllBold)))
-                continue;
+            if (!titleLike(static_cast<uint32_t>(r))) continue;
             const uint32_t from = infoFrom[a.page], to = infoFrom[a.page + 1];
             if (to - from > budget) continue;
             budget -= to - from;
-            bool columns = overColumn(a);
-            // Its peers: the lines rowPeer paired it with.
-            for (uint32_t i = from; i < to && columns; ++i) {
+            uint32_t titles = 1, over = overColumn(a) ? 1 : 0;
+            // Its peers: the lines rowPeer paired it with, each starting a title-like block.
+            for (uint32_t i = from; i < to; ++i) {
                 const Info& o = infos[i];
-                if (i == b.first || !o.rowPeer || o.dir != a.dir ||
+                if (i == b.first || !o.rowPeer || o.dir != a.dir || rawOf[i] == kNoRaw || !titleLike(rawOf[i]) ||
                     std::fabs(o.baseline - a.baseline) > 0.3f * Fmax(a.size, o.size) ||
                     std::fabs(o.size - a.size) > 0.03f * Fmax(a.size, o.size) || o.chars > 60 || o.numbering ||
                     ((o.flags ^ a.flags) & kLineAllBold) || (o.flags & kLineAnchor) || !(o.u0 > a.u1 || o.u1 < a.u0))
                     continue;
-                columns = overColumn(o);
+                titles++;
+                if (overColumn(o)) over++;
             }
-            cardTitle[r] = columns;
+            cardTitle[r] = titles >= 2 && over >= 2 && 2 * over >= titles;
         }
     }
     for (size_t r = 0; r < raws.size(); ++r) {
@@ -2028,7 +2075,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 text += ' ';
                 text += line;
             }
-            return marks >= 2 || NoTitle(text);
+            return marks >= 2 || NoTitle(text) || DateLine(text);
         };
         // Slightly larger text (from 7 % up) is a heading only as one or two short unpunctuated lines.
         const bool larger = size >= body * kHeadingSize ||
@@ -2117,6 +2164,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             uint64_t chars = styleChars[k.styleKey];
             if (k.styleKey >= 0) chars = std::max(chars, textChars[sizeStyle(k)]);
             if (chars * 10 <= totalChars * 3) continue;
+            // A cover page's title: the only block of its style, set at title size on the first
+            // page. A document of a few lines (a cover, a flyer, a slide) gives the share no meaning.
+            if (styleBlocks[k.styleKey] == 1 && k.size >= kTitleSize * body && infos[raws[r].first].page == 0) continue;
             const bool weighed = styleBlocks[k.styleKey] == 1 || (k.size >= kTitleSize * body && scanned(r));
             if (weighed && chars * 10 <= (totalChars + cellChars) * 3) continue;
             k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
@@ -2279,11 +2329,36 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
     }
 
+    // A chapter's number set alone above its title ("2" over "The Lost Homeland"): one or two
+    // digits on a line of their own at 2.5 times the body size or more, right over a heading of
+    // title size (kTitleSize times the body) on its page, the two within twice the number's size,
+    // is a heading of its own (kordoc's isChapterNumber takes the same).
+    for (size_t r = 0; r + 1 < raws.size(); ++r) {
+        Classified& k = kinds[r];
+        const Classified& n = kinds[r + 1];
+        if (k.kind != BlockKind::Paragraph || raws[r].count != 1 || n.kind != BlockKind::Heading) continue;
+        const Info& a = infos[raws[r].first];
+        const Info& b = infos[raws[r + 1].first];
+        if (b.page != a.page || a.dir != 0 || b.dir != 0 || !(a.size >= 2.5f * body) || !(n.size >= kTitleSize * body) ||
+            !(a.baseline > b.baseline) || a.vb - b.vt > 2 * a.size)
+            continue;
+        const PageData& page = pages[a.page];
+        LineText(page, page.lines[a.line], line);
+        size_t digits = 0;
+        while (digits < line.size() && line[digits] >= '0' && line[digits] <= '9') ++digits;
+        if (digits < 1 || digits > 2 || digits != line.size()) continue;
+        k.kind = BlockKind::Heading;
+        k.styleKey = static_cast<int>(std::lround(k.size * 2)) * 2 + (k.bold ? 1 : 0);
+    }
+
     // An italic subtitle under a heading ("1. Shipping as a vector" over "List of ports in
     // Appendix 3" in italics) completes it: a heading right under another on its page, within 1.5
     // times the upper one's size, its lines all italic where the upper one's are not, set no larger
     // (a quarter point aside) and neither numbered nor enumerated, joins it as one heading at the
-    // upper one's level.
+    // upper one's level. So do the stacked lines of a display title ("SEAGRASS" over "IN SOUTH
+    // FLORIDA"): two headings of one line each, at least 1.25 times the body size, centred on each
+    // other within half the smaller size, touching within 0.3 of it, neither more than 1.45 times
+    // the other's size and neither numbered (kordoc's mergeStackedHeadingLines joins the same).
     {
         size_t kept = 0;
         for (size_t r = 0; r < raws.size(); ++r) {
@@ -2304,6 +2379,14 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     upperItalic = (infos[i].flags & kLineAllItalic) != 0;
                 join = join && !upperItalic;
                 for (uint32_t i = s.first; i < s.first + s.count && join; ++i) join = (infos[i].flags & kLineAllItalic) != 0;
+                const float small = Fmin(hk.size, sk.size), large = Fmax(hk.size, sk.size);
+                const bool stack = !join && hk.kind == BlockKind::Heading && sk.kind == BlockKind::Heading && !hk.runIn &&
+                                   !sk.runIn && h.take == 0 && s.take == 0 && h.count == 1 && s.count == 1 &&
+                                   h.first + 1 == s.first && n.page == above.page && n.dir == above.dir &&
+                                   n.baseline < above.baseline && above.vb - n.vt <= 0.3f * small &&
+                                   std::fabs((above.u0 + above.u1) - (n.u0 + n.u1)) <= small && large <= 1.45f * small &&
+                                   small >= 1.25f * body && !above.numbering && !n.numbering;
+                join = join || stack;
                 if (join) {
                     LineText(pages[n.page], pages[n.page].lines[n.line], line);
                     join = SectionDepth(line) == 0;

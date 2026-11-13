@@ -212,6 +212,21 @@ void TestDehyphenation() {
     RAYOPDF_CHECK(Contains(md, "well- Known"), 413);
 }
 
+// A soft hyphen right after a word break (a typesetter's hyphenation point at a word's start) is
+// invisible inside a line, but the word break before it stays: "these ­distributions" is two
+// words, mid-line or at a line's start.
+void TestSoftHyphenWordBreak() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "If these \xC2\xAD" "distributions are symmetric, we can say much", 72, 700, 10);
+    AddText(pages[0], "\xC2\xAD" "about them, as brought here by the", 72, 688, 10);
+    AddText(pages[0], "traders and bought by the \xC2\xAD" "Arabians at the port.", 72, 676, 10);
+    const std::string md = Run(pages);
+    Show("soft hyphen word break", md);
+    RAYOPDF_CHECK(Contains(md, "If these distributions are symmetric, we can say much about them,") &&
+                      Contains(md, "by the Arabians at the port.") && !Contains(md, "\xC2\xAD"),
+                  1919);
+}
+
 void TestCjkLineJoin() {
     // A paragraph wrapping between two ideographs joins them without a space.
     std::vector<PageData> pages{NewPage(1)};
@@ -1776,6 +1791,7 @@ int main() {
     TestLists();
     TestRunningHeaders();
     TestDehyphenation();
+    TestSoftHyphenWordBreak();
     TestCodeBlock();
     TestDuplicateBold();
     TestDuplicateCells();

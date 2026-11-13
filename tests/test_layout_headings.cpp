@@ -2,8 +2,9 @@
 // Core tests of the heading rules of src/layout/semantics.cpp on scientific papers: the title
 // above an outline that names the sections only, small capitals, numbering in the outline match,
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
-// cards, a page's lead line and an italic subtitle under a heading. Pages are built glyph by
-// glyph and converted by the whole pipeline. Exit codes 1800-1849.
+// cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
+// chapter's number and a display title's stacked lines. Pages are built glyph by glyph and
+// converted by the whole pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -425,6 +426,92 @@ void TestSubtitle() {
                   1836);
 }
 
+// Card titles whose columns hold larger text than they do (a slide's labels over its statements)
+// still title them when most of the row stands over a column of two lines or 40 characters, and
+// titles of two lines are titles too.
+void TestCardContent() {
+    std::vector<PageData> page{NewPage(1)};
+    const char* const kTitles[] = {"Our Purpose", "Our Mission", "What We Do"};
+    const char* const kFirst[] = {"Making AI Beneficial", "Easy-to-apply AI,", "Providing the best AI"};
+    const char* const kSecond[] = {nullptr, "Everywhere", "solutions for everyone"};
+    for (int c = 0; c < 3; ++c) {
+        const float x = 40 + 190.0f * c;
+        AddText(page[0], kTitles[c], x, 700, 13);
+        AddText(page[0], kFirst[c], x, 676, 18);
+        if (kSecond[c]) AddText(page[0], kSecond[c], x, 654, 18);
+    }
+    AddBody(page[0], 560, 5);
+    std::string md = Run(page);
+    Show("card statements", md);
+    RAYOPDF_CHECK(Contains(md, "# Our Purpose\n") && Contains(md, "# Our Mission\n") && Contains(md, "# What We Do\n") &&
+                      !Contains(md, "# Making AI") && !Contains(md, "# Easy-to"),
+                  1837);
+    std::vector<PageData> two{NewPage(1)};
+    // Panels: titles of two lines on one baseline, each over a caption of its own (one or two
+    // lines, on baselines of their own) and a chart's labels.
+    const char* const kLine1[] = {"Comparison with Beauty", "Domestic Subscription", "Education Content"};
+    const char* const kLine2[] = {"Recommendation Models", "Platform Model", "Platform PoC Case"};
+    AddText(two[0], "Hit ratio of the models", 40, 666, 10);
+    AddText(two[0], "on commerce service data", 40, 654, 10);
+    AddText(two[0], "Quantitative evaluations", 230, 668, 10);
+    AddText(two[0], "of the recommendations", 230, 656, 10);
+    AddText(two[0], "Prediction rates", 420, 664, 10);
+    for (int c = 0; c < 3; ++c) {
+        const float x = 40 + 190.0f * c;
+        AddText(two[0], kLine1[c], x, 700, 12);
+        AddText(two[0], kLine2[c], x, 685, 12);
+        for (int k = 0; k < 4; ++k) AddText(two[0], std::to_string(40 - 10 * k), x + 20.0f * k, 620.0f - 13 * (c + k), 9);
+    }
+    AddBody(two[0], 560, 5);
+    md = Run(two);
+    Show("two-line card titles", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "Comparison with Beauty").empty() &&
+                      HeadingWith(md, "Comparison with Beauty").find("Recommendation Models") != std::string_view::npos &&
+                      !HeadingWith(md, "Education Content").empty(),
+                  1838);
+}
+
+// A cover page: its title, the one block of its style set at title size, heads the document though
+// it holds more than 30 % of the cover's few characters; the date under it titles nothing.
+void TestCoverTitle() {
+    std::vector<PageData> page{NewPage(1)};
+    AddText(page[0], "Land Ownership by Foreigners", 124, 520, 26, kGlyphBold);
+    AddText(page[0], "in Selected Jurisdictions", 143, 489, 26, kGlyphBold);
+    AddText(page[0], "June 2023", 270, 400, 15);
+    AddText(page[0], "LL File No. 2023-022255, a report of the Library", 160, 160, 11);
+    AddText(page[0], "The Law Library of Congress, Legal Research", 170, 146, 11);
+    const std::string md = Run(page);
+    Show("cover", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "Land Ownership by Foreigners").empty(), 1839);
+    RAYOPDF_CHECK(Contains(md, "June 2023") && HeadingWith(md, "June 2023").empty(), 1840);
+}
+
+// A chapter's number set large over its title is a heading of its own; a display title's stacked
+// lines in two sizes are one heading, its capitals written as they stand.
+void TestChapterNumberAndStack() {
+    std::vector<PageData> chapter{NewPage(1)};
+    AddText(chapter[0], "2", 204, 700, 30);
+    AddText(chapter[0], "The Lost Homeland", 114, 665, 24, kGlyphBold);
+    AddBody(chapter[0], 620, 6);
+    std::string md = Run(chapter);
+    Show("chapter number", md);
+    RAYOPDF_CHECK(Contains(md, "# 2\n") && !HeadingWith(md, "The Lost Homeland").empty() &&
+                      HeadingWith(md, "The Lost Homeland").find('2') == std::string_view::npos,
+                  1841);
+    // A leaflet's panel: a smaller heading and its text, then the display title. "SEAGRASS" (8
+    // glyphs of 16.6 points: 132.8 wide) over "IN SOUTH FLORIDA" (16 of 12: 192 wide), both
+    // centred on x 300, the lower one's top 4 points below the upper one's bottom.
+    std::vector<PageData> stack{NewPage(1)};
+    AddText(stack[0], "How Can You Help?", 72, 740, 16, kGlyphBold);
+    AddBody(stack[0], 716, 4);
+    AddText(stack[0], "SEAGRASS", 300 - 66.4f, 600, 33.2f, kGlyphBold);
+    AddText(stack[0], "IN SOUTH FLORIDA", 300 - 96, 600 - 6.64f - 4 - 19.2f, 24, kGlyphBold);
+    AddBody(stack[0], 520, 4);
+    md = Run(stack);
+    Show("display stack", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "SEAGRASS IN SOUTH FLORIDA").empty(), 1842);
+}
+
 } // namespace
 
 int main() {
@@ -439,6 +526,9 @@ int main() {
     TestCardTitles();
     TestLeadLine();
     TestSubtitle();
+    TestCardContent();
+    TestCoverTitle();
+    TestChapterNumberAndStack();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

@@ -996,6 +996,28 @@ void AppendLineText(const PageData& page, const Line& line, std::string& out, ui
     }
 }
 
+// A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
+// "TABLE IV"), in any letter case.
+bool IsCaption(std::string_view t) {
+    static const std::string_view kLabels[] = {"figure ", "fig. ", "table ", "chart ", "exhibit ", "graph ", "diagram "};
+    for (const std::string_view label : kLabels) {
+        if (t.size() < label.size() + 1) continue;
+        bool same = true;
+        for (size_t i = 0; i < label.size() && same; ++i) {
+            char c = t[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            same = c == label[i];
+        }
+        if (!same) continue;
+        const char c = t[label.size()];
+        const char d = t.size() > label.size() + 1 ? t[label.size() + 1] : ' ';
+        if (c >= '0' && c <= '9') return true;
+        // "A1", "A.2", "IV", "S3"
+        return c >= 'A' && c <= 'Z' && ((d >= '0' && d <= '9') || d == '.' || d == ':' || d == ' ' || d == 'V' || d == 'I');
+    }
+    return false;
+}
+
 void AppendGlyphTexts(const PageData& page, const Line& line, uint32_t k0, uint32_t k1, std::string& out) {
     ForGlyphTextRuns(page, line, k0, k1, [&](std::string_view text) { out.append(text); });
 }
