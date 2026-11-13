@@ -27,7 +27,9 @@ python3 tools/dev.py image                    # rayopdf-build:2, once
 python3 tools/dev.py build                    # build/release/rayopdf
 python3 tools/dev.py test --config asan       # core tests and the CLI verifier, ASan + UBSan
 python3 tools/dev.py test --config tsan       # the same under ThreadSanitizer
-python3 tools/dev.py test --config windows    # rayopdf.exe (MinGW-w64), tested under Wine
+python3 tools/dev.py test --config windows    # rayopdf.exe and rayopdf.dll (MinGW-w64), tested under Wine
+python3 tools/dev.py image --name wheel       # rayopdf-wheel:1 (manylinux_2_28), once
+python3 tools/dev.py test --config wheel      # librayopdf.so and the Python package (tests/verify_python.py)
 python3 tools/fuzz.py replay                  # every fuzz target over the committed regressions
 python3 tools/check_repo.py                   # the repository's rules that need no build
 ```
@@ -35,12 +37,15 @@ python3 tools/check_repo.py                   # the repository's rules that need
 Before a change is proposed: `test --config asan` passes, a fresh build has no compiler
 warning and `tools/check_repo.py` finds nothing (the Repository Hygiene workflow runs it on
 every push). Changes to threads also pass `--config tsan`; changes to files, paths or processes also
-pass `--config windows`; changes to the add-on pass `--config ocr` (image `rayopdf-ocr:1`).
+pass `--config windows`; changes to the C ABI or the Python package (`python/`) also pass
+`--config wheel` and `--config windows`; changes to the add-on pass `--config ocr` (image
+`rayopdf-ocr:1`).
 
 The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same image on pull
 requests and once a night when master changed: the release build without warnings, the tests in
 release and ASan + UBSan, and the fuzz regressions; on a tag `v*` and by hand
-(`gh workflow run ci.yml`) also ThreadSanitizer and Windows. It does not run on pushes to master.
+(`gh workflow run ci.yml`) also ThreadSanitizer, Windows and the wheel config. It does not run on
+pushes to master.
 
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range
 `tests/check.h` lists, and build the PDFs they read in memory. `tests/verify_cli.py` checks the
@@ -117,13 +122,16 @@ git tag v$V && git push origin v$V
 
 The tag starts two workflows. CI runs every configuration, ThreadSanitizer and Windows included.
 Release stops unless the tag is `v<VERSION>`, builds `--config static` and `--config windows` in
-the build image, packages them twice to check the bytes repeat, and makes a **draft** release
-with the four core archives and `SHA256SUMS`: `rayopdf-$V-linux-x64-static.tar.gz`,
-`rayopdf-$V-windows-x64.zip`, and the C++ API's `rayopdf-lib-$V-linux-x64.tar.gz` and
-`rayopdf-lib-$V-windows-x64.zip` (`librayopdf.a`, which those builds' `rayopdf_bundle` target
-merges from the modules, with its header and example). Its `container` job builds the image of
-`packaging/container/Dockerfile` from the Linux archive, checks that it prints its version and
-converts a one-page PDF, and pushes it as `ghcr.io/butterski/rayopdf:$V` and `:latest`.
+the build image and `--config wheel` in `rayopdf-wheel:1`, packages them twice to check the bytes
+repeat, and makes a **draft** release with the six core packages and `SHA256SUMS`:
+`rayopdf-$V-linux-x64-static.tar.gz`, `rayopdf-$V-windows-x64.zip`, the C++ API's
+`rayopdf-lib-$V-linux-x64.tar.gz` and `rayopdf-lib-$V-windows-x64.zip` (`librayopdf.a`, which
+those builds' `rayopdf_bundle` target merges from the modules, with its header and example), and
+the Python wheels `rayopdf-$V-py3-none-manylinux_2_28_x86_64.whl` and
+`rayopdf-$V-py3-none-win_amd64.whl` (`tools/build_wheel.py`: the package with `librayopdf.so` or
+`rayopdf.dll`; attached to the release only, not published to PyPI). Its `container` job builds
+the image of `packaging/container/Dockerfile` from the Linux archive, checks that it prints its
+version and converts a one-page PDF, and pushes it as `ghcr.io/butterski/rayopdf:$V` and `:latest`.
 
 The OCR add-on's archives need the `rayopdf-ocr:1` image (inference runtimes and models; its
 build takes about 50 minutes), so they are built locally from the tagged commit and attached to
@@ -137,15 +145,15 @@ python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
 python3 tools/dev.py --image rayopdf-ocr:1 run -- \
     sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 rm -rf build/dist && mkdir -p build/dist
-gh release download v$V --dir build/dist --pattern "rayopdf-$V-*" --pattern "rayopdf-lib-$V-*"   # the four core archives
+gh release download v$V --dir build/dist --pattern "rayopdf-$V-*" --pattern "rayopdf-lib-$V-*"   # the six core packages
 for part in ocr-linux ocr-windows ocr-scripts-linux ocr-scripts-windows; do
     python3 tools/package.py --only $part                    # SHA256SUMS: every archive in build/dist
 done
-(cd build/dist && sha256sum -c SHA256SUMS)                   # eight archives
+(cd build/dist && sha256sum -c SHA256SUMS)                   # ten packages
 gh release upload v$V build/dist/rayopdf-ocr-* build/dist/SHA256SUMS --clobber
 ```
 
-`SHA256SUMS` then lists all eight archives, the four core ones with the bytes the workflow built.
+`SHA256SUMS` then lists all ten packages, the six core ones with the bytes the workflow built.
 Publish the draft (`gh release edit v$V --draft=false`) once CI has passed on the tag and the
 version has its record under `docs/benchmarks/`.
 

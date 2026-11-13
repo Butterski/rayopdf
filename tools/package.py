@@ -22,6 +22,13 @@ build's rayopdf_bundle target), example.cpp and the core archives' documents and
   rayopdf-lib-VERSION-linux-x64.tar.gz      build/static/librayopdf.a (GCC, x86-64 Linux)
   rayopdf-lib-VERSION-windows-x64.zip       build/windows/librayopdf.a (MinGW-w64)
 
+The Python package's wheels (--only wheel-linux|wheel-windows; tools/build_wheel.py writes them):
+python/rayopdf with the C ABI's shared library in rayopdf/_lib/, the core archives' documents
+in the .dist-info folder:
+
+  rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl   build/wheel/librayopdf.so (glibc <= 2.28)
+  rayopdf-VERSION-py3-none-win_amd64.whl               build/windows/rayopdf.dll (MinGW-w64)
+
 With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
 the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
@@ -42,6 +49,7 @@ the same folder again, so that it unpacks over the add-on; the add-on loads them
 Build the binaries first:
   python3 tools/dev.py build --config static
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
+  python3 tools/dev.py build --config wheel                           # in rayopdf-wheel:1
   python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:1
   python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
   python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
@@ -49,9 +57,10 @@ Build the binaries first:
 Usage:
   python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
                            [--lib-linux build/static/librayopdf.a] [--lib-windows build/windows/librayopdf.a]
+                           [--wheel-linux build/wheel/librayopdf.so] [--wheel-windows build/windows/rayopdf.dll]
                            [--out build/dist]
-                           [--only linux|windows|lib-linux|lib-windows|ocr-linux|ocr-windows|
-                                   ocr-scripts-linux|ocr-scripts-windows]
+                           [--only linux|windows|lib-linux|lib-windows|wheel-linux|wheel-windows|
+                                   ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
                            [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
@@ -73,6 +82,8 @@ import tarfile
 import time
 import zipfile
 from pathlib import Path
+
+import build_wheel  # tools/build_wheel.py, beside this file
 
 REPO = Path(__file__).resolve().parent.parent
 REPOSITORY_URL = "https://github.com/Butterski/rayopdf"
@@ -208,17 +219,40 @@ def ocr_scripts(folder: Path) -> list[tuple[str, bytes, int]]:
     return entries
 
 
-def check_windows(binary: Path) -> None:
+def check_windows(binary: Path, dll: bool = False) -> None:
     data = binary.read_bytes()
     if data[:2] != b"MZ":
         raise SystemExit(f"package: {binary} is not a Windows executable")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0" or struct.unpack_from("<H", data, pe + 4)[0] != 0x8664:
         raise SystemExit(f"package: {binary} is not an x86-64 PE executable")
+    if dll != bool(struct.unpack_from("<H", data, pe + 22)[0] & 0x2000):  # IMAGE_FILE_DLL
+        raise SystemExit(f"package: {binary} is {'not ' if dll else ''}a DLL")
     # Only system DLLs: the MinGW runtime (libstdc++, libgcc, winpthread) must be linked in.
-    for dll in (b"libstdc++-6.dll", b"libgcc_s_seh-1.dll", b"libwinpthread-1.dll"):
-        if dll in data:
-            raise SystemExit(f"package: {binary} imports {dll.decode()}: build it with --config windows")
+    for runtime in (b"libstdc++-6.dll", b"libgcc_s_seh-1.dll", b"libwinpthread-1.dll"):
+        if runtime in data:
+            raise SystemExit(f"package: {binary} imports {runtime.decode()}: build it with --config windows")
+
+
+# The manylinux_2_28 wheel's promise: no glibc symbol version newer than this.
+MAX_GLIBC = (2, 28)
+
+
+def check_shared_linux(library: Path) -> None:
+    """librayopdf.so: an x86-64 ELF shared object needing no glibc newer than MAX_GLIBC and no
+    libstdc++ or libgcc_s (both linked in)."""
+    data = library.read_bytes()
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        raise SystemExit(f"package: {library} is not a 64-bit little-endian ELF file")
+    e_type, e_machine = struct.unpack_from("<HH", data, 16)
+    if e_type != 3 or e_machine != 62:
+        raise SystemExit(f"package: {library} is not an x86-64 shared object")
+    versions = {(int(a), int(b)) for a, b in re.findall(rb"GLIBC_(\d+)\.(\d+)", data)}
+    if not versions or max(versions) > MAX_GLIBC:
+        raise SystemExit(f"package: {library} needs glibc {max(versions, default=None)}: build it with --config wheel")
+    for name in (b"libstdc++.so", b"libgcc_s.so"):
+        if name in data:
+            raise SystemExit(f"package: {library} needs {name.decode()}: build it with --config wheel")
 
 
 def check_library(library: Path, windows: bool) -> None:
@@ -316,11 +350,15 @@ def main() -> int:
     parser.add_argument("--linux", default="build/static/rayopdf", help="the linux-x64-static binary")
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
-    parser.add_argument("--only", choices=("linux", "windows", "lib-linux", "lib-windows", "ocr-linux", "ocr-windows",
-                                           "ocr-scripts-linux", "ocr-scripts-windows"),
+    parser.add_argument("--only", choices=("linux", "windows", "lib-linux", "lib-windows", "wheel-linux",
+                                           "wheel-windows", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
+                                           "ocr-scripts-windows"),
                         help="package one archive")
     parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
     parser.add_argument("--lib-windows", default="build/windows/librayopdf.a", help="the windows-x64 C++ API library")
+    parser.add_argument("--wheel-linux", default="build/wheel/librayopdf.so",
+                        help="the manylinux_2_28 wheel's shared library (--config wheel)")
+    parser.add_argument("--wheel-windows", default="build/windows/rayopdf.dll", help="the win_amd64 wheel's DLL")
     parser.add_argument("--ocr", action="store_true", help="also package the OCR add-on's archives and script pack")
     parser.add_argument("--ocr-linux", default="build/ocr/addon/rayopdf-ocr", help="the linux add-on binary")
     parser.add_argument("--ocr-windows", default="build/ocr-windows/addon/rayopdf-ocr.exe", help="the windows add-on")
@@ -360,6 +398,16 @@ def main() -> int:
         name = f"rayopdf-lib-{version}-windows-x64"
         zip_archive(out / f"{name}.zip", name, lib_entries(library, docs["core"]), mtime)
         made.append(out / f"{name}.zip")
+    for part, platform, given in (("wheel-linux", "linux", args.wheel_linux),
+                                  ("wheel-windows", "windows", args.wheel_windows)):
+        if args.only in (None, part):
+            library = REPO / given if not Path(given).is_absolute() else Path(given)
+            if platform == "linux":
+                check_shared_linux(library)
+            else:
+                check_windows(library, dll=True)
+            made.append(build_wheel.build(library, platform, version, out, docs["core"], mtime,
+                                          args.repository.rstrip("/")))
     ocr = {"ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"}
     wanted = ocr if args.ocr and args.only is None else {args.only}
     if wanted & ocr:
@@ -395,7 +443,7 @@ def main() -> int:
     archives = sorted(p for p in out.iterdir()
                       if p.name.startswith((f"rayopdf-{version}-", f"rayopdf-lib-{version}-", f"rayopdf-ocr-{version}-",
                                             f"rayopdf-ocr-scripts-{version}-")) and
-                      p.name.endswith((".tar.gz", ".zip")))
+                      p.name.endswith((".tar.gz", ".zip", ".whl")))
     sums = "".join(f"{sha256(p)}  {p.name}\n" for p in archives)
     (out / "SHA256SUMS").write_text(sums, encoding="ascii")
     for path in made:

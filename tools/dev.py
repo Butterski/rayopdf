@@ -6,7 +6,7 @@ Nothing is installed on the host: the compilers, CMake and Ninja live in the ima
 repository is mounted at /src, and builds go to build/<name>/ (git-ignored).
 
 Usage:
-  python3 tools/dev.py [--image TAG] image [--name build|ocr]  # build an image (default: build)
+  python3 tools/dev.py [--image TAG] image [--name build|ocr|wheel]  # build an image (default: build)
   python3 tools/dev.py [--image TAG] build [--config CONFIG] [--dir NAME] [--target T ...]
   python3 tools/dev.py [--image TAG] test [--config CONFIG] [--dir NAME] [-- CTEST ARGS]
   python3 tools/dev.py [--image TAG] run [--mount HOST:CTR] -- COMMAND ...
@@ -15,7 +15,10 @@ Configs: release (GCC, -O2), debug (GCC, -O0 -g), asan (Clang, ASan + UBSan, -O1
 tsan (Clang, ThreadSanitizer, -O1 -g), static (GCC release, fully static -static-pie binary for
 the evaluation harness's `cli` tool and the linux-x64-static release), fuzz (Clang, libFuzzer
 targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for the windows-x64
-release; `test` runs the core tests and the CLI verifier under Wine), and the OCR add-on's
+release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test` runs the
+core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in the
+rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
+newer than 2.28; tests including tests/verify_python.py), and the OCR add-on's
 configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference runtimes, models,
 tesseract) unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr on
 ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the same on ONNX
@@ -36,14 +39,17 @@ REPO = Path(__file__).resolve().parent.parent
 IMAGE = "rayopdf-build:2"
 IMAGE_TAG = IMAGE  # --image, or the config's image
 # Images `image --name` builds: Dockerfile under docker/ and tag.
-IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:1")}
+IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:1"),
+          "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1")}
 # Configs that build in another image than the build image.
-CONFIG_IMAGES = {"ocr": "rayopdf-ocr:1", "ocr-ort": "rayopdf-ocr:1", "ocr-windows": "rayopdf-ocr:1"}
+CONFIG_IMAGES = {"ocr": "rayopdf-ocr:1", "ocr-ort": "rayopdf-ocr:1", "ocr-windows": "rayopdf-ocr:1",
+                 "wheel": "rayopdf-wheel:1"}
 OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:1
 
 # MinGW's linker writes the link time into the PE header unless told not to; without it two builds
 # of one source differ in four bytes, and so would the release archives (tools/package.py).
 PE_NO_TIMESTAMP = "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp"
+PE_DLL_NO_TIMESTAMP = "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp"  # rayopdf.dll, the wheel's
 
 CONFIGS = {
     "release": ["-DCMAKE_BUILD_TYPE=Release"],
@@ -59,7 +65,8 @@ CONFIGS = {
                 "-DCMAKE_SYSTEM_PROCESSOR=x86_64", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix",
                 "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix",
                 "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine",
-                PE_NO_TIMESTAMP],
+                PE_NO_TIMESTAMP, PE_DLL_NO_TIMESTAMP, "-DRAYOPDF_SHARED=ON"],
+    "wheel": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_SHARED=ON"],
     "ocr": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
             "-DRAYOPDF_OCR_RUNTIME=ncnn", "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux",
             f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],

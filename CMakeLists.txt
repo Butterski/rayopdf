@@ -19,6 +19,9 @@ option(RAYOPDF_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSaniti
 option(RAYOPDF_TSAN "Build with ThreadSanitizer" OFF)
 # libFuzzer targets of tests/fuzz (Clang only; implies the sanitizers).
 option(RAYOPDF_FUZZ "Build the libFuzzer targets of tests/fuzz" OFF)
+# The C ABI as a shared library (librayopdf.so, rayopdf.dll) for the Python package: every target
+# position-independent, and on ELF platforms hidden symbols but the C ABI's.
+option(RAYOPDF_SHARED "Build the shared library of the C ABI" OFF)
 
 if(RAYOPDF_FUZZ)
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -28,6 +31,12 @@ if(RAYOPDF_FUZZ)
 endif()
 if(RAYOPDF_TSAN AND RAYOPDF_SANITIZE)
     message(FATAL_ERROR "RAYOPDF_TSAN and RAYOPDF_SANITIZE exclude each other.")
+endif()
+if(RAYOPDF_SHARED)
+    if(RAYOPDF_STATIC)
+        message(FATAL_ERROR "RAYOPDF_SHARED and RAYOPDF_STATIC exclude each other.")
+    endif()
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # Threads for the batch modes' workers (--batch, --serve --json --workers=N).
@@ -59,6 +68,9 @@ function(rayopdf_flags target)
         endif()
         if(RAYOPDF_FUZZ)
             target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
+        endif()
+        if(RAYOPDF_SHARED AND NOT WIN32)
+            target_compile_options(${target} PRIVATE -fvisibility=hidden)
         endif()
     endif()
     if(MINGW)
@@ -110,12 +122,32 @@ if(TARGET rayopdf_api)
 endif()
 
 # The C ABI (include/rayopdf/rayopdf_c.h, src/api/c/), outside the api module's folder: an object
-# library that test_api_c links, never the command line.
+# library that test_api_c and the shared library link, never the command line.
 if(TARGET rayopdf_api)
     add_library(rayopdf_c_obj OBJECT src/api/c/c_api.cpp)
     target_link_libraries(rayopdf_c_obj PUBLIC rayopdf_api)
     target_compile_definitions(rayopdf_c_obj PUBLIC RAYOPDF_C_BUILD)
     rayopdf_flags(rayopdf_c_obj)
+endif()
+
+# librayopdf.so (Linux) or rayopdf.dll (MinGW-w64): the C ABI and every module, with the C++ runtime
+# linked in, so that it loads into any process (the Python package's wheels, tools/build_wheel.py).
+# On Linux a version script exports the three functions of the C ABI alone (not the inline C++
+# the objects instantiate); on Windows only what RAYOPDF_API marks dllexport is exported.
+if(TARGET rayopdf_api AND RAYOPDF_SHARED)
+    add_library(rayopdf_c SHARED $<TARGET_OBJECTS:rayopdf_c_obj>)
+    target_link_libraries(rayopdf_c PRIVATE rayopdf_api)
+    rayopdf_flags(rayopdf_c)
+    set_target_properties(rayopdf_c PROPERTIES OUTPUT_NAME rayopdf)
+    if(WIN32)
+        set_target_properties(rayopdf_c PROPERTIES PREFIX "")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set(script "${CMAKE_BINARY_DIR}/rayopdf_c.map")
+        file(WRITE "${script}" "{\n  global: rayopdf_convert; rayopdf_output_free; rayopdf_version;\n  local: *;\n};\n")
+        target_link_options(rayopdf_c PRIVATE -static-libstdc++ -static-libgcc "-Wl,--version-script=${script}"
+            -Wl,--no-undefined $<$<CONFIG:Release>:-Wl,--gc-sections>)
+        set_property(TARGET rayopdf_c APPEND PROPERTY LINK_DEPENDS "${script}")
+    endif()
 endif()
 
 # GNU ld (not gold, lld or a PE linker) takes the INSERT scripts below.
@@ -287,6 +319,16 @@ if(RAYOPDF_TESTS)
             endif()
         endforeach()
     endif()
+    # The shared library as a C program on Windows loads it (tests/c_api_smoke.c, under Wine in the
+    # windows config): LoadLibrary("rayopdf.dll") from the folder both are built in.
+    if(TARGET rayopdf_c AND WIN32)
+        add_executable(c_api_smoke tests/c_api_smoke.c)
+        target_include_directories(c_api_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        target_compile_options(c_api_smoke PRIVATE -Wall -Wextra)
+        target_link_options(c_api_smoke PRIVATE -static)
+        add_dependencies(c_api_smoke rayopdf_c)
+        add_test(NAME c_api_smoke COMMAND c_api_smoke)
+    endif()
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET rayopdf)
         # A cross build's binary runs under its emulator (Wine for the Windows build).
@@ -302,6 +344,12 @@ if(RAYOPDF_TESTS)
             add_test(NAME ocr_addon COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_ocr.py"
                 --binary $<TARGET_FILE:rayopdf-ocr> --models "${RAYOPDF_OCR_MODELS}" ${rayopdf_emulator})
         endif()
+    endif()
+    # The Python package over librayopdf.so (tests/verify_python.py; the wheel config).
+    if(Python3_Interpreter_FOUND AND TARGET rayopdf_c AND NOT WIN32)
+        add_test(NAME python COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_python.py"
+            --library $<TARGET_FILE:rayopdf_c> --objdump "${CMAKE_OBJDUMP}")
+        set_tests_properties(python PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
     endif()
 endif()
 

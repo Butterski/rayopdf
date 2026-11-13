@@ -148,6 +148,7 @@ build.
 | `rayopdf-<version>-linux-x64-static.tar.gz` | 1,761 KB | Linux: one static executable, no dependency |
 | `rayopdf-<version>-windows-x64.zip` | 1,720 KB | Windows: `rayopdf.exe` |
 | `rayopdf-lib-<version>-<platform>` | 1,589 KB / 1,677 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
+| `rayopdf-<version>-py3-none-<platform>.whl` | new in 0.3.0 | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
 | `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: Cyrillic, Korean, Arabic, Devanagari, Tamil, Kannada for the add-on |
 
@@ -452,6 +453,29 @@ exceptions and keeps no state between calls, which may run on several threads at
 g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread
 ./a.out paper.pdf > paper.md
 ```
+
+### Python
+
+The wheels `rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl` (Linux with glibc 2.28 or newer)
+and `rayopdf-VERSION-py3-none-win_amd64.whl`, attached to each release (not on PyPI), hold the
+package `rayopdf` for Python 3.9 or newer: the converter as a shared library in the calling
+process, nothing else to install. `convert` takes a path or the PDF's bytes and the options of
+`--convert` as keyword arguments (`format`, `pages`, `password`, `math`, `plain`, `tables`,
+`furniture`, `chunk_chars`, `images` (a folder), `ocr`, `workers`, ...); the `Result` holds
+`text`, `data` (the parsed JSON document, or the list of chunks), `report` and `pages`. A failure
+raises a `RayoPdfError` whose `status` is the command line's exit code (`CorruptError`,
+`PasswordRequiredError`, ...).
+
+```sh
+pip install rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl
+python3 -c 'import rayopdf; print(rayopdf.convert("paper.pdf").text)'
+```
+
+`rayopdf.integrations.langchain.RayoPdfLoader` (LangChain, `pip install langchain-core`) loads a
+PDF as one `Document` a chunk with its `heading_path` and `pages`, or with `mode="single"` as one;
+`rayopdf.integrations.llama_index.RayoPdfReader` (`pip install llama-index-core`) is the same for
+LlamaIndex. Other languages call the C ABI of `include/rayopdf/rayopdf_c.h` (`rayopdf_convert`
+with the flags of `--convert` as strings) in the same library.
 
 ### Container image
 

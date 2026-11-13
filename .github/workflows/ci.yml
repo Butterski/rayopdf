@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # ThreadSanitizer and the Windows build under Wine: on tags and manual runs.
+      # ThreadSanitizer, the Windows build under Wine and the wheel config: on tags and manual runs.
       EXTENDED: ${{ github.event_name == 'workflow_dispatch' || github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v7
@@ -68,3 +68,8 @@ jobs:
       - name: Tests, Windows build under Wine
         if: env.SKIP != 'true' && env.EXTENDED == 'true'
         run: python3 tools/dev.py test --config windows
+      - name: Tests, shared library and Python package (manylinux_2_28)
+        if: env.SKIP != 'true' && env.EXTENDED == 'true'
+        run: |
+          python3 tools/dev.py image --name wheel
+          python3 tools/dev.py test --config wheel

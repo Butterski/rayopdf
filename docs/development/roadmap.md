@@ -348,6 +348,15 @@ JSON object a line;
   `rayopdf_output` with malloc'd, NUL-terminated `text`, `report` and `error` (empty on success),
   which `rayopdf_output_free` frees and zeroes. An unknown flag is status 2, "unknown option: X".
   `rayopdf_version()`. The language bindings call it.
+- **Shared library and Python:** with `RAYOPDF_SHARED` (`tools/dev.py` configs `wheel`, in the
+  manylinux_2_28 image `rayopdf-wheel:1`, and `windows`) CMake links the C ABI and every module
+  into `librayopdf.so` (position-independent, hidden symbols, a version script exporting the
+  three `rayopdf_*` functions, libstdc++ and libgcc linked in, no glibc symbol newer than 2.28) or
+  `rayopdf.dll` (static MinGW runtime). The package `python/rayopdf` (ctypes, Python 3.9+) loads
+  it from `rayopdf/_lib/`: `convert(source, **options) -> Result` (`text`, `data`, `report`,
+  `pages`), `version()`, `RayoPdfError` with one subclass a status, and the loaders
+  `rayopdf.integrations.langchain.RayoPdfLoader` and `rayopdf.integrations.llama_index.RayoPdfReader`
+  (one document a chunk). `tests/verify_python.py` and, under Wine, `tests/c_api_smoke.c` check them.
 
 |Exit code|Meaning|
 |---|---|
@@ -365,9 +374,13 @@ LICENSE, NOTICE, VERSION and `third_party/licenses/`, with fixed times and owner
 `SHA256SUMS`. The C++ API's `rayopdf-lib-VERSION-linux-x64.tar.gz` and
 `rayopdf-lib-VERSION-windows-x64.zip` hold the same documents with `include/rayopdf/rayopdf.h`,
 `lib/librayopdf.a` (the modules merged by the static and Windows builds' `rayopdf_bundle` target)
-and `example.cpp`. The container image `ghcr.io/butterski/rayopdf:VERSION`
-(`packaging/container/Dockerfile`, built by the Release workflow from the Linux archive) holds
-the static binary alone on an empty base, run as user 65532 in `/w`.
+and `example.cpp`. The Python wheels `rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl` and
+`rayopdf-VERSION-py3-none-win_amd64.whl` (`tools/build_wheel.py`, reproducible: sorted entries,
+one fixed time, RECORD with SHA-256) hold the package with the shared library and the core
+archives' documents; they are attached to the release, not published to PyPI. The container
+image `ghcr.io/butterski/rayopdf:VERSION` (`packaging/container/Dockerfile`, built by the
+Release workflow from the Linux archive) holds the static binary alone on an empty base, run as
+user 65532 in `/w`.
 
 ### D8 Limits
 
