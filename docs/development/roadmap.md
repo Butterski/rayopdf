@@ -5,8 +5,10 @@ This document records the architecture decisions and the milestones. Every exit 
 against the measured baselines in
 [docs/benchmarks/baselines-2026-11-05.md](../benchmarks/baselines-2026-11-05.md), produced by the
 harness that [evaluation.md](evaluation.md) specifies. The decisions cite the research notes in
-`docs/research/`: [landscape](../research/landscape.md), [algorithms](../research/algorithms.md)
-and [OCR/ML](../research/ocr-ml.md).
+`docs/research/`: [landscape](../research/landscape.md), [algorithms](../research/algorithms.md),
+[OCR/ML](../research/ocr-ml.md), [small ML](../research/small-ml.md) (small learned models from
+the text layer, their data and licences) and [layout math](../research/layout-math.md) (statistics
+in place of fixed thresholds, formula structure).
 
 RayoMD's decision record
 ([arbitrary_pdf_research_decision.md](https://github.com/Butterski/rayomd/blob/ef106cac5d8a7081cda6c02cec0f38d88048cf97/docs/development/arbitrary_pdf_research_decision.md),

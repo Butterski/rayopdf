@@ -196,6 +196,12 @@ olmOCR-bench overall scores come from the [olmocr README](https://github.com/all
 - [OmniDocBench](https://github.com/opendatalab/OmniDocBench) scores Markdown generated from page **images**. Its pipeline-vs-VLM rankings (e.g. docling EN overall edit 0.589 vs PP-StructureV3 0.145 in the [dots.ocr table](https://huggingface.co/rednote-hilab/dots.ocr)) therefore do not measure text-layer extraction **[INFERENCE]**.
 - The olmOCR-bench published table has no pure text-layer baseline ([bench README](https://github.com/allenai/olmocr/blob/main/olmocr/bench/README.md)). We must run our own.
 
+Updated 2026-11-13: [small-ml.md](small-ml.md) surveys small learned models that read the text
+layer instead of page images (line roles, table structure from word positions, furniture,
+reading order), their training data and licences, and which fit the core (tiny decision trees) or
+the add-on (PP-DocLayout-S, SLANet_plus). [layout-math.md](layout-math.md) has the statistical
+methods that replace fixed thresholds and the formula-structure algorithms.
+
 ---
 
 ## 4. Inference runtimes for a small static C++ binary
