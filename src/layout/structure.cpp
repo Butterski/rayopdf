@@ -4,6 +4,7 @@
 #include "common/minmax.h"
 #include "layout/interpreter.h"
 #include "layout/lines.h"
+#include "layout/math.h"
 #include "layout/tables.h"
 
 #include <algorithm>
@@ -32,6 +33,7 @@ constexpr uint32_t kNone = UINT32_MAX;
 constexpr size_t kMaxRoleMapEntries = 4096;   // RoleMap and ClassMap entries read
 constexpr size_t kMaxAttributeObjects = 64;   // attribute objects read per element
 constexpr size_t kMaxTextString = 4096;       // bytes of one /Alt or /ActualText read
+constexpr size_t kMaxPageFormulas = 1024;     // tagged formulas with LaTeX alternate text per page
 
 // Glyph flags inline elements imply.
 enum : uint8_t {
@@ -672,6 +674,7 @@ void TaggedLayout::FindOwners() {
     nodeOwner_.assign(n, kNone);
     nodeStyle_.assign(n, 0);
     nodeFigure_.assign(n, kNone);
+    nodeFormula_.assign(n, kNone);
     nodeLabel_.assign(n, 0);
     owners_.clear();
     tables_.clear();
@@ -728,6 +731,7 @@ void TaggedLayout::FindOwners() {
             row[i] = row[p];
             nodeStyle_[i] = nodeStyle_[p];
             nodeFigure_[i] = nodeFigure_[p];
+            nodeFormula_[i] = nodeFormula_[p];
             nodeLabel_[i] = nodeLabel_[p];
         }
         if (r == StructRole::BlockQuote && quote[i] < 8) quote[i]++;
@@ -738,6 +742,12 @@ void TaggedLayout::FindOwners() {
         if (r == StructRole::Emphasis) nodeStyle_[i] |= kStyleItalic;
         if (node.flags & kNodeLineThrough) nodeStyle_[i] |= kStyleStrike;
         if (r == StructRole::Figure) nodeFigure_[i] = i;
+        if (r == StructRole::Formula && nodeFormula_[i] == kNone) {
+            const StructNode& f = nodes[i];
+            const std::string_view alt = f.altLength > 0 ? std::string_view(structure_->text).substr(f.alt, f.altLength)
+                                                         : std::string_view(structure_->text).substr(f.actual, f.actualLength);
+            if (LatexAlt(alt)) nodeFormula_[i] = i;
+        }
         if (artifact[i]) continue;
         uint32_t above = p != kNone ? nodeOwner_[p] : kNone;
         // Text right inside a grouping element (an anonymous paragraph) takes in the inline elements
@@ -936,6 +946,7 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
     glyphSeq_.assign(n, {});
     lineOwner_.assign(n, {});
     lineKey_.assign(n, {});
+    std::vector<uint32_t> formulaNodes;  // per page: the Formula of each PageData::formulaAlts entry
 
     // Every glyph's element: its owner, whether it is a list label, its place in the tree.
     uint64_t visible = 0, mapped = 0, semantic = 0;
@@ -1067,10 +1078,14 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
                 k = end;
             }
         }
-        // What inline elements say about their glyphs.
+        // What inline elements say about their glyphs; the LaTeX of the formulas they belong to.
         int32_t lastMcid = -2;
         uint8_t lastStream = 0;
         uint8_t style = 0;
+        uint32_t formula = 0;  // index + 1 into page.formulaAlts
+        page.formulaAlts.clear();
+        page.glyphFormula.clear();
+        formulaNodes.clear();
         for (size_t gi = 0; gi < page.glyphs.size(); ++gi) {
             Glyph& g = page.glyphs[gi];
             if (g.mcid != lastMcid || g.mcStream != lastStream) {
@@ -1080,11 +1095,37 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
                 const StructItem* item =
                     g.mcid >= 0 && stream != kNone ? FindItem(structure, static_cast<uint32_t>(p), stream, g.mcid) : nullptr;
                 style = item ? nodeStyle_[item->node] : 0;
+                const uint32_t f = item ? nodeFormula_[item->node] : kNone;
+                formula = 0;
+                if (f != kNone) {
+                    const auto at = std::find(formulaNodes.begin(), formulaNodes.end(), f);
+                    if (at != formulaNodes.end()) {
+                        formula = static_cast<uint32_t>(at - formulaNodes.begin()) + 1;
+                    } else if (formulaNodes.size() < kMaxPageFormulas && page.text.size() <= (size_t(1) << 30)) {
+                        const StructNode& node = structure.nodes[f];
+                        FormulaAlt alt;
+                        alt.alt = static_cast<uint32_t>(page.text.size());
+                        if (node.altLength > 0)
+                            page.text.append(structure.text, node.alt, node.altLength);
+                        else
+                            page.text.append(structure.text, node.actual, node.actualLength);
+                        alt.altLength = static_cast<uint32_t>(page.text.size()) - alt.alt;
+                        const uint32_t o = nodeOwner_[f];
+                        alt.display = o != kNone && owners_[o].node == f && owners_[o].kind == OwnerKind::Paragraph;
+                        page.formulaAlts.push_back(alt);
+                        formulaNodes.push_back(f);
+                        formula = static_cast<uint32_t>(formulaNodes.size());
+                    }
+                }
             }
             if (style & kStyleBold) g.flags |= kGlyphBold;
             if (style & kStyleItalic) g.flags |= kGlyphItalic;
             if (style & kStyleMono) g.flags |= kGlyphMonospace;
             if (style & kStyleStrike) g.flags |= kGlyphStrike;
+            if (formula != 0) {
+                if (page.glyphFormula.empty()) page.glyphFormula.assign(page.glyphs.size(), 0);
+                page.glyphFormula[gi] = formula;
+            }
         }
         // Images outside the tree are decoration (PDF/UA: real content is tagged).
         for (ImageBox& image : page.images) {

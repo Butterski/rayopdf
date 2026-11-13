@@ -244,6 +244,13 @@ struct MathCode {
     uint8_t code = 0;
 };
 
+// A tagged Formula's LaTeX (layout/structure.h): its /Alt, else its /ActualText, when it reads as
+// LaTeX (layout/math.h LatexAlt). --math=latex writes it in place of the formula's glyphs.
+struct FormulaAlt {
+    uint32_t alt = 0, altLength = 0;  // in PageData::text
+    bool display = false;             // the element is a block of its own: $$…$$
+};
+
 struct PageData {
     int number = 0;              // 1-based page number
     float width = 0, height = 0; // upright page size
@@ -263,6 +270,11 @@ struct PageData {
     // Glyphs of math fonts left without text (kGlyphUnmapped), with their one-byte code: --math=latex
     // reads them through TeX's font encodings (layout/math.h PrepareMathGlyphs).
     std::vector<MathCode> mathCodes;
+    // Tagged formulas with LaTeX alternate text (the tagged path's Prepare), and per glyph the
+    // formula it belongs to: index + 1 into formulaAlts, 0 for none; empty when the page has none
+    // (glyphs past its end belong to none).
+    std::vector<FormulaAlt> formulaAlts;
+    std::vector<uint32_t> glyphFormula;
     int contentErrors = 0;       // content streams not fully read or interpreted
     bool limitHit = false;       // the operator or glyph budget ran out
 
@@ -280,6 +292,12 @@ struct PageData {
     std::string_view ImageName(const ImageBox& i) const { return std::string_view(text).substr(i.name, i.nameLength); }
     std::string_view ImageAlt(const ImageBox& i) const { return std::string_view(text).substr(i.alt, i.altLength); }
     std::string_view ImageOcrText(const ImageBox& i) const { return std::string_view(text).substr(i.ocr, i.ocrLength); }
+    // The tagged formula (index + 1 into formulaAlts) glyph `glyph` belongs to, 0 for none.
+    uint32_t FormulaOf(uint32_t glyph) const { return glyph < glyphFormula.size() ? glyphFormula[glyph] : 0; }
+    std::string_view FormulaText(uint32_t formula) const {
+        const FormulaAlt& f = formulaAlts[formula - 1];
+        return std::string_view(text).substr(f.alt, f.altLength);
+    }
     // Whether the ordered lines hold text (image anchors hold none).
     bool HasText() const {
         for (uint32_t li : order)
@@ -298,6 +316,8 @@ struct PageData {
         markStreams.clear();
         fontMath.clear();
         mathCodes.clear();
+        formulaAlts.clear();
+        glyphFormula.clear();
         lines.clear();
         lineGlyphs.clear();
         order.clear();

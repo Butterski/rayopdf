@@ -24,6 +24,8 @@
 // the number; nesting from L inside L or LI, or from marker positions when the tree lists items
 // flat), Code, Caption, TH/TD (tables with row and column spans through Table/THead/TBody/TR),
 // Figure (its images, with /Alt as the alternate text), Note; BlockQuote sets the quote depth;
+// a Formula whose /Alt (else /ActualText) is LaTeX gives it to its glyphs (PageData::formulaAlts),
+// which --math=latex writes in their place ($$…$$ when the Formula is a block of its own);
 // inline elements (Span, Link, Em, Strong, Code inside text, Quote, Reference, Lbl) belong to the
 // block around them and lend it emphasis (Strong, Em), code spans (Code) and strike-through
 // (TextDecorationType LineThrough) through the glyph flags. Artifacts and untagged content are
@@ -166,6 +168,9 @@ private:
     std::vector<uint32_t> nodeOwner_;                // per node
     std::vector<uint8_t> nodeStyle_;                 // per node: glyph flags (bits of kStyle*)
     std::vector<uint32_t> nodeFigure_;               // per node: the Figure around it, or UINT32_MAX
+    // per node: the outermost Formula around it whose /Alt (else /ActualText) reads as LaTeX
+    // (layout/math.h LatexAlt), or UINT32_MAX
+    std::vector<uint32_t> nodeFormula_;
     std::vector<uint8_t> nodeLabel_;                 // per node: inside the Lbl of a list item
     std::vector<TableInfo> tables_;
     std::vector<std::vector<uint32_t>> glyphOwner_;  // per page, per glyph: owner (top bit: label)

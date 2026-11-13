@@ -1627,6 +1627,26 @@ MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::
     return builder.Run(display, out, tag);
 }
 
+bool LatexAlt(std::string_view alt) {
+    if (alt.empty() || alt.size() >= 4096) return false;
+    bool latex = false;
+    int depth = 0;
+    for (size_t i = 0; i < alt.size(); ++i) {
+        const char c = alt[i];
+        if (c == '$') return false;
+        if (c == '^' || c == '_') latex = true;
+        if (c == '\\' && i + 1 < alt.size()) {
+            const char next = alt[i + 1];
+            if (IsAsciiLetter(static_cast<unsigned char>(next))) latex = true;
+            ++i;  // an escaped character (\{, \}, \\) counts as no brace
+            continue;
+        }
+        if (c == '{') ++depth;
+        if (c == '}' && --depth < 0) return false;
+    }
+    return latex && depth == 0;
+}
+
 void AddMathGlyph(const PageData& page, const Glyph& g, MathInput& in) {
     // Spaces and what is not drawn are no part of a formula.
     if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) return;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the tagged path (src/layout/structure.cpp): the structure tree read, checked and
 // used for blocks and reading order, on tagged PDFs built in memory (tests/pdf_builder.h) and
-// converted by the whole pipeline. Exit codes 900-949.
+// converted by the whole pipeline. Exit codes 900-949; tagged formulas' LaTeX 2200-2201.
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -409,6 +409,57 @@ void Figures() {
     RAYOPDF_CHECK(Has(md, "![a chart](img/"), 937);
 }
 
+// Tagged formulas (--math=latex): a Formula placed as a block whose /Alt is LaTeX is written as
+// $$alt$$, an inline one as $alt$; the default mode writes the glyphs, and an /Alt that is no
+// LaTeX leaves the glyphs to the rebuild. Exit codes 2200-2201.
+std::string FormulaDocument(const std::string& displayAlt) {
+    TaggedBuilder t;
+    const int doc = t.Element(0, "Document");
+    const int h = t.Element(doc, "H1");
+    t.Mcid(h, 0, 0);
+    const int p = t.Element(doc, "P");
+    t.Mcid(p, 0, 1);
+    const int inlineFormula = t.Element(p, "Formula", "/Alt (x^{2})");
+    t.Mcid(inlineFormula, 0, 2);
+    t.Mcid(p, 0, 3);
+    const int display = t.Element(doc, "Formula", "/Alt (" + displayAlt + ") /A << /O /Layout /Placement /Block >>");
+    t.Mcid(display, 0, 4);
+    const int after = t.Element(doc, "P");
+    t.Mcid(after, 0, 5);
+    std::string c = MarkedText("H1", 0, 72, 720, 18, "Ratios");
+    c += MarkedText("P", 1, 72, 690, 12, "The square");
+    c += MarkedText("Span", 2, 136, 690, 12, "x2");
+    c += MarkedText("P", 3, 152, 690, 12, "grows and the ratio is");
+    c += MarkedText("Formula", 4, 280, 660, 12, "a/b");
+    c += MarkedText("P", 5, 72, 630, 12, "which ends the text.");
+    return t.Build({c});
+}
+
+std::string RunMath(const std::string& pdf, MathMode math) {
+    std::unique_ptr<Document> document;
+    RAYOPDF_CHECK(Document::Open(pdf, "", document) == OpenStatus::Ok, 900);
+    ConvertOptions options;
+    options.math = math;
+    std::string md;
+    ConvertReport report;
+    Convert(*document, options, md, report);
+    if (std::getenv("RAYOPDF_TEST_VERBOSE")) std::fprintf(stderr, "--- %s\n%s", StructureUseName(report.structure), md.c_str());
+    RAYOPDF_CHECK(report.structure == StructureUse::Used, 900);
+    return md;
+}
+
+void Formulas() {
+    const std::string pdf = FormulaDocument("\\\\frac{a}{b}");
+    const std::string latex = RunMath(pdf, MathMode::Latex);
+    const std::string unicode = RunMath(pdf, MathMode::Unicode);
+    RAYOPDF_CHECK(Has(latex, "\n\n$$\\frac{a}{b}$$\n\n") && Has(latex, "The square $x^{2}$ grows") && !Has(latex, "a/b") &&
+                      Has(unicode, "a/b") && !Has(unicode, "\\frac") && !Has(unicode, "x^{2}"),
+                  2200);
+    // "a over b" is no LaTeX: the glyphs, rebuilt as the geometry path would.
+    const std::string words = RunMath(FormulaDocument("a over b"), MathMode::Latex);
+    RAYOPDF_CHECK(Has(words, "a/b") && !Has(words, "a over b") && Has(words, "$x^{2}$"), 2201);
+}
+
 } // namespace
 
 int main() {
@@ -424,6 +475,7 @@ int main() {
     Inline();
     UntaggedAndRange();
     Figures();
+    Formulas();
     std::puts("test_layout_tagged: ok");
     return 0;
 }

@@ -193,8 +193,9 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   are fixtures whose producer drew no script (LibreOffice, Typst and XeLaTeX drop the raw HTML
   `<sub>`/`<sup>` of c14-misc). Optional
   `--math=latex` (decided 2026-11-09) writes formulas as `$…$` / `$$…$$` LaTeX rebuilt from glyph
-  geometry (an equation number after a display as `(n)`); the default stays Unicode and its output
-  byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
+  geometry (an equation number after a display as `(n)`); a tagged Formula whose `/Alt` (else
+  `/ActualText`) is LaTeX is written as it is instead (0.3.0). The default stays Unicode and its
+  output byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
   `inline_eds`) and every key of READoc arXiv (decided 2026-11-11: that suite's ground truth is
   LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
   else in the default mode. 0.1.0 was released with one key open, READoc arXiv `table_teds`

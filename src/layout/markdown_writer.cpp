@@ -177,6 +177,12 @@ private:
     void FindFormulas();
     // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
     bool WriteFormula(uint32_t from, uint32_t to);
+    // A tagged formula's LaTeX (PageData::formulaAlts) appended to out_: its ends trimmed, line
+    // breaks and other control characters as spaces.
+    void AppendFormulaAlt(std::string_view alt);
+    // The tagged formula (index + 1 into its page's formulaAlts) that is a block of its own and
+    // holds every glyph of `block`, or 0.
+    uint32_t TaggedDisplay(const Block& block) const;
     // Unicode mode (D6): a formula's script written in Unicode superscript or subscript forms
     // ("mc²", "x₀"). The glyphs refs_[k, …) of word `w`, before `stop`, raised or lowered alike
     // from `k` on are a formula's script when one of them, or their base (the glyph before them
@@ -808,8 +814,8 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
     const uint32_t blockEnd = block.first + block.count;
     // A glyph in a style written, an inline image, or (with styles) a page with link annotations:
     // the full path, found before anything is written. In LaTeX mode also a glyph that may be
-    // math: without one the block holds no formula, and the full path writes what this one does
-    // (a dollar escaped as AppendEscaped does it).
+    // math or belongs to a tagged formula with LaTeX: without one the block holds no formula, and
+    // the full path writes what this one does (a dollar escaped as AppendEscaped does it).
     for (uint32_t bl = block.first; bl < blockEnd; ++bl) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
@@ -820,9 +826,10 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         if (faces & bail) return false;
         if constexpr (kLatex) {
             for (uint32_t k = ref.skip; k < line.count; ++k) {
-                const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+                const uint32_t gi = page.lineGlyphs[line.first + k];
+                const Glyph& g = page.glyphs[gi];
                 const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
-                if (MayBeFormula(font, g.flags, page.GlyphText(g))) return false;
+                if (MayBeFormula(font, g.flags, page.GlyphText(g)) || page.FormulaOf(gi) != 0) return false;
             }
         }
     }
@@ -946,7 +953,7 @@ bool Writer::PlainHeading(const Block& block) {
             std::string_view text = page.GlyphText(g);
             if (math_ == MathMode::Latex && block.number == 0) {
                 const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
-                if (MayBeFormula(font, g.flags, text)) return false;
+                if (MayBeFormula(font, g.flags, text) || page.FormulaOf(page.lineGlyphs[line.first + k]) != 0) return false;
             }
             // A soft hyphen shows only at a line's end, as a hyphen; a word break before it stays.
             if (text == "\xC2\xAD") {
@@ -1293,9 +1300,59 @@ void Writer::FindFormulas() {
         }
     }
     FindInlineFormulas(inline_, mathRun_);
+    // Tagged formulas with LaTeX: each run of a formula's glyphs is one formula, in place of the
+    // runs found among them.
+    for (uint32_t k = 0; k < n;) {
+        const uint32_t f = pages_[refs_[k].page].FormulaOf(refs_[k].glyph);
+        if (f == 0) {
+            ++k;
+            continue;
+        }
+        uint32_t end = k + 1;
+        while (end < n && refs_[end].page == refs_[k].page && pages_[refs_[end].page].FormulaOf(refs_[end].glyph) == f) ++end;
+        for (uint32_t j = 0; j < k; ++j)
+            if (mathRun_[j] > k) mathRun_[j] = 0;  // a run found that reaches into the formula
+        for (uint32_t j = k; j < end; ++j) mathRun_[j] = 0;
+        mathRun_[k] = end;
+        k = end;
+    }
+}
+
+void Writer::AppendFormulaAlt(std::string_view alt) {
+    size_t b = 0, e = alt.size();
+    while (b < e && static_cast<unsigned char>(alt[b]) <= ' ') ++b;
+    while (e > b && static_cast<unsigned char>(alt[e - 1]) <= ' ') --e;
+    for (size_t i = b; i < e; ++i) out_.push_back(static_cast<unsigned char>(alt[i]) < ' ' ? ' ' : alt[i]);
+}
+
+uint32_t Writer::TaggedDisplay(const Block& block) const {
+    uint32_t formula = 0;
+    const uint32_t page = lines_[block.first].page;
+    for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+        const BlockLine& ref = lines_[bl];
+        if (ref.page != page) return 0;
+        const PageData& p = pages_[ref.page];
+        if (p.glyphFormula.empty()) return 0;
+        const Line& line = p.lines[ref.line];
+        for (uint32_t k = ref.skip; k < line.count; ++k) {
+            const uint32_t gi = p.lineGlyphs[line.first + k];
+            if (p.glyphs[gi].flags & (kGlyphSpace | kGlyphDropped)) continue;
+            const uint32_t f = p.FormulaOf(gi);
+            if (f == 0 || (formula != 0 && f != formula)) return 0;
+            formula = f;
+        }
+    }
+    return formula != 0 && pages_[page].formulaAlts[formula - 1].display ? formula : 0;
 }
 
 bool Writer::WriteFormula(uint32_t from, uint32_t to) {
+    // A tagged formula's LaTeX (FindFormulas made the run its glyphs).
+    if (const uint32_t f = pages_[refs_[from].page].FormulaOf(refs_[from].glyph)) {
+        out_.push_back('$');
+        AppendFormulaAlt(pages_[refs_[from].page].FormulaText(f));
+        out_.push_back('$');
+        return true;
+    }
     mathIn_.Clear();
     const uint32_t pageIndex = refs_[from].page;
     const PageData& page = pages_[pageIndex];
@@ -1320,6 +1377,12 @@ bool Writer::WriteFormula(uint32_t from, uint32_t to) {
 }
 
 bool Writer::Display(const Block& block) {
+    if (const uint32_t f = TaggedDisplay(block)) {
+        out_.append("$$");
+        AppendFormulaAlt(pages_[lines_[block.first].page].FormulaText(f));
+        out_.append("$$");
+        return true;
+    }
     if (block.count != 1) return false;
     const BlockLine& ref = lines_[block.first];
     const PageData& page = pages_[ref.page];

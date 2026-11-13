@@ -123,6 +123,12 @@ enum class MathStatus : uint8_t {
 // separated by "\\\\". Inline formulas broken over lines (kMathLineStart) are rebuilt line by line.
 MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::string& tag);
 
+// Whether a tagged Formula's /Alt or /ActualText reads as LaTeX, to be written as it is in LaTeX
+// mode (PageData::formulaAlts): under 4096 bytes (a longer one was cut when read), a command (a
+// backslash before a letter), `^` or `_`, braces that balance (\{ and \} not counted), and no `$`
+// (it would end the formula's delimiters).
+bool LatexAlt(std::string_view alt);
+
 // Adds `page`'s glyph `g` to `in` (its text, font class and flags).
 void AddMathGlyph(const PageData& page, const Glyph& g, MathInput& in);
 
