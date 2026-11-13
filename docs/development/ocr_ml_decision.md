@@ -287,3 +287,42 @@ Holdout, measured once on the final build, aggregate only: READoc github text_ed
 head_teds 0.876, seg_kt 0.9966; arxiv text_eds 0.7452, head_teds 0.4687, table_teds 0.4812,
 seg_kt 0.956. These numbers were not used to decide. For reference, Main's earlier runs gave github
 text_eds 0.939 without the add-on and 0.926 with body placement.
+
+## Small models in the core (M9)
+
+Decision of 2026-11-14 (roadmap milestone M9). A small model ships in the core only when all of
+these hold: the strict quality gate passes (no gated metric more than its epsilon, 0.0001, below
+its best); at least one gated metric rises by 0.002 or more; odl instructions (default options,
+one worker) grow by at most 0.5 %; the generated model data is at most 256 KiB; two trainings
+give byte-identical dumps; it learns only from DocLayNet's train subset and RayoPDF's generated
+tables. The features are the converter's own, written by `rayopdf --features`; the training runs
+in the `train` image without network ([evaluation.md](evaluation.md#training-data-of-the-small-models)).
+**No model ships in 0.3.0.**
+
+|Model|Training data|Validation|Strict gate|odl instructions|Generated data|Two trainings|Shipped|
+|---|---|---|---|---|---|---|---|
+|Edge rows (furniture the rules keep)|20,000 DocLayNet train pages: 46,947 rows, 21,425 furniture|doclaynet-dev: furniture F1 of rows 0.855 (rules) → 0.878 (rules and model)|failed: doclaynet-val heading_f1 −0.0003|+0.24 %|1,740 nodes, about 46.6 KB|identical|no|
+|Table gaps (borderless columns)|2,400 generated tables (400 fixtures, 6 producers): 3,884 candidate gaps|1,109 gaps, all boundaries|not run|–|–|identical|no|
+
+**Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
+rules examine in a page's outer tenth (`src/layout/features.h`); it would remove a row the rules
+keep, at most 1.35 body sizes, when its probability reaches τ. At τ = 0.69, the threshold with the
+best doclaynet-dev F1, it removed the first line of every `rayomd-tech` fixture, so the candidate
+used τ_p = 0.933, the lowest threshold with a precision of 0.98 on doclaynet-dev's kept rows
+(precision 0.983, recall 0.455), and never took a page below three other lines. It changed 0 of
+216 synthetic PDFs, 3 of 200 odl documents, 9 of 1,403 olmOCR pages and 2 of 900 READoc
+development documents. The gate measured doclaynet-dev furniture_f1 0.5946 → 0.5967,
+doclaynet-val furniture_f1 0.4753 → 0.4781 and olmOCR `headers_footers` 0.8486 → 0.8513, above the
+0.002 the criteria ask for, but doclaynet-val heading_f1 fell 0.69590 → 0.69562 (−0.00028, the
+gate's epsilon is 0.0001): not shipped.
+
+**Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
+typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
+candidate gap was a column boundary (3,884 of 3,884 in training, 1,109 of 1,109 in validation):
+`--features table-gaps` reports the gaps the column finder already accepts, so there is nothing
+to tell apart and LightGBM stops after one tree. A useful model needs candidates below the
+minimum gap as negatives.
+
+**Tier B, outside the core.** PP-DocLayout-S for page regions and SLANet_plus with PP-LCNet for
+table structure (Apache-2.0) remain candidates for the OCR add-on. The trigger is a measured gap
+on image tables or on pages routed to OCR, such as odl 110 and 122.

@@ -599,8 +599,9 @@ These are AGENTS.md rules 4–8:
 The small models of plan M9 (edge rows as page furniture, borderless table column gaps) learn
 from the converter's own decisions, written by its developer mode `rayopdf --features
 edge-rows|table-gaps IN.pdf OUT.jsonl` (roadmap D7, `src/layout/features.h`). Nothing here is
-committed: the files live under the harness root, and models stay out of the repository until
-step 5.5 changes AGENTS.md rule 1.
+committed: the files live under the harness root, and no model has passed M9
+([ocr_ml_decision.md](ocr_ml_decision.md#small-models-in-the-core-m9)), so the repository holds
+none.
 
 ```sh
 python3 tools/eval.py images --only train                     # rayopdf-eval-train:1 (LightGBM, NumPy)
