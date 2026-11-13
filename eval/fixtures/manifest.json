@@ -88,7 +88,8 @@
         "xelatex",
         "xelatex-2col",
         "xelatex-eisvogel",
-        "beamer"
+        "beamer",
+        "context"
       ]
     },
     {
@@ -118,10 +119,12 @@
         "xelatex-eisvogel",
         "typst",
         "chromium",
+        "chromium-untagged",
         "weasyprint",
         "libreoffice",
         "libreoffice-tagged",
-        "beamer"
+        "beamer",
+        "context"
       ]
     },
     {
@@ -170,9 +173,11 @@
         "xelatex-eisvogel",
         "typst",
         "chromium",
+        "chromium-untagged",
         "weasyprint",
         "libreoffice",
-        "libreoffice-tagged"
+        "libreoffice-tagged",
+        "context"
       ]
     }
   ]

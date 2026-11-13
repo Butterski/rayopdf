@@ -34,7 +34,7 @@ from make_images import write_images  # noqa: E402
 TIMEOUT_S = 300
 PRODUCERS = (
     "rayomd", "rayomd-pdfua", "rayomd-tech", "xelatex", "xelatex-2col", "xelatex-eisvogel", "typst",
-    "chromium", "weasyprint", "libreoffice", "libreoffice-tagged", "beamer",
+    "chromium", "chromium-untagged", "weasyprint", "libreoffice", "libreoffice-tagged", "beamer", "context",
 )
 EISVOGEL = "/opt/eval/templates/eisvogel.latex"
 SLIDES_FIXTURE = "d06-slides"
@@ -79,14 +79,20 @@ def producer_steps(producer, fixture_id, workdir, out, worker):
                                    "-V", "CJKmainfont=Noto Sans CJK SC"]]
     if producer == "typst":
         return [pandoc_std(src) + ["-o", out, "--pdf-engine=typst", "-V", "mainfont=DejaVu Sans"]]
-    if producer == "chromium":
-        return [
+    if producer in ("chromium", "chromium-untagged"):
+        steps = [
             pandoc_std(src) + ["--mathml", "--embed-resources", "--metadata", f"title={fixture_id}",
                                "-o", "page.html"],
             ["chromium", "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
              f"--user-data-dir=/tmp/chrome-{worker}", "--no-pdf-header-footer",
              f"--print-to-pdf={out}", f"file://{workdir}/page.html"],
         ]
+        # Chromium tags what it prints; this producer is the same PDF with its tags taken out.
+        if producer == "chromium-untagged":
+            steps.append(["python3", "/opt/eval/producers/untag.py", out])
+        return steps
+    if producer == "context":
+        return [pandoc_std(src) + ["-o", out, "--pdf-engine=context", "-V", "mainfont=DejaVu Sans"]]
     if producer == "weasyprint":
         return [
             pandoc_std(src) + ["--metadata", f"title={fixture_id}", "-o", "page.html"],

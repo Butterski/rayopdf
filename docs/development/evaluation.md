@@ -204,24 +204,28 @@ and `img/photo.png`, generated deterministically at render time by
 |xelatex-eisvogel|no|`P -o {out} --pdf-engine=xelatex --template=eisvogel.latex --syntax-highlighting=idiomatic` with xelatex's fonts; the Eisvogel template 3.5.1 (BSD-3-Clause, release SHA-256 pinned in the producers image). READoc's GitHub subset was made with pandoc + Eisvogel: this development producer shows that layout without opening the holdout (added 2026-11-06, after the baselines)|
 |typst|yes|`P -o {out} --pdf-engine=typst -V mainfont="DejaVu Sans"`|
 |chromium|yes|`P --mathml --embed-resources` to HTML, then headless Chromium `--print-to-pdf`|
+|chromium-untagged|no|chromium, then `eval/producers/untag.py` (pikepdf) deletes the catalog's `/StructTreeRoot` and `/MarkInfo` and the pages' `/StructParents`: the same pages untagged (added 2026-11-13)|
 |weasyprint (holdout)|no|`P` to HTML, then `weasyprint`|
 |libreoffice|yes|pandoc to DOCX, then `soffice --convert-to pdf`|
 |libreoffice-tagged|yes|the same with `UseTaggedPDF=true`|
 |beamer|no|`pandoc -t beamer --pdf-engine=xelatex -V mainfont="DejaVu Sans"`|
+|context|no|`P -o {out} --pdf-engine=context -V mainfont="DejaVu Sans"` (ConTeXt LMTX of `texlive-context` on `luametatex`; added 2026-11-13)|
 
 RayoMD producers never use `--embed-source`. LibreOffice 26.8 tags its PDFs by default, so both
 LibreOffice producers are tagged and there is no untagged LibreOffice row. The item-level
 `tagged` flag comes from `pdfinfo`, and tagged and untagged items are always reported apart.
 
 **Exclusions** (`manifest.json`): `c12-rtl` is not rendered by rayomd, rayomd-pdfua, rayomd-tech,
-xelatex, xelatex-2col, xelatex-eisvogel and beamer; `c13-math` not by rayomd-pdfua, weasyprint,
-libreoffice and libreoffice-tagged; `c15-alerts` only by the three rayomd producers; `d06-slides`
-only by beamer and rayomd; beamer renders only `d06-slides`.
+xelatex, xelatex-2col, xelatex-eisvogel, beamer and context; `c13-math` not by rayomd-pdfua,
+weasyprint, libreoffice and libreoffice-tagged; `c15-alerts` only by the three rayomd producers;
+`d06-slides` only by beamer and rayomd; beamer renders only `d06-slides`. chromium-untagged has
+chromium's exclusions.
 
 **Validity.** An item is valid when the producer exits 0, `qpdf --check` exits 0 or 3, and the
 whitespace-collapsed `pdftotext -enc UTF-8` output contains both sentinel sentences. Invalid items
 keep their reason and are not scored. pandoc's `longtable` cannot be set in two-column mode, so
-`xelatex-2col` is invalid on every fixture with a table.
+`xelatex-2col` is invalid on every fixture with a table; context stops with a TeX error on
+`c13-math` (pandoc's ConTeXt math).
 
 **Classes**, first match wins: `d02` → office; `d04` → academic; `d03`, `d05`, `d06` → book;
 producer `libreoffice*` → office; producer `xelatex-2col` → academic; everything else → renderer.

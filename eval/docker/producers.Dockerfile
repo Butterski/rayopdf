@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Synthetic-corpus producers (pandoc, typst, XeLaTeX, Chromium, WeasyPrint, LibreOffice,
+# Synthetic-corpus producers (pandoc, typst, XeLaTeX, ConTeXt, Chromium, WeasyPrint, LibreOffice,
 # RayoMD) plus Poppler/qpdf for validation and the text-layer census.
 # Build: docker build -f eval/docker/producers.Dockerfile -t rayopdf-eval-producers:1 eval
 FROM archlinux:latest
@@ -55,20 +55,43 @@ RUN pacman -Sy --noconfirm --needed python-pillow python-numpy openjpeg2 leptoni
     && pacman -Scc --noconfirm \
     && rm -rf /tmp/jbig2enc* /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
 
+# The untagged development producers: ConTeXt LMTX (pandoc --pdf-engine=context; texlive-context
+# runs on the luametatex engine) and pikepdf, which takes the tags out of Chromium's PDFs
+# (eval/producers/untag.py). Their own layer, after the others, so that adding them rebuilt nothing
+# above; versions from the same pinned archive snapshot. LMTX finds its TeX tree beside its binary
+# (selfautoparent:texmf-dist), which Arch's /usr/bin layout does not give: a copy of the engine
+# and its scripts in /opt/context/bin, with /opt/texmf-dist naming the tree, does. Its file
+# database and its format are made here, into /opt/texmf-var, so that a run as any user reads them.
+RUN pacman -Sy --noconfirm --needed python-pikepdf texlive-context luametatex \
+    && pacman -Scc --noconfirm \
+    && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/* \
+    && mkdir -p /opt/context/bin \
+    && cp /usr/bin/luametatex /usr/bin/mtxrun.lua /usr/bin/context.lua /opt/context/bin/ \
+    && ln -s luametatex /opt/context/bin/mtxrun \
+    && ln -s luametatex /opt/context/bin/context \
+    && ln -s /usr/share/texmf-dist /opt/texmf-dist \
+    && PATH=/opt/context/bin:$PATH mtxrun --generate \
+    && PATH=/opt/context/bin:$PATH context --make \
+    && chmod -R a+rX /opt/context /opt/texmf-var
+ENV PATH=/opt/context/bin:$PATH
+
 COPY producers/ /opt/eval/producers/
 COPY census/ /opt/eval/census/
 
 RUN python3 - <<'EOF' && chmod -R a+rX /opt/eval
 import json, subprocess
 
-def first(cmd):
+def first(cmd, marker=None):
+    """The first non-empty output line of `cmd`, or with `marker` what follows it on its line."""
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as e:
         return f"error: {e}"
     for line in (p.stdout + "\n" + p.stderr).splitlines():
-        if line.strip():
+        if marker is None and line.strip():
             return line.strip()
+        if marker is not None and marker in line:
+            return line.split(marker, 1)[1].strip()
     return None
 
 v = {
@@ -78,6 +101,7 @@ v = {
     "chromium": first(["chromium", "--version"]),
     "weasyprint": first(["weasyprint", "--version"]),
     "soffice": first(["soffice", "--version"]),
+    "context": first(["context", "--version"], "current version:"),
     "rayomd": first(["rayomd", "--version"]),
     "pdfinfo": first(["pdfinfo", "-v"]),
     "qpdf": first(["qpdf", "--version"]),
@@ -85,7 +109,8 @@ v = {
     "opj_compress": first(["opj_compress", "-h"]),
     "pacman": {line.split()[0]: line.split()[1] for line in subprocess.run(
         ["pacman", "-Q", "poppler", "python-pillow", "python-numpy", "openjpeg2", "leptonica",
-         "libtiff", "libjpeg-turbo", "zlib"], capture_output=True, text=True).stdout.splitlines()},
+         "libtiff", "libjpeg-turbo", "zlib", "python-pikepdf", "texlive-context", "luametatex"],
+        capture_output=True, text=True).stdout.splitlines()},
 }
 with open("/opt/eval/versions.json", "w") as f:
     json.dump(v, f, indent=2, sort_keys=True)
