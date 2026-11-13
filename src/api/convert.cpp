@@ -34,6 +34,7 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
         case Format::Markdown: out.format = Layout::OutputFormat::Markdown; break;
         case Format::Json: out.format = Layout::OutputFormat::Json; break;
         case Format::Chunks: out.format = Layout::OutputFormat::Chunks; break;
+        case Format::Inspect: out.format = Layout::OutputFormat::Inspect; break;
     }
     out.chunkChars = options.chunkChars;
     out.pageMarkers = options.pageMarkers;

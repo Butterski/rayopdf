@@ -4,8 +4,9 @@
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
-//                                   [--format=markdown|json|chunks] [--chunk-chars=N] [--page-markers]
-//                                   [--front-matter] [--furniture=drop|keep] [--plain] [--tables=auto|html]
+//                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
+//                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
+//                                   [--tables=auto|html]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -115,7 +116,8 @@ void PrintUsage(std::FILE* out) {
         "  --format=FORMAT    markdown (default); json: one JSON object with the document's\n"
         "                     metadata and its blocks (type, page, boxes, Markdown; schema 1);\n"
         "                     chunks: JSON Lines, one chunk for retrieval a line (heading path,\n"
-        "                     pages, boxes, blocks, Markdown)\n"
+        "                     pages, boxes, blocks, Markdown); inspect: an HTML page drawing\n"
+        "                     each page's lines, blocks in reading order, cells and images\n"
         "  --chunk-chars=N    chunks: at most N bytes of Markdown a chunk (256 to 1000000,\n"
         "                     default 4000; a longer block is split)\n"
         "  --page-markers     <!-- page N --> before the Markdown of each page\n"
@@ -146,9 +148,10 @@ void PrintUsage(std::FILE* out) {
         "\n"
         "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
         "(\"output\" left out: the answer carries the Markdown, or with --format=json the JSON as\n"
-        "\"json\", with --format=chunks the chunks as the array \"chunks\") and answers each with its\n"
-        "record, in request order, after a first line {\"rayopdf\":\"VERSION\",\"protocol\":1}; quit\n"
-        "ends it. --batch writes NAME.json with --format=json, NAME.jsonl with --format=chunks.\n"
+        "\"json\", with --format=chunks the chunks as the array \"chunks\", with --format=inspect the\n"
+        "HTML as \"html\") and answers each with its record, in request order, after a first line\n"
+        "{\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it. --batch writes NAME.json with\n"
+        "--format=json, NAME.jsonl with --format=chunks, NAME.html with --format=inspect.\n"
         "\n"
         "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
         "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
@@ -269,8 +272,10 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             options.convert.format = Layout::OutputFormat::Json;
         } else if (format == "chunks") {
             options.convert.format = Layout::OutputFormat::Chunks;
+        } else if (format == "inspect") {
+            options.convert.format = Layout::OutputFormat::Inspect;
         } else {
-            error = "--format takes markdown, json or chunks: " + std::string(format);
+            error = "--format takes markdown, json, chunks or inspect: " + std::string(format);
             return FlagStatus::Invalid;
         }
     } else if (StartsWith(arg, "--chunk-chars=")) {
@@ -708,9 +713,10 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
         const std::string& relative = files[i];
         job.input = Join(inputFolder, relative);
         job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) +
-                     (document.convert.format == Layout::OutputFormat::Json     ? ".json"
-                      : document.convert.format == Layout::OutputFormat::Chunks ? ".jsonl"
-                                                                                : ".md");
+                     (document.convert.format == Layout::OutputFormat::Json      ? ".json"
+                      : document.convert.format == Layout::OutputFormat::Chunks  ? ".jsonl"
+                      : document.convert.format == Layout::OutputFormat::Inspect ? ".html"
+                                                                                 : ".md");
         if (!outputs.insert(kWindows ? Lowered(job.output) : job.output).second) {
             job.record.status = "error";
             job.record.code = kExitUnwritable;
@@ -806,6 +812,9 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
                 at = end + 1;
             }
             record.chunks.push_back(']');
+        } else if (options.format == Layout::OutputFormat::Inspect) {
+            record.hasHtml = true;
+            record.html = markdown;
         } else {
             record.hasMarkdown = true;
             record.markdown = markdown;

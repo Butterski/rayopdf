@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // libFuzzer target of the whole conversion: the input as a PDF file through Document::Open and
 // Layout::Convert (fonts, content, layout, semantics and the writer, as `rayopdf --convert` runs
-// them, without image files), then again as JSON (--format=json), which must be one object and a
-// line break, as chunks (--format=chunks with the smallest chunk size), every line one object, and
-// as Markdown with the output options --plain, --tables=html and --furniture=keep.
+// them, without image files), then once more in one other output, chosen by the input's size so
+// that each input costs two conversions: JSON (--format=json), which must be one object and a line
+// break; chunks (--format=chunks with the smallest chunk size), every line one object; the
+// inspector (--format=inspect), one HTML file without a script; or Markdown with the output
+// options --plain, --tables=html and --furniture=keep.
 // Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
 
 #include "layout/convert.h"
@@ -20,25 +22,36 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     const std::string_view bytes(reinterpret_cast<const char*>(data), size);
     if (RayoPdf::Document::Open(bytes, "", document) != RayoPdf::OpenStatus::Ok) return 0;
     RayoPdf::Layout::ConvertOptions options;
-    std::string markdown;
+    std::string out;
     RayoPdf::Layout::ConvertReport report;
-    RayoPdf::Layout::Convert(*document, options, markdown, report);
-    options.format = RayoPdf::Layout::OutputFormat::Json;
-    RayoPdf::Layout::Convert(*document, options, markdown, report);
-    if (markdown.size() < 3 || markdown.front() != '{' || markdown.compare(markdown.size() - 2, 2, "}\n") != 0)
-        __builtin_trap();
-    options.format = RayoPdf::Layout::OutputFormat::Chunks;
-    options.chunkChars = RayoPdf::Layout::kMinChunkChars;
-    RayoPdf::Layout::Convert(*document, options, markdown, report);
-    for (size_t at = 0; at < markdown.size();) {
-        const size_t end = markdown.find('\n', at);
-        if (end == std::string::npos || end - at < 2 || markdown[at] != '{' || markdown[end - 1] != '}') __builtin_trap();
-        at = end + 1;
+    RayoPdf::Layout::Convert(*document, options, out, report);
+    switch (size % 4) {
+    case 0:
+        options.format = RayoPdf::Layout::OutputFormat::Json;
+        RayoPdf::Layout::Convert(*document, options, out, report);
+        if (out.size() < 3 || out.front() != '{' || out.compare(out.size() - 2, 2, "}\n") != 0) __builtin_trap();
+        break;
+    case 1:
+        options.format = RayoPdf::Layout::OutputFormat::Chunks;
+        options.chunkChars = RayoPdf::Layout::kMinChunkChars;
+        RayoPdf::Layout::Convert(*document, options, out, report);
+        for (size_t at = 0; at < out.size();) {
+            const size_t end = out.find('\n', at);
+            if (end == std::string::npos || end - at < 2 || out[at] != '{' || out[end - 1] != '}') __builtin_trap();
+            at = end + 1;
+        }
+        break;
+    case 2:
+        options.format = RayoPdf::Layout::OutputFormat::Inspect;
+        RayoPdf::Layout::Convert(*document, options, out, report);
+        if (out.compare(0, 15, "<!DOCTYPE html>") != 0 || out.find("<script") != std::string::npos) __builtin_trap();
+        break;
+    default:
+        options.plain = true;
+        options.tables = RayoPdf::Layout::TableFormat::Html;
+        options.furniture = RayoPdf::Layout::Furniture::Keep;
+        RayoPdf::Layout::Convert(*document, options, out, report);
+        break;
     }
-    options.format = RayoPdf::Layout::OutputFormat::Markdown;
-    options.plain = true;
-    options.tables = RayoPdf::Layout::TableFormat::Html;
-    options.furniture = RayoPdf::Layout::Furniture::Keep;
-    RayoPdf::Layout::Convert(*document, options, markdown, report);
     return 0;
 }

@@ -2,6 +2,7 @@
 #include "layout/pipeline.h"
 
 #include "layout/figures.h"
+#include "layout/inspect_writer.h"
 #include "layout/lines.h"
 #include "layout/markdown_writer.h"
 #include "layout/page_pool.h"
@@ -119,12 +120,20 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.htmlTables = output->tables == TableFormat::Html;
         settings.chunkChars = output->chunkChars;
     }
-    if (output && output->format == OutputFormat::Json)
+    if (output && output->format == OutputFormat::Json) {
         WriteJson(pages, blocks, repaired, output->metadata, markdown, counts, math, settings);
-    else if (output && output->format == OutputFormat::Chunks)
+    } else if (output && output->format == OutputFormat::Chunks) {
         WriteChunks(pages, blocks, markdown, counts, math, settings);
-    else
+    } else if (output && output->format == OutputFormat::Inspect) {
+        // The blocks' Markdown (page markers aside) for the inspector's tooltips.
+        std::string text;
+        std::vector<WrittenBlock> written;
+        settings.pageMarkers = false;
+        WriteMarkdown(pages, blocks, false, text, counts, math, settings, &written);
+        WriteInspect(pages, blocks, text, written, markdown);
+    } else {
         WriteMarkdown(pages, blocks, repaired, markdown, counts, math, settings);
+    }
     report.headings += counts.headings;
     report.paragraphs += counts.paragraphs;
     report.listItems += counts.listItems;

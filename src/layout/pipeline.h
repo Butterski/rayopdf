@@ -58,9 +58,9 @@ struct OutputSettings {
 // display formulas (layout/math.h) and has the writer write formulas as LaTeX. The page-local
 // stages (math glyphs, lines, tables, reading order) run on the threads of `pool` when there is
 // one (layout/page_pool.h), with the same result. `output` null writes Markdown as OutputSettings'
-// defaults do; else JSON (WriteJson), chunks (WriteChunks) or Markdown with the settings it gives
-// (page markers, plain text, HTML tables), and with furniture kept no running header, footer or
-// page number is removed.
+// defaults do; else JSON (WriteJson), chunks (WriteChunks), the inspector (WriteInspect) or
+// Markdown with the settings it gives (page markers, plain text, HTML tables), and with furniture
+// kept no running header, footer or page number is removed.
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images = nullptr, const Structure* structure = nullptr,

@@ -249,7 +249,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--ocr=auto|off|force] [--ocr-addon=PATH]
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
                                 [--math=unicode|latex] [--workers=N]
-                                [--format=markdown|json|chunks] [--chunk-chars=N]
+                                [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
                                 [--page-markers] [--front-matter]
                                 [--furniture=drop|keep] [--plain] [--tables=auto|html]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
@@ -329,6 +329,19 @@ rows with its header repeated in each, code by lines with its fence reopened.
 rayopdf --convert paper.pdf paper.jsonl --format=chunks --chunk-chars=2000
 ```
 
+### Layout inspector
+
+`--format=inspect` writes one HTML file (a style block, no script) that shows what the layout
+stages decided: each page drawn as SVG in PDF points, every line's text where it stands (running
+headers, footers and page numbers that were left out grey and struck through), every block's
+boxes coloured by type and numbered in reading order (hover one for its type and the start of
+its Markdown), a line through the blocks in output order, table cells and images. At most
+20,000 lines are drawn a page.
+
+```sh
+rayopdf --convert paper.pdf paper.html --format=inspect --images=none
+```
+
 ### Plain text, HTML tables and page furniture
 
 Three options change conventions on which readers and benchmarks disagree; the defaults keep the
@@ -360,8 +373,8 @@ detects damage, not forgery, and the comparison does not cover punctuation, Mark
 link targets beyond that allowance. The profile carries no images: the source's image links stay
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
-with `--format=json`, `--format=chunks`, `--page-markers`, `--plain`, `--tables=html` or
-`--furniture=keep`, which need the pages' layout), or why the payload was
+with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
+`--tables=html` or `--furniture=keep`, which need the pages' layout), or why the payload was
 rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`,
 `mismatch`. `--no-exact` always converts the pages.
 
@@ -388,7 +401,8 @@ on one core for a 300 dpi Latin page, more for other scripts.
 ### Batch conversion
 
 `--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md` (with
-`--format=json` `NAME.json`, with `--format=chunks` `NAME.jsonl`), its images to
+`--format=json` `NAME.json`, with `--format=chunks` `NAME.jsonl`, with `--format=inspect`
+`NAME.html`), its images to
 `OUT-FOLDER/NAME-images/`. `--recursive` adds the
 subfolders, except hidden ones, mirrored
 under `OUT-FOLDER`; `--skip-unchanged` keeps Markdown files at least as new as their PDF; `--report`
@@ -408,8 +422,9 @@ rayopdf --batch papers md-out --recursive --skip-unchanged --report=report.jsonl
 line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
-Markdown as `markdown`, with `--format=json` the JSON object as `json`, or with `--format=chunks`
-the chunks as the array `chunks`, and no images are written) and `args` (flags of `--convert`:
+Markdown as `markdown`, with `--format=json` the JSON object as `json`, with `--format=chunks`
+the chunks as the array `chunks`, or with `--format=inspect` the HTML as `html`, and no images
+are written) and `args` (flags of `--convert`:
 `--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`,
 `--math`, `--ocr`, `--ocr-addon`, `--format`, `--chunk-chars`, `--page-markers`,
 `--front-matter`, `--furniture`, `--plain`, `--tables`, over those

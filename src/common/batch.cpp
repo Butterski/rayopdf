@@ -76,7 +76,7 @@ void AppendJsonString(std::string& out, std::string_view text) {
 void AppendRecord(std::string& out, const Record& record) {
     out.reserve(out.size() + 256 + record.id.size() + record.input.size() + record.output.size() +
                 record.error.size() + record.counters.size() + record.markdown.size() + record.json.size() +
-                record.chunks.size());
+                record.chunks.size() + record.html.size());
     out.push_back('{');
     if (!record.id.empty()) {
         out += "\"id\":";
@@ -108,6 +108,9 @@ void AppendRecord(std::string& out, const Record& record) {
     } else if (record.hasChunks) {
         out += ",\"chunks\":";
         out += record.chunks;
+    } else if (record.hasHtml) {
+        out += ",\"html\":";
+        AppendJsonString(out, record.html);
     } else if (record.hasMarkdown) {
         out += ",\"markdown\":";
         AppendJsonString(out, record.markdown);

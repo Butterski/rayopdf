@@ -5,8 +5,8 @@
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
 with 1 and 4 workers), and the output options (--format=json, --format=chunks, --chunk-chars,
---page-markers, --front-matter, --furniture, --plain, --tables). It builds the PDFs it needs in a
-temporary directory (none are committed) and never times anything.
+--format=inspect, --page-markers, --front-matter, --furniture, --plain, --tables). It builds the
+PDFs it needs in a temporary directory (none are committed) and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -441,6 +441,31 @@ def check_chunks(c: Checker, work: Path, hello: str) -> None:
             "markdown" not in answer and "Hello World" in answer["chunks"][0].get("markdown", ""), repr(answer)[:300])
 
 
+def check_inspect(c: Checker, work: Path, hello: str) -> None:
+    """--format=inspect: one HTML file without a script, a section and SVG a page with the text and
+    the blocks numbered; --batch writes NAME.html; a serve answer carries the string "html"."""
+    pages = str(work / "pages.pdf")
+    r = c.run("--convert", pages, str(work / "pages.html"), "--format=inspect")
+    html = (work / "pages.html").read_text("utf-8") if (work / "pages.html").exists() else ""
+    c.check("inspect output", r.returncode == 0 and html.startswith("<!DOCTYPE html>") and "<script" not in html and
+            all(f'<section id="page-{n}">' in html for n in range(1, 8)) and html.count("<svg ") == 7 and
+            '<rect class="t-' in html and "<title>#1 " in html, repr(html[:300]))
+    again = c.run("--convert", pages, "-", "--format=inspect")
+    c.check("inspect output is deterministic", again.returncode == 0 and again.stdout.decode("utf-8") == html)
+    source = work / "inspect-in"
+    source.mkdir()
+    (source / "hello.pdf").write_bytes(Path(hello).read_bytes())
+    r = c.run("--batch", str(source), str(work / "inspect-out"), "--format=inspect")
+    written = work / "inspect-out" / "hello.html"
+    c.check("batch writes NAME.html", r.returncode == 0 and written.exists() and
+            ">Hello World</text>" in written.read_text("utf-8") and not (work / "inspect-out" / "hello.md").exists())
+    request = json.dumps({"id": 1, "input": hello, "args": ["--format=inspect"]}).encode() + b"\n"
+    answers = records(c.run("--serve", "--json", stdin=request).stdout)
+    answer = answers[1] if len(answers) > 1 else {}
+    c.check("serve answers with the HTML", isinstance(answer.get("html"), str) and "markdown" not in answer and
+            ">Hello World</text>" in answer["html"], repr(answer)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -553,6 +578,7 @@ def main() -> int:
 
         check_output_features(c, work, hello)
         check_chunks(c, work, hello)
+        check_inspect(c, work, hello)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

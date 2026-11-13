@@ -134,8 +134,9 @@ Source: [algorithms §2, §4, §5, §6](../research/algorithms.md).
 ### D5 Source precedence
 
 1. `rayomd-source/1` exact recovery of RayoMD-made PDFs (`--no-exact` turns it off). JSON output,
-   chunks and page markers need the pages' layout, so with `--format=json`, `--format=chunks` or
-   `--page-markers` a payload is not used (`"exact":"format"`).
+   chunks, the layout inspector and page markers need the pages' layout, so with `--format=json`,
+   `--format=chunks`, `--format=inspect` or `--page-markers` a payload is not used
+   (`"exact":"format"`).
 2. A structure tree that passes validation.
 3. The document outline.
 4. Geometry heuristics.
@@ -262,6 +263,20 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   piece closed with `</table>`; code at line ends, each piece within its fence and info string. A
   row or code line longer than N stays whole. Comments are ordinary blocks; page markers and front
   matter are not written; the repair comment is not a block and is left out.
+- Layout inspector (`--format=inspect`, decided 2026-11-13; `src/layout/inspect_writer.h`): one
+  deterministic HTML5 file with a `<style>` block and no script. Per page a
+  `<section id="page-N">` with `<h2>Page N</h2>` and an SVG of `viewBox="0 0 W H"` in PDF points,
+  drawn under `matrix(1 0 0 -1 0 H)` (origin at the lower left; text counter-flipped so it
+  reads upright): every line's text as `<text>` at its start on the baseline with its
+  `font-size` and `textLength` (`lengthAdjust="spacingAndGlyphs"`), turned lines along their
+  direction, lines removed as running headers, footers or page numbers with class `removed`
+  (grey, struck through); every block's boxes (the JSON output's) as `<rect class="t-TYPE">` with
+  a `<title>` `#k TYPE [level]` and the first 120 characters of its Markdown, and its number k
+  (reading order from 1, as the JSON output's blocks); one `<polyline class="order">` through the
+  centres of the page's block boxes in output order; each table cell holding text as
+  `<rect class="cell">` (the union of its lines' boxes); images as `<rect class="image">` with
+  their file names. At most 20,000 lines are drawn a page, then a note says how many were not.
+  All text is HTML-escaped (control characters as spaces, malformed UTF-8 as U+FFFD).
 
 ### D7 Command line
 
@@ -269,7 +284,7 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
-        [--format=markdown|json|chunks] [--chunk-chars=N] [--page-markers] [--front-matter]
+        [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--page-markers] [--front-matter]
         [--furniture=drop|keep] [--plain] [--tables=auto|html]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
@@ -283,26 +298,30 @@ rayopdf --bench IN.pdf TMPDIR N [options]       (developer option, performance.m
 `src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).
 One record shape serves `--report`, the batch report and the serve answers, after RayoMD's
 protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error", "code",
-"error"?, "pages", "bytes", "ms", <counters>, "markdown"? | "json"? | "chunks"?}`, one JSON object a line;
+"error"?, "pages", "bytes", "ms", <counters>, "markdown"? | "json"? | "chunks"? | "html"?}`, one
+JSON object a line;
 `code` is the exit code the document alone would give.
 
 - **`--format=json`**, **`--format=chunks`** (with **`--chunk-chars=N`**, 256 to 1,000,000,
-  else a usage error), **`--page-markers`**, **`--front-matter`**, **`--plain`**,
-  **`--tables=html`** and **`--furniture=keep`** choose what is written (D6): the JSON document
-  or chunks for retrieval instead of Markdown, page markers in the Markdown, front matter before
-  it, text without inline markup, every table as HTML, page furniture kept. A RayoMD payload is
-  not used with any of them except `--front-matter` (the record's `exact` is `format`).
+  else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
+  **`--plain`**, **`--tables=html`** and **`--furniture=keep`** choose what is written (D6): the
+  JSON document, chunks for retrieval or the layout inspector's HTML instead of Markdown, page
+  markers in the Markdown, front matter before it, text without inline markup, every table as
+  HTML, page furniture kept. A RayoMD payload is not used with any of them except
+  `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
   hidden ones and links to folders excepted, mirrored) to `NAME.md` (`NAME.json` with
-  `--format=json`, `NAME.jsonl` with `--format=chunks`) and `NAME-images/` under the output
+  `--format=json`, `NAME.jsonl` with `--format=chunks`, `NAME.html` with `--format=inspect`) and
+  `NAME-images/` under the output
   folder, sorted by their UTF-8 paths. Two
   inputs with one output (`a.pdf`, `a.PDF`) leave the second refused (code 12). The exit code is
   the last failed document's, in input order.
 - **`--serve --json`** answers requests `{"id"?, "input", "output"?, "args"?}` (RayoMD's protocol
   1 without its `markdown`/`source_path` input, as the input of a PDF converter is a file). The
   first line out is `{"rayopdf":"VERSION","protocol":1}`; without `output` the answer carries the
-  Markdown, with `--format=json` the JSON document itself as `"json"`, or with `--format=chunks`
-  the chunks as one JSON array `"chunks"`. `args` holds flags of
+  Markdown, with `--format=json` the JSON document itself as `"json"`, with `--format=chunks`
+  the chunks as one JSON array `"chunks"`, or with `--format=inspect` the HTML as the string
+  `"html"`. `args` holds flags of
   `--convert` only; batch flags and unknown fields are code-2 errors and the session goes on.
   Lines are at most 1 MiB, `args` at most 64. The request reader (`src/common/serve.*`) has the
   fuzz target `fuzz_common_serve`.

@@ -1715,6 +1715,8 @@ void AddBox(std::vector<PageBox>& boxes, uint32_t page, uint8_t dir, float x0, f
     boxes.push_back(PageBox{page, x0, y0, x1, y1});
 }
 
+} // namespace
+
 const char* BlockTypeName(BlockKind kind) {
     switch (kind) {
     case BlockKind::Paragraph: return "paragraph";
@@ -1728,8 +1730,6 @@ const char* BlockTypeName(BlockKind kind) {
     }
     return "paragraph";
 }
-
-} // namespace
 
 void BlockBoxes(const std::vector<PageData>& pages, const BlockList& list, const Block& block,
                 std::vector<PageBox>& boxes) {

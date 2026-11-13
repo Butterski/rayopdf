@@ -88,6 +88,10 @@ void BlockBoxes(const std::vector<PageData>& pages, const BlockList& list, const
 // Appends `boxes` as JSON: [{"page":N,"bbox":[x0,y0,x1,y1]}...] (N: PageData::number; `%.2f`).
 void AppendBoxes(std::string& out, const std::vector<PageData>& pages, const PageBox* boxes, size_t count);
 
+// The JSON output's `type` of a block: "heading", "paragraph", "list_item", "code", "table",
+// "image", "footnote" or "comment".
+const char* BlockTypeName(BlockKind kind);
+
 // Appends the Markdown of `blocks` to `out`; `repaired` puts the repair comment first. `written`,
 // when given, receives every block written, in order.
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired, std::string& out,

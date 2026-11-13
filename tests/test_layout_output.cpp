@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
 // plain text without inline markup, every table as HTML, page furniture kept, the exact recovery
-// they turn off, and chunks for retrieval (WriteChunks). Exit codes 2000-2049.
+// they turn off, chunks for retrieval (WriteChunks) and the layout inspector (WriteInspect). Exit
+// codes 2000-2049.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -373,6 +374,43 @@ void TestChunks() {
     RAYOPDF_CHECK(whole, 2014);
 }
 
+// A title and a paragraph.
+std::vector<PageData> HeadingPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Annual Review", 72, 740, 24);
+    AddText(pages[0], "The year brought steady growth across every region.", 72, 700, 10);
+    return pages;
+}
+
+void TestInspect() {
+    OutputSettings settings;
+    settings.format = OutputFormat::Inspect;
+    const std::string heading = Run(HeadingPage, settings);
+    Show("inspect", heading);
+    RAYOPDF_CHECK(Count(heading, "<rect class=\"t-heading\"") == 1 && Count(heading, "<rect class=\"t-paragraph\"") == 1 &&
+                      Contains(heading, "<title>#1 heading 1&#10;# Annual Review</title>") &&
+                      Contains(heading, "<title>#2 paragraph&#10;The year brought") &&
+                      Contains(heading, "\">1</text>") && Contains(heading, "\">2</text>") &&
+                      Count(heading, "<polyline class=\"order\"") == 1 && Contains(heading, "<section id=\"page-1\">") &&
+                      Contains(heading, ">Annual Review</text>"),
+                  2030);
+    // The running header: drawn on each of the three pages, struck through as removed.
+    const std::string running = Run(RunningPages, settings);
+    int removed = 0;
+    for (size_t at = running.find(">ACME Quarterly Report 2026</text>"); at != std::string::npos;
+         at = running.find(">ACME Quarterly Report 2026</text>", at + 1)) {
+        const size_t open = running.rfind("<text", at);
+        removed += running.compare(open, 21, "<text class=\"removed\"") == 0 ? 1 : 0;
+    }
+    RAYOPDF_CHECK(removed == 3 && Contains(running, ">Body text of page 2 stays.</text>"), 2031);
+    const std::string table = Run(TablePage, settings);
+    Show("inspect table", table);
+    RAYOPDF_CHECK(Count(table, "<rect class=\"cell\"") == 6 && Count(table, "<rect class=\"t-table\"") == 1, 2032);
+    RAYOPDF_CHECK(!Contains(heading, "<script") && !Contains(running, "<script") && !Contains(table, "<script") &&
+                      heading.compare(0, 15, "<!DOCTYPE html>") == 0 && Contains(heading, "<style>"),
+                  2033);
+}
+
 } // namespace
 
 int main() {
@@ -381,6 +419,7 @@ int main() {
     TestFurniture();
     TestExactFormat();
     TestChunks();
+    TestInspect();
     std::puts("layout output tests passed");
     return 0;
 }
