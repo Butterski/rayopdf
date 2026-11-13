@@ -940,6 +940,20 @@ User instructions against 0.0.12 after the round (master `82818ed`, on `4128ae3`
   is taken in time: warm `--bench` with images written over the synthetic corpus without
   weasyprint (181 documents), CPU 3, 2026-11-12 22:23 UTC, load about 2: 1,528 → 1,574 pages/s
   (+3.0 %, mean 0.655 → 0.635 ms a page).
+- **`src/hot.ld` regenerated** (6.7): `tools/hot_sections.py` over the release and static builds
+  of `ec4dfad` (every tenth odl document and four synthetic fixtures of eight producers): 776
+  sections, the program's new and renamed functions (the API's conversion, the JSON writer, box
+  grids, chart axes, the glyph page box) placed with the code every conversion runs. Output
+  identical; fresh page faults over odl (median of 200 documents) 156 → 150 (`56fba35`).
+
+### Result (0.1.1 against 0.2.0, 2026-11-13)
+
+0.2.0 (`536de1f`) against 0.1.1, CPU 3, interleaved, 10:11-10:19 UTC, load about 1 to 2: warm
+over odl 2,214 → 2,231 pages/s (median of three runs; p95 0.696 → 0.694 ms), fresh 0.910 →
+0.893 ms (12 rotated rounds), fresh page faults 154 → 147, `--batch --workers=1` task-clock 96.6
+→ 96.2 ms, SafeDocs 0000348 on one core 11.96 → 11.02 ms. The program's own cost (+0.67 %
+instructions over odl, +2.3 % over SafeDocs) is won back, and its warm target of 2,250 pages/s
+is not reached ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md#speed)).
 
 ### Tried and rejected (2026-11-12)
 

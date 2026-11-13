@@ -338,43 +338,44 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-12)
+### Status (2026-11-13)
 
-0.1.1 is released ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)): six layout steps taken from a
-comparison with kordoc ([baselines-2026-11-12](../benchmarks/baselines-2026-11-12.md)) and one
-found beside it, each through the quality gate: lists of contents as text, Office runs' left-out
-spaces, a slide title's kicker, turned chart labels in reading position, the heading-style share
-counting a style's paragraphs, a paper's title block past wide affiliations, set flush left or
-under a split title, and lettered page numbers and address lines. Against 0.1.0: odl overall
-0.896 → 0.902 (NID 0.917 → 0.922, MHS 0.840 → 0.853); READoc arXiv `head_teds` 0.693 → 0.695
-(holdout, LaTeX mode) and 0.701 → 0.706 (validation); olmOCR `headers_footers` 0.841 → 0.839 (two
-tests whose page numbers the turned labels used to follow); the rest unchanged.
+0.2.0 is released ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md),
+[release check](../benchmarks/release-check-2026-11-13.md)): structured output (`--format=json`,
+`--page-markers`, `--front-matter`; D6, D7), a C++ API with library archives, a container image,
+an Agent Skill and an MCP server; rules for tables, page furniture and headings found on a second
+READoc development split (`readoc-dev2`) and on odl; tables drawn as images read by the OCR
+add-on when they fill the image; the ninth performance round. Against 0.1.1: odl overall 0.902 →
+0.909 (TEDS 0.889 → 0.915, MHS 0.853 → 0.874); olmOCR `headers_footers` 0.839 → 0.849; READoc
+arXiv `table_teds` 0.617 → 0.618 (holdout, LaTeX mode; development 0.712 → 0.723, second
+development 0.594 → 0.620, validation 0.577 → 0.582); the rest unchanged. With the add-on, odl
+0.908 → 0.915.
 
-The bar stands as for 0.1.0 ([v0.1.0](../benchmarks/v0.1.0-2026-11-12.md),
-[release check](../benchmarks/release-check-2026-11-12.md)): every item holds except one key,
-released as open by the user's decision of 2026-11-11: READoc arXiv `table_teds` 0.617 (LaTeX
-mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882, `head_teds` 0.695, `seg_kt`
-0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above the best text-layer tool,
-NID and MHS above docling. (c): 2,217 pages/s warm, 0.909 ms fresh. (d): the 0.1.0 campaign's 24
-fuzz targets, the regressions replayed clean on 0.1.1; ASan sweeps in three modes clean. (e):
-reported in the release check.
+The bar stands as for 0.1.0 ([release check](../benchmarks/release-check-2026-11-13.md)): every
+item holds except one key, released as open by the user's decision of 2026-11-11: READoc arXiv
+`table_teds` 0.618 (LaTeX mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882,
+`head_teds` 0.697, `seg_kt` 0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above
+the best text-layer tool, NID and MHS above docling. (c): 2,231 pages/s warm, 0.893 ms fresh.
+(d): 25 fuzz targets, 26.1 h, clean after one JBIG2 slow unit fixed; ASan sweeps in three modes
+clean. (e): reported in the release check.
 
-- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.1.0
-  campaign covered all 24 fuzz targets.
+- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.2.0
+  campaign covered all 25 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M3 Layout:** open: olmOCR `headers_footers` (0.839, docling 0.898), `long_tiny_text` without
-  the add-on, synthetic `xelatex-2col` NID ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)).
-- **M4 Semantics:** open: holdout construct F1 ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md));
+- **M3 Layout:** open: olmOCR `headers_footers` (0.849, docling 0.898), `long_tiny_text` without
+  the add-on, synthetic `xelatex-2col` NID ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md)).
+- **M4 Semantics:** open: holdout construct F1 ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md));
   READoc arXiv `head_teds` met.
 - **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
-  ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md)).
+  ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M7 Product:** front ends, Windows build, packaging, the speed bar and the 0.1.0 and 0.1.1
-  releases done ([v0.1.1](../benchmarks/v0.1.1-2026-11-12.md), [performance.md](performance.md)).
+- **M7 Product:** front ends, Windows build, packaging, the speed bar, structured output, the C++
+  API, library archives and the container image done; releases 0.1.0, 0.1.1 and 0.2.0
+  ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md), [performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
-  [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)); open: Hebrew, Kannada and
-  Arabic quality.
+  [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn
+  as images since 0.2.0; open: Hebrew, Kannada and Arabic quality.
 
 ## Engineering conventions
 

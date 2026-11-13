@@ -12,7 +12,9 @@ against the baselines; each version record compares RayoPDF with them.
 | [baselines-scanned-2026-11-07.md](baselines-scanned-2026-11-07.md) | The OCR references on the scanned suites |
 | [baselines-readoc-dev-2026-11-10.md](baselines-readoc-dev-2026-11-10.md) | The READoc development split (`readoc-dev`): RayoPDF and the competitors on 300 READoc documents outside the holdout, beside their holdout scores |
 | [baselines-2026-11-12.md](baselines-2026-11-12.md) | kordoc, which claims the top of opendataloader-bench: OCR off on every suite, its default on odl, its speed; what RayoPDF took from it after 0.1.0 |
-| [v0.1.1-2026-11-12.md](v0.1.1-2026-11-12.md) | The kordoc round's release: every suite, core and bundle, both math modes, the holdouts once; speed against 0.1.0 |
+| [baselines-readoc-dev2-2026-11-13.md](baselines-readoc-dev2-2026-11-13.md) | The second READoc development split (`readoc-dev2`): RayoPDF 0.1.1, docling, pymupdf and kordoc on 600 more READoc documents outside the other sets |
+| [v0.2.0-2026-11-13.md](v0.2.0-2026-11-13.md) | The release with structured output, the C++ API and the image tables: every suite, core and bundle, the holdouts once; READoc tables on the four READoc sets; speed against 0.1.1 |
+| [release-check-2026-11-13.md](release-check-2026-11-13.md) | 0.2.0 against the release bar: quality, speed, the 25-target fuzz campaign and its JBIG2 finding, ASan sweeps, footprint |
 | [v0.1.0-2026-11-12.md](v0.1.0-2026-11-12.md) | The release: every suite, core and bundle, both math modes, the holdouts once; READoc tables on the three READoc sets with docling; speed against 0.0.12 |
 | [release-check-2026-11-12.md](release-check-2026-11-12.md) | 0.1.0 against the release bar: quality, speed, the 24-target fuzz campaign, ASan sweeps, footprint |
 | [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | Round 7 and the validation split |
@@ -43,6 +45,7 @@ Each version record links its predecessor.
 | 0.0.15 | 2026-11-11 | [v0.0.15-2026-11-11.md](v0.0.15-2026-11-11.md) | Page furniture on single pages (olmOCR headers_footers 0.841), table headers, escaping; the READoc validation split, which showed round 7's table rules fitted the development split |
 | 0.1.0 | 2026-11-12 | [v0.1.0-2026-11-12.md](v0.1.0-2026-11-12.md) | The first release ([release check](release-check-2026-11-12.md)): table dialect checked on the validation split, Unicode script forms; READoc arXiv tables released as the one open item |
 | 0.1.1 | 2026-11-12 | [v0.1.1-2026-11-12.md](v0.1.1-2026-11-12.md) | Lists of contents, slide kickers, heading styles and paper title blocks taken from reading kordoc (odl 0.896 → 0.902) |
+| 0.2.0 | 2026-11-13 | [v0.2.0-2026-11-13.md](v0.2.0-2026-11-13.md) | JSON output, page markers and front matter, the C++ API, library archives and a container image ([release check](release-check-2026-11-13.md)); table and furniture rules from a second READoc development split (odl 0.902 → 0.909); the add-on reads tables drawn as images |
 
 ## Naming
 
