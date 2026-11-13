@@ -109,6 +109,15 @@ if(TARGET rayopdf_api)
     target_include_directories(rayopdf_api PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 endif()
 
+# The C ABI (include/rayopdf/rayopdf_c.h, src/api/c/), outside the api module's folder: an object
+# library that test_api_c links, never the command line.
+if(TARGET rayopdf_api)
+    add_library(rayopdf_c_obj OBJECT src/api/c/c_api.cpp)
+    target_link_libraries(rayopdf_c_obj PUBLIC rayopdf_api)
+    target_compile_definitions(rayopdf_c_obj PUBLIC RAYOPDF_C_BUILD)
+    rayopdf_flags(rayopdf_c_obj)
+endif()
+
 # GNU ld (not gold, lld or a PE linker) takes the INSERT scripts below.
 set(RAYOPDF_GNU_LD OFF)
 if(NOT WIN32 AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -255,6 +264,9 @@ if(RAYOPDF_TESTS)
             set_tests_properties(${test_name} PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
         endif()
     endforeach()
+    if(TARGET test_api_c)
+        target_link_libraries(test_api_c PRIVATE rayopdf_c_obj)
+    endif()
     # The C++ API's example (src/api/example/, shipped in the lib archives), built with the tests
     # so that it always compiles against the public header.
     if(TARGET rayopdf_api)

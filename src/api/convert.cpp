@@ -47,13 +47,14 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
 }
 
 // Opens and converts the PDF in `bytes`, which `name` names in errors.
-Result Run(const std::string& name, std::string_view bytes, const Options& options, std::string& output) {
+Result Run(const std::string& name, std::string_view bytes, std::string_view password,
+           const Layout::ConvertOptions& options, std::string& output) {
     Result result;
     std::unique_ptr<Document> document;
-    result.status = OpenDocument(name, bytes, options.password, document, result.error);
+    result.status = OpenDocument(name, bytes, password, document, result.error);
     if (result.status != Status::Ok) return result;
     Layout::ConvertReport report;
-    Layout::Convert(*document, LayoutOptions(options), output, report);
+    Layout::Convert(*document, options, output, report);
     result.pages = report.pages;
     std::string counters;
     AppendCounters(counters, report, document->Report());
@@ -155,7 +156,13 @@ void AppendCounters(std::string& out, const Layout::ConvertReport& r, const Docu
 
 Result ConvertMemory(std::string_view pdf, const Options& options, std::string& output) {
     output.clear();
-    return Run("the input", pdf, options, output);
+    return Run("the input", pdf, options.password, LayoutOptions(options), output);
+}
+
+Result ConvertMemory(std::string_view pdf, std::string_view password, const Layout::ConvertOptions& options,
+                     std::string& output) {
+    output.clear();
+    return Run("the input", pdf, password, options, output);
 }
 
 Result ConvertFile(const std::string& path, const Options& options, std::string& output) {
@@ -164,7 +171,7 @@ Result ConvertFile(const std::string& path, const Options& options, std::string&
     Result result;
     result.status = ReadInput(path, file, result.error);
     if (result.status != Status::Ok) return result;
-    return Run(path, file.Bytes(), options, output);
+    return Run(path, file.Bytes(), options.password, LayoutOptions(options), output);
 }
 
 const char* Version() {

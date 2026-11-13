@@ -27,6 +27,11 @@ Status ReadInput(const std::string& path, File::InputFile& file, std::string& er
 Status OpenDocument(const std::string& path, std::string_view bytes, std::string_view password,
                     std::unique_ptr<Document>& document, std::string& error);
 
+// ConvertMemory (rayopdf/rayopdf.h) with the converter's own options, as the flags give them
+// (api/flags.h): the C ABI's conversion.
+Result ConvertMemory(std::string_view pdf, std::string_view password, const Layout::ConvertOptions& options,
+                     std::string& output);
+
 // One member of a JSON object being written into `out` (which starts with '{' or ','): a comma
 // before it unless it is the first.
 void AppendField(std::string& out, const char* key, uint64_t value);

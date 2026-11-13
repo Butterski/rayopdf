@@ -341,6 +341,13 @@ JSON object a line;
   `Status` whose values are the exit codes below (2 aside: options are not parsed), the error,
   the pages and the `--report` counters as one JSON object; `Version()`. The command line reads
   and opens its inputs and writes its counters through the same functions.
+- **C ABI:** `include/rayopdf/rayopdf_c.h` (C99; `src/api/c/`, the object library `rayopdf_c_obj`):
+  `rayopdf_convert(pdf, size, args, count, &out)` takes the flags of `--convert` as strings,
+  parsed by the command line's own parser (`src/api/flags.h`), plus `--workers=N` (page threads,
+  default 1) and `--images=DIR` (no images by default); it returns the exit code and fills a
+  `rayopdf_output` with malloc'd, NUL-terminated `text`, `report` and `error` (empty on success),
+  which `rayopdf_output_free` frees and zeroes. An unknown flag is status 2, "unknown option: X".
+  `rayopdf_version()`. The language bindings call it.
 
 |Exit code|Meaning|
 |---|---|
