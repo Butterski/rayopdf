@@ -30,7 +30,6 @@ constexpr uint32_t kMinBandHeight = 4;
 constexpr float kMinStrokes = 3.0f;          // ink runs a row of a text band crosses, at least
 constexpr float kStrokesPerHeight = 0.8f;    // ... and per band height of ink span
 constexpr float kMinTextRows = 0.15f;
-constexpr float kCellGap = 2.0f;             // band heights: a gap between a table's cells, not words
 
 // Vector-outline text: glyph-sized filled curves.
 constexpr float kGlyphShapeMin = 2.0f, kGlyphShapeMax = 40.0f;  // points high
@@ -315,93 +314,33 @@ bool LooksLikeText(const uint8_t* pixels, uint32_t width, uint32_t height, TextE
         e.midtones > kMaxMidtones)
         return false;
 
-    // Rules (a table's grid, a frame) ink long runs of pixels: a horizontal run of at least
-    // `longRow` or a vertical one of at least `longColumn` counts as paper in the band pass, so that
-    // a table's vertical rules do not join its rows of text into one band. The vertical runs are
-    // marked in a bit mask, the horizontal ones found in the row pass itself.
-    const uint8_t t = static_cast<uint8_t>(threshold);
-    const uint32_t longRow = std::max<uint32_t>(width / 4, 32), longColumn = std::max<uint32_t>(height / 4, 32);
-    std::vector<uint64_t> ruleMask;
-    if (height >= longColumn) {
-        std::vector<uint32_t> runStart(width, UINT32_MAX);
-        const auto closeRun = [&](uint32_t x, uint32_t end) {
-            const uint32_t start = runStart[x];
-            runStart[x] = UINT32_MAX;
-            if (end - start < longColumn) return;
-            if (ruleMask.empty()) ruleMask.assign(size_t((n + 63) / 64), 0);
-            for (uint32_t y = start; y < end; ++y) {
-                const uint64_t at = uint64_t(y) * width + x;
-                ruleMask[size_t(at >> 6)] |= uint64_t(1) << (at & 63);
-            }
-        };
-        for (uint32_t y = 0; y < height; ++y) {
-            const uint8_t* row = pixels + uint64_t(y) * width;
-            for (uint32_t x = 0; x < width; ++x) {
-                if (row[x] <= t) {
-                    if (runStart[x] == UINT32_MAX) runStart[x] = y;
-                } else if (runStart[x] != UINT32_MAX) {
-                    closeRun(x, y);
-                }
-            }
-        }
-        for (uint32_t x = 0; x < width; ++x)
-            if (runStart[x] != UINT32_MAX) closeRun(x, height);
-    }
-    const auto masked = [&](uint64_t at) {
-        return !ruleMask.empty() && ((ruleMask[size_t(at >> 6)] >> (at & 63)) & 1) != 0;
-    };
-
-    // Rows: bands of rows holding ink, and how many ink runs cross each. A band's span leaves out
-    // the gaps between its inked columns wider than kCellGap band heights: a row of a table has
-    // its words in cells far apart, and is as dense as a line of text where it has words.
+    // Rows: bands of rows holding ink, and how many ink runs cross each.
     const uint32_t inked = std::max<uint32_t>(2, width / 333);
     std::vector<uint32_t> heights;
-    std::vector<uint32_t> inkRow(width, 0);  // per column: 1 + the last row that inked it
     uint32_t bandStart = 0, bandRuns = 0, bandMin = 0, bandMax = 0;
     bool inBand = false;
     const auto closeBand = [&](uint32_t end) {
         const uint32_t h = end - bandStart;
-        // Columns inked by the band's rows (and by the row that ends it, a few pixels at most).
-        const auto inBandColumn = [&](uint32_t x) { return inkRow[x] > bandStart && inkRow[x] <= end + 1; };
-        uint64_t gaps = 0;
-        uint32_t previous = bandMin;
-        for (uint32_t x = bandMin + 1; x <= bandMax; ++x) {
-            if (!inBandColumn(x)) continue;
-            if (float(x - previous - 1) > kCellGap * float(h)) gaps += x - previous - 1;
-            previous = x;
-        }
-        const float span = float(uint64_t(bandMax - bandMin + 1) - gaps);
+        const float span = float(bandMax - bandMin + 1);
         const float strokes = float(bandRuns) / float(h);
         e.bands++;
         if (h >= kMinBandHeight && h <= height / 3 && strokes >= kMinStrokes && strokes >= kStrokesPerHeight * span / float(h))
             heights.push_back(h);
     };
+    const uint8_t t = static_cast<uint8_t>(threshold);
     for (uint32_t y = 0; y < height; ++y) {
         const uint8_t* row = pixels + uint64_t(y) * width;
-        const uint64_t rowAt = uint64_t(y) * width;
         uint32_t count = 0, runs = 0, first = width, last = 0;
-        for (uint32_t x = 0; x < width;) {
-            if (row[x] > t) {
-                ++x;
-                continue;
+        bool previous = false;
+        for (uint32_t x = 0; x < width; ++x) {
+            const bool ink = row[x] <= t;
+            if (ink) {
+                count++;
+                if (!previous) runs++;
+                if (first == width) first = x;
+                last = x;
             }
-            uint32_t end = x + 1;
-            while (end < width && row[end] <= t) ++end;
-            if (end - x < longRow) {
-                bool previous = false;
-                for (uint32_t k = x; k < end; ++k) {
-                    const bool ink = !masked(rowAt + k);
-                    if (ink) {
-                        inkRow[k] = y + 1;
-                        count++;
-                        if (!previous) runs++;
-                        if (first == width) first = k;
-                        last = k;
-                    }
-                    previous = ink;
-                }
-            }
-            x = end;
+            previous = ink;
         }
         if (count >= inked) {
             if (!inBand) {

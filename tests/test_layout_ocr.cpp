@@ -497,9 +497,9 @@ void TestLooksLikeText() {
 }
 
 // A 600 x 300 gray image of a ruled grid of 3 rows and `cols` columns (2-pixel rules), with two
-// bands of text-like strokes (dark runs of 3-6 pixels) 12 pixels high in each row of cells when
-// `text`: across the width, or with `word` a word of that many pixels at the left of each cell.
-std::string RuledGrid(bool text, uint32_t cols = 4, uint32_t word = 0) {
+// bands of text-like strokes (dark runs of 3-6 pixels) 12 pixels high across each row of cells
+// when `text`.
+std::string RuledGrid(bool text, uint32_t cols = 4) {
     const uint32_t w = 600, h = 300;
     const uint32_t pitch = 592 / cols;
     std::string grid(size_t(w) * h, static_cast<char>(0xFF));
@@ -510,8 +510,7 @@ std::string RuledGrid(bool text, uint32_t cols = 4, uint32_t word = 0) {
                 for (uint32_t y = top; y < top + 12; ++y)
                     for (uint32_t x = 8; x + 8 < w;) {
                         const uint32_t run = 3 + (x / 7 + y) % 4;
-                        const bool inWord = word == 0 || (x % pitch >= 8 && x % pitch < 8 + word);
-                        for (uint32_t k = x; inWord && k < x + run && k + 8 < w; ++k) grid[size_t(y) * w + k] = 20;
+                        for (uint32_t k = x; k < x + run && k + 8 < w; ++k) grid[size_t(y) * w + k] = 20;
                         x += run + 4;
                     }
             }
@@ -526,18 +525,30 @@ std::string RuledGrid(bool text, uint32_t cols = 4, uint32_t word = 0) {
     return grid;
 }
 
-void TestRuledGridText() {
-    // A table drawn as an image: its vertical rules ink every row, yet its rows of text are text.
-    const std::string table = RuledGrid(true);
-    TextEvidence e;
-    RAYOPDF_CHECK(LooksLikeText(reinterpret_cast<const uint8_t*>(table.data()), 600, 300, &e), 1750);
-    RAYOPDF_CHECK(e.textBands == 6, 1750);
-    // The grid alone holds no text.
-    const std::string empty = RuledGrid(false);
-    RAYOPDF_CHECK(!LooksLikeText(reinterpret_cast<const uint8_t*>(empty.data()), 600, 300), 1751);
-    // A table of short words, far apart in their cells: its rows are lines of text.
-    const std::string sparse = RuledGrid(true, 4, 40);
-    RAYOPDF_CHECK(LooksLikeText(reinterpret_cast<const uint8_t*>(sparse.data()), 600, 300, &e) && e.textBands == 6, 1752);
+void TestChartNoText() {
+    // A chart: a black frame of two vertical and two horizontal lines around a curve in a light
+    // colour (paper to the threshold), five tick labels left of it, a row of six below it and a
+    // legend of four lines inside. The frame inks every row of the chart, one band: its labels are
+    // no text.
+    const uint32_t w = 600, h = 300;
+    std::string chart(size_t(w) * h, static_cast<char>(0xFF));
+    const auto label = [&](uint32_t x0, uint32_t x1, uint32_t top) {  // text-like strokes, 10 pixels high
+        for (uint32_t y = top; y < top + 10; ++y)
+            for (uint32_t x = x0; x < x1;) {
+                const uint32_t run = 3 + (x / 7 + y) % 4;
+                for (uint32_t k = x; k < x + run && k < x1; ++k) chart[size_t(y) * w + k] = 20;
+                x += run + 4;
+            }
+    };
+    for (uint32_t y = 10; y < 262; ++y)
+        for (const uint32_t x : {50u, 51u, 588u, 589u}) chart[size_t(y) * w + x] = 0;
+    for (uint32_t x = 50; x < 590; ++x)
+        for (const uint32_t y : {10u, 11u, 260u, 261u}) chart[size_t(y) * w + x] = 0;
+    for (uint32_t x = 60; x < 580; ++x) chart[size_t(250 - (x - 60) * 200 / 520) * w + x] = static_cast<char>(170);
+    for (uint32_t k = 0; k < 5; ++k) label(8, 44, 20 + 50 * k);
+    for (uint32_t k = 0; k < 6; ++k) label(60 + 100 * k, 90 + 100 * k, 270);
+    for (uint32_t k = 0; k < 4; ++k) label(450, 570, 30 + 20 * k);
+    RAYOPDF_CHECK(!LooksLikeText(reinterpret_cast<const uint8_t*>(chart.data()), w, h), 1755);
 }
 
 void TestImageRulings() {
@@ -1242,7 +1253,7 @@ int main() {
     TestRouting();
     TestBrokenAndVector();
     TestLooksLikeText();
-    TestRuledGridText();
+    TestChartNoText();
     TestImageRulings();
     TestCanvas();
     TestOcrGlyphs();

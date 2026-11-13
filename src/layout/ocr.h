@@ -45,10 +45,11 @@ void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mod
 // meets the image: with `imagesWritten`, it is the image's alternate text (ImageBox::ocr, used
 // when the image has no /Alt), so the figure's words stay with the figure instead of entering the
 // body; without images it is body text at the image's place (an OCR text layer). A region whose
-// text, alone with the rules of its pixels (layout/ocr_tables.h), makes a table holding at least
-// 80 % of its characters is a table drawn as an image: its text becomes an OCR text layer (so the
-// page's tables read it) and the image is not written (ImageState::Skipped). Every region read as
-// a text layer brings the rules of its pixels when AddOcrGlyphs found none over it.
+// text, alone with the rules of its pixels (layout/ocr_tables.h), makes tables holding at least
+// 80 % of its characters and covering at least 60 % of the region is a table drawn as an image:
+// its text becomes an OCR text layer (so the page's tables read it) and the image is not written
+// (ImageState::Skipped). Every region read as a text layer brings the rules of its pixels when
+// AddOcrGlyphs found none over it.
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
                     std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
                     const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten);

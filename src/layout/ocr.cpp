@@ -57,9 +57,11 @@ uint32_t AddRegion(const OcrCanvas& canvas, const OcrProtocol::Response& respons
     return added;
 }
 
-// Whether the region's text, alone on a page of `page`'s size with the region's rules, makes a
-// table holding at least kOcrTableShare of its characters: an image of a table.
+// Whether the region's text, alone on a page of `page`'s size with the region's rules, makes
+// tables holding at least kOcrTableShare of its characters and covering at least kOcrTableArea of
+// the region: an image of a table, not a screenshot or a figure with a table in a corner of it.
 constexpr float kOcrTableShare = 0.8f;
+constexpr float kOcrTableArea = 0.6f;
 bool ReadsAsTable(const OcrCanvas& canvas, const OcrProtocol::Response& response, const PageData& page) {
     PageData scratch;
     scratch.number = page.number;
@@ -70,10 +72,15 @@ bool ReadsAsTable(const OcrCanvas& canvas, const OcrProtocol::Response& response
     TableContinuation continuation;
     DetectTables(scratch, continuation);
     uint64_t inCells = 0;
-    for (const Table& table : scratch.tables)
+    double area = 0;
+    for (const Table& table : scratch.tables) {
         for (uint32_t l = table.firstLine; l < table.firstLine + table.lineCount && l < scratch.lines.size(); ++l)
             inCells += scratch.lines[l].chars;
-    return !scratch.tables.empty() && double(inCells) >= kOcrTableShare * double(added);
+        area += double(table.x1 - table.x0) * double(table.y1 - table.y0);
+    }
+    const double region = double(canvas.x1 - canvas.x0) * double(canvas.y1 - canvas.y0);
+    return !scratch.tables.empty() && double(inCells) >= kOcrTableShare * double(added) &&
+           area >= kOcrTableArea * region;
 }
 
 } // namespace
