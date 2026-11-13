@@ -208,6 +208,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.plain = options.plain;
     output.tables = options.tables;
     output.chunkChars = options.chunkChars;
+    output.features = options.features;
     output.metadata = &metadata;
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure, json ? &metadata : nullptr};
     const DocumentRead read{&DocumentParts::Read, &parts};

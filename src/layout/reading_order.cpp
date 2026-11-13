@@ -3,6 +3,7 @@
 
 #include "common/minmax.h"
 #include "common/per_thread.h"
+#include "layout/features.h"
 #include "layout/lines.h"
 
 #include <algorithm>
@@ -813,7 +814,23 @@ constexpr float kWideGapMaxSize = 1.35f;
 constexpr float kWideGapSizeTolerance = 0.05f;
 constexpr uint32_t kWideGapMaxChars = 80;
 
-int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key) {
+// The edge rows RemoveEdgeRows examines in the outer kWideGapBand, for a FeatureSink (layout/
+// features.h): each row's features, box and text, and its edge line, whose flag tells at the end
+// of the page whether the rules removed it.
+struct EdgeReport {
+    const FeatureSink* sink = nullptr;
+    const std::unordered_map<std::string, KeyCount>* counts = nullptr;
+    int pages = 0;
+    struct Row {
+        uint32_t line = 0;
+        float features[kEdgeRowFeatures] = {};
+        float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        std::string text;
+    };
+    std::vector<Row> rows;
+};
+
+int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key, EdgeReport* report) {
     std::vector<uint32_t> lines;
     lines.reserve(page.lines.size());
     for (uint32_t i = 0; i < page.lines.size(); ++i) {
@@ -1027,6 +1044,52 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool wide = wideCenter < h * kWideGapBand && gap >= kWideGap * body && largest <= kWideGapMaxSize * body &&
                               chars <= kWideGapMaxChars && std::fabs(largest - body) > kWideGapSizeTolerance * body &&
                               !(largest > body && (bold || (side == 0 && page.width > h))) && !anyMono && !superscript;
+            if (report && wideCenter < h * kWideGapBand) {
+                EdgeReport::Row& out = report->rows.emplace_back();
+                out.line = lines[side == 0 ? first : last - 1];
+                rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
+                                lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
+                std::sort(rowLines.begin(), rowLines.end(),
+                          [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
+                float y0 = INFINITY, y1 = -INFINITY;
+                uint32_t artifactChars = 0;
+                bool italic = true;
+                for (uint32_t li : rowLines) {
+                    const Line& l = page.lines[li];
+                    if (!out.text.empty()) out.text.push_back(' ');
+                    AppendLineText(page, l, out.text);
+                    y0 = Fmin(y0, l.vb), y1 = Fmax(y1, l.vt);
+                    if (l.flags & kLineArtifact) artifactChars += l.chars;
+                    italic = italic && (l.flags & kLineAllItalic);
+                }
+                RunningKey(out.text, key);
+                float digitShare = 0, capitalShare = 0;
+                bool endsInDigit = false;
+                TextShares(out.text, digitShare, capitalShare, endsInDigit);
+                float holding = 0;
+                if (report->pages > 1 && !key.empty()) {
+                    const auto found = report->counts->find((side == 0 ? "T" : "B") + key);
+                    if (found != report->counts->end()) holding = float(found->second.total) / float(report->pages - 1);
+                }
+                float* f = out.features;
+                f[0] = wideCenter / h;
+                f[1] = float(side);
+                f[2] = gap / body;
+                f[3] = largest / body;
+                f[4] = float(chars);
+                f[5] = digitShare;
+                f[6] = bold ? 1 : 0;
+                f[7] = italic ? 1 : 0;
+                f[8] = IsPageNumberKey(key) ? 1 : 0;
+                f[9] = chars ? float(artifactChars) / float(chars) : 0;
+                f[10] = ((rowLeft + rowRight) / 2 - page.width / 2) / page.width;
+                f[11] = (rowRight - rowLeft) / Fmax(textRight - textLeft, 1.0f);
+                f[12] = float(lines.size());
+                f[13] = holding;
+                f[14] = capitalShare;
+                f[15] = endsInDigit ? 1 : 0;
+                out.x0 = rowLeft, out.y0 = y0, out.x1 = rowRight, out.y1 = y1;
+            }
             const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
                                            ((closeFolio || closeNumber || wide) && row < 2)));
@@ -1065,6 +1128,13 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 last = start;
         }
     }
+    if (report) {
+        for (const EdgeReport::Row& row : report->rows) {
+            report->sink->edgeRow(report->sink->context, static_cast<uint32_t>(page.number), row.features, row.x0,
+                                  row.y0, row.x1, row.y1, row.text, (page.lines[row.line].flags & kLineRemoved) != 0);
+        }
+        report->rows.clear();
+    }
     return removed;
 }
 
@@ -1099,7 +1169,7 @@ int RemoveMarginLines(PageData& page) {
 
 } // namespace
 
-int RemoveRunningLines(std::vector<PageData>& pages) {
+int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
     const int n = static_cast<int>(pages.size());
     std::unordered_map<std::string, KeyCount> counts;
     std::string text, key;
@@ -1192,8 +1262,13 @@ int RemoveRunningLines(std::vector<PageData>& pages) {
         for (; i < sizeChars.size() && sizeChars[i].first == size; ++i) chars += sizeChars[i].second;
         weigh(size, chars);
     }
+    EdgeReport edges;
+    edges.sink = sink;
+    edges.counts = &counts;
+    edges.pages = n;
+    EdgeReport* report = sink && sink->edgeRow ? &edges : nullptr;
     for (PageData& page : pages) {
-        removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key);
+        removed += RemoveEdgeRows(page, float(bodyKey) / 2, text, key, report);
         removed += RemoveMarginLines(page);
     }
     return removed;

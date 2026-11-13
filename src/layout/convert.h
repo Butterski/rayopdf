@@ -6,6 +6,7 @@
 // unmapped glyphs and a repaired file get a `<!-- rayopdf: ... -->` comment where they apply.
 #pragma once
 
+#include "layout/features.h"
 #include "layout/math.h"
 #include "layout/ocr_options.h"
 #include "pdf/document.h"
@@ -78,6 +79,9 @@ struct ConvertOptions {
     // it ended (its pages, fonts and structure, and its page threads, left waiting) is not freed
     // or joined, which the end of the process does at once.
     bool oneShot = false;
+    // Developer mode (`rayopdf --features`): the edge rows and table gaps the rules examine, with
+    // their features (layout/features.h). Table gaps need pageWorkers 1.
+    const FeatureSink* features = nullptr;
 };
 
 // What became of the document's structure tree (tagged PDF, roadmap D5; layout/structure.h).

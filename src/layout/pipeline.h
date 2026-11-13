@@ -45,6 +45,7 @@ struct OutputSettings {
     bool plain = false;                          // no inline markup (WriteSettings::plain)
     TableFormat tables = TableFormat::Auto;      // Html: every table as HTML
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
+    const FeatureSink* features = nullptr;       // developer mode: edge-row and table-gap features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
 };
 

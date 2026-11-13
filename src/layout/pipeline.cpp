@@ -85,7 +85,8 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     // Kept furniture: no running line, edge row or margin line is removed (a used tree still leaves
     // out its artifacts).
     const bool keepFurniture = output && output->furniture == Furniture::Keep;
-    if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages);
+    const FeatureSink* features = output ? output->features : nullptr;
+    if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages, features);
     if (images) PlaceImages(pages, *images, report);
     std::vector<uint8_t> unmapped(pages.size(), 0);
     const bool parallel = pool && !tree && !pages.empty();
@@ -96,7 +97,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         if (tree) {
             tagged.LayOut(pages, static_cast<uint32_t>(p));
         } else if (!parallel) {
-            report.headerFooterLines -= DetectTables(page, continuation);
+            report.headerFooterLines -= DetectTables(page, continuation, features);
             MarkFigureText(page);
             OrderLines(page);
             SplitRunInHeadings(page);

@@ -292,7 +292,15 @@ rayopdf --serve --json [options] [--workers=N]
 rayopdf --inspect IN.pdf [--password=PW]
 rayopdf --version | --help
 rayopdf --bench IN.pdf TMPDIR N [options]       (developer option, performance.md)
+rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]   (developer option, eval/train/)
 ```
+
+`--features` converts IN.pdf on one page thread and writes, one JSON object a line, the feature
+vectors of the decisions small models may learn (`src/layout/features.h`): every edge row the
+furniture rules examine in the outer tenth of a page, `{"page","box":[x0,y0,x1,y1],"text","f":[16
+values],"rules":0|1}` with whether the rules removed it, or every column gap of a candidate
+borderless table run, `{"page","box":[x0,x1],"f":[12 values],"rules":0|1}` with whether the run
+became a table. Conversions without it compute no features; the output never changes.
 
 `--no-exact` converts the pages of a RayoMD PDF that carries its source (D5 step 1,
 `src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).

@@ -551,6 +551,11 @@ public:
           grids_(std::move(scratch_.grids)), wordUsed_(std::move(scratch_.wordUsed)),
           events_(std::move(scratch_.events)), bins_(std::move(scratch_.bins)),
           pageRows_(std::move(scratch_.pageRows)), pageRowWords_(std::move(scratch_.pageRowWords)) {}
+    // The same, reporting Borderless's candidate gaps to `features` (upright text only).
+    Detector(PageData& page, TableContinuation& continuation, uint8_t dir, const FeatureSink* features)
+        : Detector(page, continuation, dir) {
+        if (dir == 0 && features && features->tableGap) features_ = features;
+    }
     ~Detector() {
         scratch_.words = std::move(words_);
         scratch_.h = std::move(h_);
@@ -575,6 +580,9 @@ private:
     void RuleStacks();
     void Continue();
     void Borderless(float gapFactor);
+    void ReportGaps(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
+                    const std::vector<Gap>& gaps, const std::vector<int>& columns, const std::vector<uint8_t>& label,
+                    float em, bool secondPass, bool chosen);
     void BuildRows(float xa, float xb, float ylo, float yhi, std::vector<Row>& rows, std::vector<uint32_t>& rowWords);
     bool Columns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                  float xa, float xb, float minGap, std::vector<Gap>& gaps, const std::vector<uint8_t>* skip = nullptr);
@@ -647,6 +655,7 @@ private:
     uint32_t marks_ = 0;
     uint32_t pageRowsMarks_ = UINT32_MAX;
     float bodySize_ = 10;
+    const FeatureSink* features_ = nullptr;  // Borderless's gaps go there (layout/features.h)
     float wordSpace_ = 0.3f;  // the page's median space between words of a line, in ems
     int restored_ = 0;
     std::vector<Ruling> figures_;  // the page's figure regions in this frame, once figuresKnown_
@@ -3351,8 +3360,12 @@ void Detector::Borderless(float gapFactor) {
         const auto clearLabels = [&]() {
             for (size_t q = begin; q < e; ++q) label[q] = 0;
         };
-        if (n < 3 || m < 2 || m > kMaxTableCols || Texty(rows, rowWords, begin, e, gaps, em, false) ||
-            ListLike(rows, rowWords, begin, e, gaps)) {
+        // Runs of a table's shape the tests reject still have their gaps reported to features_.
+        const bool shape = n >= 3 && m >= 2 && m <= kMaxTableCols;
+        const bool rejected =
+            !shape || Texty(rows, rowWords, begin, e, gaps, em, false) || ListLike(rows, rowWords, begin, e, gaps);
+        const bool report = features_ && shape;
+        if (rejected && !report) {
             clearLabels();
             continue;
         }
@@ -3463,8 +3476,14 @@ void Detector::Borderless(float gapFactor) {
             }
         }
         const float y0 = rows[e - 1].bottom, y1 = rows[first].top;
-        if (high && Free(xa, y0, xb, y1) && !FigureText(rows, rowWords, first, e, TextSize(rows[first])))
+        const size_t tables = grids_.size();
+        if (!rejected && high && Free(xa, y0, xb, y1) && !FigureText(rows, rowWords, first, e, TextSize(rows[first])))
             TextGrid(rows, rowWords, first, e, gaps, TableKind::Borderless, 0, xa, xb);
+        if (report) ReportGaps(rows, rowWords, begin, e, gaps, columns, label, em, gapFactor < 1.0f, grids_.size() > tables);
+        if (rejected) {
+            clearLabels();
+            continue;
+        }
         clearLabels();
         // A header row without numbers whose labels, centred over narrow columns of figures, fill
         // the gaps between them sets the columns wrong: the body is tried again without it.
@@ -3994,12 +4013,80 @@ uint16_t RepeatedHeader(const TablePart& head, const TablePart& part) {
     return n;
 }
 
-int DetectTables(PageData& page, TableContinuation& continuation) {
+void Detector::ReportGaps(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
+                          const std::vector<Gap>& gaps, const std::vector<int>& columns,
+                          const std::vector<uint8_t>& label, float em, bool secondPass, bool chosen) {
+    const size_t m = gaps.size() + 1;
+    const uint32_t base = rows[begin].first;
+    // Per column: cells filled and numeric, and the left and right edges of each cell.
+    std::vector<int> filled(m, 0), numeric(m, 0);
+    std::vector<std::vector<float>> lefts(m), rights(m);
+    std::vector<float> a(m), b(m);
+    std::vector<uint32_t> digits(m), letters(m);
+    int counted = 0;
+    for (size_t q = begin; q < end; ++q) {
+        if (label[q]) continue;
+        counted++;
+        std::fill(a.begin(), a.end(), INFINITY);
+        std::fill(b.begin(), b.end(), -INFINITY);
+        std::fill(digits.begin(), digits.end(), 0u);
+        std::fill(letters.begin(), letters.end(), 0u);
+        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k) {
+            const int c = columns[k - base];
+            if (c < 0 || static_cast<size_t>(c) >= m) continue;
+            const TWord& w = words_[rowWords[k]];
+            a[c] = Fmin(a[c], w.x0), b[c] = Fmax(b[c], w.x1);
+            const WordChars& t = Chars(w);
+            digits[c] += t.digits, letters[c] += t.letters;
+        }
+        for (size_t c = 0; c < m; ++c) {
+            if (!(b[c] > a[c])) continue;
+            filled[c]++;
+            numeric[c] += NumericCounts(digits[c], letters[c]);
+            lefts[c].push_back(a[c]);
+            rights[c].push_back(b[c]);
+        }
+    }
+    std::vector<float> spread;
+    float f[kTableGapFeatures];
+    for (size_t g = 0; g < gaps.size(); ++g) {
+        const float width = gaps[g].b - gaps[g].a;
+        int rank = 0;
+        for (size_t o = 0; o < gaps.size(); ++o) {
+            const float other = gaps[o].b - gaps[o].a;
+            rank += other > width || (other == width && o < g);
+        }
+        int inked = 0;
+        for (size_t q = begin; q < end; ++q) {
+            bool ink = false;
+            for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count && !ink; ++k)
+                ink = words_[rowWords[k]].x0 < gaps[g].b && words_[rowWords[k]].x1 > gaps[g].a;
+            inked += ink;
+        }
+        f[0] = width / em;
+        f[1] = float(inked) / float(end - begin);
+        spread = rights[g];
+        f[2] = MedianDeviation(spread) / em;
+        spread = lefts[g + 1];
+        f[3] = MedianDeviation(spread) / em;
+        f[4] = filled[g] ? float(numeric[g]) / float(filled[g]) : 0;
+        f[5] = filled[g + 1] ? float(numeric[g + 1]) / float(filled[g + 1]) : 0;
+        f[6] = counted ? float(filled[g] + filled[g + 1]) / float(2 * counted) : 0;
+        f[7] = float(rank);
+        f[8] = float(end - begin);
+        f[9] = em / bodySize_;
+        f[10] = secondPass ? 1 : 0;
+        f[11] = chosen ? 1 : 0;
+        features_->tableGap(features_->context, static_cast<uint32_t>(page_.number), f, gaps[g].a, gaps[g].b, chosen);
+    }
+}
+
+int DetectTables(PageData& page, TableContinuation& continuation, const FeatureSink* features) {
     if (page.lines.empty()) {
         continuation.valid = false;
         return 0;
     }
-    int restored = Detector(page, continuation, 0).Run();
+    int restored = Detector(page, continuation, 0, features).Run();
     // Tables turned on the page (a landscape table on a portrait page): each other direction with
     // lines enough for a table of its own, in its frame.
     uint32_t turned[4] = {0, 0, 0, 0};

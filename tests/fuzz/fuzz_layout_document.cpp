@@ -4,11 +4,13 @@
 // them, without image files), then once more in one other output, chosen by the input's size so
 // that each input costs two conversions: JSON (--format=json), which must be one object and a line
 // break; chunks (--format=chunks with the smallest chunk size), every line one object; the
-// inspector (--format=inspect), one HTML file without a script; or Markdown with the output
-// options --plain, --tables=html and --furniture=keep.
+// inspector (--format=inspect), one HTML file without a script; Markdown with the output options
+// --plain, --tables=html and --furniture=keep; or Markdown with a feature sink (`rayopdf
+// --features`) counting the edge rows and table gaps, which must be the same Markdown.
 // Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
 
 #include "layout/convert.h"
+#include "layout/features.h"
 #include "pdf/document.h"
 
 #include <cstddef>
@@ -25,7 +27,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     std::string out;
     RayoPdf::Layout::ConvertReport report;
     RayoPdf::Layout::Convert(*document, options, out, report);
-    switch (size % 4) {
+    switch (size % 5) {
     case 0:
         options.format = RayoPdf::Layout::OutputFormat::Json;
         RayoPdf::Layout::Convert(*document, options, out, report);
@@ -46,12 +48,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         RayoPdf::Layout::Convert(*document, options, out, report);
         if (out.compare(0, 15, "<!DOCTYPE html>") != 0 || out.find("<script") != std::string::npos) __builtin_trap();
         break;
-    default:
+    case 3:
         options.plain = true;
         options.tables = RayoPdf::Layout::TableFormat::Html;
         options.furniture = RayoPdf::Layout::Furniture::Keep;
         RayoPdf::Layout::Convert(*document, options, out, report);
         break;
+    default: {
+        size_t calls = 0;
+        RayoPdf::Layout::FeatureSink sink;
+        sink.context = &calls;
+        sink.edgeRow = [](void* context, uint32_t, const float*, float, float, float, float, std::string_view, bool) {
+            ++*static_cast<size_t*>(context);
+        };
+        sink.tableGap = [](void* context, uint32_t, const float*, float, float, bool) { ++*static_cast<size_t*>(context); };
+        options.features = &sink;
+        std::string again;
+        RayoPdf::Layout::Convert(*document, options, again, report);
+        if (again != out) __builtin_trap();
+        break;
+    }
     }
     return 0;
 }

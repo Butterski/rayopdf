@@ -12,6 +12,7 @@
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --inspect IN.pdf [--password=PW]
 //   rayopdf --bench IN.pdf TMPDIR N [--images=none] [--no-structure] [--workers=N] ...   (developer option)
+//   rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]          (developer option)
 //   rayopdf --version | --help
 //
 // OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
@@ -37,6 +38,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -105,6 +107,10 @@ void PrintUsage(std::FILE* out) {
         "                                               this process into TMPDIR/out.md (images in\n"
         "                                               TMPDIR/out-images/); prints the fastest and\n"
         "                                               median milliseconds of the N timed runs\n"
+        "  rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]\n"
+        "                                               write the features of the edge rows or the\n"
+        "                                               borderless table gaps the rules examine, one\n"
+        "                                               JSON object a line (eval/train/)\n"
         "\n"
         "Options:\n"
         "  --password=PW      user or owner password of an encrypted PDF\n"
@@ -427,6 +433,75 @@ int Bench(const std::string& input, const std::string& folder, std::string_view 
     std::snprintf(line, sizeof line, "runs=%d best_ms=%.6f median_ms=%.6f pages=%" PRIu64 "\n", runs, times.front(),
                   times[times.size() / 2], pages);
     File::WriteStandardOutput(line);
+    return kExitOk;
+}
+
+// One line of --features: {"page":P,"box":[...],"text":"...","f":[...],"rules":0|1}, numbers as
+// floats that read back exactly (a non-finite value as 0).
+void AppendFeatureLine(std::string& out, uint32_t page, const float* box, int boxCount, const std::string_view* text,
+                       const float* features, int count, bool rules) {
+    char buf[32];
+    const auto number = [&](float v) {
+        std::snprintf(buf, sizeof buf, "%.9g", std::isfinite(v) ? double(v) : 0.0);
+        out += buf;
+    };
+    out += "{\"page\":" + std::to_string(page) + ",\"box\":[";
+    for (int i = 0; i < boxCount; ++i) {
+        if (i) out.push_back(',');
+        number(box[i]);
+    }
+    out += ']';
+    if (text) {
+        out += ",\"text\":";
+        Batch::AppendJsonString(out, *text);
+    }
+    out += ",\"f\":[";
+    for (int i = 0; i < count; ++i) {
+        if (i) out.push_back(',');
+        number(features[i]);
+    }
+    out += rules ? "],\"rules\":1}\n" : "],\"rules\":0}\n";
+}
+
+// --features: converts IN.pdf with the flags given, on one page thread, and writes the feature
+// lines of `kind` (edge-rows or table-gaps; layout/features.h) to OUT.jsonl.
+int WriteFeatures(std::string_view kind, const std::string& input, const std::string& output,
+                  const DocumentOptions& document) {
+    const bool edges = kind == "edge-rows";
+    if (!edges && kind != "table-gaps") return Usage("--features takes edge-rows or table-gaps: ", kind);
+    std::string lines;
+    Layout::FeatureSink sink;
+    sink.context = &lines;
+    if (edges) {
+        sink.edgeRow = [](void* context, uint32_t page, const float* f, float x0, float y0, float x1, float y1,
+                          std::string_view text, bool removed) {
+            const float box[4] = {x0, y0, x1, y1};
+            AppendFeatureLine(*static_cast<std::string*>(context), page, box, 4, &text, f, Layout::kEdgeRowFeatures,
+                              removed);
+        };
+    } else {
+        sink.tableGap = [](void* context, uint32_t page, const float* f, float x0, float x1, bool chosen) {
+            const float box[2] = {x0, x1};
+            AppendFeatureLine(*static_cast<std::string*>(context), page, box, 2, nullptr, f,
+                              Layout::kTableGapFeatures, chosen);
+        };
+    }
+    Layout::ConvertOptions options = document.convert;
+    options.imageDirectory.clear();
+    options.imageLinkPrefix.clear();
+    options.pageWorkers = 1;
+    options.features = &sink;
+    std::string markdown;
+    Batch::Record record;
+    ConvertDocument(input, std::string(), document.password, options, markdown, record, false);
+    if (record.code != kExitOk) {
+        PrintError(record.error);
+        return record.code;
+    }
+    if (!File::WriteAll(output, lines)) {
+        PrintError("cannot write " + output);
+        return kExitUnwritable;
+    }
     return kExitOk;
 }
 
@@ -802,7 +877,8 @@ int main(int argc, char** argv) {
         PrintUsage(stderr);
         return kExitUsage;
     }
-    enum class Mode { None, Convert, Inspect, Batch, Serve, Bench } mode = Mode::None;
+    enum class Mode { None, Convert, Inspect, Batch, Serve, Bench, Features } mode = Mode::None;
+    std::string featureKind;
     std::string input;
     std::string output;
     DocumentOptions document;
@@ -810,7 +886,7 @@ int main(int argc, char** argv) {
     BatchOptions batch;
     bool report = false;
     bool json = false;
-    const char* kModes = "only one of --convert, --batch, --serve, --inspect and --bench";
+    const char* kModes = "only one of --convert, --batch, --serve, --inspect, --bench and --features";
 
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string_view arg = args[i];
@@ -845,6 +921,13 @@ int main(int argc, char** argv) {
             if (i + 1 >= args.size()) return Usage("--inspect needs IN.pdf");
             mode = Mode::Inspect;
             input = args[++i];
+        } else if (arg == "--features") {
+            if (mode != Mode::None) return Usage(kModes);
+            if (i + 3 >= args.size()) return Usage("--features needs edge-rows or table-gaps, IN.pdf and OUT.jsonl");
+            mode = Mode::Features;
+            featureKind = args[++i];
+            input = args[++i];
+            output = args[++i];
         } else if (arg == "--bench") {
             if (mode != Mode::None) return Usage(kModes);
             if (i + 3 >= args.size()) return Usage("--bench needs IN.pdf, TMPDIR and N");
@@ -908,6 +991,7 @@ int main(int argc, char** argv) {
             if (!json) return Usage("--serve needs --json");
             if (report) return Usage("--serve --json takes no --report: its answers are the records");
             return RunServe(document, batch.workersGiven ? batch.workers : 1);
+        case Mode::Features: return WriteFeatures(featureKind, input, output, document);
         case Mode::Bench:
             SetBatchAllocator();
             return Bench(input, output, benchCount, document);

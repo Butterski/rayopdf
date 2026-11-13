@@ -17,6 +17,7 @@
 // baselines. Images join that order afterwards, after the paragraph they would split.
 #pragma once
 
+#include "layout/features.h"
 #include "layout/page.h"
 
 #include <vector>
@@ -27,7 +28,8 @@ namespace RayoPdf::Layout {
 constexpr float kRunningBand = 0.12f;
 
 // Marks running headers, footers and page numbers on `pages` with kLineRemoved; how many lines.
-int RemoveRunningLines(std::vector<PageData>& pages);
+// `sink` (layout/features.h) gets the edge rows examined in the outer tenth of each page.
+int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink = nullptr);
 
 // Fills page.order with the lines not removed, in reading order: upright text first, then each
 // other direction in its own frame.
