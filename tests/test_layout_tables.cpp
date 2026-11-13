@@ -989,6 +989,49 @@ void TestFractionBar() {
     RAYOPDF_CHECK(report.tables == 0, 576);
 }
 
+// A displayed fraction set in upright type, the formula's name beside its bar ("LT = 1 / (1/L1 +
+// 1/L2 + 1/L3)"): three rows that part into columns under one rule are no table. A table of three
+// rows under a header rule, prose a column away beside it, stays one.
+void TestFractionBesideText() {
+    {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddProse(page, 72, 450, 740, 3);
+        AddText(page, "LT =", 100, 697);
+        AddText(page, "1", 208, 706);
+        HLine(page, 130, 290, 700);
+        AddText(page, "1", 140, 688);
+        AddText(page, "1", 208, 688);
+        AddText(page, "1", 276, 688);
+        AddText(page, "L1", 136, 676);
+        AddText(page, "+", 172, 676);
+        AddText(page, "L2", 204, 676);
+        AddText(page, "+", 240, 676);
+        AddText(page, "L3", 272, 676);
+        AddProse(page, 72, 450, 650, 2);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("fraction beside text", md);
+        RAYOPDF_CHECK(report.tables == 0 && Contains(md, "LT =") && Contains(md, "L3"), 1743);
+    }
+    {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddProse(page, 320, 220, 740, 8);
+        AddText(page, "Method", 76, 704);
+        AddText(page, "Score", 200, 704);
+        HLine(page, 72, 280, 700);
+        AddText(page, "Alpha", 76, 688);
+        AddText(page, "2.10", 200, 688);
+        AddText(page, "Beta", 76, 676);
+        AddText(page, "3.40", 200, 676);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("table under a rule beside prose", md);
+        RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Method | Score |\n| --- | --- |\n| Alpha | 2.10 |"), 1744);
+    }
+}
+
 // Double rulings 3 pt apart around every column: the empty slivers between them are no columns.
 void TestDoubleRules() {
     std::vector<PageData> pages{NewPage()};
@@ -2462,6 +2505,7 @@ int main(int argc, char** argv) {
     TestHostileRulings();
     TestDegenerateGrids();
     TestFractionBar();
+    TestFractionBesideText();
     TestDoubleRules();
     TestColumnLattice();
     TestStripes();

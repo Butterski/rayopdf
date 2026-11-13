@@ -3149,9 +3149,23 @@ void Detector::RuleStacks() {
                 }
                 return (2 * mono > all && (starts == 0 || 3 * labelled < 2 * starts)) || 10 * math >= 4 * all;
             };
+            // A single rule over the fewest rows its table takes, with text beside the rule at its
+            // height an em from its ends at most (a displayed formula's name and equals sign, or its
+            // next term): the bar of a fraction, whose numerator and denominator are no table.
+            const auto fractionBar = [&]() {
+                if (!single || end - begin != 3) return false;
+                const float reachY = 3 * Fmax(em, bodySize_);
+                auto it = std::lower_bound(words_.begin(), words_.end(), top + reachY, [](const TWord& w, float y) { return w.base > y; });
+                for (; it != words_.end() && it->base >= top - reachY; ++it) {
+                    const float cx = (it->x0 + it->x1) / 2, reach = Fmax(em, it->size);
+                    if (it->removed || it->y0 > top || it->y1 < top || (cx >= xa && cx <= xb)) continue;
+                    if ((cx < xa && xa - it->x1 <= reach) || (cx > xb && it->x0 - xb <= reach)) return true;
+                }
+                return false;
+            };
             // A single rule closes nothing: its table needs three rows at least.
             if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&
-                multiCell() && !code() &&
+                multiCell() && !code() && !fractionBar() &&
                 !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps) &&
                 !(open && WordSpaced(rows, rowWords, begin, end, gaps)) &&
                 !FigureText(rows, rowWords, begin, end, em)) {
