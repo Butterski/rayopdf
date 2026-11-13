@@ -1883,18 +1883,41 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         std::vector<uint32_t> rawOf(infos.size(), kNoRaw);
         for (size_t r = 0; r < raws.size(); ++r) rawOf[raws[r].first] = static_cast<uint32_t>(r);
         uint64_t budget = kCardChecks;
-        const auto overColumn = [&](const Info& t) {
+        // A look over t's page for the column below it takes the page's raw blocks from the budget:
+        // false once the budget has run out (no column then).
+        const auto takeLook = [&](const Info& t) {
             const uint32_t from = rawFrom[t.page], to = rawFrom[t.page + 1];
             if (to - from > budget) return false;
             budget -= to - from;
+            return true;
+        };
+        // What overColumn reads of each raw block's first line, packed, made at the first look: its
+        // baseline, top, left edge (or its body's), direction, and whether it may be a column at all
+        // (no anchor, no note).
+        struct Top {
+            float baseline, vt, left;
+            uint8_t dir;
+            bool usable;
+        };
+        std::vector<Top> tops;
+        const auto overColumn = [&](const Info& t) {
+            if (tops.empty()) {
+                tops.resize(raws.size());
+                for (size_t q = 0; q < raws.size(); ++q) {
+                    const Info& top = infos[raws[q].first];
+                    tops[q] = Top{top.baseline, top.vt, Fmin(top.u0, raws[q].bodyU0), top.dir,
+                                  !(top.flags & kLineAnchor) && raws[q].note == 0};
+                }
+            }
+            const uint32_t from = rawFrom[t.page], to = rawFrom[t.page + 1];
             size_t below = to;
             for (size_t q = from; q < to; ++q) {
-                const Info& top = infos[raws[q].first];
-                if (top.dir != t.dir || (top.flags & kLineAnchor) || raws[q].note != 0 || !(top.baseline < t.vb)) continue;
-                if (std::fabs(Fmin(top.u0, raws[q].bodyU0) - t.u0) > body) continue;
-                if (below == to || top.vt > infos[raws[below].first].vt) below = q;
+                const Top& top = tops[q];
+                if (top.dir != t.dir || !top.usable || !(top.baseline < t.vb)) continue;
+                if (std::fabs(top.left - t.u0) > body) continue;
+                if (below == to || top.vt > tops[below].vt) below = q;
             }
-            if (below == to || t.vb - infos[raws[below].first].vt > 2.5f * t.size) return false;
+            if (below == to || t.vb - tops[below].vt > 2.5f * t.size) return false;
             const RawBlock& c = raws[below];
             uint32_t lines = 0, chars = 0;
             for (uint32_t i = c.first; i < c.first + c.count && i < c.first + 64; ++i) lines++, chars += infos[i].chars;
@@ -1903,11 +1926,16 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         const auto titleLike = [&](uint32_t r) {
             const RawBlock& b = raws[r];
             const Info& a = infos[b.first];
+            if (b.count > 2 || !a.rowPeer || a.chars > 40 || (a.flags & kLineAnchor) ||
+                !(a.size >= 1.1f * body || (a.flags & kLineAllBold)))
+                return false;
             uint32_t chars = 0;
             for (uint32_t i = b.first; i < b.first + b.count; ++i) chars += infos[i].chars;
-            return b.count <= 2 && a.rowPeer && a.chars <= 40 && chars <= 80 && !(a.flags & kLineAnchor) &&
-                   (a.size >= 1.1f * body || (a.flags & kLineAllBold));
+            return chars <= 80;
         };
+        // The infos of a block's titles whose look fitted the budget, looked at only when the block
+        // has a peer.
+        std::vector<uint32_t> looks;
         for (size_t r = 0; r < raws.size(); ++r) {
             const RawBlock& b = raws[r];
             const Info& a = infos[b.first];
@@ -1915,19 +1943,25 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             const uint32_t from = infoFrom[a.page], to = infoFrom[a.page + 1];
             if (to - from > budget) continue;
             budget -= to - from;
-            uint32_t titles = 1, over = overColumn(a) ? 1 : 0;
+            uint32_t titles = 1;
+            looks.clear();
+            if (takeLook(a)) looks.push_back(b.first);
             // Its peers: the lines rowPeer paired it with, each starting a title-like block.
             for (uint32_t i = from; i < to; ++i) {
                 const Info& o = infos[i];
-                if (i == b.first || !o.rowPeer || o.dir != a.dir || rawOf[i] == kNoRaw || !titleLike(rawOf[i]) ||
+                if (i == b.first || !o.rowPeer || o.dir != a.dir || rawOf[i] == kNoRaw ||
                     std::fabs(o.baseline - a.baseline) > 0.3f * Fmax(a.size, o.size) ||
                     std::fabs(o.size - a.size) > 0.03f * Fmax(a.size, o.size) || o.chars > 60 || o.numbering ||
-                    ((o.flags ^ a.flags) & kLineAllBold) || (o.flags & kLineAnchor) || !(o.u0 > a.u1 || o.u1 < a.u0))
+                    ((o.flags ^ a.flags) & kLineAllBold) || (o.flags & kLineAnchor) || !(o.u0 > a.u1 || o.u1 < a.u0) ||
+                    !titleLike(rawOf[i]))
                     continue;
                 titles++;
-                if (overColumn(o)) over++;
+                if (takeLook(o)) looks.push_back(i);
             }
-            cardTitle[r] = titles >= 2 && over >= 2 && 2 * over >= titles;
+            if (titles < 2) continue;
+            uint32_t over = 0;
+            for (const uint32_t i : looks) over += overColumn(infos[i]) ? 1 : 0;
+            cardTitle[r] = over >= 2 && 2 * over >= titles;
         }
     }
     for (size_t r = 0; r < raws.size(); ++r) {
