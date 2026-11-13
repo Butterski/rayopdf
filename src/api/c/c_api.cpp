@@ -66,6 +66,9 @@ bool ParseArgs(const char* const* args, size_t count, Layout::ConvertOptions& op
         }
     }
     options = document.convert;
+#ifdef __EMSCRIPTEN__
+    options.pageWorkers = 1;  // the WebAssembly module has no threads; --workers is taken and has no effect
+#endif
     password = document.password;
     options.imageDirectory.clear();
     options.imageLinkPrefix.clear();

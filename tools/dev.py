@@ -6,7 +6,7 @@ Nothing is installed on the host: the compilers, CMake and Ninja live in the ima
 repository is mounted at /src, and builds go to build/<name>/ (git-ignored).
 
 Usage:
-  python3 tools/dev.py [--image TAG] image [--name build|ocr|wheel]  # build an image (default: build)
+  python3 tools/dev.py [--image TAG] image [--name build|ocr|wheel|wasm]  # build an image (default: build)
   python3 tools/dev.py [--image TAG] build [--config CONFIG] [--dir NAME] [--target T ...]
   python3 tools/dev.py [--image TAG] test [--config CONFIG] [--dir NAME] [-- CTEST ARGS]
   python3 tools/dev.py [--image TAG] run [--mount HOST:CTR] -- COMMAND ...
@@ -18,7 +18,10 @@ targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for
 release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test` runs the
 core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in the
 rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
-newer than 2.28; tests including tests/verify_python.py), and the OCR add-on's
+newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
+rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
+rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), and the
+OCR add-on's
 configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference runtimes, models,
 tesseract) unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr on
 ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the same on ONNX
@@ -40,10 +43,12 @@ IMAGE = "rayopdf-build:2"
 IMAGE_TAG = IMAGE  # --image, or the config's image
 # Images `image --name` builds: Dockerfile under docker/ and tag.
 IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:1"),
-          "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1")}
+          "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1"), "wasm": ("wasm.Dockerfile", "rayopdf-wasm:1")}
 # Configs that build in another image than the build image.
 CONFIG_IMAGES = {"ocr": "rayopdf-ocr:1", "ocr-ort": "rayopdf-ocr:1", "ocr-windows": "rayopdf-ocr:1",
-                 "wheel": "rayopdf-wheel:1"}
+                 "wheel": "rayopdf-wheel:1", "wasm": "rayopdf-wasm:1"}
+# Configs whose configure step runs through a wrapper (Emscripten's emcmake: its toolchain file).
+CONFIG_WRAPPERS = {"wasm": "emcmake"}
 OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:1
 
 # MinGW's linker writes the link time into the PE header unless told not to; without it two builds
@@ -67,6 +72,7 @@ CONFIGS = {
                 "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine",
                 PE_NO_TIMESTAMP, PE_DLL_NO_TIMESTAMP, "-DRAYOPDF_SHARED=ON"],
     "wheel": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_SHARED=ON"],
+    "wasm": ["-DCMAKE_BUILD_TYPE=Release"],
     "ocr": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
             "-DRAYOPDF_OCR_RUNTIME=ncnn", "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux",
             f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
@@ -114,8 +120,10 @@ def cmd_image(args) -> int:
 
 def configure_and_build(args) -> int:
     out = build_dir(args)
-    script = (f"cmake -S . -B {out} -G Ninja {' '.join(CONFIGS[args.config])} >/dev/null && "
-              f"cmake --build {out}")
+    configure = f"cmake -S . -B {out} -G Ninja {' '.join(CONFIGS[args.config])}"
+    if args.config in CONFIG_WRAPPERS:
+        configure = f"{CONFIG_WRAPPERS[args.config]} {configure}"
+    script = f"{configure} >/dev/null && cmake --build {out}"
     if args.target:
         script += " --target " + " ".join(args.target)
     return docker(["sh", "-ec", script])

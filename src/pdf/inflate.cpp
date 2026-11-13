@@ -887,6 +887,9 @@ private:
 // A buffer kept per thread for whole outputs up to this size, so that the common stream's output
 // needs no allocation of its own before it is copied out; a larger one is freed after its call.
 constexpr size_t kKeptBuffer = size_t(1) << 20;
+// The largest output limit: 1 TiB, far beyond any stream, or half the address space where size_t
+// has 32 bits (the WebAssembly module), so that `limit + 1 + kSlack` stays in range.
+constexpr size_t kMaxLimit = sizeof(size_t) >= 8 ? static_cast<size_t>(uint64_t(1) << 40) : SIZE_MAX / 2;
 
 } // namespace
 
@@ -916,7 +919,7 @@ void Output::Release() {
 
 Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
-    limit = std::min(limit, (size_t(1) << 40));
+    limit = std::min(limit, kMaxLimit);
     Output& buffer = PerThread<Output>();
     Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, 0, limit,
                       PerThread<DynamicTables>());
@@ -927,7 +930,7 @@ Result Inflate(std::string_view in, std::string& out, size_t limit) {
 }
 
 Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length) {
-    limit = std::min(limit, (size_t(1) << 40));
+    limit = std::min(limit, kMaxLimit);
     Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), out, at, limit,
                       PerThread<DynamicTables>());
     const Result result = inflater.Run();
@@ -947,7 +950,7 @@ Stream::Stream() = default;
 Stream::~Stream() = default;
 
 void Stream::Start(std::string_view in, size_t limit) {
-    limit = std::min(limit, (size_t(1) << 40));
+    limit = std::min(limit, kMaxLimit);
     if (!state_) state_ = std::make_unique<State>();
     if (!state_->tables) state_->tables.reset(new DynamicTables);
     state_->inflater = std::make_unique<Inflater>(reinterpret_cast<const uint8_t*>(in.data()), in.size(),

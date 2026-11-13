@@ -1,0 +1,23 @@
+{
+  "name": "rayopdf",
+  "version": "0.0.0",
+  "description": "PDF to Markdown, JSON and chunks for retrieval in WebAssembly: RayoPDF's converter",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Butterski/rayopdf.git"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./rayopdf.d.ts",
+      "default": "./rayopdf.js"
+    }
+  },
+  "main": "./rayopdf.js",
+  "types": "./rayopdf.d.ts",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["pdf", "markdown", "converter", "rag", "webassembly"]
+}

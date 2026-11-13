@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # A tag v<VERSION> builds the core archives (tools/package.py: the binaries, the C++ API's library
-# archives and the Python wheels) and makes a draft release with them and SHA256SUMS, and builds
-# the container image from the Linux archive, checks it and pushes it to ghcr.io. Run by hand
-# (`gh workflow run release.yml`) it is a dry run: the same archives as workflow artifacts and the
-# image checked, no release and no push. The OCR add-on's archives need the rayopdf-ocr:1 image
-# and are built and attached locally: CONTRIBUTING.md § Versions and releases.
+# archives, the Python wheels and the npm package) and makes a draft release with them and
+# SHA256SUMS, and builds the container image from the Linux archive, checks it and pushes it to
+# ghcr.io. Run by hand (`gh workflow run release.yml`) it is a dry run: the same archives as
+# workflow artifacts and the image checked, no release and no push. The OCR add-on's archives
+# need the rayopdf-ocr:1 image and are built and attached locally: CONTRIBUTING.md § Versions and
+# releases.
 name: Release
 
 on:
@@ -27,7 +28,7 @@ jobs:
   archives:
     name: Core archives
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,6 +51,10 @@ jobs:
         run: |
           python3 tools/dev.py image --name wheel
           python3 tools/dev.py build --config wheel --target rayopdf_c
+      - name: Build rayopdf-core.wasm (Emscripten, in rayopdf-wasm:1)
+        run: |
+          python3 tools/dev.py image --name wasm
+          python3 tools/dev.py build --config wasm --target rayopdf_wasm
       - name: Package, twice with the same bytes
         run: |
           python3 tools/package.py --out build/dist
@@ -63,6 +68,7 @@ jobs:
             build/dist/rayopdf-*.tar.gz
             build/dist/rayopdf-*.zip
             build/dist/rayopdf-*.whl
+            build/dist/rayopdf-*.tgz
             build/dist/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
@@ -90,11 +96,11 @@ jobs:
           cd dist && sha256sum -c SHA256SUMS
           if gh release view "$tag" > /dev/null 2>&1; then
             # A second run of the same tag replaces the files of the release it made.
-            gh release upload "$tag" rayopdf-*.tar.gz rayopdf-*.zip rayopdf-*.whl SHA256SUMS --clobber
+            gh release upload "$tag" rayopdf-*.tar.gz rayopdf-*.zip rayopdf-*.whl rayopdf-*.tgz SHA256SUMS --clobber
           else
             gh release create "$tag" --draft --verify-tag --title "RayoPDF ${tag#v}" \
               --notes "Core archives of commit $GITHUB_SHA, built by the Release workflow; SHA256SUMS lists their checksums. The OCR add-on's archives are built and attached by hand (CONTRIBUTING.md, Versions and releases)." \
-              rayopdf-*.tar.gz rayopdf-*.zip rayopdf-*.whl SHA256SUMS
+              rayopdf-*.tar.gz rayopdf-*.zip rayopdf-*.whl rayopdf-*.tgz SHA256SUMS
           fi
 
   container:

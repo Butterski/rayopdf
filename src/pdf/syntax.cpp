@@ -83,7 +83,7 @@ PdfArena::~PdfArena() {
 
 void* PdfArena::AllocateNew(size_t bytes) {
     // Far beyond any input: a size that cannot be meant.
-    if (bytes > (size_t(1) << 40)) return nullptr;
+    if (static_cast<uint64_t>(bytes) > (uint64_t(1) << 40)) return nullptr;
     bytes = (bytes + 7) & ~size_t(7);
     if (bytes > static_cast<size_t>(end_ - at_)) {
         // Chunks double from 4 KiB to 1 MiB with their header; a bigger block gets a chunk of its own.

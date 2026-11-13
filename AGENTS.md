@@ -6,8 +6,8 @@ crypt, pdf, text, image, raster, layout, api, ocr and cli; the C++ API's public 
 `include/rayopdf/rayopdf.h`, the C ABI's `include/rayopdf/rayopdf_c.h`; the OCR add-on
 `rayopdf-ocr` is built from `src/ocr/addon`), its tests under `tests/`, the Python package over
 the C ABI under `python/` (ctypes, Python 3.9 or newer, the standard library only outside
-`rayopdf/integrations/`), the evaluation harness under `eval/` and `tools/eval.py`, and the
-research and roadmap under `docs/`.
+`rayopdf/integrations/`), the npm package over its WebAssembly build under `packaging/npm/`, the
+evaluation harness under `eval/` and `tools/eval.py`, and the research and roadmap under `docs/`.
 
 ## Rules
 
@@ -92,5 +92,5 @@ research and roadmap under `docs/`.
     build image on pull requests, tags `v*`, once a night and by hand, never on pushes to master;
     keep it so, with `concurrency` that cancels superseded runs and `timeout-minutes` on every
     job. A workflow runs the same `tools/` commands a developer runs, in the image built from
-    `docker/build.Dockerfile` (`.github/actions/build-image`), or for the `wheel` config the one
-    `tools/dev.py image --name wheel` builds, not its own build steps.
+    `docker/build.Dockerfile` (`.github/actions/build-image`), or for the `wheel` and `wasm`
+    configs the one `tools/dev.py image --name wheel|wasm` builds, not its own build steps.

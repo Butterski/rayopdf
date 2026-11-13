@@ -45,9 +45,9 @@ typedef struct rayopdf_output {
 // `rayopdf --convert` (--password=PW, --pages=A-B, --format=..., --math=..., --chunk-chars=N,
 // --page-markers, --front-matter, --furniture=..., --plain, --tables=..., --no-exact,
 // --no-annotations, --no-structure, --ocr=..., --ocr-addon=PATH), --workers=N (1-64 page threads,
-// default 1) and --images=DIR (image files written to DIR and linked as DIR/NAME; default and
-// --images=none: no images). An unknown flag gives status 2 and "unknown option: X". Fills `out`
-// (overwritten, never read) and returns its status.
+// default 1; always 1 in the WebAssembly module) and --images=DIR (image files written to DIR and
+// linked as DIR/NAME; default and --images=none: no images). An unknown flag gives status 2 and
+// "unknown option: X". Fills `out` (overwritten, never read) and returns its status.
 RAYOPDF_API int rayopdf_convert(const void* pdf, size_t pdf_size, const char* const* args, size_t arg_count,
                                 rayopdf_output* out);
 

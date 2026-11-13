@@ -39,8 +39,17 @@ if(RAYOPDF_SHARED)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
-# Threads for the batch modes' workers (--batch, --serve --json --workers=N).
-find_package(Threads REQUIRED)
+# The WebAssembly module (EMSCRIPTEN, tools/dev.py config wasm): the C ABI alone, on one thread
+# (no threads linked; the C ABI converts on one page thread), without processes (the OCR add-on
+# is never found: src/layout/ocr_process_none.cpp), so no command line, batch, serve or add-on.
+if(EMSCRIPTEN)
+    if(RAYOPDF_SHARED OR RAYOPDF_STATIC OR RAYOPDF_SANITIZE OR RAYOPDF_TSAN OR RAYOPDF_OCR_ADDON)
+        message(FATAL_ERROR "An Emscripten build takes none of RAYOPDF_SHARED, _STATIC, _SANITIZE, _TSAN, _FUZZ, _OCR_ADDON.")
+    endif()
+else()
+    # Threads for the batch modes' workers (--batch, --serve --json --workers=N).
+    find_package(Threads REQUIRED)
+endif()
 
 # Flags of all own code: no exceptions and no RTTI anywhere (roadmap D1), warnings on. Release
 # builds on Linux also have no unwind tables: nothing unwinds (a throw of libstdc++'s ends the
@@ -101,8 +110,18 @@ set(RAYOPDF_DEPENDS_image pdf)
 set(RAYOPDF_DEPENDS_layout text image)
 set(RAYOPDF_DEPENDS_api layout)
 set(RAYOPDF_DEPENDS_ocr crypt common)
+if(EMSCRIPTEN)
+    list(REMOVE_ITEM RAYOPDF_MODULES ocr)
+endif()
 foreach(module ${RAYOPDF_MODULES})
     file(GLOB sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/${module}/*.cpp")
+    # The OCR add-on's child process: ocr_process.cpp where processes exist, else the stand-in
+    # that starts none.
+    if(EMSCRIPTEN)
+        list(FILTER sources EXCLUDE REGEX "/layout/ocr_process\\.cpp$")
+    else()
+        list(FILTER sources EXCLUDE REGEX "/layout/ocr_process_none\\.cpp$")
+    endif()
     if(sources)
         add_library(rayopdf_${module} STATIC ${sources})
         target_include_directories(rayopdf_${module} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -112,7 +131,7 @@ foreach(module ${RAYOPDF_MODULES})
             endif()
         endforeach()
         rayopdf_flags(rayopdf_${module})
-        if(module STREQUAL "common")
+        if(module STREQUAL "common" AND NOT EMSCRIPTEN)
             target_link_libraries(rayopdf_common PUBLIC Threads::Threads)
         endif()
     endif()
@@ -150,9 +169,23 @@ if(TARGET rayopdf_api AND RAYOPDF_SHARED)
     endif()
 endif()
 
+# The WebAssembly module of the npm package (packaging/npm/): rayopdf-core.mjs (an ES6 module
+# factory for browsers and Node.js) and rayopdf-core.wasm, the C ABI and every module, built
+# without SIMD (the scalar paths) on one thread.
+if(TARGET rayopdf_api AND EMSCRIPTEN)
+    add_executable(rayopdf_wasm $<TARGET_OBJECTS:rayopdf_c_obj>)
+    target_link_libraries(rayopdf_wasm PRIVATE rayopdf_api)
+    rayopdf_flags(rayopdf_wasm)
+    set_target_properties(rayopdf_wasm PROPERTIES OUTPUT_NAME rayopdf-core SUFFIX ".mjs")
+    target_link_options(rayopdf_wasm PRIVATE -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,node
+        -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB
+        -sEXPORTED_FUNCTIONS=_rayopdf_convert,_rayopdf_output_free,_rayopdf_version,_malloc,_free
+        -sEXPORTED_RUNTIME_METHODS=FS,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAPU32)
+endif()
+
 # GNU ld (not gold, lld or a PE linker) takes the INSERT scripts below.
 set(RAYOPDF_GNU_LD OFF)
-if(NOT WIN32 AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+if(NOT WIN32 AND NOT APPLE AND NOT EMSCRIPTEN AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     separate_arguments(rayopdf_linker_flags UNIX_COMMAND "${CMAKE_EXE_LINKER_FLAGS}")
     execute_process(COMMAND ${CMAKE_CXX_COMPILER} ${rayopdf_linker_flags} -Wl,--version
         OUTPUT_VARIABLE rayopdf_linker_version ERROR_QUIET)
@@ -167,7 +200,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set_source_files_properties(src/layout/lines.cpp PROPERTIES COMPILE_OPTIONS "-fno-tree-slp-vectorize")
 endif()
 
-if(TARGET rayopdf_api)
+if(TARGET rayopdf_api AND NOT EMSCRIPTEN)
     add_executable(rayopdf src/cli/main.cpp)
     target_link_libraries(rayopdf PRIVATE rayopdf_api)
     rayopdf_flags(rayopdf)
@@ -274,7 +307,18 @@ if(RAYOPDF_OCR_ADDON)
     endif()
 endif()
 
-if(RAYOPDF_TESTS)
+if(RAYOPDF_TESTS AND EMSCRIPTEN)
+    enable_testing()
+    # The npm package over the WebAssembly module (tests/verify_wasm.mjs), run by the Node.js the
+    # Emscripten toolchain names as its emulator. The core tests start processes and threads and
+    # run in the native configs only.
+    if(NOT CMAKE_CROSSCOMPILING_EMULATOR)
+        message(FATAL_ERROR "The Emscripten toolchain names no Node.js (CMAKE_CROSSCOMPILING_EMULATOR).")
+    endif()
+    list(GET CMAKE_CROSSCOMPILING_EMULATOR 0 rayopdf_node)
+    add_test(NAME wasm COMMAND ${rayopdf_node} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_wasm.mjs"
+        --module $<TARGET_FILE:rayopdf_wasm>)
+elseif(RAYOPDF_TESTS)
     enable_testing()
     # Core tests: one executable per file tests/test_<module>[_<part>].cpp, linked to its module.
     # Every check fails with a code of its own (tests/check.h lists the ranges);

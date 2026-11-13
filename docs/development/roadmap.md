@@ -357,6 +357,15 @@ JSON object a line;
   `pages`), `version()`, `RayoPdfError` with one subclass a status, and the loaders
   `rayopdf.integrations.langchain.RayoPdfLoader` and `rayopdf.integrations.llama_index.RayoPdfReader`
   (one document a chunk). `tests/verify_python.py` and, under Wine, `tests/c_api_smoke.c` check them.
+- **WebAssembly and npm:** under Emscripten (`tools/dev.py` config `wasm`, image `rayopdf-wasm:1`)
+  CMake builds the target `rayopdf_wasm` alone: `rayopdf-core.mjs` (an ES6 module factory for
+  browsers and Node.js) and `rayopdf-core.wasm` from the C ABI, without threads (one page thread,
+  whatever `--workers` says), without SIMD (the scalar paths) and without processes
+  (`src/layout/ocr_process_none.cpp` finds no OCR add-on); no command line, batch, serve or add-on.
+  `packaging/npm/rayopdf.js` wraps it: `convert(pdf, options)` with Python's option names in
+  camelCase resolves to `{text, data, report, pages, images}` (images written to MEMFS `/out`,
+  returned as a `Map` and deleted) or rejects with a `RayoPdfError` carrying the status;
+  `version()`; types in `rayopdf.d.ts`. `tests/verify_wasm.mjs` checks it under Node.js.
 
 |Exit code|Meaning|
 |---|---|
@@ -377,7 +386,8 @@ LICENSE, NOTICE, VERSION and `third_party/licenses/`, with fixed times and owner
 and `example.cpp`. The Python wheels `rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl` and
 `rayopdf-VERSION-py3-none-win_amd64.whl` (`tools/build_wheel.py`, reproducible: sorted entries,
 one fixed time, RECORD with SHA-256) hold the package with the shared library and the core
-archives' documents; they are attached to the release, not published to PyPI. The container
+archives' documents; they are attached to the release, not published to PyPI. So is the npm
+package `rayopdf-VERSION.tgz` (npm pack's layout under `package/`, fixed times). The container
 image `ghcr.io/butterski/rayopdf:VERSION` (`packaging/container/Dockerfile`, built by the
 Release workflow from the Linux archive) holds the static binary alone on an empty base, run as
 user 65532 in `/w`.

@@ -149,6 +149,7 @@ build.
 | `rayopdf-<version>-windows-x64.zip` | 1,720 KB | Windows: `rayopdf.exe` |
 | `rayopdf-lib-<version>-<platform>` | 1,589 KB / 1,677 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
 | `rayopdf-<version>-py3-none-<platform>.whl` | new in 0.3.0 | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
+| `rayopdf-<version>.tgz` | new in 0.3.0 | JavaScript (WebAssembly) for browsers and Node.js 18+: `npm install ./rayopdf-<version>.tgz` |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
 | `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: Cyrillic, Korean, Arabic, Devanagari, Tamil, Kannada for the add-on |
 
@@ -476,6 +477,23 @@ PDF as one `Document` a chunk with its `heading_path` and `pages`, or with `mode
 `rayopdf.integrations.llama_index.RayoPdfReader` (`pip install llama-index-core`) is the same for
 LlamaIndex. Other languages call the C ABI of `include/rayopdf/rayopdf_c.h` (`rayopdf_convert`
 with the flags of `--convert` as strings) in the same library.
+
+### JavaScript (WebAssembly)
+
+`rayopdf-VERSION.tgz`, attached to each release (not on the npm registry), is the npm package
+`rayopdf`: the converter built with Emscripten for browsers and Node.js 18 or newer, an ES
+module. `convert(pdf, options)` takes the PDF as a `Uint8Array` and the options of the Python
+package in camelCase (`format`, `pages`, `password`, `math`, `plain`, `tables`, `furniture`,
+`chunkChars`, `pageMarkers`, `frontMatter`, ...); it resolves to `{text, data, report, pages,
+images}`, where `images` maps file names to bytes when `images` is `true` (linked as
+`images/NAME`) or a folder name, and rejects with a `RayoPdfError` carrying the `status`. It runs
+on one thread, without SIMD and without the OCR add-on, with the same output as the command line.
+
+```sh
+npm install ./rayopdf-VERSION.tgz
+node --input-type=module -e 'import { readFileSync } from "node:fs"; import { convert } from "rayopdf";
+console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
+```
 
 ### Container image
 

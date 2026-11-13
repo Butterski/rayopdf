@@ -29,6 +29,12 @@ in the .dist-info folder:
   rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl   build/wheel/librayopdf.so (glibc <= 2.28)
   rayopdf-VERSION-py3-none-win_amd64.whl               build/windows/rayopdf.dll (MinGW-w64)
 
+The npm package (--only npm), in npm pack's layout (one folder package/): packaging/npm's
+package.json (its version set from VERSION), rayopdf.js and rayopdf.d.ts, the WebAssembly module
+and the core archives' documents:
+
+  rayopdf-VERSION.tgz                       build/wasm/rayopdf-core.mjs and rayopdf-core.wasm
+
 With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
 the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
@@ -50,6 +56,7 @@ Build the binaries first:
   python3 tools/dev.py build --config static
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
   python3 tools/dev.py build --config wheel                           # in rayopdf-wheel:1
+  python3 tools/dev.py build --config wasm                            # in rayopdf-wasm:1
   python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:1
   python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
   python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
@@ -58,8 +65,8 @@ Usage:
   python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
                            [--lib-linux build/static/librayopdf.a] [--lib-windows build/windows/librayopdf.a]
                            [--wheel-linux build/wheel/librayopdf.so] [--wheel-windows build/windows/rayopdf.dll]
-                           [--out build/dist]
-                           [--only linux|windows|lib-linux|lib-windows|wheel-linux|wheel-windows|
+                           [--npm build/wasm/rayopdf-core.mjs] [--out build/dist]
+                           [--only linux|windows|lib-linux|lib-windows|wheel-linux|wheel-windows|npm|
                                    ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
@@ -73,6 +80,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import struct
@@ -286,6 +294,27 @@ def lib_entries(library: Path, docs: list[tuple[str, bytes, int]]) -> list[tuple
             ("example.cpp", (REPO / "src" / "api" / "example" / "example.cpp").read_bytes(), 0o644)] + docs
 
 
+def check_wasm(module: Path) -> None:
+    """rayopdf-core.mjs and beside it rayopdf-core.wasm, a WebAssembly binary (magic \\0asm, version 1)."""
+    wasm = module.with_suffix(".wasm")
+    if not module.is_file() or b"rayopdf-core.wasm" not in module.read_bytes():
+        raise SystemExit(f"package: {module} is not the module factory of rayopdf-core.wasm: build it with --config wasm")
+    if wasm.read_bytes()[:8] != b"\0asm\x01\0\0\0":
+        raise SystemExit(f"package: {wasm} is not a WebAssembly binary: build it with --config wasm")
+
+
+def npm_entries(module: Path, version: str, docs: list[tuple[str, bytes, int]]) -> list[tuple[str, bytes, int]]:
+    """The npm package's entries: packaging/npm's files (package.json with `version`), the module and `docs`."""
+    folder = REPO / "packaging" / "npm"
+    manifest = json.loads((folder / "package.json").read_text(encoding="utf-8"))
+    manifest["version"] = version
+    return [("package.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"), 0o644),
+            ("rayopdf.js", (folder / "rayopdf.js").read_bytes(), 0o644),
+            ("rayopdf.d.ts", (folder / "rayopdf.d.ts").read_bytes(), 0o644),
+            ("rayopdf-core.mjs", module.read_bytes(), 0o644),
+            ("rayopdf-core.wasm", module.with_suffix(".wasm").read_bytes(), 0o644)] + docs
+
+
 def tar_gz(path: Path, folder: str, entries: list[tuple[str, bytes, int]], mtime: int) -> None:
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
@@ -351,7 +380,7 @@ def main() -> int:
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
     parser.add_argument("--only", choices=("linux", "windows", "lib-linux", "lib-windows", "wheel-linux",
-                                           "wheel-windows", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
+                                           "wheel-windows", "npm", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
                                            "ocr-scripts-windows"),
                         help="package one archive")
     parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
@@ -359,6 +388,8 @@ def main() -> int:
     parser.add_argument("--wheel-linux", default="build/wheel/librayopdf.so",
                         help="the manylinux_2_28 wheel's shared library (--config wheel)")
     parser.add_argument("--wheel-windows", default="build/windows/rayopdf.dll", help="the win_amd64 wheel's DLL")
+    parser.add_argument("--npm", default="build/wasm/rayopdf-core.mjs",
+                        help="the npm package's WebAssembly module (rayopdf-core.wasm beside it; --config wasm)")
     parser.add_argument("--ocr", action="store_true", help="also package the OCR add-on's archives and script pack")
     parser.add_argument("--ocr-linux", default="build/ocr/addon/rayopdf-ocr", help="the linux add-on binary")
     parser.add_argument("--ocr-windows", default="build/ocr-windows/addon/rayopdf-ocr.exe", help="the windows add-on")
@@ -408,6 +439,11 @@ def main() -> int:
                 check_windows(library, dll=True)
             made.append(build_wheel.build(library, platform, version, out, docs["core"], mtime,
                                           args.repository.rstrip("/")))
+    if args.only in (None, "npm"):
+        module = REPO / args.npm if not Path(args.npm).is_absolute() else Path(args.npm)
+        check_wasm(module)
+        tar_gz(out / f"rayopdf-{version}.tgz", "package", npm_entries(module, version, docs["core"]), mtime)
+        made.append(out / f"rayopdf-{version}.tgz")
     ocr = {"ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"}
     wanted = ocr if args.ocr and args.only is None else {args.only}
     if wanted & ocr:
@@ -441,9 +477,9 @@ def main() -> int:
 
     # SHA256SUMS covers every archive of this version in the folder, also one packaged earlier.
     archives = sorted(p for p in out.iterdir()
-                      if p.name.startswith((f"rayopdf-{version}-", f"rayopdf-lib-{version}-", f"rayopdf-ocr-{version}-",
-                                            f"rayopdf-ocr-scripts-{version}-")) and
-                      p.name.endswith((".tar.gz", ".zip", ".whl")))
+                      if (p.name.startswith((f"rayopdf-{version}-", f"rayopdf-lib-{version}-", f"rayopdf-ocr-{version}-",
+                                             f"rayopdf-ocr-scripts-{version}-")) and
+                          p.name.endswith((".tar.gz", ".zip", ".whl"))) or p.name == f"rayopdf-{version}.tgz")
     sums = "".join(f"{sha256(p)}  {p.name}\n" for p in archives)
     (out / "SHA256SUMS").write_text(sums, encoding="ascii")
     for path in made:
