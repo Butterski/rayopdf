@@ -27,8 +27,10 @@ namespace RayoPdf::Layout {
 // Bands of the page height where running headers and footers live (§5.2: ~12 %).
 constexpr float kRunningBand = 0.12f;
 
-// Marks running headers, footers and page numbers on `pages` with kLineRemoved; how many lines.
-// `sink` (layout/features.h) gets the edge rows examined in the outer tenth of each page.
+// Marks running headers, footers and page numbers on `pages` with kLineRemoved; how many lines:
+// band lines whose repetition key recurs across the document, page numbers that count up from page
+// to page (from four pages), and furniture at a single page's edges. `sink` (layout/features.h)
+// gets the edge rows examined in the outer tenth of each page.
 int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink = nullptr);
 
 // Fills page.order with the lines not removed, in reading order: upright text first, then each

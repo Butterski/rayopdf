@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the reading-order stage (src/layout/reading_order.cpp): columns, cuts and page
-// furniture, on pages built glyph by glyph and converted by the whole pipeline. Exit codes 750-799
-// and 1850-1899.
+// furniture, on pages built glyph by glyph and converted by the whole pipeline. Exit codes 750-799,
+// 1850-1899 and, for page numbers counted up from page to page, 2155-2156.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -556,6 +556,57 @@ void TestNotesAfterColumns() {
                   1861);
 }
 
+// Page numbers 17 to 26 on ten pages, each on a line set in the text's own pitch between the
+// text's last line (which says something else on every page) and a bottom line that differs on
+// every page, so not the outermost line: the numbers go, counted up from page to page (or by the
+// counts and the edge rows); every other line stays.
+void TestCountedPageNumbers() {
+    std::vector<PageData> pages;
+    const char* const notes[] = {"Printed in Lisbon", "Draft for review", "Copy two of six", "Internal use only",
+                                 "Revised in March", "Archive edition", "Second printing", "Field copy",
+                                 "Proof for authors", "Library copy"};
+    const char* const last[] = {"and the harbour froze early", "while grain prices doubled", "as families left in spring",
+                                "when the new road arrived", "once teachers came by train", "after the mill burned",
+                                "before the records were lost", "where two bridges stood", "during a long drought",
+                                "until the town recovered"};
+    for (int p = 0; p < 10; ++p) {
+        pages.push_back(NewPage());
+        pages.back().number = p + 1;
+        for (int i = 0; i < 49; ++i)
+            AddText(pages.back(), "Text line " + std::to_string(i) + " of page " + std::to_string(p + 1) + " goes on.",
+                    72, 690 - 12.0f * i, 10);
+        AddText(pages.back(), last[p], 72, 102, 10);
+        AddText(pages.back(), std::to_string(17 + p), 300, 90, 10);
+        AddText(pages.back(), notes[p], 72, 78, 10);
+    }
+    const std::string md = Run(pages);
+    bool numbers = false;
+    for (int v = 17; v <= 26; ++v) numbers = numbers || Find(md, ("\n" + std::to_string(v) + "\n").c_str()) != std::string::npos;
+    RAYOPDF_CHECK(!numbers && Find(md, "Proof for authors") != std::string::npos && Find(md, "during a long drought") != std::string::npos,
+                  2155);
+}
+
+// Ten pages whose first lines, high in the top band, say different things: nothing is removed.
+void TestDifferentFirstLines() {
+    std::vector<PageData> pages;
+    const char* const openings[] = {"The harbour froze early that winter",  "Grain prices doubled within a month",
+                                    "Most families left by the spring",     "A new road reached the valley in May",
+                                    "Teachers arrived with the first train", "The mill burned down twice",
+                                    "Records of the council are lost",      "Two bridges were built by hand",
+                                    "Letters describe a long drought",      "By autumn the town had recovered"};
+    for (int p = 0; p < 10; ++p) {
+        pages.push_back(NewPage());
+        pages.back().number = p + 1;
+        AddText(pages.back(), openings[p], 72, 740, 10);
+        for (int i = 0; i < 20; ++i)
+            AddText(pages.back(), "Plain body line number " + std::to_string(i) + " on its page", 72, 690 - 12.0f * i, 10);
+    }
+    const std::string md = Run(pages);
+    bool all = true;
+    for (const char* opening : openings) all = all && Find(md, opening) != std::string::npos;
+    RAYOPDF_CHECK(all, 2156);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -583,6 +634,8 @@ int main() {
     TestOverlappingHeadRow();
     TestWideGapRows();
     TestNotesAfterColumns();
+    TestCountedPageNumbers();
+    TestDifferentFirstLines();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

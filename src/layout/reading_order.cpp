@@ -1167,6 +1167,127 @@ int RemoveMarginLines(PageData& page) {
     return removed;
 }
 
+// Page numbers counted up from page to page (docs/research/layout-math.md §5): a line of a page's
+// top or bottom band that is only a number (LonePageNumber) is a page number when the pages beside
+// it hold the numbers before and after it at the same band and row, from the edge in, at the same
+// place across the page. The exact-key pass and the outermost-line rule miss such numbers when
+// another line (a footer that differs on every page) stands between them and the edge.
+struct BandLine {
+    uint32_t line;
+    uint8_t band;  // 0 top, 1 bottom
+    uint8_t rank;  // 0 the outermost row of its band
+    float cy, x0, x1;
+    int32_t number;  // the value of a line that is only an arabic or roman number, else -1
+};
+
+// The value of a page number written alone: 1 to 4 digits, or a roman numeral (of one case) up
+// to 4999; -1 for anything else.
+int32_t LonePageNumber(std::string_view t) {
+    while (!t.empty() && t.front() == ' ') t.remove_prefix(1);
+    while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
+    if (t.empty() || t.size() > 15) return -1;
+    if (t[0] >= '0' && t[0] <= '9') {
+        if (t.size() > 4) return -1;
+        int32_t value = 0;
+        for (char c : t) {
+            if (c < '0' || c > '9') return -1;
+            value = value * 10 + (c - '0');
+        }
+        return value;
+    }
+    const bool lower = t[0] >= 'a';
+    int32_t value = 0, previous = 0;
+    for (size_t i = t.size(); i-- > 0;) {
+        const char c = lower ? t[i] : static_cast<char>(t[i] - 'A' + 'a');
+        if ((t[i] >= 'a') != lower) return -1;
+        int32_t digit = 0;
+        switch (c) {
+        case 'i': digit = 1; break;
+        case 'v': digit = 5; break;
+        case 'x': digit = 10; break;
+        case 'l': digit = 50; break;
+        case 'c': digit = 100; break;
+        case 'd': digit = 500; break;
+        case 'm': digit = 1000; break;
+        default: return -1;
+        }
+        value += digit < previous ? -digit : digit;
+        previous = std::max(previous, digit);
+    }
+    return value > 0 && value < 5000 ? value : -1;
+}
+
+// Whether band lines `a` and `b` of pages `width` wide stand at one place across the page: their
+// centres within a tenth of the width, as they are or mirrored about the page's middle (odd and
+// even pages).
+bool SameColumnPlace(const BandLine& a, const BandLine& b, float width) {
+    const float ca = (a.x0 + a.x1) / 2, cb = (b.x0 + b.x1) / 2;
+    return std::fabs(ca - cb) <= 0.1f * width || std::fabs(ca - (width - cb)) <= 0.1f * width;
+}
+
+// Page numbers counted up from page to page (BandLine) in the top and bottom bands of `pages`
+// (four at least): a band line that is only a number (LonePageNumber), at the place where the pages
+// beside it hold the numbers before and after it (or the two after it, or the two before it) at
+// the same band and row. Rows are counted from the edge in (lines within a quarter of their size
+// of a row's first line share it); a line is compared with the lines of its row on the other page.
+// How many lines it removes.
+int RemoveCountedPageNumbers(std::vector<PageData>& pages) {
+    const int n = static_cast<int>(pages.size());
+    std::vector<std::vector<BandLine>> bands(pages.size());
+    std::string text;
+    for (size_t p = 0; p < pages.size(); ++p) {
+        const PageData& page = pages[p];
+        const float h = page.height;
+        std::vector<BandLine>& lines = bands[p];
+        for (uint32_t li = 0; li < page.lines.size(); ++li) {
+            const Line& line = page.lines[li];
+            if (line.dir != 0 || line.count == 0) continue;
+            const float cy = (line.vb + line.vt) / 2;
+            const bool top = cy > h * (1 - kRunningBand), bottom = cy < h * kRunningBand;
+            if (!top && !bottom) continue;
+            LineText(page, line, text);
+            lines.push_back(BandLine{li, static_cast<uint8_t>(top ? 0 : 1), 0, cy, line.u0, line.u1, LonePageNumber(text)});
+        }
+        // Rows from the edge in, per band: the top band's highest line first, a row's lines left
+        // to right.
+        std::sort(lines.begin(), lines.end(), [](const BandLine& a, const BandLine& b) {
+            if (a.band != b.band) return a.band < b.band;
+            if (a.cy != b.cy) return a.band == 0 ? a.cy > b.cy : a.cy < b.cy;
+            return a.x0 < b.x0;
+        });
+        for (size_t i = 0; i < lines.size(); ++i) {
+            BandLine& b = lines[i];
+            if (i == 0 || lines[i - 1].band != b.band) continue;  // rank 0
+            const BandLine& previous = lines[i - 1];
+            const float size = page.lines[b.line].size;
+            const bool sameRow = std::fabs(previous.cy - b.cy) <= 0.25f * size;
+            b.rank = sameRow ? previous.rank : static_cast<uint8_t>(std::min(previous.rank + 1, 255));
+        }
+    }
+    int removed = 0;
+    for (int p = 0; p < n; ++p) {
+        PageData& page = pages[static_cast<size_t>(p)];
+        for (const BandLine& b : bands[static_cast<size_t>(p)]) {
+            Line& line = page.lines[b.line];
+            if ((line.flags & kLineRemoved) || b.number < 0) continue;
+            const auto holds = [&](int q, int32_t value) {
+                if (q < 0 || q >= n || value < 0) return false;
+                for (const BandLine& o : bands[static_cast<size_t>(q)])
+                    if (o.band == b.band && o.rank == b.rank && o.number == value && SameColumnPlace(b, o, page.width))
+                        return true;
+                return false;
+            };
+            const int32_t v = b.number;
+            if ((holds(p - 1, v - 1) && holds(p + 1, v + 1)) || (holds(p + 1, v + 1) && holds(p + 2, v + 2)) ||
+                (holds(p - 1, v - 1) && holds(p - 2, v - 2))) {
+                line.flags |= kLineRemoved;
+                removed++;
+            }
+        }
+    }
+    return removed;
+}
+
 } // namespace
 
 int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
@@ -1232,6 +1353,9 @@ int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
             removed++;
         }
     }
+    // Page numbers that count up from page to page off the outermost line
+    // (RemoveCountedPageNumbers).
+    if (n >= 4) removed += RemoveCountedPageNumbers(pages);
     // The body size (algorithms §6.1: the most common size by characters) for the edge test: the
     // size key with the most characters, the smallest of equal counts (whatever order the keys are
     // weighed in). Keys up to kCountedSizeKeys are counted in place, the rest sorted and summed.
