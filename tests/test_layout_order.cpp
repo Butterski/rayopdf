@@ -530,6 +530,31 @@ void TestWideGapRows() {
     RAYOPDF_CHECK(Find(md, "Printed:") == std::string::npos && Find(md, "Body line 49 of") != std::string::npos, 1859);
 }
 
+// A lone page number at the foot, centred on the text: set between two dashes ("- 7 -", whose first
+// dash is no list marker), or set apart from double-spaced text by less than its line spacing plus a
+// quarter em but more than half an em. Both go; a list item "- 7" at the foot stays, and so does a
+// flush-left number at the same gap.
+void TestFootPageNumbers() {
+    // 25 body lines of 10 points, `step` points apart, from 700 down; the text runs from 72 to 307.
+    const auto build = [](const char* number, float x, float y, float step) {
+        std::vector<PageData> pages{NewPage()};
+        for (int i = 0; i < 25; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    700 - step * i, 10);
+        AddText(pages[0], number, x, y, 10);
+        return Run(pages);
+    };
+    // Double spacing (a 14-point gap between lines): the last line at 124, its box bottom at 122; a
+    // number at 98 has its top at 106, 16 points below: under the spacing plus a quarter em.
+    std::string md = build("7", 187, 98, 24);
+    RAYOPDF_CHECK(Find(md, "\n7\n") == std::string::npos && Find(md, "Body line 24 of") != std::string::npos, 1880);
+    RAYOPDF_CHECK(Find(build("7", 72, 98, 24), "\n7\n") != std::string::npos, 1881);
+    // Single spacing: the last line at 412; "- 7 -" at 30, in the outer margin, is far below it.
+    md = build("- 7 -", 180, 30, 12);
+    RAYOPDF_CHECK(Find(md, "7 -") == std::string::npos && Find(md, "Body line 24 of") != std::string::npos, 1882);
+    RAYOPDF_CHECK(Find(build("- 7", 180, 30, 12), "- 7\n") != std::string::npos, 1883);
+}
+
 // Two columns of running text, each ending in smaller notes (a numbered note, a marked one): the
 // body runs on from the first column to the second, the notes come after it. A caption at the foot
 // of a column is no note and stays where it is read.
@@ -633,6 +658,7 @@ int main() {
     TestCloseFolioRows();
     TestOverlappingHeadRow();
     TestWideGapRows();
+    TestFootPageNumbers();
     TestNotesAfterColumns();
     TestCountedPageNumbers();
     TestDifferentFirstLines();

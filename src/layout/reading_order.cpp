@@ -830,6 +830,14 @@ struct EdgeReport {
     std::vector<Row> rows;
 };
 
+// A line set between two like dashes ("- 12 -", "– Seite 3 von 9 –"): a decorated page number, whose
+// first dash, `first`, is no list marker.
+bool DashWrapped(const PageData& page, const Line& line, std::string_view first) {
+    if (line.count < 3 || (first != "-" && first != "\xE2\x80\x93" && first != "\xE2\x80\x94")) return false;
+    const Glyph& last = page.glyphs[page.lineGlyphs[line.first + line.count - 1]];
+    return (last.flags & kGlyphSpaceBefore) && page.GlyphText(last) == first;
+}
+
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key, EdgeReport* report) {
     std::vector<uint32_t> lines;
     lines.reserve(page.lines.size());
@@ -912,7 +920,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             float rowLeft = INFINITY, rowRight = -INFINITY;
             uint32_t chars = 0;
             float largest = 0;
-            bool superscript = false, bold = true, mono = true, anyMono = false, artifact = true;
+            bool superscript = false, bold = true, mono = true, anyMono = false, artifact = true, dashed = false;
             for (size_t k = 0; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
                 // On the edge line's baseline, or beside it on an offset one (a folio set a little
@@ -931,14 +939,20 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 anyMono = anyMono || (l.flags & kLineAllMono);
                 artifact = artifact && (l.flags & kLineArtifact);
                 superscript = superscript || IsSuperscript(page.glyphs[page.lineGlyphs[l.first]], l);
-                // A row starting with a list marker or enumerator ("5. The last note") is content.
+                // A row starting with a list marker or enumerator ("5. The last note") is content; a
+                // page number set between dashes is not (DashWrapped).
                 uint32_t end = 1, value = 0;
                 while (end < l.count && end < 8 && !(page.glyphs[page.lineGlyphs[l.first + end]].flags & kGlyphSpaceBefore))
                     ++end;
                 if (end < l.count) {
                     text.clear();
                     AppendGlyphTexts(page, l, 0, end, text);
-                    superscript = superscript || ParseMarker(text, value) != Marker::None;
+                    if (ParseMarker(text, value) != Marker::None) {
+                        if (DashWrapped(page, l, text))
+                            dashed = true;
+                        else
+                            superscript = true;
+                    }
                 }
             }
             if (last - first - count < 1) break;
@@ -1022,15 +1036,19 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // A page number or a folio row closer than minGap but set apart by more than the line
             // spacing plus a quarter em: a folio row of separate pieces (no piece of a listing)
             // reaching an edge of the text, or a lone page number centred on the text or flush
-            // with its right edge. Lines of a paragraph are no further apart than its spacing.
+            // with its right edge. Lines of a paragraph are no further apart than its spacing. A lone
+            // number centred under the text needs only half an em (closeGap's floor), at the text's
+            // own line spacing or closer: a page number under double-spaced text, where a last line
+            // of a paragraph is set flush left.
             const float closeGap = Fmax(0.5f * body, spacing + 0.25f * body);
             const bool reachesEdge = rowLeft <= textLeft + 2 * body || rowRight >= textRight - 2 * body;
             const bool closeFolio = folio && !anyMono && !note && !superscript && largest <= 1.35f * body &&
                                     (spread || offset || (count >= 2 && reachesEdge)) && gap >= closeGap &&
                                     figureGap >= closeGap;
-            const bool closeNumber = number && !superscript && largest <= 1.3f * body && gap >= closeGap &&
-                                     (std::fabs((rowLeft + rowRight) - (textLeft + textRight)) <= 4 * body ||
-                                      rowRight >= textRight - body);
+            const bool centred = std::fabs((rowLeft + rowRight) - (textLeft + textRight)) <= 4 * body;
+            const bool closeNumber = number && !superscript && largest <= 1.3f * body &&
+                                     ((gap >= closeGap && (centred || rowRight >= textRight - body)) ||
+                                      (side == 1 && centred && gap >= 0.5f * body && figureGap >= 0.5f * body));
             // A short row the producer marked as an artifact, within kNumberBand and at most twice
             // the body size (not a display heading), whatever its gap. A head or a foot is a few
             // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
@@ -1120,6 +1138,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             pending = 0;
             weakPending = false;
             start = side == 0 ? first : last;
+            // A page number set between dashes closes its edge's furniture: the rows inside it (a
+            // numbered heading, "Buch 2") are content.
+            if (dashed) break;
         }
         if (pending > 0) {
             if (side == 0)
