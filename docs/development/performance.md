@@ -973,20 +973,101 @@ is not reached ([v0.2.0](../benchmarks/v0.2.0-2026-11-13.md#speed)).
   are about a tenth of the decoder's instructions (round 3's profile), the rest is entropy
   decoding.
 
+## Tenth round (2026-11-13)
+
+Base `613f071` (`p10-base`) against 0.2.0 (`536de1f`). The 0.3.0 program so far cost user instructions
+(`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with `--math=latex`): odl +0.32 %, heavy10
++0.11 %, syn6 +0.37 %, SafeDocs +0.24 %, `multi_column` +0.61 %, `tables` +0.27 %, `arxiv_math` +0.61 %.
+Other jobs ran on the machine all round: no times were taken, and every step was kept or rejected by
+instruction counts alone (at least 0.1 % fewer on odl or on the group the code serves; 0.5 % for the
+open candidates' own groups).
+
+### Steps
+
+- **This program's cost** (7.1): callgrind self instructions of 0.2.0 against `613f071` over odl and
+  olmOCR `multi_column` (Release with `-g`; `multi_column` linked with gold to keep line information).
+  The functions that grew most, with functions inlined or split between the builds counted together
+  (`RemoveEdgeRows`, inlined into `RemoveRunningLines` in 0.2.0, did not grow: 3.98 → 3.83 M over odl):
+
+  |Function|odl|`multi_column`|What grew|
+  |---|---|---|---|
+  |`BuildBlocks`|6.06 → 6.45 M|17.94 → 24.13 M|card titles (`e4d1d0a`): a column looked for below each title-like block|
+  |`Writer::CollectWords`|11.13 → 11.80 M|24.94 → 26.48 M|a soft hyphen's word break carried to the next glyph|
+  |`Writer::Inline` (with `InlinePlain`)|23.56 → 24.10 M|61.10 → 62.45 M|the same, and plain output's script tags|
+  |`OrderLines` (`DeferNotes`)|2.19 → 2.39 M|6.84 → 7.40 M|notes after columns (`e4d1d0a`)|
+  |`AppendLineText`|2.35 → 2.62 M|5.09 → 5.29 M|`DeferNotes`' line texts|
+  |`Writer::StyleWords`|14.10 → 14.23 M|33.11 → 33.36 M|its source unchanged since 0.2.0|
+  |`IsCaption` (moved to `lines.cpp`)|0.06 → 0.10 M|0.21 → 0.24 M|called by `DeferNotes`|
+  |`memcpy`, `malloc`|9.12 → 9.28 M|26.59 → 26.07 M|their callers above|
+  |`string::append`|1.60 → 1.66 M|5.66 → 5.71 M|their callers above|
+  |`strlen`|0.56 → 0.61 M|1.60 → 1.71 M|their callers above|
+
+  One rewrite each for the program's own functions (the library functions follow their callers),
+  kept at 0.1 % fewer instructions or more, each byte-identical (`land.sh`, G-bytes 0 of 997 differ):
+
+  |Commit|Change|Effect (`instr.sh`)|
+  |---|---|---|
+  |card titles (`perf(layout): card titles tested cheaply first…`)|Card titles: a title-like block's cheap tests before its characters are summed, the peer loop's geometry before `titleLike`; the column below a title looked for only when the block has a peer (the budget taken as before, in the same order), over a packed array of the raw blocks' first lines|`multi_column` -0.165 %, `tables` -0.020 %, the other groups within +0.012 %|
+
+- **Open candidates** (7.2):
+
+  |Commit|Change|Effect (`instr.sh`)|
+  |---|---|---|
+  |hex strings (`perf(pdf): hex strings read in one pass`)|Hex strings read in one pass: the closing `>` found with `memchr`, the bytes checked and decoded in one pass into room for a byte per two bytes of the string|odl -0.103 %, syn6 -0.248 %, `multi_column` -0.126 %, SafeDocs -0.061 %, `tables` -0.029 %|
+
+### Result (`p10-base` against the round's two steps)
+
+User instructions, `--batch --workers=1`, images off (`arxiv_math` with `--math=latex`), CPU 9; the
+round's tree is `613f071` with the two steps:
+
+|Group|0.2.0|`613f071`|Round 10|Program|Round|0.2.0 → round|
+|---|---|---|---|---|---|---|
+|odl|783,989,572|786,517,003|785,874,263|+0.32 %|-0.08 %|+0.24 %|
+|heavy10|200,407,195|200,632,270|200,615,428|+0.11 %|-0.01 %|+0.10 %|
+|syn6|123,336,618|123,798,363|123,507,063|+0.37 %|-0.24 %|+0.14 %|
+|SafeDocs|1,564,331,356|1,568,096,879|1,567,519,958|+0.24 %|-0.04 %|+0.20 %|
+|`multi_column`|1,699,366,109|1,709,649,542|1,704,958,097|+0.61 %|-0.27 %|+0.33 %|
+|`tables`|1,040,050,173|1,042,839,209|1,042,421,870|+0.27 %|-0.04 %|+0.23 %|
+|`arxiv_math`|5,548,888,634|5,582,868,790|5,583,860,757|+0.61 %|+0.02 %|+0.63 %|
+
+### Tried and rejected (2026-11-13)
+
+Each against `613f071` (`instr.sh`); none reached its threshold.
+
+- `CollectWords` and `InlinePlain`: a line's superscript and subscript bounds read once, a soft
+  hyphen's word break carried as flag bits: odl -0.045 %, syn6 -0.064 %, `multi_column` -0.065 %,
+  `arxiv_math` -0.067 %. With `InlinePlain`'s style test moved from its pass before writing into the
+  writing loop (what was written goes again): odl -0.010 %, syn6 +0.231 %, `multi_column` -0.071 %.
+- `DeferNotes`: the first 10 bytes of a line's text in place of the whole (all the tests read), its
+  vectors kept by the thread: odl -0.040 %, `arxiv_math` +0.025 %, the rest within 0.006 %.
+- `StyleWords` (open candidate): its passes over every glyph through local pointers and style masks (a
+  style byte's store may alias every member): odl -0.025 %, `multi_column` -0.027 %, SafeDocs
+  -0.019 %, syn6 -0.030 %.
+- Breuel's `Topological` (open candidate, 20.8 M of `multi_column`'s 1,735 M under callgrind): the
+  side-by-side test over the wide lines only, the edges as bit rows and the free lines' in-degrees
+  lowered along set bits: `multi_column` +0.052 %; with its vectors kept by the thread +0.083 %; out of
+  line besides +0.075 % (odl +0.013 %). Its own lines fell by about a fifth; `Cut`, which it was inlined
+  into, grew by more.
+- Card titles without the packed array (the first design of card titles (`perf(layout): card titles tested cheaply first…`)): `multi_column` -0.082 %.
+- **Images encoded on the page threads** and **`--serve` with `--batch`'s malloc settings**: their
+  gains are wall time only (the instructions stay or grow), which this round could not measure; they
+  stay open.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** the empty-clip flag folded into the SSE2 clip test (about 3 instructions a
   glyph); line and word texts copied once when contiguous in the page text.
 - **The OCR route's `MeasurePage`** (1.6 % of odl): three attempts to count in the glyph loop cost
   what the pass costs; counts per font slot are untried.
-- **Objects and order:** hex strings read in one pass (13.6 M on `multi_column`, 6 M on odl);
-  Breuel's topological order (about 20 M on `multi_column`); the writer's `StyleWords` (33 M on
-  `multi_column`).
+- **Order and the writer:** Breuel's topological order (about 20 M on `multi_column`); the writer's
+  `StyleWords` (33 M on `multi_column`). Round 10's rewrites of both gained nothing (tenth round,
+  Tried and rejected).
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
-  tagged documents); images encoded on the page threads; a fuzz target that converts with several
-  workers (the fuzz targets convert with one; the sanitizer sweeps and tests cover the rest).
+  tagged documents); images encoded on the page threads (a gain in wall time only, not measured in
+  round 10); a fuzz target that converts with several workers (the fuzz targets convert with one;
+  the sanitizer sweeps and tests cover the rest).
 - **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
-  same peak RSS, but freed memory stays with the process.
+  same peak RSS, but freed memory stays with the process (wall time only, not measured in round 10).
 - **Profile-guided builds:** +3 to +4 % warm with identical output, once a training set can live
   in the repository.
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
