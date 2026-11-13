@@ -135,7 +135,7 @@ void PrintUsage(std::FILE* out) {
         "  --front-matter     YAML front matter from the document's information (title, author,\n"
         "                     dates, pages) before the Markdown\n"
         "  --furniture=MODE   drop (default): leave out running headers, footers and page numbers;\n"
-        "                     keep: write them as text where they stand\n"
+        "                     keep: write them as text, heads before a page's text, feet after it\n"
         "  --plain            no inline markup: no emphasis, code spans or links (their text\n"
         "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
         "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"

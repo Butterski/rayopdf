@@ -243,6 +243,39 @@ void TestKeptFurnitureText() {
                   2015);
 }
 
+// Three two-column pages under a running head over the right column and over a page number
+// under the left one.
+std::vector<PageData> ColumnHeadPages() {
+    std::vector<PageData> pages;
+    for (int p = 1; p <= 3; ++p) {
+        pages.push_back(NewPage(p));
+        PageData& page = pages.back();
+        AddText(page, "Studies in Rivers", 420, 765, 9);
+        for (int i = 0; i < 12; ++i) {
+            const std::string n = std::to_string(i);
+            AddText(page, "Left column line " + n + " runs on here,", 72, 740 - 13.0f * i, 10);
+            AddText(page, "Right column line " + n + " runs on too,", 320, 740 - 13.0f * i, 10);
+        }
+        AddText(page, std::to_string(16 + p), 72, 40, 9);
+    }
+    return pages;
+}
+
+// Kept furniture is read apart from the text: a head before it, a foot after it.
+void TestKeptFurnitureOrder() {
+    const std::string dropped = Run(ColumnHeadPages, OutputSettings());
+    OutputSettings settings;
+    settings.furniture = Furniture::Keep;
+    const std::string kept = Run(ColumnHeadPages, settings);
+    Show("column head dropped", dropped);
+    Show("column head kept", kept);
+    const size_t head = kept.find("Studies in Rivers"), left = kept.find("Left column line 0"),
+                 right = kept.find("Right column line 11"), number = kept.find("17");
+    RAYOPDF_CHECK(!Contains(dropped, "Studies in Rivers") && Count(kept, "Studies in Rivers") == 3 && head < left &&
+                      right < number && number != std::string::npos,
+                  2017);
+}
+
 // A RayoMD PDF with its source: the output options need the pages, so the payload is not used.
 void TestExactFormat() {
     Test::ProfilePdf spec;
@@ -466,6 +499,7 @@ int main() {
     TestHtmlTables();
     TestFurniture();
     TestKeptFurnitureText();
+    TestKeptFurnitureOrder();
     TestExactFormat();
     TestChunks();
     TestInspect();

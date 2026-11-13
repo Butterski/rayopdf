@@ -1592,6 +1592,62 @@ void DeferNotes(PageData& page) {
     order.swap(placed);
 }
 
+// Kept page furniture (kLineFurniture, Furniture::Keep) is read apart from the text, which is
+// ordered as if it had been removed: lines turned sideways (a margin stamp) and upright lines in
+// the page's upper half before the text, top to bottom; the others after it, notes included.
+void PlaceKeptFurniture(PageData& page) {
+    // 0: not kept furniture (or a table's cell), 1: read before the text, 2: after it.
+    const auto place = [&](const Line& l) {
+        if ((l.flags & (kLineFurniture | kLineTableCell | kLineImage)) != kLineFurniture) return 0;
+        return l.dir != 0 || l.vb + l.vt >= page.height ? 1 : 2;
+    };
+    size_t head = 0, kept = 0;
+    for (const Line& l : page.lines) {
+        const int p = place(l);
+        head += p == 1;
+        kept += p != 0;
+    }
+    if (kept == 0) return;
+    std::vector<uint32_t> placed;
+    placed.reserve(page.order.size() + kept);
+    for (uint32_t i = 0; i < page.lines.size(); ++i)
+        if (place(page.lines[i]) == 1) placed.push_back(i);
+    placed.insert(placed.end(), page.order.begin(), page.order.end());
+    const size_t footFrom = placed.size();
+    for (uint32_t i = 0; i < page.lines.size(); ++i)
+        if (place(page.lines[i]) == 2) placed.push_back(i);
+    // Turned lines first, then upright lines top to bottom by rows, each row left to right: lines
+    // on the first one's baseline or beside it on an offset one (a folio set lower than the title).
+    const auto arrange = [&](size_t from, size_t to) {
+        const auto begin = placed.begin();
+        std::stable_sort(begin + static_cast<std::ptrdiff_t>(from), begin + static_cast<std::ptrdiff_t>(to),
+                         [&](uint32_t a, uint32_t b) {
+                             const Line& x = page.lines[a];
+                             const Line& y = page.lines[b];
+                             if ((x.dir != 0) != (y.dir != 0)) return x.dir != 0;
+                             return x.dir == 0 && x.baseline > y.baseline;
+                         });
+        for (size_t r = from; r < to;) {
+            const Line& first = page.lines[placed[r]];
+            size_t end = r + 1;
+            while (first.dir == 0 && end < to) {
+                const Line& l = page.lines[placed[end]];
+                const float overlap = Fmin(l.vt, first.vt) - Fmax(l.vb, first.vb);
+                if (std::fabs(l.baseline - first.baseline) > 0.3f * Fmax(l.size, first.size) &&
+                    overlap < 0.5f * Fmin(l.vt - l.vb, first.vt - first.vb))
+                    break;
+                ++end;
+            }
+            std::stable_sort(begin + static_cast<std::ptrdiff_t>(r), begin + static_cast<std::ptrdiff_t>(end),
+                             [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
+            r = end;
+        }
+    };
+    arrange(0, head);
+    arrange(footFrom, placed.size());
+    page.order.swap(placed);
+}
+
 } // namespace
 
 void OrderLines(PageData& page) {
@@ -1603,7 +1659,8 @@ void OrderLines(PageData& page) {
     for (uint8_t dir = 0; dir < 4; ++dir) {
         items.clear();
         for (uint32_t i = 0; i < lineCount; ++i)
-            if (page.lines[i].dir == dir && !(page.lines[i].flags & (kLineRemoved | kLineTableCell | kLineImage)))
+            if (page.lines[i].dir == dir &&
+                !(page.lines[i].flags & (kLineRemoved | kLineTableCell | kLineImage | kLineFurniture)))
                 items.push_back(i);
         if (dir == 0) AddObstacles(page, items);
         if (!items.empty()) orderer.Order(items);
@@ -1614,6 +1671,7 @@ void OrderLines(PageData& page) {
     page.lines.resize(lineCount);
     PlaceTurnedLines(page);
     DeferNotes(page);
+    PlaceKeptFurniture(page);
     // Images join the text's order without changing it: before the first line read below their
     // top edge that shares their horizontal extent (the text after them in their column, or after
     // a full-width figure), else before the first line read below their top edge anywhere, else
