@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
-// plain text without inline markup, every table as HTML, page furniture kept, and the exact
-// recovery they turn off. Exit codes 2000-2049.
+// plain text without inline markup, every table as HTML, page furniture kept, the exact recovery
+// they turn off, and chunks for retrieval (WriteChunks). Exit codes 2000-2049.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -11,6 +11,7 @@
 #include "layout/pipeline.h"
 #include "pdf/document.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -219,6 +220,159 @@ void TestExactFormat() {
     RAYOPDF_CHECK(format, 2004);
 }
 
+// The values of `key` (a JSON string member) in the lines of `jsonl`, one a line, unescaped
+// (\n, \", \\ and \uXXXX below U+0080: what the tests' text needs).
+std::vector<std::string> Strings(const std::string& jsonl, std::string_view key) {
+    std::vector<std::string> values;
+    const std::string marker = "\"" + std::string(key) + "\":\"";
+    for (size_t at = jsonl.find(marker); at != std::string::npos; at = jsonl.find(marker, at)) {
+        at += marker.size();
+        std::string value;
+        for (; at < jsonl.size() && jsonl[at] != '"'; ++at) {
+            if (jsonl[at] != '\\' || at + 1 >= jsonl.size()) {
+                value.push_back(jsonl[at]);
+                continue;
+            }
+            const char e = jsonl[++at];
+            if (e == 'n') {
+                value.push_back('\n');
+            } else if (e == 'u' && at + 4 < jsonl.size()) {
+                value.push_back(static_cast<char>(std::strtol(jsonl.substr(at + 1, 4).c_str(), nullptr, 16)));
+                at += 4;
+            } else {
+                value.push_back(e);
+            }
+        }
+        values.push_back(value);
+    }
+    return values;
+}
+
+// The text inside the brackets of `"key":[...]` on each line of `jsonl` (arrays of numbers or
+// strings without brackets).
+std::vector<std::string> Arrays(const std::string& jsonl, std::string_view key) {
+    std::vector<std::string> values;
+    const std::string marker = "\"" + std::string(key) + "\":[";
+    for (size_t at = jsonl.find(marker); at != std::string::npos; at = jsonl.find(marker, at)) {
+        at += marker.size();
+        const size_t end = jsonl.find(']', at);
+        values.push_back(jsonl.substr(at, end - at));
+    }
+    return values;
+}
+
+OutputSettings ChunkSettings(uint32_t chars) {
+    OutputSettings settings;
+    settings.format = OutputFormat::Chunks;
+    settings.chunkChars = chars;
+    return settings;
+}
+
+// A title, a paragraph, a section of two paragraphs and a section of one.
+std::vector<PageData> SectionsPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    AddText(page, "Annual Review", 72, 740, 24);
+    AddText(page, "The year brought steady growth across every region.", 72, 700, 10);
+    AddText(page, "Results", 72, 660, 16);
+    AddText(page, "Sales rose by a tenth in the first half.", 72, 630, 10);
+    AddText(page, "Costs fell slightly over the same period.", 72, 600, 10);
+    AddText(page, "Outlook", 72, 560, 16);
+    AddText(page, "The next year should bring more of the same.", 72, 530, 10);
+    return pages;
+}
+
+// One paragraph of about 1,000 bytes: sentences of about 50 bytes on lines of at most 90.
+std::string LongParagraph() {
+    std::string text;
+    for (int i = 1; text.size() < 1000; ++i) {
+        if (!text.empty()) text.push_back(' ');
+        text += "Clause " + std::to_string(i) + " describes the quiet river near the old mill.";
+    }
+    return text;
+}
+
+std::vector<PageData> LongParagraphPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    const std::string text = LongParagraph();
+    float y = 740;
+    for (size_t at = 0; at < text.size(); y -= 12) {
+        size_t end = std::min(text.size(), at + 90);
+        if (end < text.size()) end = text.rfind(' ', end);
+        AddText(pages[0], std::string_view(text).substr(at, end - at), 72, y, 10);
+        at = end + 1;
+    }
+    return pages;
+}
+
+// A ruled table of a header row and 40 rows, two columns.
+std::vector<PageData> LongTablePage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    const float xs[] = {72, 200, 320};
+    const int rows = 41;
+    for (int r = 0; r <= rows; ++r) HLine(page, xs[0], xs[2], 760 - 16.0f * r);
+    for (float x : xs) VLine(page, x, 760 - 16.0f * rows, 760);
+    for (int r = 0; r < rows; ++r) {
+        const float y = 760 - 16.0f * r - 12;
+        AddText(page, r == 0 ? std::string("Item") : "Item " + std::to_string(r), xs[0] + 6, y, 10);
+        AddText(page, r == 0 ? std::string("Amount") : std::to_string(100 + r), xs[1] + 6, y, 10);
+    }
+    return pages;
+}
+
+void TestChunks() {
+    const std::string sections = Run(SectionsPage, ChunkSettings(kDefaultChunkChars));
+    Show("chunks", sections);
+    const std::vector<std::string> paths = Arrays(sections, "heading_path");
+    const std::vector<std::string> texts = Strings(sections, "markdown");
+    RAYOPDF_CHECK(Count(sections, "\n") == 3 && paths.size() == 3 && texts.size() == 3 &&
+                      paths[0] == "\"Annual Review\"" && paths[1] == "\"Annual Review\",\"Results\"" &&
+                      paths[2] == "\"Annual Review\",\"Outlook\"" && texts[1].compare(0, 11, "## Results\n") == 0 &&
+                      texts[2].compare(0, 11, "## Outlook\n") == 0,
+                  2010);
+    RAYOPDF_CHECK(texts.size() == 3 && texts[1] == "## Results\n\nSales rose by a tenth in the first half.\n\n"
+                                                   "Costs fell slightly over the same period.",
+                  2011);
+
+    const std::string paragraph = Run(LongParagraphPage, ChunkSettings(300));
+    Show("chunks of a paragraph", paragraph);
+    const std::vector<std::string> pieces = Strings(paragraph, "markdown");
+    bool split = pieces.size() >= 4;
+    std::string joined;
+    for (size_t p = 0; p < pieces.size(); ++p) {
+        split = split && pieces[p].size() <= 300 && pieces[p].back() == '.';
+        joined += (p > 0 ? " " : "") + pieces[p];
+    }
+    RAYOPDF_CHECK(split && joined == LongParagraph() && Arrays(paragraph, "blocks") ==
+                                                            std::vector<std::string>(pieces.size(), "0"),
+                  2012);
+
+    const std::string table = Run(LongTablePage, ChunkSettings(300));
+    Show("chunks of a table", table);
+    const std::vector<std::string> parts = Strings(table, "markdown");
+    bool repeated = parts.size() >= 3;
+    int rows = 0;
+    for (const std::string& part : parts) {
+        repeated = repeated && part.compare(0, 34, "| Item | Amount |\n| --- | --- |\n| ") == 0;
+        rows += Count(part, "\n| Item ");
+    }
+    RAYOPDF_CHECK(repeated && rows == 40 && Count(table, "| 140 |") == 1, 2013);
+
+    // Unsplit blocks: the chunks' Markdown joined is the Markdown output, block by block in order.
+    bool whole = true;
+    for (auto build : {SectionsPage, LongTablePage}) {
+        const std::string markdown = Run(build, OutputSettings());
+        const std::string chunks = Run(build, ChunkSettings(kDefaultChunkChars));
+        std::string text, order, expected;
+        for (const std::string& part : Strings(chunks, "markdown")) text += (text.empty() ? "" : "\n\n") + part;
+        for (const std::string& list : Arrays(chunks, "blocks")) order += (order.empty() ? "" : ",") + list;
+        for (int b = 0, n = Count(markdown, "\n\n") + 1; b < n; ++b) expected += (b > 0 ? "," : "") + std::to_string(b);
+        whole = whole && text + "\n" == markdown && order == expected;
+    }
+    RAYOPDF_CHECK(whole, 2014);
+}
+
 } // namespace
 
 int main() {
@@ -226,6 +380,7 @@ int main() {
     TestHtmlTables();
     TestFurniture();
     TestExactFormat();
+    TestChunks();
     std::puts("layout output tests passed");
     return 0;
 }

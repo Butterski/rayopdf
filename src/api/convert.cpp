@@ -30,7 +30,12 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
     }
     out.ocr.addon = options.ocrAddon;
     out.math = options.math == Math::Latex ? Layout::MathMode::Latex : Layout::MathMode::Unicode;
-    out.format = options.format == Format::Json ? Layout::OutputFormat::Json : Layout::OutputFormat::Markdown;
+    switch (options.format) {
+        case Format::Markdown: out.format = Layout::OutputFormat::Markdown; break;
+        case Format::Json: out.format = Layout::OutputFormat::Json; break;
+        case Format::Chunks: out.format = Layout::OutputFormat::Chunks; break;
+    }
+    out.chunkChars = options.chunkChars;
     out.pageMarkers = options.pageMarkers;
     out.frontMatter = options.frontMatter;
     out.furniture = options.furniture == Furniture::Keep ? Layout::Furniture::Keep : Layout::Furniture::Drop;

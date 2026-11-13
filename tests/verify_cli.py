@@ -4,9 +4,9 @@
 --report, encrypted input, --convert with several page workers (the same Markdown and record as
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
-with 1 and 4 workers), and the output options (--format=json, --page-markers, --front-matter,
---furniture, --plain, --tables). It builds the PDFs it needs in a temporary directory (none are
-committed) and never times anything.
+with 1 and 4 workers), and the output options (--format=json, --format=chunks, --chunk-chars,
+--page-markers, --front-matter, --furniture, --plain, --tables). It builds the PDFs it needs in a
+temporary directory (none are committed) and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -399,6 +399,48 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
                                                  for b in answer["json"].get("blocks", [])), repr(answer)[:300])
 
 
+def check_chunks(c: Checker, work: Path, hello: str) -> None:
+    """--format=chunks: JSON Lines whose unsplit blocks' Markdown, joined, is the Markdown output and
+    whose block indices run in order; --chunk-chars takes 256 to 1000000 (else a usage error);
+    --batch writes NAME.jsonl; a serve answer carries the array "chunks"."""
+    pages = str(work / "pages.pdf")
+    markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
+    r = c.run("--convert", pages, str(work / "pages.jsonl"), "--format=chunks")
+    try:
+        chunks = [json.loads(line) for line in (work / "pages.jsonl").read_text("utf-8").splitlines()]
+    except (OSError, ValueError):
+        chunks = []
+    indices = [b for chunk in chunks for b in chunk.get("blocks", [])]
+    c.check("chunks output", r.returncode == 0 and bool(chunks) and
+            [chunk.get("chunk") for chunk in chunks] == list(range(len(chunks))) and
+            indices == list(range(len(indices))) and
+            "\n\n".join(chunk.get("markdown", "") for chunk in chunks) + "\n" == markdown and
+            all(isinstance(chunk.get("heading_path"), list) and len(chunk.get("pages", [])) == 2 and "boxes" in chunk
+                for chunk in chunks), repr(chunks)[:300])
+    r = c.run("--convert", pages, "-", "--format=chunks", "--chunk-chars=256")
+    c.check("chunk size taken", r.returncode == 0 and all(
+        len(json.loads(line)["markdown"].encode()) <= 256 for line in r.stdout.decode("utf-8").splitlines()),
+        repr(r.stdout[:300]))
+    for flag in ("--chunk-chars=10", "--chunk-chars=1000001", "--chunk-chars=", "--chunk-chars=4k"):
+        c.check(f"bad {flag}", c.run("--convert", pages, "-", "--format=chunks", flag).returncode == 2)
+    source = work / "chunks-in"
+    source.mkdir()
+    (source / "hello.pdf").write_bytes(Path(hello).read_bytes())
+    r = c.run("--batch", str(source), str(work / "chunks-out"), "--format=chunks")
+    try:
+        lines = [json.loads(line) for line in (work / "chunks-out" / "hello.jsonl").read_text("utf-8").splitlines()]
+    except (OSError, ValueError):
+        lines = []
+    c.check("batch writes NAME.jsonl", r.returncode == 0 and len(lines) == 1 and
+            "Hello World" in lines[0].get("markdown", "") and not (work / "chunks-out" / "hello.md").exists(),
+            repr(lines)[:200])
+    request = json.dumps({"id": 1, "input": hello, "args": ["--format=chunks", "--chunk-chars=300"]}).encode() + b"\n"
+    answers = records(c.run("--serve", "--json", stdin=request).stdout)
+    answer = answers[1] if len(answers) > 1 else {}
+    c.check("serve answers with the chunks", isinstance(answer.get("chunks"), list) and len(answer["chunks"]) == 1 and
+            "markdown" not in answer and "Hello World" in answer["chunks"][0].get("markdown", ""), repr(answer)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -510,6 +552,7 @@ def main() -> int:
         c.check("no images on standard output", r.returncode == 0 and b"![" not in r.stdout)
 
         check_output_features(c, work, hello)
+        check_chunks(c, work, hello)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

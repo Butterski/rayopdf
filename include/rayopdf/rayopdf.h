@@ -14,9 +14,10 @@
 
 namespace RayoPdf::Api {
 
-// What is written: Markdown, or the document as one JSON object (schema 1: its metadata and its
-// blocks with their pages, boxes and Markdown; `rayopdf --format=json`).
-enum class Format : uint8_t { Markdown, Json };
+// What is written: Markdown, the document as one JSON object (schema 1: its metadata and its
+// blocks with their pages, boxes and Markdown; `rayopdf --format=json`), or chunks for retrieval
+// as JSON Lines (`rayopdf --format=chunks`).
+enum class Format : uint8_t { Markdown, Json, Chunks };
 // Formulas as Unicode text, or rebuilt as LaTeX between $ and $$.
 enum class Math : uint8_t { Unicode, Latex };
 // OCR through the rayopdf-ocr add-on: never; where the text layer fails (when the add-on is found);
@@ -52,6 +53,7 @@ struct Options {
     Furniture furniture = Furniture::Drop;   // page furniture left out or kept
     bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
     Tables tables = Tables::Auto;            // Html: every table as HTML
+    uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic
 };

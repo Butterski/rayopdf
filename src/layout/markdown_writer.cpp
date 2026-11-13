@@ -1704,12 +1704,6 @@ void AppendInteger(std::string& out, const char* key, uint64_t value) {
     out += std::to_string(value);
 }
 
-// A block's box on one page (an index into the pages), on the upright page.
-struct PageBox {
-    uint32_t page;
-    float x0, y0, x1, y1;
-};
-
 // Adds a box of the frame of `dir` on page `page` to `boxes`: joined with the box it has there.
 void AddBox(std::vector<PageBox>& boxes, uint32_t page, uint8_t dir, float x0, float y0, float x1, float y1) {
     RectFromFrame(dir, x0, y0, x1, y1);
@@ -1736,6 +1730,50 @@ const char* BlockTypeName(BlockKind kind) {
 }
 
 } // namespace
+
+void BlockBoxes(const std::vector<PageData>& pages, const BlockList& list, const Block& block,
+                std::vector<PageBox>& boxes) {
+    boxes.clear();
+    if (block.kind == BlockKind::Comment) return;
+    // An image's box, a table's parts' (their anchor lines' tables, in the frame of their
+    // direction), any other block's lines'.
+    for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+        const PageData& page = pages[list.lines[bl].page];
+        const Line& line = page.lines[list.lines[bl].line];
+        if (block.kind == BlockKind::Image) {
+            const ImageBox& image = page.images[line.first];
+            AddBox(boxes, list.lines[bl].page, 0, image.x0, image.y0, image.x1, image.y1);
+            break;
+        }
+        if (block.kind == BlockKind::Table) {
+            if (!(line.flags & kLineTableAnchor)) continue;
+            const Table& table = page.tables[line.first];
+            AddBox(boxes, list.lines[bl].page, line.dir, table.x0, table.y0, table.x1, table.y1);
+            continue;
+        }
+        if (line.count == 0 && !(line.flags & kLineAnchor)) continue;
+        AddBox(boxes, list.lines[bl].page, line.dir, line.u0, line.vb, line.u1, line.vt);
+    }
+}
+
+void AppendBoxes(std::string& out, const std::vector<PageData>& pages, const PageBox* boxes, size_t count) {
+    out.push_back('[');
+    for (size_t b = 0; b < count; ++b) {
+        if (b > 0) out.push_back(',');
+        out += "{\"page\":";
+        out += std::to_string(pages[boxes[b].page].number);
+        out += ",\"bbox\":[";
+        AppendCoordinate(out, boxes[b].x0);
+        out.push_back(',');
+        AppendCoordinate(out, boxes[b].y0);
+        out.push_back(',');
+        AppendCoordinate(out, boxes[b].x1);
+        out.push_back(',');
+        AppendCoordinate(out, boxes[b].y1);
+        out += "]}";
+    }
+    out.push_back(']');
+}
 
 void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool repaired,
                const DocumentMetadata* metadata, std::string& out, WriteCounts& counts, MathMode math,
@@ -1782,42 +1820,9 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         out.push_back('"');
         const BlockLine* anchor = block.kind == BlockKind::Comment ? nullptr : &list.lines[block.first];
         AppendInteger(out, "page", anchor ? static_cast<uint64_t>(pages[anchor->page].number) : block.number);
-        // Boxes: an image's, a table's parts' (their anchor lines' tables, in the frame of their
-        // direction), any other block's lines'.
-        boxes.clear();
-        for (uint32_t bl = block.first; anchor && bl < block.first + block.count; ++bl) {
-            const PageData& page = pages[list.lines[bl].page];
-            const Line& line = page.lines[list.lines[bl].line];
-            if (block.kind == BlockKind::Image) {
-                const ImageBox& image = page.images[line.first];
-                AddBox(boxes, list.lines[bl].page, 0, image.x0, image.y0, image.x1, image.y1);
-                break;
-            }
-            if (block.kind == BlockKind::Table) {
-                if (!(line.flags & kLineTableAnchor)) continue;
-                const Table& table = page.tables[line.first];
-                AddBox(boxes, list.lines[bl].page, line.dir, table.x0, table.y0, table.x1, table.y1);
-                continue;
-            }
-            if (line.count == 0 && !(line.flags & kLineAnchor)) continue;
-            AddBox(boxes, list.lines[bl].page, line.dir, line.u0, line.vb, line.u1, line.vt);
-        }
-        out += ",\"boxes\":[";
-        for (size_t b = 0; b < boxes.size(); ++b) {
-            if (b > 0) out.push_back(',');
-            out += "{\"page\":";
-            out += std::to_string(pages[boxes[b].page].number);
-            out += ",\"bbox\":[";
-            AppendCoordinate(out, boxes[b].x0);
-            out.push_back(',');
-            AppendCoordinate(out, boxes[b].y0);
-            out.push_back(',');
-            AppendCoordinate(out, boxes[b].x1);
-            out.push_back(',');
-            AppendCoordinate(out, boxes[b].y1);
-            out += "]}";
-        }
-        out.push_back(']');
+        BlockBoxes(pages, list, block, boxes);
+        out += ",\"boxes\":";
+        AppendBoxes(out, pages, boxes.data(), boxes.size());
         switch (block.kind) {
         case BlockKind::Heading:
             AppendInteger(out, "level", static_cast<uint64_t>(std::max(1, std::min<int>(6, block.level))));
@@ -1878,6 +1883,254 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         out.push_back('}');
     }
     out += "]}\n";
+}
+
+namespace {
+
+bool IsAsciiPunct(char c) {
+    return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') || (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
+}
+
+// The text of a heading's Markdown into `text`: without quote marks, its "#" marker and backslash
+// escapes.
+void HeadingText(std::string_view md, std::string& text) {
+    while (md.size() >= 2 && md[0] == '>' && md[1] == ' ') md.remove_prefix(2);
+    size_t at = 0;
+    while (at < md.size() && md[at] == '#') ++at;
+    if (at < md.size() && md[at] == ' ') ++at;
+    text.clear();
+    for (; at < md.size(); ++at) {
+        if (md[at] == '\\' && at + 1 < md.size() && IsAsciiPunct(md[at + 1])) ++at;
+        text.push_back(md[at]);
+    }
+}
+
+// Where the first piece of `text` (longer than `limit`) ends: `cut` its length (at most `limit`),
+// `next` where the rest starts. At the last sentence end (". ", "? ", "! " before a capital or a
+// digit) within the limit, else at the last space, else at the last character boundary.
+void TextCut(std::string_view text, size_t limit, size_t& cut, size_t& next) {
+    size_t sentence = 0, space = 0;
+    const size_t last = std::min(limit, text.size() - 1);
+    for (size_t i = 1; i <= last; ++i) {
+        if (text[i] != ' ') continue;
+        space = i;
+        const char before = text[i - 1];
+        const char after = i + 1 < text.size() ? text[i + 1] : ' ';
+        if ((before == '.' || before == '?' || before == '!') &&
+            ((after >= 'A' && after <= 'Z') || (after >= '0' && after <= '9')))
+            sentence = i;
+    }
+    if (sentence != 0 || space != 0) {
+        cut = sentence != 0 ? sentence : space;
+        next = cut + 1;
+        return;
+    }
+    cut = limit;
+    while (cut > 1 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) --cut;
+    next = cut;
+}
+
+// The open chunk of WriteChunks and the heading path, written as JSON Lines to `out`.
+class ChunkWriter {
+public:
+    ChunkWriter(const std::vector<PageData>& pages, std::string& out) : pages_(pages), out_(out) {}
+
+    bool Empty() const { return blocks_.empty(); }
+    bool OnlyHeadings() const { return onlyHeadings_; }
+    size_t Size() const { return markdown_.size(); }
+
+    // A heading of `level` with `text`: the path's entries of that level or deeper end.
+    void Heading(int level, const std::string& text) {
+        while (!levels_.empty() && levels_.back() >= level) {
+            levels_.pop_back();
+            path_.pop_back();
+        }
+        levels_.push_back(level);
+        path_.push_back(text);
+    }
+
+    // Adds block `index` (its Markdown, boxes and first page number) to the open chunk.
+    void Add(uint32_t index, std::string_view md, bool heading, const std::vector<PageBox>& boxes, int page) {
+        if (!markdown_.empty()) markdown_ += "\n\n";
+        markdown_ += md;
+        Take(index, boxes, page);
+        onlyHeadings_ = onlyHeadings_ && heading;
+    }
+
+    // Writes the open chunk, if any.
+    void Flush() {
+        if (blocks_.empty()) return;
+        Write(markdown_);
+    }
+
+    // Writes `md`, a piece of block `index`, as a chunk of its own (the open chunk must be empty).
+    void Piece(uint32_t index, std::string_view md, const std::vector<PageBox>& boxes, int page) {
+        Take(index, boxes, page);
+        Write(md);
+    }
+
+private:
+    void Take(uint32_t index, const std::vector<PageBox>& boxes, int page) {
+        blocks_.push_back(index);
+        boxes_.insert(boxes_.end(), boxes.begin(), boxes.end());
+        const bool first = blocks_.size() == 1;
+        first_ = first ? page : std::min(first_, page);
+        last_ = first ? page : std::max(last_, page);
+        for (const PageBox& box : boxes) {
+            first_ = std::min(first_, pages_[box.page].number);
+            last_ = std::max(last_, pages_[box.page].number);
+        }
+    }
+
+    void Write(std::string_view md) {
+        out_ += "{\"chunk\":";
+        out_ += std::to_string(number_++);
+        out_ += ",\"heading_path\":[";
+        for (size_t h = 0; h < path_.size(); ++h) {
+            if (h > 0) out_.push_back(',');
+            Batch::AppendJsonString(out_, path_[h]);
+        }
+        out_ += "],\"pages\":[";
+        out_ += std::to_string(first_);
+        out_.push_back(',');
+        out_ += std::to_string(last_);
+        out_ += "],\"boxes\":";
+        AppendBoxes(out_, pages_, boxes_.data(), boxes_.size());
+        out_ += ",\"blocks\":[";
+        for (size_t b = 0; b < blocks_.size(); ++b) {
+            if (b > 0) out_.push_back(',');
+            out_ += std::to_string(blocks_[b]);
+        }
+        out_ += "],\"markdown\":";
+        Batch::AppendJsonString(out_, md);
+        out_ += "}\n";
+        markdown_.clear();
+        blocks_.clear();
+        boxes_.clear();
+        onlyHeadings_ = true;
+    }
+
+    const std::vector<PageData>& pages_;
+    std::string& out_;
+    std::string markdown_;
+    std::vector<uint32_t> blocks_;
+    std::vector<PageBox> boxes_;
+    std::vector<int> levels_;
+    std::vector<std::string> path_;
+    int first_ = 0, last_ = 0;
+    bool onlyHeadings_ = true;
+    uint64_t number_ = 0;
+};
+
+// The lines of a table or code block's Markdown that open (`head`) and close (`tail`) each piece
+// of it; false when it has no line between them (or is not as WriteMarkdown writes it). `starts`
+// holds where each line starts.
+bool LineFrame(BlockKind kind, std::string_view md, const std::vector<size_t>& starts, size_t& head, size_t& tail) {
+    const size_t n = starts.size();
+    const auto line = [&](size_t l) {
+        const size_t end = l + 1 < n ? starts[l + 1] - 1 : md.size();
+        return md.substr(starts[l], end - starts[l]);
+    };
+    head = tail = 0;
+    if (kind == BlockKind::Code) {
+        head = tail = 1;
+    } else if (line(0).size() >= 7 && line(0).compare(line(0).size() - 7, 7, "<table>") == 0) {
+        // HTML: "<table>", the header rows (<th> cells), the rows, "</table>".
+        head = 1;
+        while (head < n && line(head).find("<th") != std::string_view::npos) ++head;
+        tail = line(n - 1) == "</table>" ? 1 : 0;
+    } else {
+        // GFM: the header row and the separator row "| --- |...", then the rows.
+        for (size_t l = 0; l < n && head == 0; ++l) {
+            const std::string_view text = line(l);
+            if (text.find("---") != std::string_view::npos &&
+                text.find_first_not_of("|-: ") == std::string_view::npos)
+                head = l + 1;
+        }
+    }
+    return head > 0 && n > head + tail;
+}
+
+} // namespace
+
+void WriteChunks(const std::vector<PageData>& pages, const BlockList& list, std::string& out, WriteCounts& counts,
+                 MathMode math, const WriteSettings& settings) {
+    std::string markdown;
+    std::vector<WrittenBlock> written;
+    WriteSettings blocks = settings;
+    blocks.pageMarkers = false;
+    WriteMarkdown(pages, list, false, markdown, counts, math, blocks, &written);
+    const size_t limit = std::min(std::max(settings.chunkChars, kMinChunkChars), kMaxChunkChars);
+    ChunkWriter chunks(pages, out);
+    std::vector<PageBox> boxes;
+    std::vector<size_t> starts;
+    std::string heading, piece;
+    for (size_t w = 0; w < written.size(); ++w) {
+        const WrittenBlock& entry = written[w];
+        const Block& block = list.blocks[entry.block];
+        const std::string_view md = std::string_view(markdown).substr(entry.begin, entry.end - entry.begin);
+        const uint32_t index = static_cast<uint32_t>(w);
+        const bool isHeading = block.kind == BlockKind::Heading;
+        BlockBoxes(pages, list, block, boxes);
+        const int page = block.kind == BlockKind::Comment ? static_cast<int>(block.number)
+                                                          : pages[list.lines[block.first].page].number;
+        if (isHeading && !chunks.Empty() && !chunks.OnlyHeadings()) chunks.Flush();
+        const bool alone = md.size() > limit;
+        if (alone || (!chunks.Empty() && chunks.Size() + 2 + md.size() > limit)) chunks.Flush();
+        if (isHeading) {
+            HeadingText(md, heading);
+            chunks.Heading(std::max(1, std::min<int>(6, block.level)), heading);
+        }
+        if (!alone) {
+            chunks.Add(index, md, isHeading, boxes, page);
+            continue;
+        }
+        // Longer than a chunk: tables by rows and code by lines, each piece opened (and closed) as
+        // the block is; other blocks as text.
+        size_t head = 0, tail = 0;
+        bool lines = false;
+        if (block.kind == BlockKind::Table || block.kind == BlockKind::Code) {
+            starts.assign(1, 0);
+            for (size_t i = 0; i < md.size(); ++i)
+                if (md[i] == '\n') starts.push_back(i + 1);
+            lines = LineFrame(block.kind, md, starts, head, tail);
+        }
+        if (lines) {
+            const size_t n = starts.size();
+            const std::string_view open = md.substr(0, starts[head]);  // with its line break
+            const std::string_view close = tail > 0 ? md.substr(starts[n - tail] - 1) : std::string_view();
+            piece.assign(open.data(), open.size());
+            bool body = false;
+            for (size_t l = head; l < n - tail; ++l) {
+                const size_t end = l + 1 < n ? starts[l + 1] - 1 : md.size();
+                const std::string_view line = md.substr(starts[l], end - starts[l]);
+                if (body && piece.size() + 1 + line.size() + close.size() > limit) {
+                    piece.append(close.data(), close.size());
+                    chunks.Piece(index, piece, boxes, page);
+                    piece.assign(open.data(), open.size());
+                    body = false;
+                }
+                if (body) piece.push_back('\n');
+                piece.append(line.data(), line.size());
+                body = true;
+            }
+            piece.append(close.data(), close.size());
+            chunks.Piece(index, piece, boxes, page);
+            continue;
+        }
+        for (size_t at = 0; at < md.size();) {
+            const std::string_view rest = md.substr(at);
+            if (rest.size() <= limit) {
+                chunks.Piece(index, rest, boxes, page);
+                break;
+            }
+            size_t cut = 0, next = 0;
+            TextCut(rest, limit, cut, next);
+            chunks.Piece(index, rest.substr(0, cut), boxes, page);
+            at += next;
+        }
+    }
+    chunks.Flush();
 }
 
 } // namespace RayoPdf::Layout

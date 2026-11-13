@@ -4,8 +4,8 @@
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
-//                                   [--format=markdown|json] [--page-markers] [--front-matter]
-//                                   [--furniture=drop|keep] [--plain] [--tables=auto|html]
+//                                   [--format=markdown|json|chunks] [--chunk-chars=N] [--page-markers]
+//                                   [--front-matter] [--furniture=drop|keep] [--plain] [--tables=auto|html]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -112,8 +112,12 @@ void PrintUsage(std::FILE* out) {
         "  --math=MODE        unicode (default): formulas as Unicode text, scripts as Unicode\n"
         "                     superscripts and subscripts or else <sup>/<sub>;\n"
         "                     latex: formulas rebuilt as LaTeX, $...$ inline and $$...$$ displayed\n"
-        "  --format=FORMAT    markdown (default), or json: one JSON object with the document's\n"
-        "                     metadata and its blocks (type, page, boxes, Markdown; schema 1)\n"
+        "  --format=FORMAT    markdown (default); json: one JSON object with the document's\n"
+        "                     metadata and its blocks (type, page, boxes, Markdown; schema 1);\n"
+        "                     chunks: JSON Lines, one chunk for retrieval a line (heading path,\n"
+        "                     pages, boxes, blocks, Markdown)\n"
+        "  --chunk-chars=N    chunks: at most N bytes of Markdown a chunk (256 to 1000000,\n"
+        "                     default 4000; a longer block is split)\n"
         "  --page-markers     <!-- page N --> before the Markdown of each page\n"
         "  --front-matter     YAML front matter from the document's information (title, author,\n"
         "                     dates, pages) before the Markdown\n"
@@ -142,9 +146,9 @@ void PrintUsage(std::FILE* out) {
         "\n"
         "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
         "(\"output\" left out: the answer carries the Markdown, or with --format=json the JSON as\n"
-        "\"json\") and answers each with its record, in request order, after a first line\n"
-        "{\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it. --batch writes NAME.json with\n"
-        "--format=json.\n"
+        "\"json\", with --format=chunks the chunks as the array \"chunks\") and answers each with its\n"
+        "record, in request order, after a first line {\"rayopdf\":\"VERSION\",\"protocol\":1}; quit\n"
+        "ends it. --batch writes NAME.json with --format=json, NAME.jsonl with --format=chunks.\n"
         "\n"
         "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
         "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
@@ -263,10 +267,25 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             options.convert.format = Layout::OutputFormat::Markdown;
         } else if (format == "json") {
             options.convert.format = Layout::OutputFormat::Json;
+        } else if (format == "chunks") {
+            options.convert.format = Layout::OutputFormat::Chunks;
         } else {
-            error = "--format takes markdown or json: " + std::string(format);
+            error = "--format takes markdown, json or chunks: " + std::string(format);
             return FlagStatus::Invalid;
         }
+    } else if (StartsWith(arg, "--chunk-chars=")) {
+        const std::string_view value = arg.substr(14);
+        uint32_t chars = 0;
+        bool valid = !value.empty() && value.size() <= 7;
+        for (const char c : value) {
+            valid = valid && c >= '0' && c <= '9';
+            if (valid) chars = chars * 10 + static_cast<uint32_t>(c - '0');
+        }
+        if (!valid || chars < Layout::kMinChunkChars || chars > Layout::kMaxChunkChars) {
+            error = "--chunk-chars takes 256 to 1000000: " + std::string(value);
+            return FlagStatus::Invalid;
+        }
+        options.convert.chunkChars = chars;
     } else if (arg == "--page-markers") {
         options.convert.pageMarkers = true;
     } else if (arg == "--front-matter") {
@@ -689,7 +708,9 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
         const std::string& relative = files[i];
         job.input = Join(inputFolder, relative);
         job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) +
-                     (document.convert.format == Layout::OutputFormat::Json ? ".json" : ".md");
+                     (document.convert.format == Layout::OutputFormat::Json     ? ".json"
+                      : document.convert.format == Layout::OutputFormat::Chunks ? ".jsonl"
+                                                                                : ".md");
         if (!outputs.insert(kWindows ? Lowered(job.output) : job.output).second) {
             job.record.status = "error";
             job.record.code = kExitUnwritable;
@@ -774,6 +795,17 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
         if (options.format == Layout::OutputFormat::Json) {
             record.hasJson = true;
             record.json.assign(markdown, 0, markdown.empty() ? 0 : markdown.size() - 1);  // without its line break
+        } else if (options.format == Layout::OutputFormat::Chunks) {
+            // The chunks as one JSON array: the lines joined by commas.
+            record.hasChunks = true;
+            record.chunks = "[";
+            for (size_t at = 0; at < markdown.size();) {
+                const size_t end = std::min(markdown.find('\n', at), markdown.size());
+                if (at > 0) record.chunks.push_back(',');
+                record.chunks.append(markdown, at, end - at);
+                at = end + 1;
+            }
+            record.chunks.push_back(']');
         } else {
             record.hasMarkdown = true;
             record.markdown = markdown;

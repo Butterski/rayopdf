@@ -19,9 +19,15 @@ namespace RayoPdf::Layout {
 // leave little to gain from more).
 constexpr unsigned kDefaultPageWorkers = 4;
 
-// What Convert writes (roadmap D6): Markdown, or the document as one JSON object (schema 1, the
-// blocks with their pages, boxes and Markdown; layout/markdown_writer.h WriteJson).
-enum class OutputFormat : uint8_t { Markdown, Json };
+// What Convert writes (roadmap D6): Markdown, the document as one JSON object (schema 1, the blocks
+// with their pages, boxes and Markdown; layout/markdown_writer.h WriteJson), or chunks for
+// retrieval as JSON Lines (WriteChunks).
+enum class OutputFormat : uint8_t { Markdown, Json, Chunks };
+
+// ConvertOptions::chunkChars: the default and the bounds a caller checks (Convert clamps to them).
+constexpr uint32_t kDefaultChunkChars = 4000;
+constexpr uint32_t kMinChunkChars = 256;
+constexpr uint32_t kMaxChunkChars = 1000000;
 
 // Page furniture (running headers, footers, page numbers and margin lines; layout/reading_order.h):
 // left out (the default), or kept as text where it stands. A structure tree that is used still
@@ -58,6 +64,8 @@ struct ConvertOptions {
     // "1 text"). Escapes and the block structure (headings, lists, tables) are written as always.
     bool plain = false;
     TableFormat tables = TableFormat::Auto;
+    // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
+    uint32_t chunkChars = kDefaultChunkChars;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
     // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
     // may run on, at most kDefaultPageWorkers, each started only once the pages read so far are
@@ -92,8 +100,8 @@ enum class ExactUse : uint8_t {
     None,         // the file claims no payload
     Used,         // the payload passed both checks and is the Markdown written
     Pages,        // not used: a page range was asked for and the payload is the whole document
-    Format,       // not used: the output asked for (JSON, page markers, plain text, HTML tables, kept
-                  // furniture) needs the pages' layout
+    Format,       // not used: the output asked for (JSON, chunks, page markers, plain text, HTML tables,
+                  // kept furniture) needs the pages' layout
     Unsupported,  // rejected: another profile version or encoding
     Corrupt,      // rejected: the file or the profile's objects are not as the profile writes them
     Integrity,    // rejected: the payload's SHA-256 or length does not match its packet
@@ -148,8 +156,8 @@ struct ConvertReport {
 
 // Converts the pages of `document` to Markdown in `markdown` (replaced): a verified RayoMD source
 // payload as it is (layout/exact.h), else the pages; with OutputFormat::Json the document as one
-// JSON object instead. Never fails: what cannot be read is reported in `report` and marked in the
-// text.
+// JSON object instead, with OutputFormat::Chunks its chunks as JSON Lines. Never fails: what cannot
+// be read is reported in `report` and marked in the text.
 void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report);
 
 } // namespace RayoPdf::Layout

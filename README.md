@@ -249,7 +249,8 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--ocr=auto|off|force] [--ocr-addon=PATH]
                                 [--no-exact] [--no-annotations] [--no-structure] [--report]
                                 [--math=unicode|latex] [--workers=N]
-                                [--format=markdown|json] [--page-markers] [--front-matter]
+                                [--format=markdown|json|chunks] [--chunk-chars=N]
+                                [--page-markers] [--front-matter]
                                 [--furniture=drop|keep] [--plain] [--tables=auto|html]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
@@ -313,6 +314,21 @@ rayopdf --convert paper.pdf paper.md --front-matter
 
 Both apply to Markdown only; the JSON output always carries the metadata.
 
+### Chunks for retrieval
+
+`--format=chunks` writes the document as chunks for retrieval-augmented generation, one JSON
+object a line (JSON Lines): `chunk` (its number from 0), `heading_path` (the headings that enclose
+it, outermost first, as text), `pages` (first and last), `boxes` and `blocks` (the boxes and
+indices of its blocks, as `--format=json` gives them) and `markdown`. A heading starts a chunk
+(unless the chunk holds only headings so far); blocks follow under it, joined by a blank line,
+until the next would take the chunk past `--chunk-chars=N` bytes (256 to 1,000,000; default
+4,000). A block longer than that becomes chunks of its own: text at sentence ends, a table by
+rows with its header repeated in each, code by lines with its fence reopened.
+
+```sh
+rayopdf --convert paper.pdf paper.jsonl --format=chunks --chunk-chars=2000
+```
+
 ### Plain text, HTML tables and page furniture
 
 Three options change conventions on which readers and benchmarks disagree; the defaults keep the
@@ -344,8 +360,8 @@ detects damage, not forgery, and the comparison does not cover punctuation, Mark
 link targets beyond that allowance. The profile carries no images: the source's image links stay
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
-with `--format=json`, `--page-markers`, `--plain`, `--tables=html` or `--furniture=keep`, which
-need the pages' layout), or why the payload was
+with `--format=json`, `--format=chunks`, `--page-markers`, `--plain`, `--tables=html` or
+`--furniture=keep`, which need the pages' layout), or why the payload was
 rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`,
 `mismatch`. `--no-exact` always converts the pages.
 
@@ -372,7 +388,8 @@ on one core for a 300 dpi Latin page, more for other scripts.
 ### Batch conversion
 
 `--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md` (with
-`--format=json` `NAME.json`), its images to `OUT-FOLDER/NAME-images/`. `--recursive` adds the
+`--format=json` `NAME.json`, with `--format=chunks` `NAME.jsonl`), its images to
+`OUT-FOLDER/NAME-images/`. `--recursive` adds the
 subfolders, except hidden ones, mirrored
 under `OUT-FOLDER`; `--skip-unchanged` keeps Markdown files at least as new as their PDF; `--report`
 writes one record a document, in the sorted order of the inputs, to standard output or to FILE.
@@ -391,10 +408,11 @@ rayopdf --batch papers md-out --recursive --skip-unchanged --report=report.jsonl
 line out is the request's record with its `id`. The first line out is
 `{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
 an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
-Markdown as `markdown`, or with `--format=json` the JSON object as `json`, and no images are
-written) and `args` (flags of `--convert`: `--password`, `--pages`, `--images`, `--no-exact`,
-`--no-annotations`, `--no-structure`, `--math`, `--ocr`, `--ocr-addon`, `--format`,
-`--page-markers`, `--front-matter`, `--furniture`, `--plain`, `--tables`, over those
+Markdown as `markdown`, with `--format=json` the JSON object as `json`, or with `--format=chunks`
+the chunks as the array `chunks`, and no images are written) and `args` (flags of `--convert`:
+`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`,
+`--math`, `--ocr`, `--ocr-addon`, `--format`, `--chunk-chars`, `--page-markers`,
+`--front-matter`, `--furniture`, `--plain`, `--tables`, over those
 the session started with). A malformed request gets an error record (code 2) and the session goes
 on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
 converted N at a time, and the answers still come in request order.

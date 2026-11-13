@@ -89,6 +89,7 @@ Options go after the output path, in any order:
 | Images elsewhere / none | `--images=DIR` / `--images=none` |
 | Formulas as LaTeX (`$...$`, `$$...$$`) | `--math=latex` (default `unicode`: Unicode text, `<sup>`/`<sub>` where needed) |
 | Structured JSON instead of Markdown | `--format=json` (schema: [references/json.md](references/json.md)) |
+| Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000) |
 | A comment before each page's text | `--page-markers` (`<!-- page N -->`; a list or quote across a page break is split there) |
 | The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `pages`) |
 | Text without inline markup | `--plain` (no `**`, `*`, `` ` ``, links, `<sup>`/`<sub>` or `[^n]`; their text stays) |
@@ -101,7 +102,8 @@ Options go after the output path, in any order:
 | OCR | `--ocr=auto` (default), `off`, `force`; `--ocr-addon=PATH` (section 4) |
 
 `--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0, and
-`--plain`, `--tables` and `--furniture` not before 0.3.0: check `rayopdf --help` lists them.
+`--plain`, `--tables`, `--furniture` and `--format=chunks` not before 0.3.0: check
+`rayopdf --help` lists them.
 `--front-matter` and `--page-markers` have no effect with `--format=json`, whose `metadata` and
 per-block `page` carry the same information.
 
@@ -118,7 +120,8 @@ rayopdf --convert locked.pdf locked.md --password=secret
 
 For a folder: `rayopdf --batch <in-folder> <out-folder> [flags] --report` (`--recursive`,
 `--skip-unchanged`, `--report=FILE`, `--workers=N`). Each `a.pdf` becomes `a.md` (`a.json` with
-`--format=json`); the batch modes write no images (`--images=none` only).
+`--format=json`, `a.jsonl` with `--format=chunks`); the batch modes write no images
+(`--images=none` only).
 
 For many conversions from one process, `rayopdf --serve --json [flags]` reads one JSON request a
 line on stdin and answers one JSON line a request, in order, with the fields of the report below
@@ -130,7 +133,8 @@ rayopdf --serve --json --math=latex < requests.jsonl
 
 Request lines (`input` a PDF; `output` the Markdown file to write, or left out to get the
 Markdown in the answer's `"markdown"` field, or with `--format=json` the JSON document in its
-`"json"` field; `args` flags over the command line's: `--pages`, `--password`, `--math`,
+`"json"` field, with `--format=chunks` the chunks as an array in its `"chunks"` field; `args`
+flags over the command line's: `--pages`, `--password`, `--math`,
 `--format`, `--images=none`, ...):
 
 ```json

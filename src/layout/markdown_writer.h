@@ -12,8 +12,13 @@
 // metadata and pages, then per block its type, first page, boxes on each page it covers, what its
 // type adds (heading level; list depth, number and task; table cells; image file and alternate
 // text; footnote number; quote depth and alert) and, last, the Markdown WriteMarkdown writes for it.
+//
+// WriteChunks writes the same blocks as chunks for retrieval (roadmap D6), one JSON object a line:
+// consecutive blocks under one heading path, each chunk at most WriteSettings::chunkChars bytes of
+// Markdown where a block allows it.
 #pragma once
 
+#include "layout/convert.h"
 #include "layout/math.h"
 #include "layout/metadata.h"
 #include "layout/page.h"
@@ -59,12 +64,29 @@ struct WrittenBlock {
 // marker ends a list or block quote that runs across the page break. `plain`: no inline markup
 // (emphasis, code spans, strikethrough, links: their text stays; <sup>/<sub>: their text stays,
 // Unicode script forms too), footnote references as their bare number and definitions as
-// "N text". `htmlTables`: every table as HTML, not only those whose spans need it.
+// "N text". `htmlTables`: every table as HTML, not only those whose spans need it. `chunkChars`:
+// WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars].
 struct WriteSettings {
     bool pageMarkers = false;
     bool plain = false;
     bool htmlTables = false;
+    uint32_t chunkChars = kDefaultChunkChars;
 };
+
+// A block's box on one page (`page` an index into the pages), on the upright page, in points with
+// the origin at the lower left.
+struct PageBox {
+    uint32_t page;
+    float x0, y0, x1, y1;
+};
+
+// The boxes of `block` into `boxes` (replaced), one a page it covers, in the order of its lines:
+// an image's, a table's parts' (their tables), any other block's lines'. A comment has none.
+void BlockBoxes(const std::vector<PageData>& pages, const BlockList& list, const Block& block,
+                std::vector<PageBox>& boxes);
+
+// Appends `boxes` as JSON: [{"page":N,"bbox":[x0,y0,x1,y1]}...] (N: PageData::number; `%.2f`).
+void AppendBoxes(std::string& out, const std::vector<PageData>& pages, const PageBox* boxes, size_t count);
 
 // Appends the Markdown of `blocks` to `out`; `repaired` puts the repair comment first. `written`,
 // when given, receives every block written, in order.
@@ -81,5 +103,20 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, 
 void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
                const DocumentMetadata* metadata, std::string& out, WriteCounts& counts,
                MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
+
+// Appends the blocks as chunks for retrieval, one JSON object and a line break each (JSON Lines):
+// {"chunk":N,"heading_path":[...],"pages":[first,last],"boxes":[{"page","bbox"}...],"blocks":[...],
+// "markdown":"..."}. N counts from 0; `blocks` are indices into WriteJson's "blocks"; `boxes` are
+// those blocks' boxes (BlockBoxes) in order; `pages` the first and last page numbers they cover;
+// `heading_path` the text of the headings that enclose the chunk, outermost first, without markup.
+// A chunk's Markdown is its blocks' Markdown (WriteMarkdown's, page markers aside) joined by a
+// blank line. A heading of level L ends the path's entries of level L or deeper and is pushed on
+// it; it starts a chunk unless the chunk open holds only headings. A block that would take the
+// chunk past `settings.chunkChars` bytes starts a new one. A block longer than that alone becomes
+// chunks of its own: text at sentence ends (". ", "? ", "! " before a capital or digit), else at
+// the last space, else at a character; a table by rows with its header rows repeated in each; code
+// at line ends with its fence reopened. A row or code line longer than the limit stays whole.
+void WriteChunks(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts,
+                 MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
 
 } // namespace RayoPdf::Layout
