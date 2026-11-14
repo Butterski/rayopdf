@@ -2153,6 +2153,52 @@ void TestSmallerLabelRows() {
                   1710);
 }
 
+// A table set without cell margins (ConTeXt's frames): its columns stand only a word space apart,
+// less than whitespace alone parts. Its top, mid and bottom rules drawn cell by cell meet at the
+// column boundaries: the joints part the columns, and a header label's words a word space from
+// the next column's stay in their cell. The same rules drawn whole leave the narrow gaps closed.
+void TestRuleJoints() {
+    for (const bool pieces : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddProse(page, 72, 400, 760, 2);
+        // Columns at 100, 128 and 174, the widest texts 3 pt before the next column, words a
+        // word space (3 pt, no space glyphs: TeX's) apart.
+        const float joints[] = {98, 126.5f, 172.5f, 210};
+        const auto rule = [&](float y) {
+            if (!pieces) return HLine(page, joints[0], joints[3], y);
+            for (int k = 0; k < 3; ++k) HLine(page, joints[k], joints[k + 1], y);
+        };
+        rule(722);
+        AddText(page, "Name", 100, 710);
+        AddText(page, "title", AddText(page, "Job", 128, 710) + 3, 710);
+        AddText(page, "Cost", 174, 710);
+        rule(704);
+        const char* const names[] = {"Anna", "Ben", "Chloe"};
+        const char* const jobs[] = {"Engineer", "Designer", "Manager"};
+        const char* const costs[] = {"12", "7", "305"};
+        float y = 692;
+        for (int r = 0; r < 3; ++r, y -= 14) {
+            AddText(page, names[r], 100, y);
+            AddText(page, jobs[r], 128, y);
+            AddText(page, costs[r], 194 - 5.0f * float(std::strlen(costs[r])), y);
+        }
+        rule(y + 6);
+        AddProse(page, 72, 400, y - 30, 2);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(pieces ? "rule joints" : "rules drawn whole", md);
+        if (pieces) {
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Name | Job title | Cost |\n| --- | --- | --- |\n"
+                                                             "| Anna | Engineer | 12 |\n| Ben | Designer | 7 |\n"
+                                                             "| Chloe | Manager | 305 |"),
+                          1732);
+        } else {
+            RAYOPDF_CHECK(!Contains(md, "| Anna | Engineer |") && !Contains(md, "| Job title |"), 1733);
+        }
+    }
+}
+
 // A table ruled under its header and at its bottom, with no top rule: the header lines right above
 // the first rule are its header (a label over two columns stands over a rule of their width); the
 // caption above them, running across the columns, stays text.
@@ -2464,6 +2510,7 @@ int main(int argc, char** argv) {
     TestProseRiverUnderRule();
     TestHeaderLinesAtRowPitch();
     TestSmallerLabelRows();
+    TestRuleJoints();
     TestHeaderAboveRules();
     TestCloseNumberColumns();
     TestContentsLists();

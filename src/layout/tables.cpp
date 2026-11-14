@@ -595,10 +595,12 @@ private:
     bool ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps);
     // `partial`: rules among the header lines narrower than the table (a label's \cmidrule).
+    // `joints`: x positions where a table's rules drawn cell by cell meet (RuleStacks): no text
+    // spans the column boundary of a gap holding one.
     void TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                   const std::vector<Gap>& gaps, TableKind kind, uint16_t headerRows, float xa, float xb,
                   const std::vector<uint8_t>* labels = nullptr, const std::vector<uint8_t>* ruled = nullptr,
-                  const std::vector<Edge>* partial = nullptr);
+                  const std::vector<Edge>* partial = nullptr, const std::vector<float>* joints = nullptr);
     bool Free(float x0, float y0, float x1, float y1) const;
     // `figure` (when given) tells a chart's or a diagram's lines apart from other non-tables.
     bool Validate(Grid& g, bool column, bool* figure = nullptr);
@@ -1223,7 +1225,7 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
 void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                         size_t rowEnd, const std::vector<Gap>& bodyGaps, TableKind kind, uint16_t headerRows, float xa,
                         float xb, const std::vector<uint8_t>* labels, const std::vector<uint8_t>* ruled,
-                        const std::vector<Edge>* partial) {
+                        const std::vector<Edge>* partial, const std::vector<float>* joints) {
     if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) return;
     const int cols = static_cast<int>(bodyGaps.size()) + 1;
     if (rowEnd <= rowBegin || cols < 2 || cols > kMaxTableCols) return;
@@ -1586,13 +1588,19 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
             // The word before it in the row, when only a word space apart: one cell's text, unless
             // the word starts where its column's text starts (labels set a word space apart, each at
-            // its column's left edge).
+            // its column's left edge) or a joint of the table's rules lies between them.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
             const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
             for (int c = 1; c < cols; ++c) {
                 const float x = g.xs[static_cast<size_t>(c)];
+                const auto jointBetween = [&]() {
+                    for (size_t j = 0; joints && j < joints->size(); ++j)
+                        if ((*joints)[j] > before->x1 && (*joints)[j] < w.x0) return true;
+                    return false;
+                };
                 if ((w.x0 < x - 0.5f && w.x1 > x + 0.5f) ||
-                    (joined && before->x1 < x && w.x0 > x && !(std::fabs(w.x0 - colLeft[static_cast<size_t>(c)]) <= 0.3f * w.size)))
+                    (joined && before->x1 < x && w.x0 > x && !(std::fabs(w.x0 - colLeft[static_cast<size_t>(c)]) <= 0.3f * w.size) &&
+                     !jointBetween()))
                     g.vb[static_cast<size_t>(group * (cols + 1) + c)] = 0;
             }
         }
@@ -2810,7 +2818,10 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
 }
 
 // Partially ruled tables: stacks of horizontal rules of one width; rows between and around them
-// that split into the same columns.
+// that split into the same columns. Rules drawn cell by cell (CSS borders, ConTeXt's table frames)
+// meet at the column boundaries: where the pieces of every rule of a stack meet at the same x
+// positions (joints), a closed run's columns whose text, set without cell margins, stands only a
+// word space apart part there.
 void Detector::RuleStacks() {
     if (rules_.empty() || rules_.size() > kMaxTableEdges) return;
     std::sort(rules_.begin(), rules_.end(), [](const Edge& a, const Edge& b) { return a.pos > b.pos; });
@@ -2847,9 +2858,90 @@ void Detector::RuleStacks() {
     std::vector<uint8_t> ruled;      // per row of the run: a rule of the run lies between it and the row above
     std::vector<Edge> partial;       // rules among a table's header lines narrower than it
     std::vector<uint8_t> sections;   // per row of the run: label rows, and lines tried as section labels
+    // The stacks' horizontal rule pieces as drawn (before MergeEdges joins them), by height, read
+    // for the first stack; per stack, where each rule's pieces meet (by rule, then x), and the
+    // joints of the rules in use: where every one of them has pieces meeting, ascending.
+    std::vector<Edge> pieces, line;
+    bool piecesRead = false;
+    struct Meeting {
+        float x;
+        uint32_t rule;
+    };
+    std::vector<Meeting> meetings;
+    std::vector<float> joints;
     for (const Stack& s : stacks) {
         if (!s.drawn) continue;
         const float xa = s.a - 2, xb = s.b + 2;
+        joints.clear();
+        if (!piecesRead) {
+            piecesRead = true;
+            if (page_.rulings.size() <= 8 * size_t(kMaxTableEdges)) {
+                for (const Ruling& upright : page_.rulings) {
+                    const Ruling r = ToFrame(upright, dir_);
+                    const float w = r.x1 - r.x0, t = r.y1 - r.y0;
+                    if (t >= 0 && t <= kMaxThick && w >= kMinEdge && w > t) pieces.push_back(Edge{(r.y0 + r.y1) / 2, r.x0, r.x1});
+                }
+                std::sort(pieces.begin(), pieces.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
+            }
+        }
+        meetings.clear();
+        for (uint32_t k = 0; k < s.ys.size() && pieces.size() >= 2; ++k) {
+            // The rule's pieces by x: a piece's end and the next one's start within a point meet.
+            line.clear();
+            auto it = std::lower_bound(pieces.begin(), pieces.end(), s.ys[k] - kSnap, [](const Edge& p, float y) { return p.pos < y; });
+            for (; it != pieces.end() && it->pos <= s.ys[k] + kSnap && line.size() < 256; ++it)
+                if (it->a >= xa - kSnap && it->b <= xb + kSnap) line.push_back(*it);
+            std::sort(line.begin(), line.end(), [](const Edge& p, const Edge& q) { return p.a < q.a; });
+            for (size_t m = 1; m < line.size() && meetings.size() < 256; ++m)
+                if (std::fabs(line[m].a - line[m - 1].b) <= 1.0f) meetings.push_back(Meeting{(line[m - 1].b + line[m].a) / 2, k});
+        }
+        // The joints of rules [from, to] (two at least): the meetings of the first that every
+        // other one has within a point. A rule of the stack outside the table (a page header's
+        // rule as wide as the table) has none of them.
+        const auto jointsOf = [&](size_t from, size_t to) {
+            joints.clear();
+            for (size_t m = 0; m < meetings.size() && to > from; ++m) {
+                if (meetings[m].rule != from) continue;
+                bool all = true;
+                for (size_t k = from + 1; k <= to && all; ++k) {
+                    bool meets = false;
+                    for (const Meeting& o : meetings) meets = meets || (o.rule == k && std::fabs(o.x - meetings[m].x) <= 1.0f);
+                    all = meets;
+                }
+                if (all) joints.push_back(meetings[m].x);
+            }
+        };
+        // Rules cut alike: every rule of the stack has as many meetings as the first, all of them
+        // joints of the whole stack (a table's rules drawn cell by cell). Rules cut otherwise
+        // (under labels spanning columns, a page head's rule as wide as the table) mark none.
+        bool alike = s.ys.size() >= 2 && !meetings.empty();
+        if (alike) {
+            std::vector<size_t> perRule(s.ys.size(), 0);
+            for (const Meeting& m : meetings) perRule[m.rule]++;
+            for (size_t k = 1; k < perRule.size() && alike; ++k) alike = perRule[k] == perRule[0];
+            jointsOf(0, s.ys.size() - 1);
+            alike = alike && joints.size() == perRule[0];
+        }
+        if (!alike) meetings.clear();
+        // Columns over rows [from, to) (from `rowsInk` when it is proper): gaps `gapMin` wide, and
+        // narrower ones, a point wide at least, around a joint.
+        const auto stackColumns = [&](const Ink* rowsInk, size_t from, size_t to, float gapMin, std::vector<Gap>& out,
+                                      const std::vector<uint8_t>* skip) {
+            const float least = joints.empty() ? gapMin : Fmin(gapMin, 1.0f);
+            if (rowsInk && rowsInk->proper) InkColumns(*rowsInk, xa, xb, least, out);
+            else Columns(rows, rowWords, from, to, xa, xb, least, out, skip);
+            if (least < gapMin) {
+                out.erase(std::remove_if(out.begin(), out.end(),
+                                         [&](const Gap& g) {
+                                             if (g.b - g.a >= gapMin) return false;
+                                             for (float x : joints)
+                                                 if (x >= g.a - 0.5f && x <= g.b + 0.5f) return false;
+                                             return true;
+                                         }),
+                          out.end());
+            }
+            return !out.empty();
+        };
         // Bands between consecutive rules: tabular ones (rows that split into columns) form tables.
         size_t i = 0;
         while (i < s.ys.size()) {
@@ -2885,7 +2977,8 @@ void Detector::RuleStacks() {
                     bool even = evenAt(em);
                     if (!even && rows[0].size > 1.15f * em && evenAt(rows[0].size)) em = rows[0].size, even = true;
                     if (!even) break;
-                    if (Columns(rows, rowWords, 0, rows.size(), xa, xb, Fmax(3.0f, 0.5f * em), gaps)) {
+                    jointsOf(j, j + 1);
+                    if (stackColumns(nullptr, 0, rows.size(), Fmax(3.0f, 0.5f * em), gaps, nullptr)) {
                         tabularEnd = j + 1;
                         labelled = false;
                     } else if (rows.size() == 1 && (tabularEnd > i || j == i) && !labelled && s.ys[j] - s.ys[j + 1] <= 2.5f * em) {
@@ -2908,6 +3001,7 @@ void Detector::RuleStacks() {
             // closing rule of a continued table), rows above it too.
             const float top = s.ys[i], bottom = s.ys[j];
             const bool single = i == j;
+            jointsOf(i, j);
             bool open = j - i <= 1;
             float yhi = top, ylo = bottom;
             // No rule of the stack close above the run's first rule: that rule may be the one under
@@ -2937,6 +3031,9 @@ void Detector::RuleStacks() {
             // Two rules around three rows or more are a top and a bottom rule, not a top and a header
             // rule: the table is closed.
             if (j - i == 1 && coreEnd >= coreBegin + 3) open = false;
+            // Rows taken past the rules (an open run) keep whitespace columns alone: a joint marks
+            // the columns of the rows its rules close.
+            if (open) joints.clear();
             size_t begin, end;
             if (coreEnd > coreBegin) {
                 begin = coreBegin, end = coreEnd;
@@ -2974,8 +3071,7 @@ void Detector::RuleStacks() {
             Ink& ink = scratch_.ink;
             Ink& grown = scratch_.grown;
             const auto columns = [&](const Ink& rowsInk, size_t from, size_t to, std::vector<Gap>& out) {
-                return rowsInk.proper ? InkColumns(rowsInk, xa, xb, minGap, out)
-                                      : Columns(rows, rowWords, from, to, xa, xb, minGap, out, labels);
+                return stackColumns(&rowsInk, from, to, minGap, out, labels);
             };
             const auto extend = [&](size_t& from, size_t& to, bool down) {
                 for (;;) {
@@ -3180,10 +3276,10 @@ void Detector::RuleStacks() {
                 if (header > 0 && end - begin >= header + 3u &&
                     Columns(rows, rowWords, begin + header, end, xa, xb, minGap, trial, labels) && trial.size() > gaps.size() &&
                     KeepsGaps(gaps, trial) && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial);
+                    TextGrid(rows, rowWords, begin, end, trial, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial, &joints);
                 // Without such a label (or when its rows do not make a grid): the columns of all rows.
                 if (grids_.size() == before && Free(xa, y0, xb, y1))
-                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial);
+                    TextGrid(rows, rowWords, begin, end, gaps, TableKind::Ruled, header, xa, xb, labels, &ruled, &partial, &joints);
             }
             i = j + 1;
         }
