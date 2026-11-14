@@ -25,8 +25,9 @@ enum class Math : uint8_t { Unicode, Latex };
 enum class Ocr : uint8_t { Off, Auto, Force };
 // Page furniture (running headers, footers, page numbers): left out, or kept as text.
 enum class Furniture : uint8_t { Drop, Keep };
-// Tables as GFM pipe tables unless a span needs HTML, or every table as HTML.
-enum class Tables : uint8_t { Auto, Html };
+// Tables as GFM pipe tables unless a span needs HTML, every table as HTML, or every table as a
+// GFM pipe table (spans flattened).
+enum class Tables : uint8_t { Auto, Html, Pipe };
 // Quotation marks as printed, or the typographic ones (U+2018-U+201F) as ' and ".
 enum class Quotes : uint8_t { Keep, Ascii };
 
@@ -54,7 +55,7 @@ struct Options {
     bool frontMatter = false;                // Markdown: YAML front matter from the document's information
     Furniture furniture = Furniture::Drop;   // page furniture left out or kept
     bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
-    Tables tables = Tables::Auto;            // Html: every table as HTML
+    Tables tables = Tables::Auto;            // Html: every table as HTML; Pipe: every table as GFM
     Quotes quotes = Quotes::Keep;            // Ascii: typographic quotation marks as ' and "
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images

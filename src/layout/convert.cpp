@@ -227,10 +227,10 @@ void Convert(const Document& document, const ConvertOptions& options, std::strin
         const int count = document.PageCount();
         if (options.firstPage > 1 || (options.lastPage > 0 && options.lastPage < count)) use = ExactUse::Pages;
     }
-    // JSON, page markers, plain text, HTML tables, kept furniture and ASCII quotes need the pages'
-    // layout.
+    // JSON, page markers, plain text, HTML or pipe tables, kept furniture and ASCII quotes need the
+    // pages' layout.
     if (use == ExactUse::Used && (options.format != OutputFormat::Markdown || options.pageMarkers || options.plain ||
-                                  options.tables == TableFormat::Html || options.furniture == Furniture::Keep ||
+                                  options.tables != TableFormat::Auto || options.furniture == Furniture::Keep ||
                                   options.quotes == Quotes::Ascii))
         use = ExactUse::Format;
     std::unique_ptr<Conversion> conversion;

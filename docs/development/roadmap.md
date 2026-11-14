@@ -244,18 +244,20 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   without `<sup>`/`<sub>` tags, Unicode script forms kept; footnote references as their number,
   definitions as `N text`; escapes and blocks as always); `--tables=html` writes every table as
   HTML, a row a line with a space between its tags and around each cell's text as HTML
-  pretty-printers set them, odl's ground truth among them (2026-11-14; `--tables=auto`, the
-  default: GFM unless a span needs HTML, written without the spaces); `--furniture=keep` removes no
-  running header, footer, page number or margin line and writes them in paragraphs apart from the
-  text, never as headings, the text read as if they were gone and they around it: lines turned
-  sideways and those in a page's upper half before the page's text, the others after it, after
-  the notes that end the page too (`--furniture=drop`, the default, removes them; a structure tree
-  that is used still leaves out its artifacts); `--quotes=ascii` (2026-11-14) writes the
-  typographic quotation marks of the pages' text (U+2018-U+201F) as `'` and `"`, changed in the
-  glyphs' text once the blocks are built, so no stage before the writer reads them (dashes stay:
-  ASCII has no dash apart from the hyphen, which dehyphenation reads; `--quotes=keep`, the
-  default, writes them as printed). Each changes the JSON output's `markdown` and cells the same
-  way.
+  pretty-printers set them, odl's ground truth among them (2026-11-14), and `--tables=pipe` every
+  table as GFM (2026-11-14; READoc's evaluator reads pipe tables only), a spanning cell's text in
+  its first row and column, the cells it covers empty and header rows after the first as body
+  rows (`--tables=auto`, the default: GFM unless a span needs HTML, written without the spaces);
+  `--furniture=keep` removes no running header, footer, page number or margin line and writes
+  them in paragraphs apart from the text, never as headings, the text read as if they were gone
+  and they around it: lines turned sideways and those in a page's upper half before the page's
+  text, the others after it, after the notes that end the page too (`--furniture=drop`, the
+  default, removes them; a structure tree that is used still leaves out its artifacts);
+  `--quotes=ascii` (2026-11-14) writes the typographic quotation marks of the pages' text
+  (U+2018-U+201F) as `'` and `"`, changed in the glyphs' text once the blocks are built, so no
+  stage before the writer reads them (dashes stay: ASCII has no dash apart from the hyphen, which
+  dehyphenation reads; `--quotes=keep`, the default, writes them as printed). Each changes the
+  JSON output's `markdown` and cells the same way.
 - Chunks for retrieval (`--format=chunks`, decided 2026-11-13): JSON Lines, one compact object a
   chunk, `{"chunk": N, "heading_path": [...], "pages": [first, last], "boxes": [...], "blocks":
   [...], "markdown": "..."}`: `chunk` counts from 0; `heading_path` holds the text (without
@@ -296,7 +298,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
         [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--page-markers] [--front-matter]
-        [--furniture=drop|keep] [--plain] [--tables=auto|html]
+        [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
 rayopdf --serve --json [options] [--workers=N]
@@ -323,11 +325,12 @@ JSON object a line;
 
 - **`--format=json`**, **`--format=chunks`** (with **`--chunk-chars=N`**, 256 to 1,000,000,
   else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
-  **`--plain`**, **`--tables=html`**, **`--furniture=keep`** and **`--quotes=ascii`** choose what
-  is written (D6): the JSON document, chunks for retrieval or the layout inspector's HTML instead
-  of Markdown, page markers in the Markdown, front matter before it, text without inline markup,
-  every table as HTML, page furniture kept, ASCII quotation marks. A RayoMD payload is not used
-  with any of them except `--front-matter` (the record's `exact` is `format`).
+  **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--furniture=keep`** and
+  **`--quotes=ascii`** choose what is written (D6): the JSON document, chunks for retrieval or the
+  layout inspector's HTML instead of Markdown, page markers in the Markdown, front matter before
+  it, text without inline markup, every table as HTML or every table as a pipe table, page
+  furniture kept, ASCII quotation marks. A RayoMD payload is not used with any of them except
+  `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
   hidden ones and links to folders excepted, mirrored) to `NAME.md` (`NAME.json` with
   `--format=json`, `NAME.jsonl` with `--format=chunks`, `NAME.html` with `--format=inspect`) and

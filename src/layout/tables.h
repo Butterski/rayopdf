@@ -109,10 +109,12 @@ bool TableNeedsHtml(const PageData& page, const Table& table);
 // the writers drop them from a later part.
 uint16_t RepeatedHeader(const TablePart& head, const TablePart& part);
 
-// A GFM pipe table: the first row of the first part is the header row; header rows of a later
-// part that repeat the first part's are dropped. `|` in cells is escaped; a cell spanning columns
-// is written in each of them, a cell spanning rows in its first row (the rows below it empty).
-void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out);
+// A GFM pipe table: the first row of the first part is the header row (header rows after it are
+// written as body rows); header rows of a later part that repeat the first part's are dropped.
+// `|` in cells is escaped; a cell spanning rows is written in its first row (the rows below it
+// empty), a cell spanning columns in each of them with `repeatColumnSpans`, else in its first
+// column (the columns after it empty).
+void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans);
 
 // An HTML <table> with <th> header rows, colspan and rowspan, and HTML-escaped plain cell text
 // (a GFM HTML block: one line per row, no blank lines inside). `spaced`: a space between the tags

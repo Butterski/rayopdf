@@ -8,8 +8,8 @@ export interface ConvertOptions {
   math?: "unicode" | "latex";
   /** Running headers, footers and page numbers: left out (default) or kept. */
   furniture?: "drop" | "keep";
-  /** Pipe tables unless a span needs HTML (default), or every table as HTML. */
-  tables?: "auto" | "html";
+  /** Pipe tables unless a span needs HTML (default), every table as HTML, or every table as a pipe table (spans flattened). */
+  tables?: "auto" | "html" | "pipe";
   /** Quotation marks as printed (default), or the typographic ones (curly, low) as ' and ". */
   quotes?: "keep" | "ascii";
   /** OCR needs the native add-on, which WebAssembly cannot start: "auto" and "force" find none. */

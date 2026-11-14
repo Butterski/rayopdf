@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
-// plain text without inline markup, every table as HTML, page furniture kept, the exact recovery
-// they turn off, chunks for retrieval (WriteChunks) and the layout inspector (WriteInspect). Exit
-// codes 2000-2049.
+// plain text without inline markup, every table as HTML or as a pipe table, page furniture kept,
+// the exact recovery they turn off, chunks for retrieval (WriteChunks) and the layout inspector
+// (WriteInspect). Exit codes 2000-2049.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -175,6 +175,49 @@ void TestHtmlTables() {
                   2019);
 }
 
+// A lattice of three columns under a header of two rows: "Method" spans both header rows,
+// "Results" the two columns over "Mean" and "Max"; "Group A" spans the first two body rows (by
+// default the table is HTML).
+std::vector<PageData> RowSpanPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    for (float y : {720.0f, 680.0f, 640.0f, 620.0f}) HLine(page, 72, 440, y);
+    HLine(page, 200, 440, 660);
+    HLine(page, 200, 440, 700);
+    VLine(page, 72, 620, 720);
+    VLine(page, 200, 620, 720);
+    VLine(page, 440, 620, 720);
+    VLine(page, 320, 620, 700);
+    AddText(page, "Method", 76, 696, 10);
+    AddText(page, "Results", 204, 706, 10);
+    AddText(page, "Mean", 204, 686, 10);
+    AddText(page, "Max", 324, 686, 10);
+    AddText(page, "Group A", 76, 656, 10);
+    AddText(page, "12", 204, 666, 10);
+    AddText(page, "56", 204, 646, 10);
+    AddText(page, "Gamma", 76, 626, 10);
+    AddText(page, "90", 204, 626, 10);
+    AddText(page, "34", 324, 666, 10);
+    AddText(page, "78", 324, 646, 10);
+    AddText(page, "11", 324, 626, 10);
+    return pages;
+}
+
+// --tables=pipe: every table a pipe table, a spanning cell's text in its first row and column
+// only, the header's second row a body row; a table without spans as by default.
+void TestPipeTables() {
+    const std::string spans = Run(RowSpanPage, OutputSettings());
+    OutputSettings settings;
+    settings.tables = TableFormat::Pipe;
+    const std::string pipe = Run(RowSpanPage, settings);
+    Show("row spans auto", spans);
+    Show("row spans pipe", pipe);
+    RAYOPDF_CHECK(Contains(spans, "<td rowspan=\"2\">Group A</td>"), 2009);
+    RAYOPDF_CHECK(Contains(pipe, "|\n| Group A | 12 | 34 |\n|  | 56 | 78 |\n| Gamma | 90 | 11 |"), 2022);
+    RAYOPDF_CHECK(Contains(pipe, "| Method | Results |  |\n| --- | --- | --- |\n|  | Mean | Max |\n| Group A |"), 2023);
+    RAYOPDF_CHECK(!Contains(pipe, "<t") && Run(TablePage, settings) == Run(TablePage, OutputSettings()), 2024);
+}
+
 // Three pages under one running header and over page numbers.
 std::vector<PageData> RunningPages() {
     std::vector<PageData> pages;
@@ -345,12 +388,13 @@ void TestExactFormat() {
     Convert(*document, options, markdown, report);
     RAYOPDF_CHECK(report.exact == ExactUse::Used, 2008);
     bool format = true;
-    for (int variant = 0; variant < 4; ++variant) {
+    for (int variant = 0; variant < 5; ++variant) {
         ConvertOptions changed = options;
         if (variant == 0) changed.plain = true;
         if (variant == 1) changed.tables = TableFormat::Html;
         if (variant == 2) changed.furniture = Furniture::Keep;
         if (variant == 3) changed.quotes = Quotes::Ascii;
+        if (variant == 4) changed.tables = TableFormat::Pipe;
         Convert(*document, changed, markdown, report);
         format = format && report.exact == ExactUse::Format && Contains(markdown, "Revenue grew");
     }
@@ -552,6 +596,7 @@ void TestInspect() {
 int main() {
     TestPlain();
     TestHtmlTables();
+    TestPipeTables();
     TestFurniture();
     TestKeptFurnitureText();
     TestKeptFurnitureOrder();

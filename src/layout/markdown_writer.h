@@ -64,13 +64,14 @@ struct WrittenBlock {
 // marker ends a list or block quote that runs across the page break. `plain`: no inline markup
 // (emphasis, code spans, strikethrough, links: their text stays; <sup>/<sub>: their text stays,
 // Unicode script forms too), footnote references as their bare number and definitions as
-// "N text". `htmlTables`: every table as HTML, not only those whose spans need it, with a space
-// between a row's tags and around each cell's text (WriteHtmlTable `spaced`). `chunkChars`:
-// WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars].
+// "N text". `tables`: Html writes every table as HTML, not only those whose spans need it, with a
+// space between a row's tags and around each cell's text (WriteHtmlTable `spaced`); Pipe every
+// table as a GFM pipe table, a spanning cell's text in its first row and column only (the covered
+// cells empty). `chunkChars`: WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars].
 struct WriteSettings {
     bool pageMarkers = false;
     bool plain = false;
-    bool htmlTables = false;
+    TableFormat tables = TableFormat::Auto;
     uint32_t chunkChars = kDefaultChunkChars;
 };
 

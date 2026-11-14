@@ -95,6 +95,7 @@ Options go after the output path, in any order:
 | The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `pages`) |
 | Text without inline markup | `--plain` (no `**`, `*`, `` ` ``, links, `<sup>`/`<sub>` or `[^n]`; their text stays) |
 | Every table as HTML | `--tables=html` (default `auto`: pipe tables unless a span needs HTML) |
+| Every table as a pipe table, spans flattened (readers without HTML) | `--tables=pipe` |
 | Keep running headers, footers and page numbers | `--furniture=keep` (default `drop`) |
 | Encrypted PDF | `--password=PW` |
 | Ignore the tags of a tagged PDF | `--no-structure` (layout analysis only) |
@@ -182,8 +183,8 @@ Check `status` is `"ok"` (`"error"`: `error` says why) and `pages` is plausible,
   `broken`, `role-cycle`, `coverage`, `generic`, `order`) mean layout analysis did.
 - `exact`: `used` when the PDF carried its RayoMD Markdown source and that was written as it is;
   `pages` when a page range kept it from being used; `format` when `--format=json`,
-  `--page-markers`, `--plain`, `--tables=html` or `--furniture=keep` asked for the pages' layout;
-  `off` with `--no-exact`; other values name why a payload was rejected.
+  `--page-markers`, `--plain`, `--tables=html`, `--tables=pipe` or `--furniture=keep` asked for
+  the pages' layout; `off` with `--no-exact`; other values name why a payload was rejected.
 - `header_footer_lines`: running heads, page numbers and similar lines left out of the text (0
   with `--furniture=keep`).
 

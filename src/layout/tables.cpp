@@ -4138,7 +4138,7 @@ bool TableNeedsHtml(const PageData& page, const Table& table) {
     return bodySpan && table.headerRows >= 2;
 }
 
-void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
+void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans) {
     if (parts.empty()) return;
     const uint16_t cols = parts[0].table->cols;
     bool first = true;
@@ -4171,7 +4171,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
                     spanned = text, spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;
                     ++i;
                 } else if (spanLeft > 0) {
-                    if (write) put(spanned);
+                    if (write && repeatColumnSpans) put(spanned);
                     --spanLeft;
                 }
                 if (write) out += " |";

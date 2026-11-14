@@ -370,8 +370,8 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
             front.endswith(markdown), repr(front[:200]))
     r = c.run("--convert", pages, "-", "--format=json", "--page-markers", "--front-matter")
     c.check("json ignores markers and front matter", r.returncode == 0 and r.stdout == (work / "pages.json").read_bytes())
-    for flag in ("--furniture=keep", "--furniture=drop", "--plain", "--tables=html", "--tables=auto", "--quotes=ascii",
-                 "--quotes=keep"):
+    for flag in ("--furniture=keep", "--furniture=drop", "--plain", "--tables=html", "--tables=auto", "--tables=pipe",
+                 "--quotes=ascii", "--quotes=keep"):
         r = c.run("--convert", pages, "-", flag)
         c.check(f"output option {flag}", r.returncode == 0 and b"page" in r.stdout.lower(), repr(r.stderr[:200]))
     for flag in ("--furniture=hide", "--tables=gfm", "--plain=yes", "--quotes=straight"):

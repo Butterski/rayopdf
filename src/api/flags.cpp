@@ -140,8 +140,10 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             options.convert.tables = Layout::TableFormat::Auto;
         } else if (mode == "html") {
             options.convert.tables = Layout::TableFormat::Html;
+        } else if (mode == "pipe") {
+            options.convert.tables = Layout::TableFormat::Pipe;
         } else {
-            error = "--tables takes auto or html: " + std::string(mode);
+            error = "--tables takes auto, html or pipe: " + std::string(mode);
             return FlagStatus::Invalid;
         }
     } else if (StartsWith(arg, "--quotes=")) {

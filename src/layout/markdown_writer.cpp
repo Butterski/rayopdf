@@ -1628,10 +1628,11 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
         }
         case BlockKind::Table: {
             // D6: GFM unless a cell spans rows, or columns below the header rows, then HTML
-            // (layout/tables.h); every table HTML, its cells spaced, with WriteSettings::htmlTables.
-            // A table broken across pages is one table from its parts, each its anchor line then
-            // its cell lines. GFM cells are inline Markdown, cut back out of `out` after the writer
-            // appends them.
+            // (layout/tables.h); every table HTML, its cells spaced, with TableFormat::Html; every
+            // table GFM with TableFormat::Pipe (a spanning cell's text in its first row and column
+            // only). A table broken across pages is one table from its parts, each its anchor line
+            // then its cell lines. GFM cells are inline Markdown, cut back out of `out` after the
+            // writer appends them.
             parts.clear();
             partFirst.clear();
             bool html = false;
@@ -1641,13 +1642,13 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 if (!(line.flags & kLineTableAnchor)) continue;
                 parts.push_back(TablePart{&page, &page.tables[line.first], nullptr});
                 partFirst.push_back(bl);
-                html = html || TableNeedsHtml(page, page.tables[line.first]);
+                html = html || (settings.tables == TableFormat::Auto && TableNeedsHtml(page, page.tables[line.first]));
             }
             if (parts.empty()) break;
-            html = html || settings.htmlTables;
+            html = html || settings.tables == TableFormat::Html;
             counts.tables++;
             if (html && !written) {
-                WriteHtmlTable(parts, out, settings.htmlTables);
+                WriteHtmlTable(parts, out, settings.tables == TableFormat::Html);
                 break;
             }
             // The JSON output (`written`) takes every cell's inline Markdown, an HTML table's too;
@@ -1694,10 +1695,10 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             }
             if (html) {
                 counts.links = links;
-                WriteHtmlTable(parts, out, settings.htmlTables);
+                WriteHtmlTable(parts, out, settings.tables == TableFormat::Html);
                 break;
             }
-            WriteGfmTable(parts, out);
+            WriteGfmTable(parts, out, settings.tables != TableFormat::Pipe);
             break;
         }
         case BlockKind::Image: {

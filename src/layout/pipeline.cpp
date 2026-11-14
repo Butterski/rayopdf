@@ -160,7 +160,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     if (output) {
         settings.pageMarkers = output->pageMarkers;
         settings.plain = output->plain;
-        settings.htmlTables = output->tables == TableFormat::Html;
+        settings.tables = output->tables;
         settings.chunkChars = output->chunkChars;
     }
     if (output && output->format == OutputFormat::Json) {

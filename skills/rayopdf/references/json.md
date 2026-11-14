@@ -56,6 +56,6 @@ locate each block in the Markdown. A `comment` block is one of the converter's
 `<!-- rayopdf: ... -->` comments (a page without text, an image not extracted).
 
 `--front-matter` and `--page-markers` do not change JSON output: `metadata` and each block's
-`page` carry the same information. `--plain`, `--tables=html` and `--furniture=keep` do: each
-block's `markdown` and table cells are written as the Markdown output writes them with those
-options, and kept page furniture appears as blocks.
+`page` carry the same information. `--plain`, `--tables=html`, `--tables=pipe` and
+`--furniture=keep` do: each block's `markdown` and table cells are written as the Markdown output
+writes them with those options, and kept page furniture appears as blocks.

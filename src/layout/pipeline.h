@@ -43,7 +43,7 @@ struct OutputSettings {
     bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
     Furniture furniture = Furniture::Drop;       // Keep: no running line, edge row or margin line removed
     bool plain = false;                          // no inline markup (WriteSettings::plain)
-    TableFormat tables = TableFormat::Auto;      // Html: every table as HTML
+    TableFormat tables = TableFormat::Auto;      // every table as HTML or as GFM (WriteSettings::tables)
     Quotes quotes = Quotes::Keep;                // Ascii: the pages' typographic quotation marks as ' and "
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
     const FeatureSink* features = nullptr;       // developer mode: edge-row and table-gap features

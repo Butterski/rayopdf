@@ -6,7 +6,7 @@
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
-//                                   [--tables=auto|html] [--quotes=keep|ascii]
+//                                   [--tables=auto|html|pipe] [--quotes=keep|ascii]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -139,7 +139,8 @@ void PrintUsage(std::FILE* out) {
         "  --plain            no inline markup: no emphasis, code spans or links (their text\n"
         "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
         "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"
-        "                     table as HTML, a row a line, cells' text set off by spaces\n"
+        "                     table as HTML, a row a line, cells' text set off by spaces; pipe:\n"
+        "                     every table as a pipe table, spans flattened\n"
         "  --quotes=MODE      keep (default): quotation marks as printed; ascii: typographic ones\n"
         "                     (curly, low) as ' and \"\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"

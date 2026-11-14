@@ -35,8 +35,10 @@ constexpr uint32_t kMaxChunkChars = 1000000;
 // leaves out what it marks as artifacts.
 enum class Furniture : uint8_t { Drop, Keep };
 
-// Tables as GFM pipe tables unless a span needs HTML (the default), or every table as HTML.
-enum class TableFormat : uint8_t { Auto, Html };
+// Tables as GFM pipe tables unless a span needs HTML (the default), every table as HTML, or every
+// table as a GFM pipe table, a spanning cell's text in its first row and column only (the cells it
+// covers empty; header rows after the first written as body rows).
+enum class TableFormat : uint8_t { Auto, Html, Pipe };
 
 // Quotation marks as printed (the default), or the typographic ones (‘ ’ ‚ ‛ “ ” „ ‟) of the
 // pages' text as the ASCII ' and ". Dashes and other punctuation stay: ASCII has no dash apart

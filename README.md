@@ -257,7 +257,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--math=unicode|latex] [--workers=N]
                                 [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
                                 [--page-markers] [--front-matter]
-                                [--furniture=drop|keep] [--plain] [--tables=auto|html]
+                                [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -353,7 +353,7 @@ rayopdf --convert paper.pdf paper.html --format=inspect --images=none
 
 ### Plain text, HTML tables, page furniture and quotes
 
-Four options change conventions on which readers and benchmarks disagree; the defaults keep the
+Five options change conventions on which readers and benchmarks disagree; the defaults keep the
 output faithful to the page.
 
 - `--plain` writes the text without inline markup: no emphasis, code spans, strikethrough or links
@@ -364,6 +364,9 @@ output faithful to the page.
   tags and around each cell's text (`<tr> <td> 12 </td> </tr>`, as HTML pretty-printers set
   them); by default a table is a pipe table unless a cell spanning rows, or columns below the
   header rows, needs HTML, written without those spaces.
+- `--tables=pipe` writes every table as a pipe table, for readers that take no HTML: a cell
+  spanning rows or columns is written in its first row and column, the cells it covers left
+  empty, and header rows after the first become body rows.
 - `--furniture=keep` keeps running headers, footers and page numbers as text: those in the upper
   half of a page before its text, the others after it (and after the footnotes printed above
   them), in paragraphs apart from the text and never as headings; by default they are left out. A
@@ -389,9 +392,9 @@ link targets beyond that allowance. The profile carries no images: the source's 
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
 with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html`, `--furniture=keep` or `--quotes=ascii`, which need the pages' layout), or why
-the payload was rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`,
-`limit`, `utf8`, `mismatch`. `--no-exact` always converts the pages.
+`--tables=html`, `--tables=pipe`, `--furniture=keep` or `--quotes=ascii`, which need the pages'
+layout), or why the payload was rejected and the pages converted instead: `unsupported`,
+`corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts the pages.
 
 ### OCR add-on
 
