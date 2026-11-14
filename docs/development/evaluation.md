@@ -92,13 +92,14 @@ bundle's records; its `.pdf` pages are the suite, and `eval/scorer/omni_split.py
 manifests (`manifest-dev.parquet`, `manifest-val.parquet`). `data/omni/selection.json` records the
 revision, the rule, the counts and every file's SHA-256.
 
-`eval/scorer/omni_predict.py` turns RayoPDF's JSON output (`--format=json --images=none`, the
-suites' declared profile) into the grader's predictions: the HTML from the blocks (headings
-`<hN>`, paragraphs and footnotes `<p>`, list items in `<ul>` or `<ol>`, code `<pre>`, tables from
-their cells) and one layout block per output block (its box as fractions of the page from the
-top left, its type as the grader's label: heading, table, list, code, footnote, figure for an
-image, text for the rest), the text without Markdown markup. `opb grade` then gives the share of
-each family's tests passed (`text`, `tables`, `layout`) and their mean, the headline score.
+`eval/scorer/omni_predict.py` turns RayoPDF's JSON output (`--format=json --images=none
+--math=latex`, the suites' declared profile: their math tests compare LaTeX) into the grader's
+predictions: the HTML from the blocks (headings `<hN>`, paragraphs and footnotes `<p>`, list items
+in `<ul>` or `<ol>`, code `<pre>`, tables from their cells) and one layout block per output block
+(its box as fractions of the page from the top left, its type as the grader's label: heading,
+table, list, code, footnote, figure for an image, text for the rest), the text without Markdown
+markup. `opb grade` then gives the share of each family's tests passed (`text`, `tables`,
+`layout`) and their mean, the headline score.
 Several suites of the dataset are olmOCR-bench's pages (`olmo_*`), so `omni-val` shares pages
 with the `olmocr` development suite: it guards against overfitting OmniParseBench's other sources
 and its test kinds, not olmOCR's pages. `omni-dev`'s score files keep the test lines
@@ -569,7 +570,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |synthetic, olmocr|none (the default)|
 |olmocr-math, readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex`|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
-|omni-dev, omni-val|`--format=json --images=none` (the adapter builds the HTML and the layout blocks from the blocks)|
+|omni-dev, omni-val|`--format=json --images=none --math=latex` (the adapter builds the HTML and the layout blocks from the blocks; the math tests compare LaTeX)|
 
 `convert --tool cli --profile declared` appends a suite's options to `rayopdf --convert {in}
 {out}` (a suite without an entry is an error). The quality gate measures the declared profiles

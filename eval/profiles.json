@@ -11,7 +11,7 @@
     "readoc-val": "--math=latex",
     "doclaynet-dev": "--format=json --images=none",
     "doclaynet-val": "--format=json --images=none",
-    "omni-dev": "--format=json --images=none",
-    "omni-val": "--format=json --images=none"
+    "omni-dev": "--format=json --images=none --math=latex",
+    "omni-val": "--format=json --images=none --math=latex"
   }
 }
