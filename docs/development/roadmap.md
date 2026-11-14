@@ -245,9 +245,10 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   HTML (`--tables=auto`, the default: GFM unless a span needs HTML); `--furniture=keep` removes no
   running header, footer, page number or margin line and writes them in paragraphs apart from the
   text, never as headings, the text read as if they were gone and they around it: lines turned
-  sideways and those in a page's upper half before the page's text, the others after it
-  (`--furniture=drop`, the default, removes them; a structure tree that is used still leaves out
-  its artifacts). Each changes the JSON output's `markdown` and cells the same way.
+  sideways and those in a page's upper half before the page's text, the others after it, after
+  the notes that end the page too (`--furniture=drop`, the default, removes them; a structure tree
+  that is used still leaves out its artifacts). Each changes the JSON output's `markdown` and
+  cells the same way.
 - Chunks for retrieval (`--format=chunks`, decided 2026-11-13): JSON Lines, one compact object a
   chunk, `{"chunk": N, "heading_path": [...], "pages": [first, last], "boxes": [...], "blocks":
   [...], "markdown": "..."}`: `chunk` counts from 0; `heading_path` holds the text (without

@@ -363,9 +363,9 @@ output faithful to the page.
 - `--tables=html` writes every table as an HTML `<table>`; by default a table is a pipe table
   unless a cell spanning rows, or columns below the header rows, needs HTML.
 - `--furniture=keep` keeps running headers, footers and page numbers as text: those in the upper
-  half of a page before its text, the others after it, in paragraphs apart from the text and never
-  as headings; by default they are left out. A tagged PDF whose structure tree is used still leaves
-  out what the tree marks as artifacts.
+  half of a page before its text, the others after it (and after the footnotes printed above
+  them), in paragraphs apart from the text and never as headings; by default they are left out. A
+  tagged PDF whose structure tree is used still leaves out what the tree marks as artifacts.
 
 ```sh
 rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep

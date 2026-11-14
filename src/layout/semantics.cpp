@@ -1437,9 +1437,26 @@ void PlaceNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, 
     size_t n = 0;
     for (size_t i = 0; i < blocks.size() && n < notes.size(); ++i)
         while (n < notes.size() && lines[notes[n].first].page < from[i]) before[n++] = i;
+    // Kept furniture at the foot of a page (Furniture::Keep: a footer, a folio) is printed under
+    // the page's notes: a note that ends its page's blocks goes before the furniture blocks there.
+    const auto footFurniture = [&](const Block& b, uint32_t page) {
+        if (b.count == 0) return false;
+        for (uint32_t l = b.first; l < b.first + b.count; ++l) {
+            const PageData& pg = pages[lines[l].page];
+            const Line& tl = pg.lines[lines[l].line];
+            if (lines[l].page != page || !(tl.flags & kLineFurniture) || tl.dir != 0 || tl.vb + tl.vt >= pg.height)
+                return false;
+        }
+        return true;
+    };
     for (n = 0; n < notes.size(); ++n) {
         const size_t ref = refBlock[notes[n].number];
-        if (before[n] < blocks.size() && ref != SIZE_MAX) before[n] = ref + 1;
+        if (before[n] < blocks.size() && ref != SIZE_MAX) {
+            before[n] = ref + 1;
+            continue;
+        }
+        const uint32_t page = lines[notes[n].first].page;
+        while (before[n] > 0 && footFurniture(blocks[before[n] - 1], page)) --before[n];
     }
     std::vector<uint32_t> order(notes.size());
     for (uint32_t k = 0; k < order.size(); ++k) order[k] = k;

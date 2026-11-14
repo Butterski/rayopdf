@@ -276,6 +276,35 @@ void TestKeptFurnitureOrder() {
                   2017);
 }
 
+// Three pages over a running footer, the last with a footnote printed above its footer.
+std::vector<PageData> FootnoteFooterPages() {
+    std::vector<PageData> pages;
+    for (int p = 1; p <= 3; ++p) {
+        pages.push_back(NewPage(p));
+        PageData& page = pages.back();
+        float x = AddText(page, "Body text of page " + std::to_string(p) + " stays.", 72, 600, 10);
+        if (p == 3) {
+            AddText(page, "1", x, 604, 6);
+            x = AddText(page, "1", 72, 104, 5);
+            AddText(page, "Smith, Collected Essays, 2020.", x, 100, 8);
+        }
+        AddText(page, "ACME Quarterly Report 2026", 72, 40, 9);
+    }
+    return pages;
+}
+
+// Kept furniture at a page's foot is read after the page's notes, as printed.
+void TestKeptFootUnderNotes() {
+    OutputSettings settings;
+    settings.furniture = Furniture::Keep;
+    const std::string kept = Run(FootnoteFooterPages, settings);
+    Show("footer under a note", kept);
+    const size_t note = kept.find("[^1]: Smith"), footer = kept.rfind("ACME Quarterly Report 2026");
+    RAYOPDF_CHECK(Count(kept, "ACME Quarterly Report 2026") == 3 && note != std::string::npos && note < footer &&
+                      Contains(kept, "Body text of page 3 stays.[^1]"),
+                  2018);
+}
+
 // A RayoMD PDF with its source: the output options need the pages, so the payload is not used.
 void TestExactFormat() {
     Test::ProfilePdf spec;
@@ -500,6 +529,7 @@ int main() {
     TestFurniture();
     TestKeptFurnitureText();
     TestKeptFurnitureOrder();
+    TestKeptFootUnderNotes();
     TestExactFormat();
     TestChunks();
     TestInspect();
