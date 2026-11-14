@@ -5,7 +5,7 @@
 JSON object on one line, ending in a line break:
 
 ```json
-{"rayopdf":"0.2.0","schema":1,"repaired":false,
+{"rayopdf":"0.3.0","schema":1,"repaired":false,
  "metadata":{"title":"...","author":"...","created":"2021-03-04T10:20:30+01:00"},
  "pages":[{"page":1,"width":612.00,"height":792.00},{"page":2,"width":612.00,"height":792.00}],
  "blocks":[

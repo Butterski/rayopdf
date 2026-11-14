@@ -1021,13 +1021,19 @@ open candidates' own groups).
   stays as `static-plain` (§ Rerunning). Against the plain static build of the same commit
   (`6c9b541`), byte-identical (G-bytes 0 of 1,302 differ), user instructions (`instr.sh`): odl
   -1.28 %, heavy10 +0.07 %, syn6 -2.78 %, SafeDocs +0.23 %, `multi_column` -0.77 %, `tables`
-  -0.76 %, `arxiv_math` -0.85 % (measured on `a632716`). Times on CPU 3, 2026-11-14 00:29-00:31
-  UTC, load about 4 from unrelated services: warm odl images off (`bench.py warm`, three runs) 2,188
-  / 2,188 / 2,187 → 2,270 / 2,271 / 2,270 pages/s (+3.8 % each run), median 0.375 → 0.361 ms/page,
-  p95 0.701 → 0.708; fresh odl images off (`bench.py fresh`, 12 rotated rounds) 0.906 → 0.900 ms
-  median (paired -0.6 %), page faults median 151 → 153, CPU time 0.864 → 0.859 ms. The binary grew
-  from 3,700,016 to 3,996,560 bytes. The decision's bar (warm odl +2 %, fresh no worse, identical
-  output) was met: the static build is profile-guided from this round on.
+  -0.76 %, `arxiv_math` -0.85 % (measured on `a632716`). Times on CPU 3, 2026-11-14 11:15-11:27
+  UTC, load under 1.2 and nothing else of this project running, the plain static build of
+  `6c9b541` against the profile-guided one of `635ec7b` (with the `hot.ld` below): warm odl images
+  off (`bench.py warm`, five runs, the binaries' order swapped in two) 2,189-2,193 → 2,233-2,237
+  pages/s, +1.8 % to +2.1 % (median +2.0 %), median 0.376 → 0.365 ms/page; fresh odl
+  (`bench.py fresh`, 12 rotated rounds) 0.907 → 0.892 ms with images off (paired -2.0 %) and
+  1.141 → 1.120 ms with images written (-2.2 %), page faults median 151 → 149. The decision's bar
+  (warm odl +2 %, fresh no worse, identical output) is met at its edge: the static build is
+  profile-guided from this round on. Its cost: the JPEG 2000 decoder, which the generated PDFs
+  never reach, runs slower (the 40 JPEG 2000 documents, 100 pages, images written: median 108.3 →
+  112.8 ms a page, mean 116.2 → 129.2), and the SafeDocs sample takes 0.23 % more instructions. A
+  first measurement, 2026-11-14 00:29-00:31 UTC while unrelated services loaded the other CPUs,
+  had shown +3.8 % warm and -0.6 % fresh. The binary grew from 3,700,016 to 3,996,560 bytes.
 - **`src/hot.ld` regenerated** (7.4): `tools/hot_sections.py` over the release and the
   profile-guided static build, unchanged (GCC's `.text.hot.*` and `.text.unlikely.*` names come
   from the link map like any other): 1,351 sections. The code it places in the static binary grew
@@ -1092,6 +1098,9 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
   wavelet pass; ICT and RGB interleave per row. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or
   band at a time for bounded RSS.
+- **The profile of the static build:** PDFs with JPEG, JPEG 2000, CCITT and JBIG2 images in
+  `tools/pgo_corpus.py`, so that the profile reaches the image decoders (JPEG 2000 pages are 4 %
+  slower at the median under the profile-guided build, tenth round).
 
 ## Rerunning
 
