@@ -2,9 +2,9 @@
 // Core tests of the LaTeX math output (layout/math.h, --math=latex): formulas rebuilt from glyphs
 // placed by hand (scripts, fractions, radicals, operators with limits, matrices, cases, accents,
 // alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback, binomials,
-// over- and undersets, braces), inline formula runs, and whole pages through ConvertPages in both
-// math modes (scripts of scripts out of content order). Exit codes 1550-1599, 2205-2212 and
-// 2215-2216.
+// over- and undersets, braces), inline formula runs (Greek prose stays text), and whole pages
+// through ConvertPages in both math modes (scripts of scripts out of content order). Exit codes
+// 1550-1599, 2202, 2205-2212 and 2215-2216.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -372,6 +372,14 @@ void TestInline() {
     // A Greek word is text; a Greek letter alone is math.
     run = Runs("\xCE\xB1\xCE\xB2\xCE\xB3 \xCE\xB1", "", store);
     RAYOPDF_CHECK(run[0] == 0 && run[3] == 4, 1588);
+    // Greek prose with accents (tonos, polytonic) is text, not a formula of its plain letters:
+    // "Φαίδρος ἢ περὶ ῥητορικῆς".
+    run = Runs("\xCE\xA6\xCE\xB1\xCE\xAF\xCE\xB4\xCF\x81\xCE\xBF\xCF\x82 \xE1\xBC\xA2 \xCF\x80\xCE\xB5\xCF\x81\xE1\xBD\xB6 "
+               "\xE1\xBF\xA5\xCE\xB7\xCF\x84\xCE\xBF\xCF\x81\xCE\xB9\xCE\xBA\xE1\xBF\x86\xCF\x82",
+               "", store);
+    bool none = true;
+    for (uint32_t r : run) none = none && r == 0;
+    RAYOPDF_CHECK(none, 2202);
     // "n-th": the letter alone; an italic letter of a text font alone starts no formula.
     run = Runs("n-th a b", "m...ii", store);
     RAYOPDF_CHECK(run[0] == 1 && run[4] == 0 && run[5] == 0, 1589);

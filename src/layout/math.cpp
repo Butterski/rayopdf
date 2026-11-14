@@ -43,6 +43,10 @@ RAYOPDF_HOT_INLINE bool IsGreek(uint32_t c) {
            c == 0x3D6 || c == 0x3F0 || c == 0x3F1 || c == 0x3F5 || c == 0x3DD;
 }
 
+// A letter of the Greek script: the Greek and Coptic block (accented letters with tonos too) and
+// Greek Extended (polytonic letters and their spacing accents).
+bool IsGreekScript(uint32_t c) { return (c >= 0x370 && c <= 0x3FF) || (c >= 0x1F00 && c <= 0x1FFF); }
+
 // Operators, relations and arrows: Arrows, Mathematical Operators, Miscellaneous Mathematical
 // Symbols-A and -B, Supplemental Arrows, Supplemental Mathematical Operators, and ±, ×, ÷, ¬.
 bool IsMathSymbol(uint32_t c) {
@@ -2076,14 +2080,14 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
         for (uint32_t i = b; i < e; ++i) {
             const uint32_t c = FirstCp(glyphs[i].text);
             letters += IsLetterCp(c) ? 1 : 0;
-            greek += IsGreek(c) ? 1 : 0;
+            greek += IsGreekScript(c) ? 1 : 0;
         }
         bool strongWord = false;  // a strong glyph in the word: its class is final once set
         for (uint32_t i = b; i < e; ++i) {
             const InlineGlyph& g = glyphs[i];
             if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) continue;
             cls[i] = ClassOf(g.font, g.glyph->flags, g.text, letters == 1);
-            // Greek in a word of Greek letters (Greek prose) is text.
+            // Greek in a word of Greek letters (Greek prose, accented or polytonic too) is text.
             if (cls[i] == kClassStrong && g.font == static_cast<uint8_t>(MathFont::None) && IsGreek(FirstCp(g.text)) &&
                 letters > 1 && greek == letters)
                 cls[i] = kClassText;
