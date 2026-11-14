@@ -207,11 +207,11 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `headers_footers` wants furniture absent; `arxiv_math` and READoc arXiv write LaTeX), so each
   benchmark is measured with one fixed, published set of options, its declared profile in
   `eval/profiles.json`: odl `--images=none --furniture=keep --plain --tables=html --quotes=ascii`
-  (quotes from 2026-11-14), olmOCR `arxiv_math` (the `olmocr-math` suite) and READoc
-  `--math=latex`, the others the default. Version
-  records show the default row beside the declared row where they differ; the quality gate
-  measures the declared rows only, and no gated metric may fall more than 0.0001 below its best
-  (AGENTS.md rule 7).
+  (quotes from 2026-11-14), olmOCR `arxiv_math` (the `olmocr-math` suite) `--math=latex`, READoc
+  `--math=latex --tables=pipe` (its evaluator reads pipe tables only), the others the default.
+  Version records show the default row beside the declared row where they differ; the quality
+  gate measures the declared rows only, and no gated metric may fall more than 0.0001 below its
+  best (AGENTS.md rule 7).
 - Optional additions to the Markdown (decided 2026-11-12; off by default, the default output
   byte-identical): `--page-markers` writes `<!-- page N -->` (N the page's number in the file) as
   a block of its own before the first block of each page, and markers for pages with no block of
