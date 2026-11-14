@@ -166,9 +166,13 @@ void TestHtmlTables() {
     Show("table auto", gfm);
     Show("table html", html);
     RAYOPDF_CHECK(Contains(gfm, "| --- |") && !Contains(gfm, "<table>"), 2006);
-    RAYOPDF_CHECK(Contains(html, "<table>") && !Contains(html, "| --- |") && Contains(html, "<th>Name</th>") &&
-                      Contains(html, "<td>34</td>"),
+    RAYOPDF_CHECK(Contains(html, "<table>") && !Contains(html, "| --- |") && Contains(html, "<th> Name </th>") &&
+                      Contains(html, "<td> 34 </td>"),
                   2002);
+    // One row a line, a space between its tags and around each cell's text.
+    RAYOPDF_CHECK(Contains(html, "<table>\n<tr> <th> Name </th> <th> Value </th> </tr>\n<tr> <td> Alpha </td> <td> 12 </td> </tr>\n"
+                                 "<tr> <td> Beta </td> <td> 34 </td> </tr>\n</table>"),
+                  2019);
 }
 
 // Three pages under one running header and over page numbers.

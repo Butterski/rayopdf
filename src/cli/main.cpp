@@ -139,7 +139,7 @@ void PrintUsage(std::FILE* out) {
         "  --plain            no inline markup: no emphasis, code spans or links (their text\n"
         "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
         "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"
-        "                     table as HTML\n"
+        "                     table as HTML, a row a line, cells' text set off by spaces\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"

@@ -360,8 +360,10 @@ output faithful to the page.
   (the link text stays), no `<sup>`/`<sub>` tags (their text stays; Unicode script forms such as
   `x₀` too), footnote references as their number (`text.1`) and footnote definitions as `1 text`.
   Headings, lists, tables and escapes are written as always.
-- `--tables=html` writes every table as an HTML `<table>`; by default a table is a pipe table
-  unless a cell spanning rows, or columns below the header rows, needs HTML.
+- `--tables=html` writes every table as an HTML `<table>`, a row a line with a space between its
+  tags and around each cell's text (`<tr> <td> 12 </td> </tr>`, as HTML pretty-printers set
+  them); by default a table is a pipe table unless a cell spanning rows, or columns below the
+  header rows, needs HTML, written without those spaces.
 - `--furniture=keep` keeps running headers, footers and page numbers as text: those in the upper
   half of a page before its text, the others after it (and after the footnotes printed above
   them), in paragraphs apart from the text and never as headings; by default they are left out. A

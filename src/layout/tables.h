@@ -115,7 +115,9 @@ uint16_t RepeatedHeader(const TablePart& head, const TablePart& part);
 void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out);
 
 // An HTML <table> with <th> header rows, colspan and rowspan, and HTML-escaped plain cell text
-// (a GFM HTML block: one line per row, no blank lines inside).
-void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out);
+// (a GFM HTML block: one line per row, no blank lines inside). `spaced`: a space between the tags
+// of a row and around each cell's text (`<tr> <td> 12 </td> </tr>`), as HTML pretty-printers
+// set them; a browser shows the same table.
+void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out, bool spaced = false);
 
 } // namespace RayoPdf::Layout

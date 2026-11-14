@@ -4185,7 +4185,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out) {
     }
 }
 
-void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out) {
+void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out, bool spaced) {
     if (parts.empty()) return;
     const uint16_t header = std::max<uint16_t>(1, parts[0].table->headerRows);
     std::string text, scratch;
@@ -4202,18 +4202,21 @@ void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out) {
             while (i < table.cellCount && page.tableCells[table.firstCell + i].row == r) {
                 const TableCell& c = page.tableCells[table.firstCell + i++];
                 if (!write) continue;
+                if (spaced) out.push_back(' ');
                 out.push_back('<');
                 out += tag;
                 if (c.colSpan > 1) out += " colspan=\"" + std::to_string(c.colSpan) + "\"";
                 if (c.rowSpan > 1) out += " rowspan=\"" + std::to_string(c.rowSpan) + "\"";
                 out.push_back('>');
                 CellPlain(page, c, text, scratch);
+                if (spaced) out.push_back(' ');
                 AppendHtmlEscaped(text, out);
+                if (spaced && !text.empty()) out.push_back(' ');
                 out += "</";
                 out += tag;
                 out.push_back('>');
             }
-            if (write) out += "</tr>";
+            if (write) out += spaced ? " </tr>" : "</tr>";
         }
     }
     out += "\n</table>";

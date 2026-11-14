@@ -242,7 +242,9 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts
   without `<sup>`/`<sub>` tags, Unicode script forms kept; footnote references as their number,
   definitions as `N text`; escapes and blocks as always); `--tables=html` writes every table as
-  HTML (`--tables=auto`, the default: GFM unless a span needs HTML); `--furniture=keep` removes no
+  HTML, a row a line with a space between its tags and around each cell's text as HTML
+  pretty-printers set them, odl's ground truth among them (2026-11-14; `--tables=auto`, the
+  default: GFM unless a span needs HTML, written without the spaces); `--furniture=keep` removes no
   running header, footer, page number or margin line and writes them in paragraphs apart from the
   text, never as headings, the text read as if they were gone and they around it: lines turned
   sideways and those in a page's upper half before the page's text, the others after it, after
