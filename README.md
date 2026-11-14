@@ -351,9 +351,9 @@ its Markdown), a line through the blocks in output order, table cells and images
 rayopdf --convert paper.pdf paper.html --format=inspect --images=none
 ```
 
-### Plain text, HTML tables and page furniture
+### Plain text, HTML tables, page furniture and quotes
 
-Three options change conventions on which readers and benchmarks disagree; the defaults keep the
+Four options change conventions on which readers and benchmarks disagree; the defaults keep the
 output faithful to the page.
 
 - `--plain` writes the text without inline markup: no emphasis, code spans, strikethrough or links
@@ -368,6 +368,9 @@ output faithful to the page.
   half of a page before its text, the others after it (and after the footnotes printed above
   them), in paragraphs apart from the text and never as headings; by default they are left out. A
   tagged PDF whose structure tree is used still leaves out what the tree marks as artifacts.
+- `--quotes=ascii` writes the typographic quotation marks of the pages' text (‘ ’ ‚ ‛ “ ” „ ‟)
+  as the ASCII `'` and `"`; dashes and other punctuation stay as printed (ASCII has no dash apart
+  from the hyphen). By default (`--quotes=keep`) quotation marks are written as printed.
 
 ```sh
 rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep
@@ -386,9 +389,9 @@ link targets beyond that allowance. The profile carries no images: the source's 
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
 with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html` or `--furniture=keep`, which need the pages' layout), or why the payload was
-rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`,
-`mismatch`. `--no-exact` always converts the pages.
+`--tables=html`, `--furniture=keep` or `--quotes=ascii`, which need the pages' layout), or why
+the payload was rejected and the pages converted instead: `unsupported`, `corrupt`, `integrity`,
+`limit`, `utf8`, `mismatch`. `--no-exact` always converts the pages.
 
 ### OCR add-on
 

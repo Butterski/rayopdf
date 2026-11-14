@@ -27,6 +27,8 @@ enum class Ocr : uint8_t { Off, Auto, Force };
 enum class Furniture : uint8_t { Drop, Keep };
 // Tables as GFM pipe tables unless a span needs HTML, or every table as HTML.
 enum class Tables : uint8_t { Auto, Html };
+// Quotation marks as printed, or the typographic ones (U+2018-U+201F) as ' and ".
+enum class Quotes : uint8_t { Keep, Ascii };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -53,6 +55,7 @@ struct Options {
     Furniture furniture = Furniture::Drop;   // page furniture left out or kept
     bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
     Tables tables = Tables::Auto;            // Html: every table as HTML
+    Quotes quotes = Quotes::Keep;            // Ascii: typographic quotation marks as ' and "
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic

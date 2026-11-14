@@ -148,15 +148,16 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
             pages: Union[None, int, str, Tuple[Optional[int], Optional[int]]] = None,
             images: Union[None, str, os.PathLike] = None, format: str = "markdown", math: str = "unicode",
             page_markers: bool = False, front_matter: bool = False, furniture: str = "drop", plain: bool = False,
-            tables: str = "auto", chunk_chars: Optional[int] = None, structure: bool = True,
+            tables: str = "auto", quotes: str = "keep", chunk_chars: Optional[int] = None, structure: bool = True,
             annotations: bool = True, exact: bool = True, ocr: str = "off",
             ocr_addon: Union[None, str, os.PathLike] = None, workers: int = 1) -> Result:
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
     format: markdown, json, chunks or inspect; math: unicode or latex; furniture: drop or keep;
-    tables: auto or html; ocr: off, auto or force (the rayopdf-ocr add-on, found as the command
-    line finds it, or `ocr_addon`); images: a folder the image files are written to, linked as
-    FOLDER/NAME (default: no images); pages: 3, "2-5", (2, None); workers: page threads, 1 to 64.
+    tables: auto or html; quotes: keep or ascii; ocr: off, auto or force (the rayopdf-ocr add-on,
+    found as the command line finds it, or `ocr_addon`); images: a folder the image files are
+    written to, linked as FOLDER/NAME (default: no images); pages: 3, "2-5", (2, None); workers:
+    page threads, 1 to 64.
     Raises a RayoPdfError subclass when the conversion fails.
     """
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -165,7 +166,7 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
         with open(os.fspath(source), "rb") as file:
             pdf = file.read()
     args = [f"--format={format}", f"--math={math}", f"--furniture={furniture}", f"--tables={tables}",
-            f"--ocr={ocr}", f"--workers={int(workers)}"]
+            f"--quotes={quotes}", f"--ocr={ocr}", f"--workers={int(workers)}"]
     if password is not None:
         args.append(f"--password={password}")
     if pages is not None:

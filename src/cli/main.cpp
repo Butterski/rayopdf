@@ -6,7 +6,7 @@
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
-//                                   [--tables=auto|html]
+//                                   [--tables=auto|html] [--quotes=keep|ascii]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -140,6 +140,8 @@ void PrintUsage(std::FILE* out) {
         "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
         "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"
         "                     table as HTML, a row a line, cells' text set off by spaces\n"
+        "  --quotes=MODE      keep (default): quotation marks as printed; ascii: typographic ones\n"
+        "                     (curly, low) as ' and \"\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"

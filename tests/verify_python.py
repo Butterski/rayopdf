@@ -89,7 +89,7 @@ def main() -> int:
         result = rayopdf.convert(pdf_path.read_bytes(), format="json", workers=2)
         check(isinstance(result.data, dict) and result.data.get("schema") == 1 and result.text.startswith('{"rayopdf":'),
               "format=json parses, schema 1")
-        result = rayopdf.convert(pdf_path, format="chunks", chunk_chars=256, plain=True, pages=(1, None))
+        result = rayopdf.convert(pdf_path, format="chunks", chunk_chars=256, plain=True, quotes="ascii", pages=(1, None))
         check(isinstance(result.data, list) and len(result.data) == 1 and
               "Hello from Python" in result.data[0]["markdown"] and result.data[0]["pages"] == [1, 1],
               "format=chunks gives a list of chunks")

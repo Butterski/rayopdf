@@ -31,6 +31,7 @@ function flags(options, imageFolder) {
     `--math=${options.math ?? "unicode"}`,
     `--furniture=${options.furniture ?? "drop"}`,
     `--tables=${options.tables ?? "auto"}`,
+    `--quotes=${options.quotes ?? "keep"}`,
     `--ocr=${options.ocr ?? "off"}`,
   ];
   if (options.password != null) out.push(`--password=${options.password}`);

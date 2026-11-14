@@ -37,13 +37,14 @@ struct DocumentRead {
 };
 
 // What the writer writes when it is not plain Markdown (ConvertOptions::format, pageMarkers,
-// furniture, plain, tables, chunkChars).
+// furniture, plain, tables, quotes, chunkChars).
 struct OutputSettings {
     OutputFormat format = OutputFormat::Markdown;
     bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
     Furniture furniture = Furniture::Drop;       // Keep: no running line, edge row or margin line removed
     bool plain = false;                          // no inline markup (WriteSettings::plain)
     TableFormat tables = TableFormat::Auto;      // Html: every table as HTML
+    Quotes quotes = Quotes::Keep;                // Ascii: the pages' typographic quotation marks as ' and "
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
     const FeatureSink* features = nullptr;       // developer mode: edge-row and table-gap features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
@@ -60,8 +61,9 @@ struct OutputSettings {
 // stages (math glyphs, lines, tables, reading order) run on the threads of `pool` when there is
 // one (layout/page_pool.h), with the same result. `output` null writes Markdown as OutputSettings'
 // defaults do; else JSON (WriteJson), chunks (WriteChunks), the inspector (WriteInspect) or
-// Markdown with the settings it gives (page markers, plain text, HTML tables), and with furniture
-// kept no running header, footer or page number is removed.
+// Markdown with the settings it gives (page markers, plain text, HTML tables), with furniture
+// kept no running header, footer or page number removed, and with ASCII quotes the glyphs' text
+// changed once the blocks are built (so no stage before the writer sees it).
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
                   const std::vector<OutlineEntry>& outline, bool repaired, std::string& markdown, ConvertReport& report,
                   const ImageOutput* images = nullptr, const Structure* structure = nullptr,

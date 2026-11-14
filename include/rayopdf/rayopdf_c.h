@@ -43,7 +43,7 @@ typedef struct rayopdf_output {
 
 // Converts the `pdf_size` bytes at `pdf` with the flags `args` (`arg_count` of them): those of
 // `rayopdf --convert` (--password=PW, --pages=A-B, --format=..., --math=..., --chunk-chars=N,
-// --page-markers, --front-matter, --furniture=..., --plain, --tables=..., --no-exact,
+// --page-markers, --front-matter, --furniture=..., --plain, --tables=..., --quotes=..., --no-exact,
 // --no-annotations, --no-structure, --ocr=..., --ocr-addon=PATH), --workers=N (1-64 page threads,
 // default 1; always 1 in the WebAssembly module) and --images=DIR (image files written to DIR and
 // linked as DIR/NAME; default and --images=none: no images). An unknown flag gives status 2 and

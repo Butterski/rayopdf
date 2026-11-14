@@ -309,6 +309,27 @@ void TestKeptFootUnderNotes() {
                   2018);
 }
 
+// A paragraph with curly, low and straight quotation marks, an apostrophe and dashes.
+std::vector<PageData> QuotesPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "He said \xE2\x80\x9C" "fine\xE2\x80\x9D and \xE2\x80\x98" "so\xE2\x80\x99 \xE2\x80\x94 it\xE2\x80\x99s "
+            "\xE2\x80\x9E" "gut\xE2\x80\x9C, 1990\xE2\x80\x93" "99, \"plain\".", 72, 700, 10);
+    return pages;
+}
+
+// --quotes=ascii: typographic quotation marks as ' and ", dashes and straight quotes as printed.
+void TestAsciiQuotes() {
+    const std::string kept = Run(QuotesPage, OutputSettings());
+    OutputSettings settings;
+    settings.quotes = Quotes::Ascii;
+    const std::string ascii = Run(QuotesPage, settings);
+    Show("quotes keep", kept);
+    Show("quotes ascii", ascii);
+    RAYOPDF_CHECK(Contains(kept, "He said \xE2\x80\x9C" "fine\xE2\x80\x9D and \xE2\x80\x98" "so\xE2\x80\x99"), 2020);
+    RAYOPDF_CHECK(Contains(ascii, "He said \"fine\" and 'so' \xE2\x80\x94 it's \"gut\", 1990\xE2\x80\x93" "99, \"plain\"."),
+                  2021);
+}
+
 // A RayoMD PDF with its source: the output options need the pages, so the payload is not used.
 void TestExactFormat() {
     Test::ProfilePdf spec;
@@ -324,11 +345,12 @@ void TestExactFormat() {
     Convert(*document, options, markdown, report);
     RAYOPDF_CHECK(report.exact == ExactUse::Used, 2008);
     bool format = true;
-    for (int variant = 0; variant < 3; ++variant) {
+    for (int variant = 0; variant < 4; ++variant) {
         ConvertOptions changed = options;
         if (variant == 0) changed.plain = true;
         if (variant == 1) changed.tables = TableFormat::Html;
         if (variant == 2) changed.furniture = Furniture::Keep;
+        if (variant == 3) changed.quotes = Quotes::Ascii;
         Convert(*document, changed, markdown, report);
         format = format && report.exact == ExactUse::Format && Contains(markdown, "Revenue grew");
     }
@@ -534,6 +556,7 @@ int main() {
     TestKeptFurnitureText();
     TestKeptFurnitureOrder();
     TestKeptFootUnderNotes();
+    TestAsciiQuotes();
     TestExactFormat();
     TestChunks();
     TestInspect();

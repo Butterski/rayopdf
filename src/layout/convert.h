@@ -38,6 +38,11 @@ enum class Furniture : uint8_t { Drop, Keep };
 // Tables as GFM pipe tables unless a span needs HTML (the default), or every table as HTML.
 enum class TableFormat : uint8_t { Auto, Html };
 
+// Quotation marks as printed (the default), or the typographic ones (‘ ’ ‚ ‛ “ ” „ ‟) of the
+// pages' text as the ASCII ' and ". Dashes and other punctuation stay: ASCII has no dash apart
+// from the hyphen.
+enum class Quotes : uint8_t { Keep, Ascii };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -65,6 +70,7 @@ struct ConvertOptions {
     // "1 text"). Escapes and the block structure (headings, lists, tables) are written as always.
     bool plain = false;
     TableFormat tables = TableFormat::Auto;
+    Quotes quotes = Quotes::Keep;
     // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
     uint32_t chunkChars = kDefaultChunkChars;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are

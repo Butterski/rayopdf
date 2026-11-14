@@ -48,6 +48,37 @@ int LayOutPages(std::vector<PageData>& pages, PagePool& pool, MathMode math) {
     return total;
 }
 
+// Quotes::Ascii: each glyph text holding a typographic quotation mark (U+2018-U+201B, written
+// ', and U+201C-U+201F, written "; UTF-8 E2 80 98-9F) points to a copy with them replaced,
+// appended to the page's text (a text may be shared by several glyphs, so none is changed in
+// place). Image glyphs hold Markdown links and stay.
+void AsciiQuotes(PageData& page, std::string& scratch) {
+    const auto quote = [](std::string_view text, size_t i) {
+        return i + 2 < text.size() && text[i] == '\xE2' && text[i + 1] == '\x80' &&
+               static_cast<unsigned char>(text[i + 2]) >= 0x98 && static_cast<unsigned char>(text[i + 2]) <= 0x9F;
+    };
+    for (Glyph& g : page.glyphs) {
+        if (g.flags & kGlyphImage) continue;
+        const std::string_view text = page.GlyphText(g);
+        size_t at = 0;
+        while (at < text.size() && !quote(text, at)) ++at;
+        if (at == text.size()) continue;
+        scratch.assign(text.data(), at);
+        for (size_t i = at; i < text.size(); ++i) {
+            if (quote(text, i)) {
+                scratch.push_back(static_cast<unsigned char>(text[i + 2]) <= 0x9B ? '\'' : '"');
+                i += 2;
+            } else {
+                scratch.push_back(text[i]);
+            }
+        }
+        if (page.text.size() + scratch.size() > UINT32_MAX) return;
+        g.text = static_cast<uint32_t>(page.text.size());
+        g.textLength = static_cast<uint16_t>(scratch.size());
+        page.text += scratch;
+    }
+}
+
 } // namespace
 
 void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQuality>& quality,
@@ -120,6 +151,10 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     BlockList blocks;
     BuildBlocks(pages, outline, unmapped, blocks);
     if (tree) tagged.Blocks(pages, blocks);
+    if (output && output->quotes == Quotes::Ascii) {
+        std::string scratch;
+        for (PageData& page : pages) AsciiQuotes(page, scratch);
+    }
     WriteCounts counts;
     WriteSettings settings;
     if (output) {

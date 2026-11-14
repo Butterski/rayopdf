@@ -144,6 +144,16 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             error = "--tables takes auto or html: " + std::string(mode);
             return FlagStatus::Invalid;
         }
+    } else if (StartsWith(arg, "--quotes=")) {
+        const std::string_view mode = arg.substr(9);
+        if (mode == "keep") {
+            options.convert.quotes = Layout::Quotes::Keep;
+        } else if (mode == "ascii") {
+            options.convert.quotes = Layout::Quotes::Ascii;
+        } else {
+            error = "--quotes takes keep or ascii: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
     } else {
         return FlagStatus::Unknown;
     }

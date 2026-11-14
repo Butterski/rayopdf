@@ -42,6 +42,7 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
     out.furniture = options.furniture == Furniture::Keep ? Layout::Furniture::Keep : Layout::Furniture::Drop;
     out.plain = options.plain;
     out.tables = options.tables == Tables::Html ? Layout::TableFormat::Html : Layout::TableFormat::Auto;
+    out.quotes = options.quotes == Quotes::Ascii ? Layout::Quotes::Ascii : Layout::Quotes::Keep;
     out.pageWorkers = options.workers;
     return out;
 }

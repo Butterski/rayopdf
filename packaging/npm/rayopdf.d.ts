@@ -10,6 +10,8 @@ export interface ConvertOptions {
   furniture?: "drop" | "keep";
   /** Pipe tables unless a span needs HTML (default), or every table as HTML. */
   tables?: "auto" | "html";
+  /** Quotation marks as printed (default), or the typographic ones (curly, low) as ' and ". */
+  quotes?: "keep" | "ascii";
   /** OCR needs the native add-on, which WebAssembly cannot start: "auto" and "force" find none. */
   ocr?: "off" | "auto" | "force";
   /** User or owner password of an encrypted PDF. */
