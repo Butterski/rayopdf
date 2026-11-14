@@ -2330,6 +2330,42 @@ void TestRuleJoints() {
     }
 }
 
+// A ruled table whose cells are set to the middle of their rows (HTML's default): each row's
+// description wraps over two lines and its one-line cells stand halfway between them. Each row
+// is one row of the table. The same cells set to the top (the one-line cells on the first line)
+// give the same rows.
+void TestMiddleSetRows() {
+    for (const bool middle : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        HLine(page, 96, 340, 712);
+        AddText(page, "Key", 100, 700);
+        AddText(page, "Value", 180, 700);
+        AddText(page, "Description", 230, 700);
+        HLine(page, 96, 340, 694);
+        const char* const keys[] = {"alpha", "beta"};
+        const char* const values[] = {"1", "2"};
+        const char* const first[] = {"first line of", "second line of"};
+        const char* const second[] = {"the first cell", "the second cell"};
+        float y = 680;
+        for (int r = 0; r < 2; ++r, y -= 30) {
+            AddText(page, first[r], 230, y);
+            AddText(page, second[r], 230, y - 12);
+            const float at = middle ? y - 6 : y;
+            AddText(page, keys[r], 100, at);
+            AddText(page, values[r], 180, at);
+        }
+        HLine(page, 96, 340, y + 10);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(middle ? "middle-set rows" : "top-set rows", md);
+        RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Key | Value | Description |\n| --- | --- | --- |\n"
+                                                         "| alpha | 1 | first line of the first cell |\n"
+                                                         "| beta | 2 | second line of the second cell |"),
+                      middle ? 1741 : 1742);
+    }
+}
+
 // A table ruled under its header and at its bottom, with no top rule: the header lines right above
 // the first rule are its header (a label over two columns stands over a rule of their width); the
 // caption above them, running across the columns, stays text.
@@ -2645,6 +2681,7 @@ int main(int argc, char** argv) {
     TestHeaderLinesAtRowPitch();
     TestSmallerLabelRows();
     TestRuleJoints();
+    TestMiddleSetRows();
     TestHeaderAboveRules();
     TestCloseNumberColumns();
     TestContentsLists();

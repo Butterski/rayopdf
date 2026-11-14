@@ -1388,8 +1388,101 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             out[c] = Fmax(out[c], w.x1);
         }
     };
+    // Lines [s, e) as one row of cells set to the middle (HTML's default vertical-align): every
+    // filled column one cell (its lines at most 1.6 em apart), one cell of several lines and one
+    // of a single line at least, and the middles of all of them (their first and last baselines')
+    // within a fifth of an em of each other. A cell of several lines is wrapped text: evenly set,
+    // every line but the last reaching the right part of its column, a line continuing the text
+    // above (in lower case, or after a hyphen), and not values stacked (every line starting with a
+    // number). Sub-rows beside a label spanning them, cells all of one line, or cells centred at
+    // different heights (set to the top) are no such row.
+    std::vector<float> cellFirst(static_cast<size_t>(cols)), cellLast(static_cast<size_t>(cols));
+    std::vector<uint16_t> cellLines(static_cast<size_t>(cols));
+    std::vector<uint8_t> cellValues(static_cast<size_t>(cols));  // every line so far starts with a number
+    std::vector<float> gapLo(static_cast<size_t>(cols)), gapHi(static_cast<size_t>(cols));  // between its lines
+    std::vector<float> lineRight(static_cast<size_t>(cols)), fillLow(static_cast<size_t>(cols));  // its lines' right edges
+    std::vector<const TWord*> lastWord(static_cast<size_t>(cols));
+    std::vector<uint8_t> continued(static_cast<size_t>(cols));  // a line continues the text of the line above
+    std::string wordText;
+    // The end e of the longest such run [s, e) of 2 to 16 lines ending at b at most, 0 if none. The
+    // cells are read one line at a time and every run from s is judged as it grows, so each line is
+    // read once for each s; a line too far below its cell's line above ends every longer run too.
+    const auto longestMiddleRow = [&](size_t s, size_t b) {
+        const float em = TextSize(rows[s]);
+        std::fill(cellLines.begin(), cellLines.end(), uint16_t(0));
+        size_t found = 0, stacked = 0;  // stacked: columns of two lines or more (none left for a one-line cell)
+        for (size_t r = s; r < b && r < s + 16; ++r) {
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                const size_t c = static_cast<size_t>(columns[k - base]);
+                const TWord& w = words_[rowWords[k]];
+                if (cellLines[c] > 0 && cellLast[c] == rows[r].base) {
+                    lineRight[c] = Fmax(lineRight[c], w.x1);
+                    lastWord[c] = &w;
+                    continue;
+                }
+                const uint8_t value = Numeric(Chars(w)) ? 1 : 0;
+                const float gap = cellLast[c] - rows[r].base;
+                if (cellLines[c] == 0) {
+                    cellFirst[c] = rows[r].base, cellValues[c] = value, gapLo[c] = INFINITY, gapHi[c] = -INFINITY;
+                    fillLow[c] = INFINITY, continued[c] = 0;
+                } else {
+                    if (gap > 1.6f * em) return found;
+                    cellValues[c] = cellValues[c] && value;
+                    gapLo[c] = Fmin(gapLo[c], gap), gapHi[c] = Fmax(gapHi[c], gap);
+                    fillLow[c] = Fmin(fillLow[c], lineRight[c]);
+                    // Text continued: a line starting in lower case, or after a hyphen.
+                    const unsigned char head = FirstByte(w);
+                    const std::string_view before = WordText(*lastWord[c], wordText);
+                    continued[c] = continued[c] || (head >= 'a' && head <= 'z') || (!before.empty() && before.back() == '-') ||
+                                   (before.size() >= 2 && before.substr(before.size() - 2) == "\xC2\xAD");
+                }
+                lineRight[c] = w.x1;
+                lastWord[c] = &w;
+                cellLast[c] = rows[r].base;
+                stacked += ++cellLines[c] == 2;
+            }
+            if (stacked == static_cast<size_t>(cols)) return found;
+            const size_t e = r + 1;
+            if (e - s < 2) continue;
+            int filled = 0, multi = 0, single = 0;
+            float lo = INFINITY, hi = -INFINITY, pitch = 0;
+            bool cells = true;
+            for (size_t c = 0; c < static_cast<size_t>(cols) && cells; ++c) {
+                if (cellLines[c] == 0) continue;
+                if (cellLines[c] < 2) {
+                    single++;
+                } else {
+                    // Lines unevenly set (a label row over a cell's wrapped text) or a line but the
+                    // last ending short of its column's right part (a label): no one cell, in any
+                    // longer run either. Stacked values, or no line continuing the text above
+                    // (entries of sub-rows beside a label spanning them): no one cell yet.
+                    if (gapHi[c] - gapLo[c] > 0.1f * em || fillLow[c] < colLeft[c] + 0.6f * (colRight[c] - colLeft[c]))
+                        return found;
+                    if (cellValues[c] || !continued[c]) {
+                        cells = false;
+                        break;
+                    }
+                    multi++;
+                }
+                filled++;
+                const float middle = (cellFirst[c] + cellLast[c]) / 2;
+                lo = Fmin(lo, middle), hi = Fmax(hi, middle);
+                if (cellLines[c] >= 2) pitch = Fmax(pitch, gapHi[c]);
+            }
+            if (!cells || !(filled >= 2 && multi >= 1 && single >= 1 && hi - lo <= 0.2f * em)) continue;
+            // A row of its own: the lines of the table next to it stand further off than its
+            // cells' lines stand apart (cell padding), else the lines are rows set on one pitch.
+            const float apart = pitch + 0.15f * em;
+            if ((s == rowBegin || rows[s - 1].base - rows[s].base >= apart) &&
+                (e == rowEnd || rows[e - 1].base - rows[e].base >= apart))
+                found = e;
+        }
+        return found;
+    };
+    std::vector<std::pair<size_t, size_t>> windows;  // part: runs of lines [s, e) that are such rows
     // The rows of lines [a, b).
     const auto part = [&](size_t a, size_t b) {
+        const size_t k0 = starts.size() - 1;  // starts[k0] == a
         float narrow = INFINITY;
         size_t judged = 1;  // lines of [a, b) but centred labels
         for (size_t r = a + 1; r < b; ++r)
@@ -1454,6 +1547,37 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 aboveLast.swap(hereLast);
             }
         }
+        // In a ruled table, body lines that together make one row of cells set to the middle (a
+        // one-line cell between or beside the lines of a taller one) are one row, whatever the
+        // rules above made of them: from each line, the longest such run of lines is a row, and
+        // the search goes on after it. Header lines keep their rows (the header's own tests).
+        if (kind != TableKind::Ruled || b - a < 3) return;
+        windows.clear();
+        for (size_t s = std::max(a, rowBegin + headerRows); s + 2 <= b;) {
+            const size_t e = longestMiddleRow(s, b);
+            if (e == 0) {
+                ++s;
+                continue;
+            }
+            windows.emplace_back(s, e);
+            s = e;
+        }
+        if (windows.empty()) return;
+        // The starts after a: none inside a window, one at each window's first line and after
+        // its last.
+        size_t kept = k0 + 1;
+        for (size_t k = k0 + 1; k < starts.size(); ++k) {
+            bool inside = false;
+            for (const auto& [s, e] : windows) inside = inside || (starts[k] > s && starts[k] < e);
+            if (!inside) starts[kept++] = starts[k];
+        }
+        starts.resize(kept);
+        for (const auto& [s, e] : windows) {
+            if (s > a) starts.push_back(s);
+            if (e < b) starts.push_back(e);
+        }
+        std::sort(starts.begin() + static_cast<std::ptrdiff_t>(k0), starts.end());
+        starts.erase(std::unique(starts.begin() + static_cast<std::ptrdiff_t>(k0), starts.end()), starts.end());
     };
     size_t from = rowBegin;
     for (size_t r = rowBegin + 1; r < rowEnd; ++r) {
