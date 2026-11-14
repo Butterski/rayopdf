@@ -3981,8 +3981,10 @@ void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::
 }
 
 // A cell's Markdown without emphasis that covers the whole cell: a bold header row or first column,
-// an italic total, is the table's styling, not emphasis inside text. Emphasis on part of a cell
-// stays, and so do stars that open or close nothing (written raw: "** x", a space inside them).
+// an italic total, is the table's styling, not emphasis inside text (WriteGfmTable strips it from
+// header cells and from cells that share it with another cell of their row or column). Emphasis
+// on part of a cell stays, and so do stars that open or close nothing (written raw: "** x", a
+// space inside them).
 std::string_view CellStyleless(std::string_view t) {
     for (const std::string_view d : {"***", "**", "*"}) {
         if (t.size() <= 2 * d.size() || t.substr(0, d.size()) != d || t.substr(t.size() - d.size()) != d) continue;
@@ -4148,10 +4150,36 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
             out.push_back(ch == '\n' ? ' ' : ch);
         }
     };
+    std::vector<uint8_t> whole;            // per cell of a part: the delimiter length of emphasis over all of it
+    std::vector<uint16_t> perRow, perCol;  // per row and column and delimiter length: cells with it
     for (size_t p = 0; p < parts.size(); ++p) {
         const TablePart& part = parts[p];
         const Table& table = *part.table;
         const uint16_t skip = p > 0 ? RepeatedHeader(parts[0], part) : 0;
+        // Emphasis over a whole cell is the table's styling in a header row, in a row of one
+        // cell (a section's label) and where another cell of its row or column has it too (a bold
+        // column of labels, an italic total): it goes. A body cell beside plain cells, alone in
+        // its row and column with it (a word set bold in a column of examples), keeps it.
+        const uint16_t header = p == 0 ? std::max<uint16_t>(1, table.headerRows) : table.headerRows;
+        whole.assign(table.cellCount, 0);
+        perRow.assign(size_t(table.rows) * 4, 0);  // body cells; [0]: plain cells with text
+        perCol.assign(size_t(cols) * 4, 0);
+        for (uint32_t k = 0; k < table.cellCount; ++k) {
+            const TableCell& tc = part.page->tableCells[table.firstCell + k];
+            const std::string_view t = part.cellText[k];
+            whole[k] = static_cast<uint8_t>((t.size() - CellStyleless(t).size()) / 2);
+            if ((whole[k] == 0 && TrimLeaders(t).empty()) || tc.row < header || tc.row >= table.rows || tc.col >= cols) continue;
+            perRow[size_t(tc.row) * 4 + whole[k]]++;
+            perCol[size_t(tc.col) * 4 + whole[k]]++;
+        }
+        const auto styleless = [&](uint32_t k) {
+            const TableCell& tc = part.page->tableCells[table.firstCell + k];
+            const std::string_view t = part.cellText[k];
+            if (whole[k] == 0 || tc.row < header || tc.row >= table.rows || tc.col >= cols || perRow[size_t(tc.row) * 4] == 0 ||
+                perRow[size_t(tc.row) * 4 + whole[k]] >= 2 || perCol[size_t(tc.col) * 4 + whole[k]] >= 2)
+                return CellStyleless(t);
+            return t;
+        };
         uint32_t i = 0;
         for (uint16_t r = 0; r < table.rows; ++r) {
             const bool write = r >= skip;
@@ -4165,7 +4193,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
                 if (write) out.push_back(' ');
                 if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
                     part.page->tableCells[table.firstCell + i].col == c) {
-                    const std::string_view text = TrimLeaders(CellStyleless(part.cellText[i]));
+                    const std::string_view text = TrimLeaders(styleless(i));
                     if (write) put(text);
                     const uint16_t span = part.page->tableCells[table.firstCell + i].colSpan;
                     spanned = text, spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;

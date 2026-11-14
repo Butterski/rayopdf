@@ -301,6 +301,28 @@ void TestCellEmphasisEscapes() {
     RAYOPDF_CHECK(Contains(md, "| x_ | \\_x |"), 1715);
 }
 
+// Bold over a whole body cell that no other body cell of its row or column shares (a word set
+// bold in a column of examples, under a bold header) is emphasis inside the table and stays; a
+// bold column of row labels is the table's styling and goes, and so does the header's bold.
+void TestLoneCellEmphasis() {
+    for (const bool labels : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        for (float y : {700.0f, 680.0f, 660.0f, 640.0f}) HLine(page, 72, 300, y);
+        for (float x : {72.0f, 180.0f, 300.0f}) VLine(page, x, 640, 700);
+        AddText(page, "Feature", 76, 686, 10, kGlyphBold);
+        AddText(page, "Example", 184, 686, 10, kGlyphBold);
+        AddText(page, "Bold", 76, 666, 10, labels ? kGlyphBold : 0);
+        AddText(page, "important", 184, 666, 10, labels ? 0 : kGlyphBold);
+        AddText(page, "Code", 76, 646, 10, labels ? kGlyphBold : 0);
+        AddText(page, "plain", 184, 646);
+        const std::string md = Run(pages);
+        Show(labels ? "bold labels" : "lone bold cell", md);
+        if (labels) RAYOPDF_CHECK(Contains(md, "| Feature | Example |\n| --- | --- |\n| Bold | important |\n| Code | plain |"), 1740);
+        else RAYOPDF_CHECK(Contains(md, "| Feature | Example |\n| --- | --- |\n| Bold | **important** |\n| Code | plain |"), 1737);
+    }
+}
+
 // Booktabs: top, mid and bottom rules only; columns from whitespace; header above the mid rule.
 void TestBooktabs() {
     std::vector<PageData> pages{NewPage()};
@@ -2369,6 +2391,7 @@ int main(int argc, char** argv) {
     TestSpanOneLineARow();
     TestLatticeGfm();
     TestCellEmphasisEscapes();
+    TestLoneCellEmphasis();
     TestBooktabs();
     TestHeaderRule();
     TestBorderless();
