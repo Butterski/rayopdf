@@ -454,17 +454,16 @@ and benchmarks disagree on (`--plain`, `--tables=html`, `--furniture=keep`), `--
 `--format=inspect` (D6, D7), a C ABI with Python wheels and an npm package (WebAssembly), declared
 benchmark profiles (D6) under a strict quality gate, the DocLayNet and OmniParseBench suites and
 two untagged producers, rules for titles, heading levels and page numbers, binomials, over- and
-undersets, braces and nested scripts in LaTeX mode, and the tenth performance round with a
-profile-guided static build. Against 0.2.0: odl overall 0.909 → 0.915 (MHS 0.874 → 0.890), 0.936
-with its declared options; olmOCR `arxiv_math` 0.7195 → 0.7202 (LaTeX mode); the READoc keys of
-the bar unchanged at three decimals; the rest unchanged. With the add-on, odl 0.915 → 0.922. No
-small model met M9.
+undersets, braces and nested scripts in LaTeX mode, and the tenth performance round. Against
+0.2.0: odl overall 0.909 → 0.915 (MHS 0.874 → 0.890), 0.936 with its declared options; olmOCR
+`arxiv_math` 0.7195 → 0.7202 (LaTeX mode); the READoc keys of the bar unchanged at three
+decimals; the rest unchanged. With the add-on, odl 0.915 → 0.922. No small model met M9.
 
 The bar stands as for 0.2.0 ([release check](../benchmarks/release-check-2026-11-14.md)): every
 item holds except one key, released as open by the user's decision of 2026-11-11: READoc arXiv
 `table_teds` 0.618 (LaTeX mode, held to docling's 0.656 under (b)). (a): `text_eds` 0.882,
 `head_teds` 0.697, `seg_kt` 0.981, `inline_eds` 0.654 on READoc arXiv and every other suite above
-the best text-layer tool, NID and MHS above docling. (c): 2,226 pages/s warm, 0.891 ms fresh.
+the best text-layer tool, NID and MHS above docling. (c): 2,214 pages/s warm, 0.900 ms fresh.
 (d): 25 fuzz targets, 26.1 h, clean; ASan sweeps in three modes clean. (e): reported in the
 release check.
 

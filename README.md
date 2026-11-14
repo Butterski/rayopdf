@@ -57,7 +57,7 @@ process; a long document's pages on up to four threads.
 <td width="33%" valign="top">
 
 ### Small
-A **2.0 MB** download: one static executable for Linux or Windows. No runtime, no model
+A **1.9 MB** download: one static executable for Linux or Windows. No runtime, no model
 files, 2 to 15 MiB of memory for most documents.
 
 </td>
@@ -134,7 +134,7 @@ Docker and Python 3.10 or newer.
 
 ```sh
 python3 tools/dev.py image                    # the build image, once
-python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable (profile-guided)
+python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable
 python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
 ./build/static/rayopdf --convert input.pdf output.md
 ```
@@ -146,9 +146,9 @@ build.
 
 | Package | Size, 0.3.0 | For |
 |---|---:|---|
-| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,970 KB | Linux: one static executable, no dependency |
+| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,818 KB | Linux: one static executable, no dependency |
 | `rayopdf-<version>-windows-x64.zip` | 1,773 KB | Windows: `rayopdf.exe` |
-| `rayopdf-lib-<version>-<platform>` | 1,853 KB / 1,742 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
+| `rayopdf-lib-<version>-<platform>` | 1,652 KB / 1,742 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
 | `rayopdf-<version>-py3-none-<platform>.whl` | 1,468 KB / 1,741 KB | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
 | `rayopdf-<version>.tgz` | 1,032 KB | JavaScript (WebAssembly) for browsers and Node.js 18+: `npm install ./rayopdf-<version>.tgz` |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
@@ -172,23 +172,23 @@ xychart-beta
     title "One page to Markdown, in ms (lower is better)"
     x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown"]
     y-axis "Milliseconds" 0 --> 1500
-    bar [0.98, 16.9, 27.1, 45.2, 1074, 1236]
+    bar [0.97, 16.9, 27.1, 45.2, 1074, 1236]
 ```
 
 | Tool | Version | One page | A 33-page report | Peak memory | Writes |
 |---|---|---:|---:|---:|---|
-| **RayoPDF** | 0.3.0 | **0.98 ms** | **10.8 ms** | **7 MiB** | Markdown |
-| pdftotext | Poppler 25.03 | 17 ms (17×) | 46 ms (4.3×) | 18 MiB | plain text |
-| liteparse | 2.18.0 | 27 ms (28×) | 138 ms (13×) | 33 MiB | Markdown |
-| edgeparse | 0.3.2 | 45 ms (46×) | 306 ms (28×) | 27 MiB | Markdown |
-| opendataloader | 2.5.19 | 1,074 ms (1,096×) | 3,705 ms (343×) | 250 MiB | Markdown |
-| markitdown | 0.1.9 | 1,236 ms (1,261×) | 3,143 ms (291×) | 104 MiB | Markdown |
-| PyMuPDF | 2.1, layout on | 4,749 ms (4,846×) | 70,092 ms (6,490×) | 346 MiB | Markdown |
-| docling | 2.147.0, no OCR | 9,490 ms (9,684×) | 93,052 ms (8,616×) | 1,905 MiB | Markdown |
+| **RayoPDF** | 0.3.0 | **0.97 ms** | **11.1 ms** | **7 MiB** | Markdown |
+| pdftotext | Poppler 25.03 | 17 ms (17×) | 46 ms (4.2×) | 18 MiB | plain text |
+| liteparse | 2.18.0 | 27 ms (28×) | 138 ms (12×) | 33 MiB | Markdown |
+| edgeparse | 0.3.2 | 45 ms (47×) | 306 ms (28×) | 27 MiB | Markdown |
+| opendataloader | 2.5.19 | 1,074 ms (1,107×) | 3,705 ms (334×) | 250 MiB | Markdown |
+| markitdown | 0.1.9 | 1,236 ms (1,274×) | 3,143 ms (283×) | 104 MiB | Markdown |
+| PyMuPDF | 2.1, layout on | 4,749 ms (4,896×) | 70,092 ms (6,315×) | 346 MiB | Markdown |
+| docling | 2.147.0, no OCR | 9,490 ms (9,784×) | 93,052 ms (8,383×) | 1,905 MiB | Markdown |
 
-On four cores RayoPDF reads the report's pages on threads and takes 7.3 ms; the others take
+On four cores RayoPDF reads the report's pages on threads and takes 7.6 ms; the others take
 38 ms to 42 s. In a running process (`--batch`, `--serve --json`) a page takes **0.37 ms** (median of
-the benchmark's 200 pages; 2,226 pages a second on one core).
+the benchmark's 200 pages; 2,214 pages a second on one core).
 
 > [!NOTE]
 > This compares the time to a finished file, not identical output: the tools differ in what they
@@ -239,7 +239,7 @@ program takes 0.22 ms in the same timer).
 | 0.1.0 | 2,209 | 0.93 ms | tables, page furniture, escaping and script forms; round 5 and 6 costs won back |
 | 0.1.1 | 2,217 | 0.91 ms | lists of contents, slide kickers, heading styles and paper title blocks (they cost 1 %) |
 | 0.2.0 | **2,231** | 0.89 ms | JSON output, the C++ API, image tables, table and furniture rules; the ninth round won back their cost |
-| 0.3.0 | 2,226 | 0.89 ms | output options, chunks, the inspector, the C ABI; a profile-guided build (0.2.0 gave 2,217 and 0.89 ms in the same runs) |
+| 0.3.0 | 2,214 | 0.90 ms | output options, chunks, the inspector, the C ABI, title and page-number rules (they cost 0.5 %: 0.2.0 gave 2,225 and 0.89 ms in the same runs) |
 
 Every speed change is profiled, kept only if a pinned A/B shows it faster, and leaves the output
 byte for byte the same on the whole corpus. [`performance.md`](docs/development/performance.md)

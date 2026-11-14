@@ -1,11 +1,14 @@
 # Release check of 0.3.0, 2026-11-14
 
-RayoPDF 0.3.0 (code `635ec7b`, frozen; the commit after it changes only VERSION and documents)
-against the release bar of [roadmap.md](../development/roadmap.md#goal-and-release-bar). Quality
-numbers are those of [v0.3.0-2026-11-14.md](v0.3.0-2026-11-14.md), measured on `6c9b541`, whose
-output the two code commits after it leave byte for byte (the profile-guided static build and its
-`hot.ld`: 1,302 comparisons, none differs). Speed, security and footprint were measured for this
-check, on `635ec7b`. Same machine and harness as [the baselines](baselines-2026-11-05.md).
+RayoPDF 0.3.0 (code `6da39ca`, frozen; the commit after it changes only documents) against the
+release bar of [roadmap.md](../development/roadmap.md#goal-and-release-bar). Quality numbers are
+those of [v0.3.0-2026-11-14.md](v0.3.0-2026-11-14.md), measured on `6c9b541`, whose output the
+code commits after it leave byte for byte (a profile-guided static build, taken back, and
+`src/hot.ld` regenerated: 1,302 comparisons each, none differs). Speed and footprint were
+measured for this check on `6da39ca`; the fuzz campaign and the ASan sweeps ran on `635ec7b`,
+whose source the release keeps but for `src/hot.ld` and the static build's configuration, which
+the fuzz and ASan builds do not use. Same machine and harness as
+[the baselines](baselines-2026-11-05.md).
 
 **Result: every item of the bar holds except READoc arXiv `table_teds`, open as in
 [0.2.0](release-check-2026-11-13.md) by the user's decision of 2026-11-11.**
@@ -14,7 +17,7 @@ check, on `635ec7b`. Same machine and harness as [the baselines](baselines-2026-
 |---|---|---|
 | (a) quality ≥ best text-layer tool; NID and MHS ≥ docling | met | every odl, synthetic, olmOCR and READoc GitHub metric; READoc arXiv `text_eds`, `head_teds`, `seg_kt`, `inline_eds` (LaTeX mode, D6) |
 | (b) TEDS ≥ docling | met except one key | odl, synthetic, olmOCR met; READoc arXiv `table_teds` 0.618 against docling's 0.656: **open** |
-| (c) fresh ≤ 1 ms/page, warm ≥ 2,000 pages/s | met | 0.891 ms fresh, 2,226 pages/s warm |
+| (c) fresh ≤ 1 ms/page, warm ≥ 2,000 pages/s | met | 0.900 ms fresh, 2,214 pages/s warm |
 | (d) 24 h clean fuzzing per parser entry point; ASan sweep 0 crashes, 0 hangs | met | 25 targets, 26.1 h aggregate, no finding; ASan sweeps of 2,837 PDFs in three modes clean |
 | (e) binary size, package size, peak RSS per document reported | met | below |
 
@@ -49,13 +52,18 @@ as a table) failed the strict gate on the development and validation splits and 
 
 ## (c) Speed
 
-CPU 3, 0.2.0 and 0.3.0 interleaved, 2026-11-14 11:10-11:17 UTC (load under 1.5):
+CPU 3, 0.2.0 and 0.3.0 interleaved, 2026-11-14 12:13-12:17 UTC (load under 2):
 
 | measure | 0.3.0 | bar |
 |---|---|---|
-| fresh-process median per odl document (native `posix_spawn` timer, 12 rotated rounds, `--images=none`) | 0.891 ms (0.2.0: 0.888) | ≤ 1 ms/page |
-| warm throughput over the 200 odl pages (`--bench`, best of 3; median of three runs) | 2,226 pages/s (0.2.0: 2,217) | ≥ 2,000 pages/s |
-| warm median / p95 per page | 0.366 / 0.700 ms | – |
+| fresh-process median per odl document (native `posix_spawn` timer, 12 rotated rounds, `--images=none`) | 0.900 ms (0.2.0: 0.892) | ≤ 1 ms/page |
+| warm throughput over the 200 odl pages (`--bench`, best of 3; median of three runs) | 2,214 pages/s (0.2.0: 2,225) | ≥ 2,000 pages/s |
+| warm median / p95 per page | 0.372 / 0.694 ms | – |
+
+The release binary is the one the Release workflow builds on GitHub's runners: a dry run of the
+workflow on `6da39ca` built the same bytes as the binary timed here (SHA-256 `f9556211…`), so these
+times hold for it. A profile-guided build had met the bar here but was slower when GitHub built it
+([v0.3.0](v0.3.0-2026-11-14.md#tried-and-not-landed)).
 
 ## (d) Security
 
@@ -96,40 +104,40 @@ core packages on the tag):
 
 | artifact | Linux x64 (static) | Windows x64 |
 |---|---|---|
-| `rayopdf` | 3,996,560 B | 4,809,984 B |
+| `rayopdf` | 3,700,016 B | 4,809,984 B |
 | `rayopdf-ocr` (add-on) | 7,688,848 B | 7,883,513 B |
-| core archive | 2,017,724 B | 1,815,202 B |
-| C++ API archive (`librayopdf.a`, header, example) | 1,897,270 B | 1,784,068 B |
+| core archive | 1,861,629 B | 1,815,202 B |
+| C++ API archive (`librayopdf.a`, header, example) | 1,691,227 B | 1,784,068 B |
 | Python wheel (`librayopdf.so` or `rayopdf.dll` with the package) | 1,502,853 B | 1,782,870 B |
-| add-on archive (with small, tiny and orientation models) | 36,076,047 B | 35,917,363 B |
-| script pack archive (optional) | 21,107,040 B | 21,104,100 B |
+| add-on archive (with small, tiny and orientation models) | 36,076,042 B | 35,917,363 B |
+| script pack archive (optional) | 21,107,088 B | 21,104,100 B |
 
-The npm package `rayopdf-0.3.0.tgz`, one for every platform, is 1,057,132 B (its
+The npm package `rayopdf-0.3.0.tgz`, one for every platform, is 1,057,143 B (its
 `rayopdf-core.wasm` 2,338,278 B). The static `rayopdf` grew from 0.2.0's 3,576,608 B to
-3,700,016 B with this version's code and to 3,996,560 B with the profile-guided build.
+3,700,016 B.
 
 Peak RSS per document of `rayopdf --convert` (static), measured with `wait4` from a small parent,
 add-on not installed:
 
 | documents | images off: median / p95 / max | images written: median / p95 / max |
 |---|---|---|
-| odl (200) | 2.1 / 2.5 / 10.6 MiB | 2.4 / 5.1 / 18.1 MiB |
-| olmOCR born-digital (1,403) | 2.4 / 3.3 / 37.5 MiB | 2.7 / 5.3 / 39.0 MiB |
-| synthetic development (216) | 1.8 / 3.4 / 4.0 MiB | 1.9 / 6.1 / 7.0 MiB |
-| scanned development (362) | 1.6 / 1.8 / 2.1 MiB | 5.4 / 130.7 / 525.4 MiB |
-| SafeDocs sample (1,000) | 3.1 / 13.9 / 234.7 MiB | 4.4 / 30.8 / 237.5 MiB |
+| odl (200) | 2.0 / 2.4 / 10.4 MiB | 2.3 / 5.0 / 17.8 MiB |
+| olmOCR born-digital (1,403) | 2.3 / 3.1 / 37.3 MiB | 2.6 / 5.3 / 38.9 MiB |
+| synthetic development (216) | 1.7 / 3.4 / 3.9 MiB | 1.9 / 6.0 / 7.1 MiB |
+| scanned development (362) | 1.4 / 1.7 / 2.1 MiB | 5.3 / 131.0 / 523.0 MiB |
+| SafeDocs sample (1,000) | 3.1 / 13.9 / 233.7 MiB | 4.4 / 29.9 / 239.7 MiB |
 
 The largest values are the input file itself (mapped into memory) and JPEG 2000 and JPEG images,
-which are decoded whole, up to four of a document's at once. The medians are about 0.2 MiB above
-0.2.0's; the static binary is 0.4 MB larger (0.3 MB of it from the profile-guided build). The OCR
-add-on, when a page needs it, peaks at about 0.6 GB.
+which are decoded whole, up to four of a document's at once. The OCR add-on, when a page needs
+it, peaks at about 0.6 GB.
 
 ## Builds
 
-On the frozen code: release, ASan + UBSan and ThreadSanitizer 30 of 30 tests, Windows (Wine), OCR
-and OCR Windows 31 of 31, the wheel configuration 31 of 31 (with `tests/verify_python.py`), the
-WebAssembly configuration 1 of 1 (`tests/verify_wasm.mjs` under Node.js), 0 warnings in each; the
-debug build, 0 warnings; every generated table matches its generator
-(`gen_{text,cjk,bidi,math}_tables.py --check`). With VERSION 0.3.0, the static, Windows, wheel,
+On `635ec7b` (the frozen source but for `src/hot.ld` and the static configuration): release,
+ASan + UBSan and ThreadSanitizer 30 of 30 tests, Windows (Wine), OCR and OCR Windows 31 of 31, the
+wheel configuration 31 of 31 (with `tests/verify_python.py`), the WebAssembly configuration 1 of 1
+(`tests/verify_wasm.mjs` under Node.js), 0 warnings in each; the debug build, 0 warnings; every
+generated table matches its generator (`gen_{text,cjk,bidi,math}_tables.py --check`). On
+`6da39ca`: release and ASan + UBSan 30 of 30 again, 0 warnings; the static, Windows, wheel,
 WebAssembly, OCR and OCR Windows builds, 0 warnings, and every archive of `tools/package.py`;
 `tools/check_repo.py` 0 findings.
