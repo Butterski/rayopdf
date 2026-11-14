@@ -1028,6 +1028,13 @@ open candidates' own groups).
   median (paired -0.6 %), page faults median 151 → 153, CPU time 0.864 → 0.859 ms. The binary grew
   from 3,700,016 to 3,996,560 bytes. The decision's bar (warm odl +2 %, fresh no worse, identical
   output) was met: the static build is profile-guided from this round on.
+- **`src/hot.ld` regenerated** (7.4): `tools/hot_sections.py` over the release and the
+  profile-guided static build, unchanged (GCC's `.text.hot.*` and `.text.unlikely.*` names come
+  from the link map like any other): 1,351 sections. The code it places in the static binary grew
+  from 356,845 bytes (the profile-guided build with the old list, whose names had become
+  `.text.hot.*`) to 1,109,262 (the plain build placed 948,493), in the release binary 851,238;
+  binary size unchanged (3,996,560 bytes), output byte-identical (G-bytes 0 of 1,302 differ),
+  user instructions within 0.004 % of the old layout's in every group.
 
 ### Result (`p10-base` against the round's two steps)
 
