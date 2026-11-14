@@ -1015,32 +1015,12 @@ open candidates' own groups).
   |---|---|---|
   |hex strings (`perf(pdf): hex strings read in one pass`)|Hex strings read in one pass: the closing `>` found with `memchr`, the bytes checked and decoded in one pass into room for a byte per two bytes of the string|odl -0.103 %, syn6 -0.248 %, `multi_column` -0.126 %, SafeDocs -0.061 %, `tables` -0.029 %|
 
-- **Profile-guided builds** (7.3): the `static` config (the linux-x64-static release and the
-  harness's `cli` binary) is now built with GCC's profile feedback from 300 generated PDFs
-  (`tools/pgo_corpus.py`, written into `build/pgo` at build time, never committed); the plain build
-  stays as `static-plain` (§ Rerunning). Against the plain static build of the same commit
-  (`6c9b541`), byte-identical (G-bytes 0 of 1,302 differ), user instructions (`instr.sh`): odl
-  -1.28 %, heavy10 +0.07 %, syn6 -2.78 %, SafeDocs +0.23 %, `multi_column` -0.77 %, `tables`
-  -0.76 %, `arxiv_math` -0.85 % (measured on `a632716`). Times on CPU 3, 2026-11-14 11:15-11:27
-  UTC, load under 1.2 and nothing else of this project running, the plain static build of
-  `6c9b541` against the profile-guided one of `635ec7b` (with the `hot.ld` below): warm odl images
-  off (`bench.py warm`, five runs, the binaries' order swapped in two) 2,189-2,193 → 2,233-2,237
-  pages/s, +1.8 % to +2.1 % (median +2.0 %), median 0.376 → 0.365 ms/page; fresh odl
-  (`bench.py fresh`, 12 rotated rounds) 0.907 → 0.892 ms with images off (paired -2.0 %) and
-  1.141 → 1.120 ms with images written (-2.2 %), page faults median 151 → 149. The decision's bar
-  (warm odl +2 %, fresh no worse, identical output) is met at its edge: the static build is
-  profile-guided from this round on. Its cost: the JPEG 2000 decoder, which the generated PDFs
-  never reach, runs slower (the 40 JPEG 2000 documents, 100 pages, images written: median 108.3 →
-  112.8 ms a page, mean 116.2 → 129.2), and the SafeDocs sample takes 0.23 % more instructions. A
-  first measurement, 2026-11-14 00:29-00:31 UTC while unrelated services loaded the other CPUs,
-  had shown +3.8 % warm and -0.6 % fresh. The binary grew from 3,700,016 to 3,996,560 bytes.
-- **`src/hot.ld` regenerated** (7.4): `tools/hot_sections.py` over the release and the
-  profile-guided static build, unchanged (GCC's `.text.hot.*` and `.text.unlikely.*` names come
-  from the link map like any other): 1,351 sections. The code it places in the static binary grew
-  from 356,845 bytes (the profile-guided build with the old list, whose names had become
-  `.text.hot.*`) to 1,109,262 (the plain build placed 948,493), in the release binary 851,238;
-  binary size unchanged (3,996,560 bytes), output byte-identical (G-bytes 0 of 1,302 differ),
-  user instructions within 0.004 % of the old layout's in every group.
+- **`src/hot.ld` regenerated** (7.4): `tools/hot_sections.py` over the release and static builds
+  of the release's code: 799 sections (776 before). The code it places in the static binary grew
+  from 948,493 to 1,013,037 bytes, in the release binary to 850,678; output byte-identical (G-bytes
+  0 of 1,302 differ). CPU 3, 2026-11-14 12:10-12:12 UTC, against the same code with the ninth
+  round's list: warm odl images off (three runs) 2,185 → 2,200-2,205 pages/s (+0.8 %), fresh 0.912
+  → 0.897 ms (12 rotated rounds, -1.6 %), page faults median 151 → 148.
 
 ### Result (`p10-base` against the round's two steps)
 
@@ -1079,6 +1059,18 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
 - **Images encoded on the page threads** and **`--serve` with `--batch`'s malloc settings**: their
   gains are wall time only (the instructions stay or grow), which this round could not measure; they
   stay open.
+- **Profile-guided static build** (7.3; landed as `551d3a6` with `tools/pgo_corpus.py` and the
+  three-stage `--config static`, `src/hot.ld` regenerated for it in `635ec7b`, both reverted
+  before the release): GCC's profile feedback from 300 generated PDFs, output byte-identical.
+  Built and timed on this machine (CPU 3, 2026-11-14 11:15-11:27 UTC, against the plain build of
+  the same code) it gained warm odl +2.0 % (five runs, +1.8 % to +2.1 %) and fresh -2.0 % (0.907 →
+  0.892 ms), and lost on JPEG 2000 pages, a decoder the generated PDFs never reach (median 108.3 →
+  112.8 ms a page); instructions odl -1.28 %, syn6 -2.78 %, SafeDocs +0.23 %. The Release workflow
+  builds on GitHub's runners, where the same stages made a different binary (the plain build is
+  the same bytes on both machines): timed here it was 1.4 % slower warm and 14 % slower fresh
+  (1.020 against 0.895 ms) than the profile-guided binary built here, so the release would have
+  missed the bar's 1 ms. A first measurement at 00:29-00:31 UTC, while unrelated services loaded
+  the other CPUs, had shown +3.8 % warm.
 
 ## Open candidates (measured, not done)
 
@@ -1098,9 +1090,10 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
   wavelet pass; ICT and RGB interleave per row. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or
   band at a time for bounded RSS.
-- **The profile of the static build:** PDFs with JPEG, JPEG 2000, CCITT and JBIG2 images in
-  `tools/pgo_corpus.py`, so that the profile reaches the image decoders (JPEG 2000 pages are 4 %
-  slower at the median under the profile-guided build, tenth round).
+- **Profile-guided builds:** +2.0 % warm and -2.0 % fresh when the profile is trained on the
+  machine that builds and times the binary, but the same three stages on GitHub's runner made a
+  slower binary (tenth round, Tried and rejected): the training must give the same profile on any
+  machine first, and reach the image decoders (JPEG 2000 pages were 4 % slower).
 
 ## Rerunning
 
@@ -1123,7 +1116,6 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 ```sh
 python3 tools/dev.py image && docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker   # once
 python3 tools/dev.py build --config static --dir perf-static   # then copy build/perf-static/rayopdf away: NEW
-python3 tools/dev.py build --config static-plain   # the same without a profile (A/B instruction counts)
 E=benchmark-output/eval; O=$E/data/odl-bench/pdfs
 python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O --set none=--images=none \
     --set images= --set nostruct=--no-structure
@@ -1155,17 +1147,3 @@ python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/be
   `abbench.py`).
 - A `-g` build for profiles needs `-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=gold`: with `src/hot.ld` GNU
   ld drops the line information of the functions it places.
-- **Profile-guided static build (`--config static`):** three stages in the build image. GCC builds
-  an instrumented static binary (`-fprofile-generate -fprofile-update=single`) in
-  `build/static-gen`; it converts the 300 PDFs `tools/pgo_corpus.py` writes to `build/pgo`
-  (standard-14 text, two columns, ruled and borderless tables, running heads and page numbers, hex
-  strings, inline images, object streams; the same bytes on every run) with `--batch --workers=1`,
-  whose normal exit writes the profile to `build/static-gen/profile`; then `build/static` is built
-  from scratch with `-fprofile-use -fprofile-partial-training -Wno-missing-profile
-  -Wno-stringop-overflow -Wno-array-bounds` (with the profile GCC 13 warns inside libstdc++'s
-  `vector<unsigned char>::_M_fill_insert`, a false positive). `-fprofile-prefix-path` names each
-  object relative to its build directory, so the two directories share the profile. `--dir NAME`
-  uses `build/NAME-gen` for the first stage. The output is the same bytes as `static-plain`'s
-  (check with `bench.py identical`); only speed and code layout change. GCC puts the functions the
-  profile finds hot or never run into `.text.hot.*` and `.text.unlikely.*`; `tools/hot_sections.py`
-  takes those names from the static build's link map like any other.

@@ -13,23 +13,21 @@ Usage:
 
 Configs: release (GCC, -O2), debug (GCC, -O0 -g), asan (Clang, ASan + UBSan, -O1 -g),
 tsan (Clang, ThreadSanitizer, -O1 -g), static (GCC release, fully static -static-pie binary for
-the evaluation harness's `cli` tool and the linux-x64-static release, profile-guided: `build`
-makes an instrumented build in build/static-gen, converts the 300 PDFs tools/pgo_corpus.py
-writes to build/pgo with it (--batch --workers=1), and builds build/static with that profile),
-static-plain (the same static build without a profile, for A/B instruction counts), fuzz (Clang,
-libFuzzer targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for the
-windows-x64 release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test`
-runs the core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in
-the rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no
-glibc newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
+the evaluation harness's `cli` tool and the linux-x64-static release), fuzz (Clang, libFuzzer
+targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for the windows-x64
+release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test` runs the
+core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in the
+rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
+newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
 rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
 rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), and the
-OCR add-on's configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference
-runtimes, models, tesseract) unless --image says otherwise: ocr (static release with the add-on
-rayopdf-ocr on ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the
-same on ONNX Runtime), ocr-windows (MinGW-w64 rayopdf-ocr.exe on ncnn, tests under Wine). --dir
-defaults to the config's name. Builds run with --network none; RAYOPDF_DOCKER_CPUS (a cpuset such
-as 0-2,4-8) keeps the container off the CPUs a timing run uses.
+OCR add-on's
+configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference runtimes, models,
+tesseract) unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr on
+ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the same on ONNX
+Runtime), ocr-windows (MinGW-w64 rayopdf-ocr.exe on ncnn, tests under Wine). --dir defaults to
+the config's name. Builds run with --network none; RAYOPDF_DOCKER_CPUS (a cpuset such as
+0-2,4-8) keeps the container off the CPUs a timing run uses.
 """
 
 from __future__ import annotations
@@ -38,7 +36,6 @@ import argparse
 import os
 import shlex
 import subprocess
-import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -65,7 +62,6 @@ CONFIGS = {
     "asan": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",
              "-DCMAKE_CXX_COMPILER=clang++", "-DRAYOPDF_SANITIZE=ON"],
     "static": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_TESTS=OFF"],
-    "static-plain": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_TESTS=OFF"],
     "fuzz": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",
              "-DCMAKE_CXX_COMPILER=clang++", "-DRAYOPDF_FUZZ=ON", "-DRAYOPDF_TESTS=OFF"],
     "tsan": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",
@@ -133,54 +129,12 @@ def configure_and_build(args) -> int:
     return docker(["sh", "-ec", script])
 
 
-def pgo_build(args) -> int:
-    """static: an instrumented build into build/<dir>-gen, a conversion of tools/pgo_corpus.py's
-    PDFs with it, then the build of build/<dir> that uses the profile. Objects are named relative to
-    their build directory in the profile (-fprofile-prefix-path), so both directories find it."""
-    out = build_dir(args)
-    gen = f"{out}-gen"
-    profile = f"/src/{gen}/profile"
-
-    def configure(directory: str, flags: str) -> str:
-        flags += f" -fprofile-prefix-path=/src/{directory}"
-        return (f"cmake -S . -B {directory} -G Ninja {' '.join(CONFIGS[args.config])} "
-                f"-DCMAKE_C_FLAGS='{flags}' -DCMAKE_CXX_FLAGS='{flags}' >/dev/null")
-
-    targets = " --target " + " ".join(args.target) if args.target else ""
-    stages = [
-        ("instrumented build", f"{configure(gen, f'-fprofile-generate={profile} -fprofile-update=single')} && "
-                               f"cmake --build {gen} --target rayopdf"),
-        # The profile is rewritten from scratch; --batch ends with exit(), which writes it (--convert
-        # ends with _Exit, which would not).
-        ("training run", f"rm -rf {profile} {gen}/pgo-out build/pgo && python3 tools/pgo_corpus.py --out build/pgo"
-                         f" && mkdir {gen}/pgo-out && {gen}/rayopdf --batch build/pgo {gen}/pgo-out --workers=1"),
-        # --clean-first: a new profile is no dependency Ninja knows of. With the profile, GCC 13
-        # warns inside libstdc++'s own vector<unsigned char>::_M_fill_insert (-Wstringop-overflow,
-        # -Warray-bounds: a size it cannot bound, no caller of ours in the trace), a false positive;
-        # the other configs keep both warnings.
-        ("optimized build", configure(out, f"-fprofile-use={profile} -fprofile-partial-training -Wno-missing-profile"
-                                           " -Wno-stringop-overflow -Wno-array-bounds")
-                            + f" && cmake --build {out} --clean-first{targets}"),
-    ]
-    for number, (name, script) in enumerate(stages, 1):
-        start = time.monotonic()
-        code = docker(["sh", "-ec", script])
-        print(f"{args.config} stage {number} ({name}): {time.monotonic() - start:.0f} s", flush=True)
-        if code:
-            return code
-    return 0
-
-
-def build(args) -> int:
-    return pgo_build(args) if args.config == "static" else configure_and_build(args)
-
-
 def cmd_build(args) -> int:
-    return build(args)
+    return configure_and_build(args)
 
 
 def cmd_test(args) -> int:
-    code = build(args)
+    code = configure_and_build(args)
     if code:
         return code
     extra = " ".join(shlex.quote(a) for a in args.ctest) if args.ctest else ""
