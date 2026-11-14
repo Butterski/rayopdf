@@ -2876,6 +2876,7 @@ void Detector::RuleStacks() {
         if (!piecesRead) {
             piecesRead = true;
             if (page_.rulings.size() <= 8 * size_t(kMaxTableEdges)) {
+                pieces.reserve(page_.rulings.size());
                 for (const Ruling& upright : page_.rulings) {
                     const Ruling r = ToFrame(upright, dir_);
                     const float w = r.x1 - r.x0, t = r.y1 - r.y0;
@@ -4082,6 +4083,7 @@ void CellPlain(const PageData& page, const TableCell& c, std::string& out, std::
 // on part of a cell stays, and so do stars that open or close nothing (written raw: "** x", a
 // space inside them).
 std::string_view CellStyleless(std::string_view t) {
+    if (t.size() < 3 || t[0] != '*') return t;  // every delimiter is stars, one at least on each side
     for (const std::string_view d : {"***", "**", "*"}) {
         if (t.size() <= 2 * d.size() || t.substr(0, d.size()) != d || t.substr(t.size() - d.size()) != d) continue;
         const std::string_view inner = t.substr(d.size(), t.size() - 2 * d.size());
@@ -4273,7 +4275,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
             const std::string_view t = part.cellText[k];
             if (whole[k] == 0 || tc.row < header || tc.row >= table.rows || tc.col >= cols || perRow[size_t(tc.row) * 4] == 0 ||
                 perRow[size_t(tc.row) * 4 + whole[k]] >= 2 || perCol[size_t(tc.col) * 4 + whole[k]] >= 2)
-                return CellStyleless(t);
+                return t.substr(whole[k], t.size() - 2u * whole[k]);  // CellStyleless(t), measured above
             return t;
         };
         uint32_t i = 0;
