@@ -566,7 +566,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 
 |Suite|Declared options|
 |---|---|
-|odl|`--images=none --furniture=keep --plain --tables=html`|
+|odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii`|
 |synthetic, olmocr|none (the default)|
 |olmocr-math, readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex`|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|

@@ -206,8 +206,9 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   conventions (odl keeps running headers and writes no inline markup and HTML tables; olmOCR's
   `headers_footers` wants furniture absent; `arxiv_math` and READoc arXiv write LaTeX), so each
   benchmark is measured with one fixed, published set of options, its declared profile in
-  `eval/profiles.json`: odl `--images=none --furniture=keep --plain --tables=html`, olmOCR
-  `arxiv_math` (the `olmocr-math` suite) and READoc `--math=latex`, the others the default. Version
+  `eval/profiles.json`: odl `--images=none --furniture=keep --plain --tables=html --quotes=ascii`
+  (quotes from 2026-11-14), olmOCR `arxiv_math` (the `olmocr-math` suite) and READoc
+  `--math=latex`, the others the default. Version
   records show the default row beside the declared row where they differ; the quality gate
   measures the declared rows only, and no gated metric may fall more than 0.0001 below its best
   (AGENTS.md rule 7).

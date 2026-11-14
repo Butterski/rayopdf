@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "declared": {
-    "odl": "--images=none --furniture=keep --plain --tables=html",
+    "odl": "--images=none --furniture=keep --plain --tables=html --quotes=ascii",
     "synthetic": "",
     "olmocr": "",
     "olmocr-math": "--math=latex",
