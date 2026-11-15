@@ -891,6 +891,47 @@ void TestRuledRowGroups() {
     RAYOPDF_CHECK(Contains(md, "| Xlm | Merged | 60.73 | 78.58 |\n|  | Mono | 60.97 | 79.71 |"), 873);
 }
 
+// A booktabs table whose row labels are each centred over a group of four rows (LaTeX's
+// \multirow), between the second and the third: the label belongs to a row and parts none, set
+// half a row apart from the rows around it (closer than a line pitch, then wider than one).
+void TestCentredRowLabels() {
+    for (const bool wide : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        const float size = wide ? 7.5f : 8.0f, pitch = wide ? 14.0f : 9.0f;
+        const char* const labels[] = {"Compressor", "Vehicle"};
+        const char* const methods[] = {"Central", "Local", "FedAvg", "FedMeta"};
+        const char* const scores[2][4] = {{"0.637", "0.547", "0.602", "0.770"}, {"0.656", "0.646", "0.396", "0.607"}};
+        HLine(page, 72, 330, 722, 0.8f);
+        AddText(page, "Device", 76, 710, size);
+        AddText(page, "Method", 150, 710, size);
+        AddText(page, "F1", 230, 710, size);
+        AddText(page, "MAE", 290, 710, size);
+        float y = 704;
+        for (int g = 0; g < 2; ++g) {
+            HLine(page, 72, 330, y, 0.5f);
+            const float first = y - pitch;
+            for (int r = 0; r < 4; ++r) {
+                const float base = first - pitch * float(r);
+                AddText(page, methods[r], 150, base, size);
+                AddText(page, scores[g][r], 230, base, size);
+                AddText(page, r % 2 ? "0.1" : "0.2", 290, base, size);
+            }
+            AddText(page, labels[g], 76, first - 1.5f * pitch, size);
+            y = first - 3 * pitch - 0.8f * pitch;
+        }
+        HLine(page, 72, 330, y, 0.8f);
+        AddProse(page, 72, 400, y - 30, 2);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(wide ? "centred row labels, wide rows" : "centred row labels", md);
+        const bool kept = report.tables == 1 && !Contains(md, "| Compressor |  |") && !Contains(md, "| Vehicle |  |") &&
+                          Contains(md, "| Compressor | Local | 0.547 | 0.1 |\n|  | FedAvg | 0.602 | 0.2 |") &&
+                          Contains(md, "| Vehicle | Local | 0.646 | 0.1 |\n|  | FedAvg | 0.396 | 0.2 |\n|  | FedMeta | 0.607 | 0.1 |");
+        RAYOPDF_CHECK(kept, wide ? 1746 : 1745);
+    }
+}
+
 // A full-width ruled table between two columns of text: the columns are read before it, the table
 // is one block, and the columns after it follow.
 void TestTableAcrossColumns() {
@@ -2501,6 +2542,7 @@ int main(int argc, char** argv) {
     TestRuledSectionLabels();
     TestLoneSectionLabels();
     TestRuledRowGroups();
+    TestCentredRowLabels();
     TestTableAcrossColumns();
     TestHostileRulings();
     TestDegenerateGrids();

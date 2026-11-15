@@ -1348,11 +1348,29 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         }
         if (equations && related >= 2 && 2 * related >= numbered) return;
     }
+    // A label alone in the first column, set halfway between two body lines whose first cells are
+    // empty (a \multirow label centred over an even number of rows): it belongs to the row above
+    // and parts no rows; the lines around it are judged as if it were not there.
+    std::vector<uint8_t> centred(n, 0);
+    for (size_t q = rowBegin + 1; q + 1 < rowEnd; ++q) {
+        const size_t i = q - rowBegin;
+        const uint64_t up = mask[i - 1], down = mask[i + 1];
+        if (mask[i] != 1 || !up || !down || (up & 1) || (down & 1) || centred[i - 1] || i - 1 < headerRows) continue;
+        if ((labels && ((*labels)[q - 1] || (*labels)[q] || (*labels)[q + 1])) || (ruled && ((*ruled)[q] || (*ruled)[q + 1])) ||
+            cut[i] || cut[i + 1])
+            continue;
+        const float pitch = rows[q - 1].base - rows[q + 1].base, mid = (rows[q - 1].base + rows[q + 1].base) / 2;
+        centred[i] = pitch > 0 && pitch <= 3.0f * Fmax(rows[q - 1].size, rows[q + 1].size) &&
+                     std::fabs(rows[q].base - mid) <= 0.15f * pitch;
+    }
+    // The line before line r that the rows are judged from: a centred label is passed over.
+    const auto lineBefore = [&](size_t r) { return centred[r - 1 - rowBegin] ? r - 2 : r - 1; };
     // Lines closer than a line pitch are cells of one row set to the middle at different heights.
     const auto offset = [&](size_t r) {
-        return rows[r - 1].base - rows[r].base < 0.85f * Fmax(rows[r - 1].size, rows[r].size);
+        const size_t p = lineBefore(r);
+        return rows[p].base - rows[r].base < 0.85f * Fmax(rows[p].size, rows[r].size);
     };
-    const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[r - 1].bottom - rows[r].top; };
+    const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[lineBefore(r)].bottom - rows[r].top; };
     // Per column of a line: the right edge of its words, whether its first word is a number and
     // whether its last word is one.
     std::vector<float> above(static_cast<size_t>(cols)), here(static_cast<size_t>(cols));
@@ -1372,32 +1390,40 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // The rows of lines [a, b).
     const auto part = [&](size_t a, size_t b) {
         float narrow = INFINITY;
+        size_t judged = 1;  // lines of [a, b) but centred labels
         for (size_t r = a + 1; r < b; ++r)
-            if (!offset(r)) narrow = Fmin(narrow, gapAbove(r));
+            if (!centred[r - rowBegin]) {
+                judged++;
+                if (!offset(r)) narrow = Fmin(narrow, gapAbove(r));
+            }
         const float wide = narrow + Fmax(2.0f, 0.25f * rows[rowBegin].size);
         size_t wideGaps = 0;
-        for (size_t r = a + 1; r < b; ++r) wideGaps += gapAbove(r) >= wide;
-        if (b - a >= 3 && wideGaps >= 2 && wideGaps + 1 < b - a) {
+        for (size_t r = a + 1; r < b; ++r) wideGaps += !centred[r - rowBegin] && gapAbove(r) >= wide;
+        if (judged >= 3 && wideGaps >= 2 && wideGaps + 1 < judged) {
             size_t band = a;
             const auto close = [&](size_t bandEnd) {
                 bool same = bandEnd - band > 1;
-                for (size_t q = band + 1; q < bandEnd && same; ++q) same = mask[q - rowBegin] == mask[band - rowBegin];
+                for (size_t q = band + 1; q < bandEnd && same; ++q)
+                    same = centred[q - rowBegin] || mask[q - rowBegin] == mask[band - rowBegin];
                 int filled = 0;
                 for (uint64_t m = mask[band - rowBegin]; m; m &= m - 1) filled++;
                 if (same && filled >= 2) {
-                    for (size_t q = band + 1; q < bandEnd; ++q) starts.push_back(q);
+                    for (size_t q = band + 1; q < bandEnd; ++q)
+                        if (!centred[q - rowBegin]) starts.push_back(q);
                     return;
                 }
                 // A full line (its first cell and another) on the line grid, clear of the line above,
                 // under a line that fills the first cell too, starts a row: sections of one-line rows.
                 // A line filling only the first cell is that cell's wrapped text.
-                for (size_t q = band + 1; q < bandEnd; ++q)
-                    if ((mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) && (mask[q - 1 - rowBegin] & 1) &&
-                        !offset(q) && (q + 1 >= b || !offset(q + 1)) && rows[q - 1].bottom >= rows[q].top)
+                for (size_t q = band + 1; q < bandEnd; ++q) {
+                    const size_t p = lineBefore(q);
+                    if (!centred[q - rowBegin] && (mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) &&
+                        (mask[p - rowBegin] & 1) && !offset(q) && (q + 1 >= b || !offset(q + 1)) && rows[p].bottom >= rows[q].top)
                         starts.push_back(q);
+                }
             };
             for (size_t r = a + 1; r < b; ++r) {
-                if (gapAbove(r) < wide && r - rowBegin != headerRows) continue;
+                if (centred[r - rowBegin] || (gapAbove(r) < wide && r - rowBegin != headerRows)) continue;
                 close(r);
                 starts.push_back(r);
                 band = r;
@@ -1406,10 +1432,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         } else {
             rights(a, above, aboveFirst, aboveLast);
             for (size_t r = a + 1; r < b; ++r) {
+                if (centred[r - rowBegin]) continue;
                 rights(r, here, hereFirst, hereLast);
                 // A number under a number is a value of its own, not the cell's text wrapped, unless
                 // set in smaller type right under it (a standard error under its estimate).
-                const bool values = !SubLine(rows[r - 1], rows[r]);
+                const bool values = !SubLine(rows[lineBefore(r)], rows[r]);
                 bool wrapped = here[0] == -INFINITY && r - rowBegin != headerRows;
                 for (size_t c = 1; c < static_cast<size_t>(cols) && wrapped; ++c)
                     if (here[c] > -INFINITY &&
