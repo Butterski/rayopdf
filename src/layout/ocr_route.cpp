@@ -133,29 +133,39 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
     const size_t textSize = page.text.size();
     for (const Glyph& g : page.glyphs) {
         const uint16_t flags = g.flags;
-        if (flags & kGlyphSpace) {
-            endWord();
+        // Spaces end a word; they, dropped, clipped and image glyphs are not counted (one test for
+        // all four).
+        if (flags & (kGlyphSpace | kGlyphDropped | kGlyphClipped | kGlyphImage)) {
+            if (flags & kGlyphSpace) endWord();
             continue;
         }
-        if ((flags & (kGlyphDropped | kGlyphClipped | kGlyphImage)) || !(g.size >= 1.0f) || g.textLength == 0 ||
-            size_t(g.text) + g.textLength > textSize)
-            continue;
-        counted++;
-        invisible += (flags & kGlyphInvisible) ? 1 : 0;
-        const unsigned char* p = base + g.text;
-        if (g.textLength == 1 && *p < 0x80) {  // most glyphs: one ASCII character
-            const uint64_t letter = kAsciiLetters.of[*p];
-            if (letter != 0) {
-                letters += letter;
+        if (!(g.size >= 1.0f)) continue;
+        const size_t start = g.text, length = g.textLength;
+        if (length == 1) {
+            // Most glyphs: one character, most of them ASCII.
+            if (start >= textSize) continue;
+            counted++;
+            invisible += (flags & kGlyphInvisible) ? 1 : 0;
+            const unsigned char c = base[start];
+            if (c < 0x80) {
+                const uint64_t letter = kAsciiLetters.of[c];
+                if (letter != 0) {
+                    letters += letter;
+                    continue;
+                }
+                const uint8_t k = kAscii.of[c];
+                if (!(k & kAsciiSpace)) others++;
+                junk += (k & kAsciiJunk) ? 1 : 0;
+                endWord();
                 continue;
             }
-            const uint8_t k = kAscii.of[*p];
-            if (!(k & kAsciiSpace)) others++;
-            junk += (k & kAsciiJunk) ? 1 : 0;
-            endWord();
-            continue;
+        } else {
+            if (length == 0 || start + length > textSize) continue;
+            counted++;
+            invisible += (flags & kGlyphInvisible) ? 1 : 0;
         }
-        const unsigned char* const end = p + g.textLength;
+        const unsigned char* p = base + start;
+        const unsigned char* const end = p + length;
         while (p < end) {
             if (*p < 0x80) {  // most text: one table look-up
                 const uint64_t letter = kAsciiLetters.of[*p];
