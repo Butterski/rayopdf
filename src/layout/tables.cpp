@@ -623,6 +623,7 @@ private:
     void LatticeHeader(Grid& g) const;
     void RowsBelow(Grid& g);
     void JoinStripes();
+    void JoinStacked();
     void RepeatedHeaders();
     void DropChartText();
     void Commit();
@@ -3775,6 +3776,98 @@ bool Detector::Contents(const Grid& g) const {
     return leaders || roman || (refs >= 5 && uneven) || contentsTitle();
 }
 
+// A table of the same columns right under another one, nothing between them but whitespace up to
+// one and a half of the upper table's rows (a blank line set between groups of rows, or a run of
+// rows broken by a long cell), is the rest of its rows: one table. The lower part has no header of
+// its own (its first row holds a number), both parts stand at the same left and right edges (a
+// tenth of their width), and in each the body's words of every column keep clear of the next
+// column's words of both: the columns part halfway between. Lattices keep their own rules.
+void Detector::JoinStacked() {
+    std::vector<float> lo, hi;
+    // The words of grid g with their row and column in it: f(word, row, column).
+    const auto eachWord = [&](const Grid& g, const auto& f) {
+        auto it = std::lower_bound(words_.begin(), words_.end(), g.y1, [](const TWord& w, float y) { return w.base > y; });
+        for (; it != words_.end() && it->base >= g.y0; ++it) {
+            const float cx = (it->x0 + it->x1) / 2, cy = (it->y0 + it->y1) / 2;
+            if (!(cx >= g.x0 && cx <= g.x1 && cy >= g.y0 && cy <= g.y1)) continue;
+            const int r = static_cast<int>(std::upper_bound(g.ys.begin(), g.ys.end(), cy, std::greater<float>()) - g.ys.begin()) - 1;
+            const int c = static_cast<int>(std::upper_bound(g.xs.begin(), g.xs.end(), cx) - g.xs.begin()) - 1;
+            f(*it, std::min(std::max(r, 0), g.Rows() - 1), std::min(std::max(c, 0), g.Cols() - 1));
+        }
+    };
+    for (size_t a = 0; a < grids_.size(); ++a) {
+        for (size_t b = 0; b < grids_.size(); ++b) {
+            if (b == a) continue;
+            const Grid& up = grids_[a];
+            const Grid& down = grids_[b];
+            const int cols = up.Cols();
+            if (up.kind == TableKind::Lattice || down.kind == TableKind::Lattice || down.Cols() != cols || cols < 2 ||
+                cols > 64 || up.Rows() < 1 || down.Rows() < 2 || down.headerRows > 0 || !down.labelRow.empty() ||
+                up.Rows() + down.Rows() > kMaxTableRows)
+                continue;
+            const float pitch = (up.y1 - up.y0) / float(up.Rows()), width = Fmin(up.x1 - up.x0, down.x1 - down.x0);
+            if (!(down.y1 <= up.y0 + 0.3f * pitch && up.y0 - down.y1 <= 1.5f * pitch && down.y0 < up.y0) ||
+                !(std::fabs(up.x0 - down.x0) <= 0.1f * width && std::fabs(up.x1 - down.x1) <= 0.1f * width))
+                continue;
+            // Nothing between: no word outside both.
+            const float xa = Fmin(up.x0, down.x0), xb = Fmax(up.x1, down.x1);
+            bool free = true;
+            auto it = std::lower_bound(words_.begin(), words_.end(), up.y0, [](const TWord& w, float y) { return w.base > y; });
+            for (; it != words_.end() && it->base >= down.y1 && free; ++it) {
+                const float cx = (it->x0 + it->x1) / 2;
+                free = cx < xa || cx > xb || wordUsed_[static_cast<size_t>(it - words_.begin())];
+            }
+            if (!free) continue;
+            bool number = false;
+            eachWord(down, [&](const TWord& w, int r, int) { number = number || (r == 0 && Numeric(Chars(w))); });
+            if (!number) continue;
+            // Per inner boundary: the right edge of the body words before it, the left edge of those after.
+            lo.assign(static_cast<size_t>(cols), -INFINITY);
+            hi.assign(static_cast<size_t>(cols), INFINITY);
+            for (const Grid* g : {&up, &down}) {
+                eachWord(*g, [&](const TWord& w, int r, int c) {
+                    if (r < g->headerRows || (!g->labelRow.empty() && g->labelRow[static_cast<size_t>(r)])) return;
+                    for (int k = 1; k < cols; ++k) {
+                        if (c < k) lo[static_cast<size_t>(k)] = Fmax(lo[static_cast<size_t>(k)], w.x1);
+                        else hi[static_cast<size_t>(k)] = Fmin(hi[static_cast<size_t>(k)], w.x0);
+                    }
+                });
+            }
+            bool clear = true;
+            for (int k = 1; k < cols && clear; ++k) clear = hi[static_cast<size_t>(k)] - lo[static_cast<size_t>(k)] >= 1.0f;
+            if (!clear) continue;
+            Grid joined;
+            joined.kind = up.kind;
+            joined.xs.push_back(Fmin(up.xs.front(), down.xs.front()));
+            for (int k = 1; k < cols; ++k) joined.xs.push_back((lo[static_cast<size_t>(k)] + hi[static_cast<size_t>(k)]) / 2);
+            joined.xs.push_back(Fmax(up.xs.back(), down.xs.back()));
+            joined.ys = up.ys;
+            joined.ys.back() = (up.ys.back() + down.ys.front()) / 2;
+            joined.ys.insert(joined.ys.end(), down.ys.begin() + 1, down.ys.end());
+            bool ordered = true;
+            for (size_t i = 1; i < joined.ys.size() && ordered; ++i) ordered = joined.ys[i] < joined.ys[i - 1];
+            for (size_t i = 1; i < joined.xs.size() && ordered; ++i) ordered = joined.xs[i] > joined.xs[i - 1];
+            if (!ordered) continue;
+            joined.vb = up.vb;
+            joined.vb.insert(joined.vb.end(), down.vb.begin(), down.vb.end());
+            joined.hb.assign(up.hb.begin(), up.hb.begin() + up.Rows() * cols);
+            joined.hb.insert(joined.hb.end(), static_cast<size_t>(cols), 1);
+            joined.hb.insert(joined.hb.end(), down.hb.begin() + cols, down.hb.end());
+            if (!up.labelRow.empty()) {
+                joined.labelRow = up.labelRow;
+                joined.labelRow.resize(static_cast<size_t>(joined.Rows()), 0);
+            }
+            joined.headerRows = up.headerRows;
+            joined.size = up.size;
+            joined.x0 = xa, joined.x1 = xb, joined.y0 = down.y0, joined.y1 = up.y1;
+            grids_[a] = std::move(joined);
+            grids_.erase(grids_.begin() + static_cast<std::ptrdiff_t>(b));
+            if (b < a) --a;
+            b = static_cast<size_t>(-1);  // look again: a third part may follow
+        }
+    }
+}
+
 // A table's header row repeated lower on the page (the same table again after a note, or its next
 // part): a free row whose words, in order, are the cell texts of the table's first row (three cells
 // with text at least), with a row within two line pitches below it that fills two of its columns,
@@ -4063,6 +4156,7 @@ int Detector::Run() {
     Borderless(1.0f);
     const float close = Fmax(0.6f, 2.5f * wordSpace_);
     if (close < 1.0f) Borderless(close);
+    JoinStacked();
     if (dir_ == 0) RepeatedHeaders();
     DropChartText();
     Commit();

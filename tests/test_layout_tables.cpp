@@ -932,6 +932,53 @@ void TestCentredRowLabels() {
     }
 }
 
+// A booktabs table whose body leaves a blank line between two groups of rows: one table of every
+// row. Under it, after a line of space, a table of the same columns with a header of its own (no
+// number in its first row) stays a table of its own.
+void TestBlankLineInBody() {
+    for (const bool header : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        AddProse(page, 72, 400, 760, 2);
+        HLine(page, 72, 330, 732, 0.8f);
+        AddText(page, "Name", 76, 720);
+        AddText(page, "Redshift", 160, 720);
+        AddText(page, "SFR", 260, 720);
+        HLine(page, 72, 330, 714, 0.5f);
+        const char* const names[] = {"3C 9", "3C 181", "3C 191", "4C 17.09", "4C 05.34", "4C 28.40"};
+        const char* const z[] = {"2.014", "1.388", "1.954", "2.155", "2.876", "1.981"};
+        const char* const sfr[] = {"310", "150", "300", "490", "750", "370"};
+        float y = 702;
+        for (int r = 0; r < 6; ++r) {
+            if (r == 3) {
+                y -= 13;  // the blank line
+                if (header) {
+                    AddText(page, "Source", 76, y);
+                    AddText(page, "Epoch", 160, y);
+                    AddText(page, "Flux", 260, y);
+                    y -= 13;
+                }
+            }
+            AddText(page, names[r], 76, y);
+            AddText(page, z[r], 160, y);
+            AddText(page, sfr[r], 260, y);
+            y -= 13;
+        }
+        HLine(page, 72, 330, y + 6, 0.8f);
+        AddProse(page, 72, 400, y - 24, 2);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(header ? "stacked tables" : "blank line in body", md);
+        if (header) {
+            RAYOPDF_CHECK(report.tables == 2 && Contains(md, "| Source | Epoch | Flux |\n| --- | --- | --- |\n| 4C 17.09 |"), 1748);
+        } else {
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| 3C 191 | 1.954 | 300 |\n| 4C 17.09 | 2.155 | 490 |") &&
+                              Count(md, "\n| --- |") == 1,
+                          1747);
+        }
+    }
+}
+
 // A full-width ruled table between two columns of text: the columns are read before it, the table
 // is one block, and the columns after it follow.
 void TestTableAcrossColumns() {
@@ -2543,6 +2590,7 @@ int main(int argc, char** argv) {
     TestLoneSectionLabels();
     TestRuledRowGroups();
     TestCentredRowLabels();
+    TestBlankLineInBody();
     TestTableAcrossColumns();
     TestHostileRulings();
     TestDegenerateGrids();
