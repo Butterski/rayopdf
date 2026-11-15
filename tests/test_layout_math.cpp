@@ -5,8 +5,8 @@
 // over- and undersets, braces), inline formula runs (Greek prose stays text), and whole pages
 // through ConvertPages in both math modes (scripts of scripts out of content order), and the
 // arborescence the rebuild falls back on (stacked accents of olmOCR arxiv_math pages, a glyph
-// cloud, not for a paragraph that is a formula alone). Exit codes 1550-1599, 2202, 2205-2212 and
-// 2215-2224.
+// cloud, not for a paragraph that is a formula alone), and mathabx glyphs that a ToUnicode built
+// from T1 glyph names misreads, read back by code. Exit codes 1550-1599, 2202-2213 and 2215-2224.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -807,6 +807,39 @@ void TestTreeAlone() {
     RAYOPDF_CHECK(latex.find("Let $\\hat{\\dot{q}}$ be the rate") != std::string::npos, 2223);
     RAYOPDF_CHECK(latex.find("\\hat{\\dot{q}}=a") == std::string::npos, 2224);
 }
+
+// mathabx's Type 1 fonts name their glyphs as T1 text (code 0x70 "(" is "p", 0xA4 "≤" is "ď"):
+// --math=latex reads a glyph whose text is its code's T1 character by mathabx's encoding, and
+// keeps any other text; the default output keeps the text.
+void TestMathabx() {
+    RAYOPDF_CHECK(MathFontByte("TeX-matha10") == (kSymbol | kMathFontAbxA) &&
+                      MathFontByte("TeX-mathx10") == (kExtension | kMathFontAbxX) &&
+                      MathFontByte("TeX-mathb8") == (kSymbol | kMathFontAbxB) && MathFontByte("CMSY10") == kSymbol,
+                  2203);
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, static_cast<uint8_t>(kSymbol | kMathFontAbxA)};
+    const auto abx = [&page](std::string_view text, uint8_t code, float x) {
+        page.mathCodes.push_back(MathCode{static_cast<uint32_t>(page.glyphs.size()), code});
+        return AddText(page, text, x, 700, 10, 2);
+    };
+    float x = AddText(page, "Let ", 72, 700, 10);
+    x = AddText(page, "f", x, 700, 10, 1);
+    x = abx("p", 0x70, x);
+    x = AddText(page, "y", x, 700, 10, 1);
+    x = abx("q", 0x71, x);
+    x = abx("\xC4\x8F", 0xA4, x);  // ď
+    x = AddText(page, "g", x, 700, 10, 1);
+    x = abx("x", 0x50, x);  // a text other than the code's T1 character stays
+    AddText(page, " hold.", x, 700, 10);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    const std::string unicode = Convert({page}, MathMode::Unicode);
+    if (latex.find("$f(y)\\leq gx$") == std::string::npos) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find("$f(y)\\leq gx$") != std::string::npos, 2204);
+    RAYOPDF_CHECK(unicode.find("Let fpyq\xC4\x8Fgx hold.") != std::string::npos, 2213);
+}
 } // namespace
 
 int main() {
@@ -826,6 +859,7 @@ int main() {
     TestNestedScripts();
     TestTree();
     TestTreeAlone();
+    TestMathabx();
     std::puts("test_layout_math: ok");
     return 0;
 }

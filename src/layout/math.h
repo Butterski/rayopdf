@@ -66,7 +66,16 @@ MathFont MathFontOf(std::string_view baseName);
 // ToUnicode), where the Adobe Glyph List reads TeX's "phi" as φ and "phi1" as ϕ, the other way
 // round from TeX's \phi and \varphi (and "epsilon" as ε for TeX's \epsilon ϵ).
 constexpr uint8_t kMathFontNamed = 0x80;
-constexpr uint8_t kMathFontClass = 0x7F;
+// PageData::fontMath bits: a font of mathabx (TeX-matha, TeX-mathb, TeX-mathx). Their Type 1
+// versions name the glyphs as the T1 (Cork) text encoding names its codes, so that a ToUnicode
+// built from the names reads "(" as "p" and "≤" as "ď"; PrepareMathGlyphs reads such glyphs
+// back through mathabx's own encoding (their codes are in PageData::mathCodes).
+constexpr uint8_t kMathFontAbx = 0x30;
+constexpr uint8_t kMathFontAbxA = 0x10, kMathFontAbxB = 0x20, kMathFontAbxX = 0x30;
+constexpr uint8_t kMathFontClass = 0x0F;
+
+// The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf and the mathabx bits.
+uint8_t MathFontByte(std::string_view baseName);
 
 // Limits of one formula: more glyphs or rules, or deeper nesting, leave it as Unicode text.
 constexpr uint32_t kMaxFormulaGlyphs = 1024;

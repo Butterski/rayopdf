@@ -940,7 +940,7 @@ void Interpreter::SetFontEntry(const PdfValue& entry, double size) {
     while (id < fontIds_.size() && fontIds_[id] != &font) ++id;
     if (id == fontIds_.size() && fontIds_.size() < 65535) {
         fontIds_.push_back(&font);
-        page_.fontMath.push_back(static_cast<uint8_t>(MathFontOf(font.BaseName())));
+        page_.fontMath.push_back(MathFontByte(font.BaseName()));
     }
     gs_.fontId = static_cast<uint16_t>(id < 65535 ? id : 65534);
     gs_.fontMath = id < page_.fontMath.size() ? static_cast<uint8_t>(page_.fontMath[id] & kMathFontClass) : 0;
@@ -1515,10 +1515,12 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
             flags |= p.runFlags | kSourceFlags[static_cast<uint8_t>(source)];
             if (length == 0 && source != Text::UnicodeSource::None) flags |= kGlyphDropped;  // control characters
             if (!kFast && RAYOPDF_UNLIKELY(p.fontMath != 0)) {
-                // Math fonts (layout/math.h): glyphs left without text keep their code for
-                // --math=latex, and math italic fonts read through glyph names are marked (TeX's
-                // \phi is AGL's "phi1").
-                if (source == Text::UnicodeSource::None && codeBytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage)
+                // Math fonts (layout/math.h): glyphs left without text, and every glyph of a mathabx
+                // font, keep their code for --math=latex, and math italic fonts read through glyph
+                // names are marked (TeX's \phi is AGL's "phi1").
+                if (codeBytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage &&
+                    (source == Text::UnicodeSource::None ||
+                     (p.fontId < page_.fontMath.size() && (page_.fontMath[p.fontId] & kMathFontAbx) != 0)))
                     page_.mathCodes.push_back(MathCode{static_cast<uint32_t>(glyphs.size()), static_cast<uint8_t>(codeValue)});
                 if (p.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
                     (source == Text::UnicodeSource::Encoding || source == Text::UnicodeSource::FontProgram) &&
