@@ -1117,21 +1117,39 @@ against `a1db445`, images off, `--math=latex`, `--tables=pipe`: 0 differ):
 |---|---|---|
 |LaTeX rebuild (`perf(layout): the LaTeX rebuild's lookups cheaper…`)|The arborescence reads the greedy rebuild's atoms; pairs tested before `JoinMathSymbols`; the Greek count only when asked; `AppendToken`'s scan only before a letter; `CommandOf`'s overrides only from U+00A0; function names by a collision-free hash; four finiteness tests as one sum|`arxiv_math` -0.585 %, the rest within 0.003 %|
 |Tables (`perf(layout): table rows set to the middle…`)|`TextGrid`'s vectors from the thread's scratch, a middle row's facts in one struct, its continuation tests only while needed; `ToFrame` inlined; GFM cells appended whole without pipe or line break, dot leaders trimmed once|`tables` -0.311 %, SafeDocs -0.152 %, odl -0.084 %, syn6 -0.076 %, heavy10 -0.075 %, `multi_column` -0.050 %|
+|`MeasurePage` (`perf(layout): MeasurePage tests a skipped glyph's flags once…`)|A space, dropped, clipped or image glyph found by one flag test; a one-byte glyph checked against the page text by its start alone and counted on its own path (it was 1.6 % of odl, 2.3 % of syn6, about 33 instructions a glyph)|syn6 -0.289 %, `multi_column` -0.230 %, odl -0.188 %, `tables` -0.156 %, SafeDocs -0.118 %, `arxiv_math` -0.109 %, heavy10 -0.059 %|
 
-After the round against 0.3.0: odl +0.233 %, heavy10 +0.092 %, syn6 +0.293 %, SafeDocs +0.071 %,
-`multi_column` +0.348 %, `tables` +0.281 %, `arxiv_math` -0.141 %. What is left is the edge-row model,
+After the two 0.4.0 steps against 0.3.0: odl +0.233 %, heavy10 +0.092 %, syn6 +0.293 %, SafeDocs
++0.071 %, `multi_column` +0.348 %, `tables` +0.281 %, `arxiv_math` -0.141 %. With `MeasurePage`, from
+the head's own profile (the largest self costs left are the content lexer, Inflate, `PlaceGlyphs`,
+`ShowText` and `BuildLines`, each tuned in earlier rounds): against `a1db445` odl -0.272 %, heavy10
+-0.134 %, syn6 -0.368 %, SafeDocs -0.270 %, `multi_column` -0.279 %, `tables` -0.465 %,
+`arxiv_math` -0.708 %; against 0.3.0 odl +0.045 %, heavy10 +0.033 %, syn6 +0.004 %, SafeDocs
+-0.047 %, `multi_column` +0.117 %, `tables` +0.123 %, `arxiv_math` -0.251 %. What is left is the
+edge-row model,
 whose code was being changed on another branch: an exact early exit over the forest (after each
 tree, stop when the score plus the largest leaves of the trees left stays under the threshold),
 the nodes packed with float thresholds (the largest float at most each double threshold gives the
 same splits), and the row text and repetition key the rules already built reused for the features
 would cut it. No times were taken (a fuzz campaign used the other CPUs).
 
+Tried and rejected (2026-11-15):
+
+- The empty-clip flag folded into the SSE2 clip test (open candidate): `BoxTerms` holding a lane
+  mask ORed into the comparison in place of the flag cost more than the branch it removed: odl
+  +0.192 %, syn6 +0.253 %, `multi_column` +0.220 %.
+- `MeasurePage`'s single flag test without the one-byte path: odl -0.068 % (kept only with it).
+- Not attempted this round: line and word texts copied once when contiguous (`AppendLineText` and
+  `ForGlyphTextRuns` already append a run of contiguous glyph texts at a time; what is left is in
+  the callers that copy a line's text to read it), `StyleWords` and Breuel's `Topological` (round
+  10's designs gained nothing; no new design was ready).
+
 ## Open candidates (measured, not done)
 
-- **Text path:** the empty-clip flag folded into the SSE2 clip test (about 3 instructions a
-  glyph); line and word texts copied once when contiguous in the page text.
-- **The OCR route's `MeasurePage`** (1.6 % of odl): three attempts to count in the glyph loop cost
-  what the pass costs; counts per font slot are untried.
+- **Text path:** line and word texts read in place when contiguous in the page text, instead of
+  copied by the callers that only read them.
+- **The OCR route's `MeasurePage`** (1.4 % of odl after round 11): counts per font slot are
+  untried.
 - **Order and the writer:** Breuel's topological order (about 20 M on `multi_column`); the writer's
   `StyleWords` (33 M on `multi_column`). Round 10's rewrites of both gained nothing (tenth round,
   Tried and rejected).
