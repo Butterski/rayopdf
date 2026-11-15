@@ -2030,7 +2030,9 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
 
 void PrepareMathGlyphs(PageData& page) {
     // Math font glyphs without text whose code TeX's encodings know get its symbol as their text,
-    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character.
+    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character. A math
+    // italic font's φ, ϕ, ε and ϵ from ToUnicode take the form of their code (TeX's "phi" at 0x1E is
+    // \phi ϕ, "phi1" at 0x27 \varphi φ, which ToUnicode maps built on the Adobe Glyph List swap).
     for (const MathCode& c : page.mathCodes) {
         if (c.glyph >= page.glyphs.size() || page.text.size() >= (size_t(1) << 31)) continue;
         Glyph& g = page.glyphs[c.glyph];
@@ -2046,6 +2048,17 @@ void PrepareMathGlyphs(PageData& page) {
                 if (!Utf8::Decode(t, 0, have, length) || length != t.size() || have != e->cork) continue;
             }
             cp = e->cp;
+        } else if (g.textLength != 0 && !(g.flags & kGlyphUnmapped)) {
+            const uint8_t font = page.fontMath[g.font];
+            if ((font & kMathFontClass) != static_cast<uint8_t>(MathFont::Italic) || (font & kMathFontNamed)) continue;
+            const std::string_view t = page.GlyphText(g);
+            if (!IsGreekVariantText(t)) continue;
+            uint32_t have = 0;
+            size_t length = 0;
+            uint8_t family = 0;
+            if (!Utf8::Decode(t, 0, have, length) || !TexCodeSymbol(MathFont::Italic, c.code, cp, family) || cp == have) continue;
+            const bool phi = have == 0x3C6 || have == 0x3D5;
+            if (phi ? (cp != 0x3C6 && cp != 0x3D5) : (cp != 0x3B5 && cp != 0x3F5)) continue;  // a code of another letter
         } else {
             if (!(g.flags & kGlyphUnmapped) || g.textLength != 0) continue;
             uint8_t family = 0;

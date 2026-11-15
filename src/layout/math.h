@@ -77,6 +77,14 @@ constexpr uint8_t kMathFontClass = 0x0F;
 // The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf and the mathabx bits.
 uint8_t MathFontByte(std::string_view baseName);
 
+// Whether a glyph's text is φ (U+03C6), ϕ (U+03D5), ε (U+03B5) or ϵ (U+03F5): the letters TeX has
+// in two forms, which ToUnicode maps of math italic fonts give either way round. PrepareMathGlyphs
+// takes the form from the glyph's code.
+inline bool IsGreekVariantText(std::string_view t) {
+    return t.size() == 2 && ((t[0] == '\xCF' && (t[1] == '\x86' || t[1] == '\x95' || t[1] == '\xB5')) ||
+                             (t[0] == '\xCE' && t[1] == '\xB5'));
+}
+
 // Limits of one formula: more glyphs or rules, or deeper nesting, leave it as Unicode text.
 constexpr uint32_t kMaxFormulaGlyphs = 1024;
 constexpr uint32_t kMaxFormulaRules = 64;

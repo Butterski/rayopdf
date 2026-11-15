@@ -5,8 +5,9 @@
 // over- and undersets, braces), inline formula runs (Greek prose stays text), and whole pages
 // through ConvertPages in both math modes (scripts of scripts out of content order), and the
 // arborescence the rebuild falls back on (stacked accents of olmOCR arxiv_math pages, a glyph
-// cloud, not for a paragraph that is a formula alone), and mathabx glyphs that a ToUnicode built
-// from T1 glyph names misreads, read back by code. Exit codes 1550-1599, 2202-2213 and 2215-2224.
+// cloud, not for a paragraph that is a formula alone), mathabx glyphs that a ToUnicode built from
+// T1 glyph names misreads, read back by code, and φ, ϕ, ε, ϵ by their code. Exit codes 1550-1599
+// and 2202-2225.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -840,6 +841,38 @@ void TestMathabx() {
     RAYOPDF_CHECK(latex.find("$f(y)\\leq gx$") != std::string::npos, 2204);
     RAYOPDF_CHECK(unicode.find("Let fpyq\xC4\x8Fgx hold.") != std::string::npos, 2213);
 }
+
+// A ToUnicode built on the Adobe Glyph List reads TeX's \phi (code 0x1E, "phi") as φ and \varphi
+// (0x27, "phi1") as ϕ: --math=latex takes the form from the code, and keeps the text for a code of
+// another letter.
+void TestGreekVariants() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic};
+    const auto greek = [&page](std::string_view text, uint8_t code, float x) {
+        page.mathCodes.push_back(MathCode{static_cast<uint32_t>(page.glyphs.size()), code});
+        return AddText(page, text, x, 700, 10, 1);
+    };
+    float x = AddText(page, "Let ", 72, 700, 10);
+    x = greek("\xCF\x86", 0x1E, x);  // φ at \phi's code
+    x = AddText(page, ", ", x, 700, 10);
+    x = greek("\xCF\x95", 0x27, x);  // ϕ at \varphi's code
+    x = AddText(page, ", ", x, 700, 10);
+    x = greek("\xCE\xB5", 0x0F, x);  // ε at \epsilon's code
+    x = AddText(page, " and ", x, 700, 10);
+    x = greek("\xCF\x86", 0x41, x);  // φ at the code of A
+    AddText(page, " hold.", x, 700, 10);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    const char* want = "Let $\\phi,\\varphi,\\epsilon$ and $\\varphi$ hold.";
+    if (latex.find(want) == std::string::npos) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find(want) != std::string::npos, 2214);
+    // A font read through glyph names keeps the swap of their Adobe Glyph List text.
+    page.fontMath[1] = static_cast<uint8_t>(kItalic | kMathFontNamed);
+    const std::string named = Convert({page}, MathMode::Latex);
+    RAYOPDF_CHECK(named.find("Let $\\phi,\\varphi,\\epsilon$ and $\\phi$ hold.") != std::string::npos, 2225);
+}
 } // namespace
 
 int main() {
@@ -860,6 +893,7 @@ int main() {
     TestTree();
     TestTreeAlone();
     TestMathabx();
+    TestGreekVariants();
     std::puts("test_layout_math: ok");
     return 0;
 }
