@@ -2,12 +2,12 @@
 // Core tests of the LaTeX math output (layout/math.h, --math=latex): formulas rebuilt from glyphs
 // placed by hand (scripts, fractions, radicals, operators with limits, matrices, cases, accents,
 // alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback, binomials,
-// over- and undersets, braces), inline formula runs (Greek prose stays text), and whole pages
-// through ConvertPages in both math modes (scripts of scripts out of content order), and the
-// arborescence the rebuild falls back on (stacked accents of olmOCR arxiv_math pages, a glyph
-// cloud, not for a paragraph that is a formula alone), mathabx glyphs that a ToUnicode built from
-// T1 glyph names misreads, read back by code, and φ, ϕ, ε, ϵ by their code. Exit codes 1550-1599
-// and 2202-2225.
+// over- and undersets, braces), inline formula runs (Greek prose stays text; the operand after a
+// trailing operator and before a leading relation), and whole pages through ConvertPages in both
+// math modes (scripts of scripts out of content order), and the arborescence the rebuild falls
+// back on (stacked accents of olmOCR arxiv_math pages, a glyph cloud, not for a paragraph that is
+// a formula alone), mathabx glyphs that a ToUnicode built from T1 glyph names misreads, read back
+// by code, and φ, ϕ, ε, ϵ by their code. Exit codes 1550-1599 and 2202-2229.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -334,8 +334,8 @@ void TestFonts() {
 }
 
 // Inline runs over words written glyph by glyph: `fonts` per glyph (spaces are no glyphs) of
-// `text`: 'm' math italic, 'i' italic text font, anything else the upright text font; spaces start
-// words.
+// `text`: 'm' math italic, 'i' italic text font, 'b' bold text font, 's' an italic letter of the
+// text font lowered (a script), anything else the upright text font; spaces start words.
 std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::vector<Glyph>& store,
                            std::vector<InlineGlyph>* glyphsOut = nullptr) {
     store.assign(text.size(), Glyph());
@@ -351,7 +351,9 @@ std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::v
             InlineGlyph g;
             g.glyph = &store[index];
             g.font = index < fonts.size() && fonts[index] == 'm' ? kItalic : kText;
-            if (index < fonts.size() && fonts[index] == 'i') store[index].flags |= kGlyphItalic;
+            if (index < fonts.size() && (fonts[index] == 'i' || fonts[index] == 's')) store[index].flags |= kGlyphItalic;
+            if (index < fonts.size() && fonts[index] == 'b') store[index].flags |= kGlyphBold;
+            g.script = index < fonts.size() && fonts[index] == 's';
             g.wordStart = space || glyphs.empty();
             g.text = text.substr(at, length);
             glyphs.push_back(g);
@@ -392,6 +394,18 @@ void TestInline() {
     RAYOPDF_CHECK(run[0] == 4 && run[4] == 0 && run[7] == 10, 1590);
     run = Runs("(see x)", "....m.", store);
     RAYOPDF_CHECK(run[0] == 0 && run[4] == 5, 1596);
+    // A run that ends in an operator takes the operand after it, an italic letter of a text font
+    // with its scripts too: "map x→ S of" (x, → math italic), "x∈ dᵢ now".
+    run = Runs("map x\xE2\x86\x92 S of", "...mmi..", store);
+    RAYOPDF_CHECK(run[3] == 6 && run[5] == 0, 2226);
+    run = Runs("x\xE2\x88\x88 di now", "mmis...", store);
+    RAYOPDF_CHECK(run[0] == 4, 2227);
+    // A run that opens with a relation takes a bold or italic letter alone before it ("u ∈ ℝ"),
+    // not an upright one.
+    run = Runs("with u \xE2\x88\x88 R hold", "....bmm....", store);
+    RAYOPDF_CHECK(run[4] == 7 && run[5] == 0, 2228);
+    run = Runs("type u \xE2\x88\x88 R hold", ".....mm....", store);
+    RAYOPDF_CHECK(run[4] == 0 && run[5] == 7, 2229);
 }
 
 // A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the

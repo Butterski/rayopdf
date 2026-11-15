@@ -254,6 +254,17 @@ bool IsRelation(uint32_t cp) {
     }
 }
 
+// A symbol set between two operands: relations, arrows and binary operators (±, ×, ∈, ⊂, ∪, ≤,
+// ⇒, ⩽), not the operands, quantifiers, n-ary operators, integrals and dots of the same blocks.
+bool IsInfixSymbol(uint32_t cp) {
+    if (cp == 0xB1 || cp == 0xD7 || cp == 0xF7) return true;
+    if ((cp >= 0x2190 && cp <= 0x21FF) || (cp >= 0x27F0 && cp <= 0x27FF) || (cp >= 0x2A7D && cp <= 0x2AFF)) return true;
+    if (cp < 0x2208 || cp > 0x22FF) return false;
+    return !((cp >= 0x220E && cp <= 0x2211) || (cp >= 0x221A && cp <= 0x2222 && cp != 0x221D) ||
+             (cp >= 0x222B && cp <= 0x2235) || cp == 0x22A4 || cp == 0x22A5 || (cp >= 0x22C0 && cp <= 0x22C3) ||
+             (cp >= 0x22EE && cp <= 0x22F1));
+}
+
 // Delimiters: 1 opening, 2 closing, 3 either (bars).
 int DelimiterSide(uint32_t cp) {
     switch (cp) {
@@ -2334,15 +2345,21 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     bool any = false;
     for (size_t w = 0; w < words; ++w) {
         const uint32_t b = wordStart[w], e = wordStart[w + 1];
-        uint32_t letters = 0;
-        for (uint32_t i = b; i < e; ++i) letters += IsLetterCp(FirstCp(glyphs[i].text)) ? 1 : 0;
+        // Letters of the word, and those on its baseline: a letter alone there ("x", "d" of "dᵢ")
+        // is a variable when italic.
+        uint32_t letters = 0, baseLetters = 0;
+        for (uint32_t i = b; i < e; ++i) {
+            const uint32_t letter = IsLetterCp(FirstCp(glyphs[i].text)) ? 1 : 0;
+            letters += letter;
+            baseLetters += glyphs[i].script ? 0 : letter;
+        }
         // The word's glyphs of the Greek script, counted when a glyph first asks (UINT32_MAX before).
         uint32_t greek = UINT32_MAX;
         bool strongWord = false;  // a strong glyph in the word: its class is final once set
         for (uint32_t i = b; i < e; ++i) {
             const InlineGlyph& g = glyphs[i];
             if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) continue;
-            cls[i] = ClassOf(g.font, g.glyph->flags, g.text, letters == 1);
+            cls[i] = ClassOf(g.font, g.glyph->flags, g.text, letters == 1 || baseLetters == 1);
             // Greek in a word of Greek letters (Greek prose, accented or polytonic too) is text.
             if (cls[i] == kClassStrong && g.font == static_cast<uint8_t>(MathFont::None) && IsGreek(FirstCp(g.text)) &&
                 letters > 1) {
@@ -2387,6 +2404,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     std::string text;
     uint32_t start = UINT32_MAX;  // the open run's first glyph
     uint32_t last = 0;            // its last glyph so far (exclusive)
+    uint32_t closedEnd = 0;       // the end of the last run marked
     const auto close = [&]() {
         if (start == UINT32_MAX) return;
         uint32_t b = start, e = last;
@@ -2412,8 +2430,33 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
         }
         bool strong = false;
         for (uint32_t i = b; i < e; ++i) strong = strong || (cls[i] == kClassStrong && !glyphs[i].script);
-        if (strong && e > b) run[b] = e;
+        if (strong && e > b) run[b] = e, closedEnd = e;
         start = UINT32_MAX;
+    };
+    // A run that opens with an operator or a relation at the start of word `w` ("u ∈ ℝᵐ", "x = 2")
+    // takes the operand before it: a word of one bold or italic letter on its baseline (with its
+    // scripts and primes), outside any run. Returns the run's first glyph.
+    const auto operandBefore = [&](size_t w) -> uint32_t {
+        const uint32_t s = wordStart[w];
+        const uint32_t cp = FirstCp(glyphs[s].text);
+        if (w == 0 || !(IsInfixSymbol(cp) || cp == '=' || cp == '<' || cp == '>')) return s;
+        const uint32_t pb = wordStart[w - 1];
+        if (pb < closedEnd) return s;
+        uint32_t letter = UINT32_MAX;
+        for (uint32_t i = pb; i < s; ++i) {
+            const InlineGlyph& g = glyphs[i];
+            if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible)) || cls[i] == kClassStrong) return s;
+            if (g.script) continue;
+            const uint32_t c = FirstCp(g.text);
+            if (c == 0x2032 || c == '\'' || c == 0x2019) continue;
+            if (letter != UINT32_MAX || !IsAsciiLetter(c)) return s;
+            letter = i;
+        }
+        if (letter == UINT32_MAX) return s;
+        const uint16_t flags = glyphs[letter].glyph->flags;
+        const uint32_t c = FirstCp(glyphs[letter].text);
+        if (flags & kGlyphBold) return pb;
+        return (flags & kGlyphItalic) && c != 'a' && c != 'A' && c != 'I' ? pb : s;
     };
     for (size_t w = 0; w < words; ++w) {
         const uint32_t b = wordStart[w], e = wordStart[w + 1];
@@ -2461,7 +2504,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
                 op = op || c == '=' || c == '+' || c == '<' || c == '>' || c == 0x2212 || c == '/' || c == '*';
             }
             if (mathAhead) {
-                if (start == UINT32_MAX) start = b;
+                if (start == UINT32_MAX) start = operandBefore(w);
                 last = e;
             } else if (start != UINT32_MAX && neutral && (op || last == b)) {
                 // "x = 2": an operator and the numbers after it; anything without letters after a
@@ -2477,8 +2520,10 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
                     depth += c == '(' || c == '[' || c == '{' ? 1 : c == ')' || c == ']' || c == '}' ? -1 : 0;
                 }
                 const uint32_t end = last > start ? FirstCp(glyphs[last - 1].text) : 0;
+                // A run that ends in an operator or a relation ("x ∈", "f : X →") wants the operand after it.
                 const bool unfinished = depth > 0 || end == ',' || end == '=' || end == '+' || end == '-' || end == 0x2212 ||
-                                        end == '(' || end == '[' || end == '<' || end == '>';
+                                        end == '(' || end == '[' || end == '<' || end == '>' || end == '/' ||
+                                        (end >= 0x80 && IsInfixSymbol(end));
                 if (op || digits || unfinished) last = e;
                 else close();
             } else {
@@ -2505,7 +2550,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             }
             if (start == UINT32_MAX || !(s == b && last == b)) {
                 close();
-                start = s;
+                start = s == b ? operandBefore(w) : s;
             }
             last = i;
             if (i < e) close();
