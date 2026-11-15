@@ -1100,6 +1100,32 @@ services used about 8 % of the CPUs): warm odl (three runs) 2,206-2,214 → 2,18
 paired), page faults median 148 → 149; `--batch --workers=1` over odl, task-clock 96.6 → 98.0 ms;
 a JPEG 2000 page with its image written (40 documents, 100 pages) 107.4 → 108.8 ms median.
 
+## Eleventh round: 0.4.0's cost won back (2026-11-15)
+
+0.4.0 (`a1db445`) cost user instructions against 0.3.0 (`instr.sh`, `--batch --workers=1`, images off;
+`arxiv_math` with `--math=latex`): odl +0.32 %, heavy10 +0.17 %, syn6 +0.37 %, SafeDocs +0.22 %,
+`multi_column` +0.40 %, `tables` +0.59 %, `arxiv_math` +0.46 %. Callgrind of 0.3.0's code (`18bf2a0`)
+against `a1db445` (Release with `-g`, linked with gold) over odl, `multi_column`, `tables` and
+`arxiv_math`: the edge-row furniture model (`RemoveRunningLines` inclusive: odl +2.1 M, `multi_column`
++5.1 M, `tables` +2.5 M, `arxiv_math` +4.9 M; `RawScore` about a third, the rows' features the rest),
+`TextGrid` +4.6 M and `RuleStacks` +1.1 M on `tables`, and on `arxiv_math` the arborescence fallback
+(14.6 M, 8.5 M of it reading every glyph a second time), `JoinMathSymbols` called for every pair (3.9 M)
+and the Greek-script count of every word (2.3 M). Each step byte-identical (`bench.py identical`
+against `a1db445`, images off, `--math=latex`, `--tables=pipe`: 0 differ):
+
+|Commit|Change|Effect (`instr.sh`)|
+|---|---|---|
+|LaTeX rebuild (`perf(layout): the LaTeX rebuild's lookups cheaper…`)|The arborescence reads the greedy rebuild's atoms; pairs tested before `JoinMathSymbols`; the Greek count only when asked; `AppendToken`'s scan only before a letter; `CommandOf`'s overrides only from U+00A0; function names by a collision-free hash; four finiteness tests as one sum|`arxiv_math` -0.585 %, the rest within 0.003 %|
+|Tables (`perf(layout): table rows set to the middle…`)|`TextGrid`'s vectors from the thread's scratch, a middle row's facts in one struct, its continuation tests only while needed; `ToFrame` inlined; GFM cells appended whole without pipe or line break, dot leaders trimmed once|`tables` -0.311 %, SafeDocs -0.152 %, odl -0.084 %, syn6 -0.076 %, heavy10 -0.075 %, `multi_column` -0.050 %|
+
+After the round against 0.3.0: odl +0.233 %, heavy10 +0.092 %, syn6 +0.293 %, SafeDocs +0.071 %,
+`multi_column` +0.348 %, `tables` +0.281 %, `arxiv_math` -0.141 %. What is left is the edge-row model,
+whose code was being changed on another branch: an exact early exit over the forest (after each
+tree, stop when the score plus the largest leaves of the trees left stays under the threshold),
+the nodes packed with float thresholds (the largest float at most each double threshold gives the
+same splits), and the row text and repetition key the rules already built reused for the features
+would cut it. No times were taken (a fuzz campaign used the other CPUs).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** the empty-clip flag folded into the SSE2 clip test (about 3 instructions a
