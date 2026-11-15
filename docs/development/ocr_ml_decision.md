@@ -304,6 +304,7 @@ criterion (gate of 2026-11-15, below).
 |---|---|---|---|---|---|---|---|
 |Edge rows (furniture the rules keep)|20,000 DocLayNet train pages: 46,947 rows, 21,425 furniture|doclaynet-dev: furniture F1 of rows 0.855 (rules) → 0.878 (rules and model)|0.3.0: failed, doclaynet-val heading_f1 −0.0003; 0.4.0 with local removals: passed, doclaynet-dev and doclaynet-val furniture_f1 +0.0020 and +0.0024|+0.24 %|1,740 nodes, about 46.6 KB|identical|0.4.0|
 |Table gaps (borderless columns)|2,400 generated tables (400 fixtures, 6 producers): 3,884 candidate gaps|1,109 gaps, all boundaries|not run|–|–|identical|no|
+|Edge rows v2 (after 0.4.0, awaiting the gate)|the same 20,000 pages: 46,817 rows, 21,425 furniture; 23 features|doclaynet-dev: 0.863 (rules) → 0.880 (rules and model at τ_p)|not run yet; development suites below|−0.06 % against 0.4.0 (with its model)|1,740 nodes, 900 leaves, about 35.7 KB|identical|pending|
 
 **Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
 rules examine in a page's outer tenth (`src/layout/features.h`); it would remove a row the rules
@@ -345,6 +346,33 @@ output is that of `--furniture=keep` less the row's block) and 2255 (a caption u
 scored furniture, stays). The strict gate passed (2026-11-15, master `8811572` → `0893b96`):
 doclaynet-dev furniture_f1 +0.0020, doclaynet-val furniture_f1 0.4753 → 0.4777 (+0.0024) with
 heading_f1 unchanged, olmOCR `headers_footers` +0.0013; odl instructions +0.24 %. It ships.
+
+**Edge rows v2 (after 0.4.0, awaiting the gate).** A sweep of 0.4.0's model showed that lower
+thresholds would gain (doclaynet-dev furniture_f1 and olmOCR `headers_footers`), but every τ
+below 0.930 removed the first line "Sentinel start …" of eight `rayomd-tech` fixtures, costing
+synthetic untagged MHS 0.9373 → 0.9277. Seven features were added (`src/layout/features.h` 16-22:
+the row ends a sentence, its share of words starting in lower case, its words, the size of the
+line inside it, its pitch to that line against the text's line pitch, its rank from the edge, its
+left offset from the text) and the model retrained on the same pages (doclaynet-dev logloss of
+16 against 23 features 0.1545 → 0.1442). The retrained trees still score the sentinel lines
+0.95-0.96: DocLayNet's train selection holds only 7 short head rows set apart that end a
+sentence (3 of them furniture), too
+few for a leaf of 50 rows. So the engine never takes a row that ends a sentence; on doclaynet-dev
+none of the rows the model would take at any threshold from 0.6 up that end a sentence is
+furniture. With that guard τ_p is chosen at a precision of 0.90 over the rows the model may take
+(0.98 before): τ_p = 0.821, precision 0.901, recall 0.492 (the 0.98 rule gives 0.96 with recall
+0.08, which lost furniture_f1 0.5966 → 0.5948 and one `headers_footers` test). Against master
+a1db445 in the declared profiles: doclaynet-dev furniture_f1 0.596594 → 0.599899 (+0.0033),
+heading_f1 0.741236 → 0.741405, text_kept 0.9874361 → 0.9874321, the other roles equal (94 pages
+changed, each only by blocks left out); olmOCR `headers_footers` 0.849934 → 0.852590 (+2 tests),
+the other categories equal; `olmocr-math` 4 pages changed, equal; omni-dev 23 pages changed, all
+four metrics equal; synthetic (the sentinel lines kept), readoc-dev, readoc-dev2 and odl
+(`--furniture=keep`) byte-identical. The default odl row, not gated, moves 0.915543 → 0.915495
+(a running title of 088 that odl's ground truth keeps). Thresholds 0.711 (precision 0.85) lost
+heading_f1 −0.00005 and omni-dev text −0.0003; 0.885 (precision 0.95) gained furniture_f1
++0.0018 only. The forest now stops once the trees left cannot cross τ and its nodes take 12
+bytes (float thresholds at or below LightGBM's), and the features reuse the row text the rules
+built: odl instructions −0.06 % against 0.4.0 with its model. Tests 2256-2258.
 
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
