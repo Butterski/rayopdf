@@ -7,7 +7,8 @@
 // math modes (scripts of scripts out of content order), and the arborescence the rebuild falls
 // back on (stacked accents of olmOCR arxiv_math pages, a glyph cloud, not for a paragraph that is
 // a formula alone), mathabx glyphs that a ToUnicode built from T1 glyph names misreads, read back
-// by code, and φ, ϕ, ε, ϵ by their code. Exit codes 1550-1599 and 2202-2229.
+// by code, φ, ϕ, ε, ϵ by their code, and a subscript's prime. Exit codes 1550-1599, 2202-2229
+// and 2231-2232.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -104,6 +105,20 @@ void TestScripts() {
         u = f.Add("x", u, 0);
         f.Add(")", u, 0, 10, kText);
         Expect(f.Latex(), "f'(x)", 1554);
+    }
+    {
+        // g_{x'}: a prime of the subscript, lifted over it but not over the baseline; g_{x}' when
+        // lifted as a superscript of g.
+        Formula f;
+        float u = f.Add("g", 0, 0);
+        u = f.Add("x", u, -1.5f, 7);
+        f.Add("\xE2\x80\xB2", u, 0.5f, 5, kSymbol);
+        Expect(f.Latex(), "g_{x'}", 2231);
+        Formula h;
+        u = h.Add("g", 0, 0);
+        u = h.Add("x", u, -1.5f, 7);
+        h.Add("\xE2\x80\xB2", u, 3.6f, 7, kSymbol);
+        Expect(h.Latex(), "g_{x}'", 2232);
     }
 }
 

@@ -1417,7 +1417,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             continue;
         const float d = it.v - mainV;
         if (it.kind == Kind::Prime && small) {
-            role[i] = 1;
+            // A prime right after a subscript and not raised over the baseline as a superscript is
+            // (TeX lifts one at least 0.29 em) is the subscript's own: x_{i'}.
+            role[i] = i > 0 && role[i - 1] == 2 && d < 0.17f * em && it.u0 - items[i - 1].u1 < 0.3f * em ? 2 : 1;
             continue;
         }
         if (it.kind == Kind::Accent) continue;
