@@ -139,6 +139,7 @@ void TestModelRemovalIsLocal() {
 
 // A caption under a figure at the foot of a sparse page stays, though the edge-row model scores it
 // furniture: the rules keep it (the figure sets it close), and the semantics make it a caption.
+// It ends in no full stop, so the guard of rows that end a sentence does not decide it.
 void TestCaptionGuard() {
     std::vector<PageData> pages{NewPage()};
     AddBody(pages[0], 3, 740, 24);
@@ -147,9 +148,21 @@ void TestCaptionGuard() {
     pages[0].images.push_back(image);
     AddText(pages[0], "Label 0", 110, 45.4f, 10);
     AddText(pages[0], "Label 1", 200, 45.4f, 10);
-    AddText(pages[0], "Fig. 4. Test Results on the DVD dataset.", 150, 20, 8);
-    const Converted c = Convert(pages, "Fig. 4. Test Results on the DVD dataset.");
+    AddText(pages[0], "Fig. 4. Test Results on the DVD dataset", 150, 20, 8);
+    const Converted c = Convert(pages, "Fig. 4. Test Results on the DVD dataset");
     RAYOPDF_CHECK(c.score >= kEdgeRowRawTau && c.md.find("Fig. 4. Test Results") != std::string::npos, 2255);
+}
+
+// A one-line paragraph at the head of a page, over a heading set apart from it, stays though the
+// edge-row model scores it furniture: it ends a sentence, and the model never takes such a row
+// (DocLayNet's training pages hardly show one, so the model cannot learn it).
+void TestSentenceGuard() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Sentinel start C01.", 34, 750, 10);
+    AddText(pages[0], "Headings", 34, 715, 20, true);
+    AddBody(pages[0], 40, 680, 12);
+    const Converted c = Convert(pages, "Sentinel start C01.");
+    RAYOPDF_CHECK(c.score >= kEdgeRowRawTau && c.md.find("Sentinel start C01.") != std::string::npos, 2257);
 }
 
 } // namespace
@@ -162,5 +175,6 @@ int main() {
     RAYOPDF_CHECK(std::fabs(1 / (1 + std::exp(-kEdgeRowRawTau)) - kEdgeRowTau) <= 1e-12, 2253);
     TestModelRemovalIsLocal();
     TestCaptionGuard();
+    TestSentenceGuard();
     return 0;
 }

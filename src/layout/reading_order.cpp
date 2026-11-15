@@ -824,7 +824,9 @@ struct EdgeRow {
     uint32_t edge = 0;              // its edge line (an index of page.lines)
     int side = 0;                   // 0 top, 1 bottom
     float wideCenter = 0, gap = 0, largest = 0, rowLeft = 0, rowRight = 0;
+    float nextSize = 0;  // the size of the line inside it, across the gap
     uint32_t chars = 0;
+    uint32_t rank = 0;  // rows outside it on its side
     bool bold = false;
     bool rules = false;  // removed by the rules
 };
@@ -1079,6 +1081,8 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 out.wideCenter = wideCenter, out.gap = gap, out.largest = largest;
                 out.rowLeft = rowLeft, out.rowRight = rowRight;
                 out.chars = chars;
+                out.nextSize = nextSize;
+                out.rank = static_cast<uint32_t>(row);
                 out.bold = bold;
             }
             const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
@@ -1167,16 +1171,29 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         f[13] = holding;
         f[14] = capitalShare;
         f[15] = endsInDigit ? 1 : 0;
+        float words = 0, lowerShare = 0;
+        bool endsSentence = false;
+        TextWords(text, words, lowerShare, endsSentence);
+        f[16] = endsSentence ? 1 : 0;
+        f[17] = lowerShare;
+        f[18] = words;
+        f[19] = row.nextSize / body;
+        f[20] = (row.gap + body) / (spacing + body);
+        f[21] = float(row.rank);
+        f[22] = (row.rowLeft - textLeft) / Fmax(textRight - textLeft, 1.0f);
         box[0] = row.rowLeft, box[1] = y0, box[2] = row.rowRight, box[3] = y1;
     };
     // The rules' decisions first (a row's edge line tells), then the sink's records and the
     // edge-row model (layout/model.h): a row the rules kept, at most kEdgeRowSizeLimit body sizes,
     // whose raw score reaches kEdgeRowRawTau (probability kEdgeRowTau) is furniture, unless fewer
-    // than kEdgeMinLines other lines would stay on the page (the rules' guard of sparse pages) or it
-    // reads as a caption ("Fig. 4. ..."; a figure's caption at the foot is no furniture). Its lines
-    // are marked kLineEdgeModel, not removed: they take part in every later decision as text, and
-    // only the blocks they alone make are left out of the output (layout/pipeline.cpp), so the
-    // model's removals change nothing about the other lines.
+    // than kEdgeMinLines other lines would stay on the page (the rules' guard of sparse pages), it
+    // ends a sentence (feature 16: a one-line paragraph at the head of a page, which DocLayNet's
+    // training pages hardly show, so the model cannot learn it; on doclaynet-dev no row the model
+    // would take that ends a sentence is furniture) or it reads as a caption ("Fig. 4. ..."; a
+    // figure's caption at the foot is no furniture). Its lines are marked kLineEdgeModel, not
+    // removed: they take part in every later decision as text, and only the blocks they alone make
+    // are left out of the output (layout/pipeline.cpp), so the model's removals change nothing
+    // about the other lines.
     for (EdgeRow& row : edges.rows) row.rules = (page.lines[row.edge].flags & kLineRemoved) != 0;
     size_t staying = 0;  // the page's upright lines not removed
     for (uint32_t i : lines) staying += !(page.lines[i].flags & kLineRemoved);
@@ -1191,7 +1208,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         if (edges.sink)
             edges.sink->edgeRow(edges.sink->context, static_cast<uint32_t>(page.number), f, box[0], box[1], box[2], box[3],
                                 text, row.rules);
-        if (!candidate || RawScore(kEdgeRowModel, f) < kEdgeRowRawTau || IsCaption(text)) continue;
+        if (!candidate || f[16] != 0 || RawScore(kEdgeRowModel, f) < kEdgeRowRawTau || IsCaption(text)) continue;
         for (uint32_t k = row.begin; k < row.begin + row.count; ++k) {
             Line& l = page.lines[lines[k]];
             if (!(l.flags & kLineRemoved)) l.flags |= kLineEdgeModel;

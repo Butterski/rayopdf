@@ -23,6 +23,33 @@ void TextShares(std::string_view text, float& digitShare, float& capitalShare, b
     endsInDigit = last >= '0' && last <= '9';
 }
 
+void TextWords(std::string_view text, float& words, float& lowerShare, bool& endsSentence) {
+    size_t count = 0, lettered = 0, lower = 0;
+    // The last word's letters and digits (a UTF-8 lead byte counts as a letter) and its last byte.
+    size_t letters = 0, digits = 0;
+    char last = 0;
+    bool inWord = false;
+    for (const char c : text) {
+        if (c == ' ') {
+            inWord = false;
+            continue;
+        }
+        if (!inWord) {
+            inWord = true;
+            count++;
+            letters = digits = 0;
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) lettered++, lower += c >= 'a';
+        }
+        const unsigned char u = static_cast<unsigned char>(c);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || u >= 0xC0) letters++;
+        if (c >= '0' && c <= '9') digits++;
+        last = c;
+    }
+    words = float(count);
+    lowerShare = lettered ? float(lower) / float(lettered) : 0;
+    endsSentence = (last == '.' || last == '?' || last == '!') && letters >= 1 && letters + digits >= 2;
+}
+
 float MedianDeviation(std::vector<float>& values) {
     if (values.empty()) return 0;
     const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);

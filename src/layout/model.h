@@ -39,10 +39,10 @@ double RawScore(const TreeModel& model, const float* features);
 // RemoveRunningLines): a row the rules keep in the outer tenth of a page, at most
 // kEdgeRowSizeLimit body sizes, whose probability sigmoid(RawScore) reaches kEdgeRowTau (raw score
 // at least kEdgeRowRawTau = log(tau / (1 - tau))) is furniture, unless the page would keep fewer
-// than three other lines (the rules' guard of sparse pages) or the row reads as a caption. Its
-// lines stay text for every decision about the page and only the paragraphs and headings they
-// alone make are left out (kLineEdgeModel). kEdgeRowTau is the smallest threshold whose precision
-// over such rows of doclaynet-dev reaches 0.98 (the meta's "tau_precision").
+// than three other lines (the rules' guard of sparse pages), the row ends a sentence or it reads as
+// a caption. Its lines stay text for every decision about the page and only the paragraphs and
+// headings they alone make are left out (kLineEdgeModel). kEdgeRowTau is the smallest threshold
+// whose precision over such rows of doclaynet-dev reaches 0.90 (the meta's "tau_precision").
 extern const TreeModel kEdgeRowModel;
 extern const double kEdgeRowTau;
 extern const double kEdgeRowRawTau;

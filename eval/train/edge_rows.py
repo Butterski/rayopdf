@@ -6,9 +6,10 @@ Labels: a row examined by the furniture rules (`rayopdf --features edge-rows`, w
 furniture (1) when at least half of its box lies in DocLayNet's Page-header and Page-footer boxes,
 mapped from the 1025 px COCO image to PDF points as eval/scorer/doclaynet.py maps them. Trained on
 the DocLayNet train selection; doclaynet-dev (DocLayNet's val split) only stops the boosting early
-and chooses the thresholds: τ (best furniture F1 over the rows the rules keep) and τ_p (the
-smallest threshold whose precision over those rows reaches 0.98, the one the engine uses). The
-holdout doclaynet-val is never read.
+and chooses the thresholds over the rows the model may take (kept by the rules, at most
+SIZE_LIMIT body sizes, not ending a sentence): τ (best furniture F1) and τ_p (the smallest
+threshold whose precision reaches PRECISION, 0.90, the one the engine uses). The holdout
+doclaynet-val is never read.
 
 LightGBM binary: num_leaves 15, max_depth 5, learning_rate 0.1, up to 60 trees with early
 stopping after 10 rounds on dev, min_data_in_leaf 50, no bagging or feature sampling,
@@ -30,14 +31,15 @@ from pathlib import Path
 import lightgbm
 import numpy
 
-FEATURES = 16
+FEATURES = 23
 FURNITURE = ("Page-header", "Page-footer")
 PARAMS = {"objective": "binary", "num_leaves": 15, "max_depth": 5, "learning_rate": 0.1, "min_data_in_leaf": 50,
           "bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 1.0, "deterministic": True,
           "force_row_wise": True, "num_threads": 1, "seed": 0, "verbose": -1}
 ROUNDS, PATIENCE = 60, 10
 SIZE_LIMIT = 1.35  # the model may remove only rows at most this many body sizes
-PRECISION = 0.98   # τ_p's least precision over the rows the rules keep
+ENDS_SENTENCE = 16  # nor rows that end a sentence (this feature 1)
+PRECISION = 0.90  # τ_p's least precision over the rows the model may take (9 of 10 furniture)
 
 
 def furniture_boxes(coco: dict) -> dict[str, list[list[float]]]:
@@ -113,10 +115,11 @@ def main() -> int:
     raw = booster.predict(xd, raw_score=True, num_iteration=booster.best_iteration)
     probability = 1 / (1 + numpy.exp(-raw))
 
-    # τ: the threshold that maximises furniture F1 over the dev rows the rules keep (rows at most
-    # SIZE_LIMIT body sizes, as the model is used).
+    # τ: the threshold that maximises furniture F1 over the dev rows the rules keep that the model
+    # may take, as the engine uses it: rows at most SIZE_LIMIT body sizes that do not end a
+    # sentence (feature ENDS_SENTENCE).
     truth = yd.astype(bool)
-    kept = (rd == 0) & (xd[:, 3] <= SIZE_LIMIT)
+    kept = (rd == 0) & (xd[:, 3] <= SIZE_LIMIT) & (xd[:, ENDS_SENTENCE] == 0)
     best_tau, best_f1 = 1.0, -1.0
     for tau in numpy.round(numpy.arange(0.50, 0.995, 0.01), 2):
         score = f1(truth[kept], probability[kept] >= tau)

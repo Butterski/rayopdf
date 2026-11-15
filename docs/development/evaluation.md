@@ -638,10 +638,14 @@ python3 tools/eval.py train --kind table-gaps                  # models/table_ga
   text) are in different columns in at least 80 % of the rows crossing it; validation is the 20 %
   of fixtures whose SHA-256 of id is 0 modulo 5. Each `.meta.json` holds the data's SHA-256, the
   parameters, the image's versions, metrics, 64 check vectors with their raw scores and the
-  thresholds (edge rows: τ maximising doclaynet-dev furniture F1 over rows the rules keep, at most
-  1.35 body sizes, and τ_p, the smallest threshold in steps of 0.001 whose precision over those
-  rows reaches 0.98, with its precision, recall and F1; the engine uses τ_p; table gaps: τ_hi and
-  τ_lo at precision 0.98).
+  thresholds (edge rows, over the doclaynet-dev rows the model may take: kept by the rules, at
+  most 1.35 body sizes and not ending a sentence (feature 16): τ maximising furniture F1, and τ_p,
+  the smallest threshold in steps of 0.001 whose precision over those rows reaches 0.90, with its
+  precision, recall and F1; the engine uses τ_p; table gaps: τ_hi and τ_lo at precision 0.98).
+  The edge-row model's 23 features (`src/layout/features.h`) are those of 0.4.0's 16 plus the
+  row's words, their share starting in lower case, whether it ends a sentence, the size of the
+  line inside it, its pitch to that line against the text's, its rank from the edge and its
+  offset from the text's left edge; a feature change needs `train-data` and `train` again.
 
 ## Deviations from the original plan
 

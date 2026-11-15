@@ -29,7 +29,15 @@ namespace RayoPdf::Layout {
 //  13 pages holding the row's running key (same band) / (pages - 1); 0 for one page
 //  14 capital share of its letters
 //  15 ends in a digit (0 or 1)
-constexpr int kEdgeRowFeatures = 16;
+//  16 ends a sentence: its last word, of two letters or digits at least one of them a letter, ends
+//     in '.', '?' or '!' (0 or 1)
+//  17 share of its words starting with a letter that start with a lower-case one
+//  18 words
+//  19 size of the line inside it, across the gap / body size (0 when none)
+//  20 the row's pitch to that line / the text's line pitch ((gap + body) / (spacing + body))
+//  21 rows outside it on its side (0: the outermost)
+//  22 offset of its left edge from the text's left edge / text width
+constexpr int kEdgeRowFeatures = 23;
 
 // Table-gap features, in this order:
 //   0 gap width / em
@@ -63,6 +71,10 @@ struct FeatureSink {
 // Text features of a row: the share of digits among its non-space bytes, of capitals among its
 // ASCII letters, and whether its last non-space byte is a digit.
 void TextShares(std::string_view text, float& digitShare, float& capitalShare, bool& endsInDigit);
+
+// Word features of a row: its words (runs of non-space bytes), the share of those starting with an
+// ASCII letter that start with a lower-case one, and whether it ends a sentence (features 16-18).
+void TextWords(std::string_view text, float& words, float& lowerShare, bool& endsSentence);
 
 // The median absolute deviation from the median of `values` (reordered); 0 for none.
 float MedianDeviation(std::vector<float>& values);

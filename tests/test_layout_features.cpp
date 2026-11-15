@@ -8,6 +8,7 @@
 #include "layout/page.h"
 #include "layout/pipeline.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -122,10 +123,31 @@ void TestTableGaps() {
     RAYOPDF_CHECK(!records.gaps.empty() && chosen == 2, 2251);
 }
 
+// The word features of a row (16-18): a sentence ends in '.', '?' or '!' after a word of two
+// letters or digits with a letter; a page number, an initial or a number with a point does not.
+void TestTextWords() {
+    const auto ends = [](std::string_view text) {
+        float words = 0, lower = 0;
+        bool sentence = false;
+        TextWords(text, words, lower, sentence);
+        return sentence;
+    };
+    float words = 0, lower = 0;
+    bool sentence = false;
+    TextWords("Sentinel start C01.", words, lower, sentence);
+    const bool first = words == 3 && std::fabs(lower - 1.0f / 3) < 1e-6f && sentence;
+    TextWords("  ANNUAL  REPORT 2019 ", words, lower, sentence);
+    const bool second = words == 3 && lower == 0 && !sentence;
+    RAYOPDF_CHECK(first && second && ends("Is it so?") && ends("Done!") && !ends("Page 3.") && !ends("J.") &&
+                      !ends("Chapter 4") && !ends(""),
+                  2256);
+}
+
 } // namespace
 
 int main() {
     TestEdgeRow();
     TestTableGaps();
+    TestTextWords();
     return 0;
 }

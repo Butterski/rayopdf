@@ -11,7 +11,7 @@ classifier, written by eval/train/<name>.py) with its <name>.meta.json, and writ
 - the offsets of its trees in the node array, its base score (0: LightGBM folds the initial score
   into the first tree), its feature count;
 - the decision thresholds of its meta file (edge rows: τ_p, the meta's "tau_precision", the
-  smallest threshold of precision 0.98 on doclaynet-dev, as a probability and as the raw score
+  smallest threshold of precision 0.90 on doclaynet-dev, as a probability and as the raw score
   log(τ / (1 - τ)) the engine compares with, and the row size limit);
 - the meta file's 64 check vectors (features rounded to float, as the engine passes them) with
   LightGBM's raw scores, which tests/test_layout_model.cpp compares RawScore with.
