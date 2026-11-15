@@ -3,10 +3,12 @@
 // glyphs from a small alphabet of letters, digits, operators, TeX font guesses, delimiter pieces,
 // radicals, accents and mathematical alphanumerics, placed on a coarse grid (so that baselines,
 // scripts, limits and rows line up often) or at raw float bit patterns, with rules among them;
-// BuildLatex rebuilds it inline and displayed, FindInlineFormulas reads its glyphs as a run of
-// words. A second part lays the same glyphs out as a page and runs the stages after
-// interpretation in LaTeX mode: MarkDisplayFormulas, semantics and the writer.
+// BuildLatex rebuilds it inline and displayed (BuildLatexTree, its fallback, also on its own),
+// FindInlineFormulas reads its glyphs as a run of words. A second part lays the same glyphs out
+// as a page and runs the stages after interpretation in LaTeX mode: MarkDisplayFormulas,
+// semantics and the writer.
 #include "layout/math.h"
+#include "layout/math_tree.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
 
@@ -100,6 +102,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     BuildLatex(formula, false, out, tag);
     out.clear();
     BuildLatex(formula, true, out, tag);
+    // The arborescence BuildLatex falls back on (seldom reached through it), on every formula.
+    out.clear();
+    BuildLatexTree(formula, false, out, tag);
+    out.clear();
+    BuildLatexTree(formula, true, out, tag);
 
     // The glyphs as words of a paragraph.
     std::vector<InlineGlyph> words;

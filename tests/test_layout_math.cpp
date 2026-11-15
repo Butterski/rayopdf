@@ -3,12 +3,15 @@
 // placed by hand (scripts, fractions, radicals, operators with limits, matrices, cases, accents,
 // alphabets, function names, TeX font codes, equation numbers, aligned rows, fallback, binomials,
 // over- and undersets, braces), inline formula runs (Greek prose stays text), and whole pages
-// through ConvertPages in both math modes (scripts of scripts out of content order). Exit codes
-// 1550-1599, 2202, 2205-2212 and 2215-2216.
+// through ConvertPages in both math modes (scripts of scripts out of content order), and the
+// arborescence the rebuild falls back on (stacked accents of olmOCR arxiv_math pages, a glyph
+// cloud, not for a paragraph that is a formula alone). Exit codes 1550-1599, 2202, 2205-2212 and
+// 2215-2224.
 #include "check.h"
 
 #include "common/utf8.h"
 #include "layout/math.h"
+#include "layout/math_tree.h"
 #include "layout/page.h"
 #include "layout/pipeline.h"
 
@@ -575,6 +578,235 @@ void TestNestedScripts() {
     RAYOPDF_CHECK(latex.find("The value $e^{x^{2}}$ grows fast") != std::string::npos, 2215);
     RAYOPDF_CHECK(latex.find("_{1}") == std::string::npos && latex.find("1") != std::string::npos, 2216);
 }
+
+// One glyph of a formula as the text layer gave it on an olmOCR arxiv_math page.
+struct PageGlyph {
+    float u0, u1, v, size, bottom, top;
+    uint8_t font, flags;
+    const char* text;
+};
+
+MathInput InputOf(const PageGlyph* glyphs, size_t count) {
+    MathInput in;
+    for (size_t i = 0; i < count; ++i) {
+        const PageGlyph& p = glyphs[i];
+        MathGlyph g;
+        g.u0 = p.u0, g.u1 = p.u1, g.v = p.v, g.size = p.size, g.bottom = p.bottom, g.top = p.top;
+        g.font = p.font, g.flags = p.flags;
+        g.text = static_cast<uint32_t>(in.text.size());
+        g.length = static_cast<uint16_t>(std::string_view(p.text).size());
+        in.text.append(p.text);
+        in.glyphs.push_back(g);
+    }
+    return in;
+}
+
+std::string LatexOf(const MathInput& in) {
+    std::string out, tag;
+    return BuildLatex(in, false, out, tag) == MathStatus::Ok ? out : "<fail>";
+}
+
+// The arborescence (math_tree.h) where the greedy rebuild is Unsure: inline formulas of olmOCR
+// arxiv_math development pages rebuilt glyph by glyph (stacked accents set on their base's
+// baseline, which the greedy rebuild refuses), a formula through BuildLatexTree directly, and a
+// glyph cloud.
+void TestTree() {
+    {
+        // 2503.07449 page 17: a hat over a dot over q.
+        static constexpr PageGlyph kGlyphs[] = {
+            {464.73f, 469.33f, 592.48f, 8.97f, 590.74f, 598.70f, 0, 0, "\xCB\x86"},
+            {465.75f, 468.31f, 592.48f, 8.97f, 590.74f, 598.70f, 0, 0, "\xCB\x99"},
+            {464.04f, 468.16f, 592.48f, 8.97f, 590.74f, 598.70f, 1, 1, "q"},
+        };
+        Expect(LatexOf(InputOf(kGlyphs, 3)), "\\hat{\\dot{q}}", 2217);
+    }
+    {
+        // 2503.09135 page 6: dots over bars, each over its letter.
+        static constexpr PageGlyph kGlyphs[] = {
+            {232.74f, 235.51f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "\xCB\x99"},
+            {231.64f, 236.62f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "\xC2\xAF"},
+            {227.30f, 234.77f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "A"},
+            {234.77f, 239.41f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "z"},
+            {239.85f, 243.72f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "("},
+            {243.72f, 247.32f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "t"},
+            {247.32f, 251.29f, 291.77f, 6.97f, 290.42f, 296.61f, 0, 0, "1"},
+            {251.79f, 255.66f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, ")"},
+            {255.66f, 258.43f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, ","},
+            {266.74f, 269.51f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "\xCB\x99"},
+            {265.64f, 270.62f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "\xC2\xAF"},
+            {261.75f, 269.10f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "E"},
+            {269.68f, 272.66f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "l"},
+            {272.85f, 276.72f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, "("},
+            {276.72f, 280.32f, 293.27f, 9.96f, 291.34f, 300.18f, 1, 1, "t"},
+            {280.32f, 284.29f, 291.77f, 6.97f, 290.42f, 296.61f, 0, 0, "1"},
+            {284.79f, 288.66f, 293.27f, 9.96f, 291.34f, 300.18f, 0, 0, ")"},
+        };
+        Expect(LatexOf(InputOf(kGlyphs, sizeof(kGlyphs) / sizeof(kGlyphs[0]))),
+               "\\dot{\\bar{A}}z(t_{1}),\\dot{\\bar{E}}l(t_{1})", 2218);
+    }
+    {
+        // 2503.09123 page 4: scripts of scripts between big parentheses of cmex10.
+        static constexpr PageGlyph kGlyphs[] = {
+            {61.32f, 69.06f, 131.16f, 9.96f, 128.67f, 138.63f, 2, 0, "\xE2\x88\x92"},
+            {69.12f, 73.16f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "\xC7\xAB"},
+            {75.84f, 83.58f, 131.16f, 9.96f, 128.67f, 138.63f, 2, 0, "\xE2\x89\xA4"},
+            {86.40f, 91.27f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "f"},
+            {92.40f, 98.35f, 131.14f, 9.96f, 124.67f, 142.60f, 3, 0, "("},
+            {99.96f, 102.72f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "\xCB\x99"},
+            {98.88f, 103.86f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "\xCB\x9C"},
+            {98.28f, 103.97f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "x"},
+            {103.92f, 107.03f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, "("},
+            {107.04f, 111.27f, 135.24f, 6.97f, 133.82f, 140.22f, 1, 32, "k"},
+            {111.36f, 114.47f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, ")"},
+            {115.08f, 118.95f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "("},
+            {118.92f, 124.10f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "d"},
+            {124.08f, 127.19f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, "("},
+            {127.20f, 131.43f, 136.32f, 6.97f, 134.90f, 141.30f, 1, 32, "k"},
+            {131.52f, 134.63f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, ")"},
+            {124.08f, 126.90f, 128.40f, 6.97f, 126.98f, 133.38f, 1, 32, "i"},
+            {135.24f, 139.11f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, ")"},
+            {139.08f, 141.84f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, ","},
+            {144.24f, 149.22f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "\xCB\x9C"},
+            {143.52f, 149.21f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "x"},
+            {149.16f, 152.27f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, "("},
+            {152.28f, 156.51f, 135.24f, 6.97f, 133.82f, 140.22f, 1, 32, "k"},
+            {156.60f, 159.71f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, ")"},
+            {160.44f, 164.31f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "("},
+            {164.28f, 169.46f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "d"},
+            {169.44f, 172.55f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, "("},
+            {172.56f, 176.79f, 136.32f, 6.97f, 134.90f, 141.30f, 1, 32, "k"},
+            {176.88f, 179.99f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, ")"},
+            {169.44f, 172.26f, 128.40f, 6.97f, 126.98f, 133.38f, 1, 32, "i"},
+            {180.60f, 184.47f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, ")"},
+            {184.44f, 187.20f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, ","},
+            {189.60f, 194.58f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "\xCB\x9C"},
+            {188.88f, 194.58f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "u"},
+            {194.64f, 197.75f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, "("},
+            {197.76f, 201.99f, 135.24f, 6.97f, 133.82f, 140.22f, 1, 32, "k"},
+            {202.08f, 205.19f, 135.24f, 6.97f, 133.50f, 140.47f, 0, 0, ")"},
+            {205.68f, 209.55f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, "("},
+            {209.52f, 214.70f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "d"},
+            {214.68f, 217.79f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, "("},
+            {217.80f, 222.03f, 136.32f, 6.97f, 134.90f, 141.30f, 1, 32, "k"},
+            {222.12f, 225.23f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, ")"},
+            {214.68f, 217.50f, 128.40f, 6.97f, 126.98f, 133.38f, 1, 32, "i"},
+            {225.96f, 229.83f, 131.16f, 9.96f, 128.67f, 138.63f, 0, 0, ")"},
+            {229.80f, 232.56f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, ","},
+            {234.24f, 239.42f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "d"},
+            {239.40f, 242.51f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, "("},
+            {242.52f, 246.75f, 136.32f, 6.97f, 134.90f, 141.30f, 1, 32, "k"},
+            {246.84f, 249.95f, 136.32f, 6.97f, 134.58f, 141.55f, 0, 0, ")"},
+            {239.40f, 242.22f, 128.40f, 6.97f, 126.98f, 133.38f, 1, 32, "i"},
+            {250.56f, 253.32f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, ","},
+            {255.00f, 260.01f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "p"},
+            {260.04f, 265.99f, 131.14f, 9.96f, 124.67f, 142.60f, 3, 0, ")"},
+            {268.68f, 276.42f, 131.16f, 9.96f, 128.67f, 138.63f, 2, 0, "\xE2\x89\xA4"},
+            {279.24f, 283.28f, 131.16f, 9.96f, 129.01f, 138.24f, 1, 0, "\xC7\xAB"},
+        };
+        Expect(LatexOf(InputOf(kGlyphs, sizeof(kGlyphs) / sizeof(kGlyphs[0]))),
+               "-\\epsilon\\leq f\\Bigl(\\dot{\\tilde{x}}^{(k)}(d_{i}^{(k)}),\\tilde{x}^{(k)}(d_{i}^{(k)}),"
+               "\\tilde{u}^{(k)}(d_{i}^{(k)}),d_{i}^{(k)},p\\Bigr)\\leq\\epsilon",
+               2219);
+    }
+    {
+        // 2503.07623 page 2: the tilde over the Delta set apart, a line start of its own at the end.
+        static constexpr PageGlyph kGlyphs[] = {
+            {246.48f, 254.78f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "\xE2\x88\x86"},
+            {254.76f, 259.60f, 708.82f, 6.97f, 707.33f, 713.80f, 1, 32, "\xC2\xB5"},
+            {260.04f, 265.74f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, "u"},
+            {268.56f, 271.32f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, ":"},
+            {271.32f, 279.06f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "="},
+            {281.88f, 287.41f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "d"},
+            {287.40f, 290.16f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "i"},
+            {290.16f, 295.41f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "v"},
+            {295.56f, 300.40f, 708.82f, 6.97f, 707.33f, 713.80f, 1, 32, "\xC2\xB5"},
+            {300.84f, 304.70f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "("},
+            {304.68f, 310.49f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, "V"},
+            {312.84f, 316.70f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "("},
+            {316.68f, 322.38f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, "u"},
+            {322.44f, 326.30f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, ")"},
+            {326.28f, 334.52f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, "D"},
+            {334.80f, 340.50f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, "u"},
+            {340.56f, 344.42f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, ")"},
+            {347.16f, 354.90f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "="},
+            {357.60f, 362.58f, 710.26f, 9.96f, 707.77f, 717.73f, 0, 0, "0"},
+            {362.64f, 365.40f, 710.26f, 9.96f, 707.77f, 717.73f, 1, 32, ","},
+            {248.16f, 253.14f, 712.78f, 9.96f, 710.29f, 720.25f, 0, kMathLineStart, "\xCB\x9C"},
+        };
+        Expect(LatexOf(InputOf(kGlyphs, sizeof(kGlyphs) / sizeof(kGlyphs[0]))),
+               "\\tilde{\\Delta}_{\\mu}u:=\\mathrm{div}_{\\mu}(V(u)Du)=0,", 2220);
+    }
+    {
+        // 40 letters strewn at random: no arborescence of cheap edges spans them.
+        Formula f;
+        uint32_t seed = 12345;
+        const auto next = [&]() {
+            seed = seed * 1103515245u + 12345u;
+            return static_cast<float>((seed >> 8) & 0xFFFF) / 65536.0f;
+        };
+        for (int i = 0; i < 40; ++i) {
+            const char letter[2] = {static_cast<char>('a' + i % 26), 0};
+            f.Add(letter, 100 * next(), 100 * next(), 6 + 6 * next());
+        }
+        std::string out, tag;
+        RAYOPDF_CHECK(BuildLatexTree(f.in, false, out, tag) == MathStatus::Unsure && out.empty(), 2221);
+    }
+    {
+        // y = a²/b + √x through the tree itself: a bar's numerator and denominator, a radical.
+        Formula f;
+        float u = f.Add("y", -12, 0);
+        f.Add("=", u, 0, 10, kText);
+        u = f.Add("a", 1.5f, 6);
+        f.Add("2", u, 10, 7, kText);
+        f.Add("b", 3, -6);
+        f.Rule(0, 11, 2.4f, 2.8f);
+        f.Add("+", 12, 0, 10, kText);
+        f.Add("\xE2\x88\x9A", 18, 8, 10, kSymbol, 0, 0.8f);
+        f.Rule(26, 34, 8, 8.4f);
+        f.Add("x", 28, 0);
+        std::string out, tag;
+        const MathStatus s = BuildLatexTree(f.in, false, out, tag);
+        Expect(s == MathStatus::Ok ? out : "<fail>", "y=\\frac{a^{2}}{b}+\\sqrt{x}", 2222);
+    }
+}
+
+// The arborescence in the writer: a formula of stacked accents inside a sentence is rebuilt; the
+// same formula as a paragraph's whole text (a display the lines did not mark) keeps the greedy
+// rebuild's result, Unicode text.
+void TestTreeAlone() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic};
+    // A hat over a dot over q at (x, y), as the text layer of 2503.07449 page 17 gives them: the
+    // accents on q's baseline.
+    const auto accented = [&](float x, float y) {
+        static constexpr const char* kAccents[] = {"\xCB\x86", "\xCB\x99"};
+        for (int i = 0; i < 2; ++i) {
+            Glyph g;
+            g.u0 = x + 0.7f + i, g.u1 = x + 5.3f - i, g.vb = y - 1.8f, g.vt = y + 6.2f, g.v = y;
+            g.size = 9;
+            g.text = static_cast<uint32_t>(page.text.size());
+            page.text.append(kAccents[i]);
+            g.textLength = 2;
+            page.glyphs.push_back(g);
+        }
+        return AddText(page, "q", x, y, 9, 1);
+    };
+    float x = AddText(page, "Let ", 72, 700, 9);
+    x = accented(x, 700);
+    AddText(page, " be the rate of the flow through the pipe.", x, 700, 9);
+    x = accented(72, 670);
+    x = AddText(page, " = ", x, 670, 9);
+    AddText(page, "a", x, 670, 9, 1);
+    AddText(page, "And so the text goes on after the formula.", 72, 640, 9);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    if (latex.find("Let $\\hat{\\dot{q}}$ be the rate") == std::string::npos || latex.find("\\hat{\\dot{q}}=a") != std::string::npos)
+        std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find("Let $\\hat{\\dot{q}}$ be the rate") != std::string::npos, 2223);
+    RAYOPDF_CHECK(latex.find("\\hat{\\dot{q}}=a") == std::string::npos, 2224);
+}
 } // namespace
 
 int main() {
@@ -592,6 +824,8 @@ int main() {
     TestPages();
     TestConstructs();
     TestNestedScripts();
+    TestTree();
+    TestTreeAlone();
     std::puts("test_layout_math: ok");
     return 0;
 }

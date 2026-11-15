@@ -26,6 +26,9 @@
 // names (\sin) or \text; Unicode becomes KaTeX's commands, and mathematical alphanumerics their
 // alphabet (𝐀 → \mathbf{A}, ℝ → \mathbb{R}, 𝒮 → \mathcal{S}). Anything the rebuild cannot place
 // or read (an unmapped glyph, a structure past the limits) leaves the formula as Unicode text.
+// Before that, a formula of at most 256 glyphs whose rebuild first fails on a row's accents (Unsure:
+// accents stacked on one base, an accent its row finds no base for) is read again as a
+// minimum-cost arborescence of its glyphs, fraction bars and radicals (math_tree.h).
 #pragma once
 
 #include "layout/page.h"
@@ -124,7 +127,9 @@ enum class MathStatus : uint8_t {
 // an equation number set apart on the right ("(3)", "(2.1a)"): it goes to `tag` (without the
 // brackets) and not into the formula; rows set one under the other (aligned equations) are
 // separated by "\\\\". Inline formulas broken over lines (kMathLineStart) are rebuilt line by line.
-MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::string& tag);
+// A greedy rebuild of at most kMaxTreeGlyphs glyphs first Unsure on a row's accents falls back on
+// BuildLatexTree when `tree` is set.
+MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::string& tag, bool tree = true);
 
 // Whether a tagged Formula's /Alt or /ActualText reads as LaTeX, to be written as it is in LaTeX
 // mode (PageData::formulaAlts): under 4096 bytes (a longer one was cut when read), a command (a

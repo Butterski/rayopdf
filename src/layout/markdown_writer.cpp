@@ -1369,7 +1369,11 @@ bool Writer::WriteFormula(uint32_t from, uint32_t to) {
     }
     AddMathRules(page, u0 - 1, u1 + 1, vb, vt, mathIn_);
     latex_.clear();
-    if (BuildLatex(mathIn_, false, latex_, tag_) != MathStatus::Ok) return false;
+    // A run that is the block's whole text is a display formula the lines did not mark as one:
+    // the arborescence's LaTeX would set it inline where the source sets it apart (READoc reads it
+    // as a wrong inline formula), so it keeps the greedy rebuild's result.
+    const bool alone = from == 0 && to == refs_.size();
+    if (BuildLatex(mathIn_, false, latex_, tag_, !alone) != MathStatus::Ok) return false;
     out_.push_back('$');
     out_.append(latex_);
     out_.push_back('$');

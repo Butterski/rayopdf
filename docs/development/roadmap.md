@@ -199,12 +199,14 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `<sub>`/`<sup>` of c14-misc). Optional
   `--math=latex` (decided 2026-11-09) writes formulas as `$…$` / `$$…$$` LaTeX rebuilt from glyph
   geometry (an equation number after a display as `(n)`); a tagged Formula whose `/Alt` (else
-  `/ActualText`) is LaTeX is written as it is instead (0.3.0). The default stays Unicode and its
-  output byte-identical. For the release bar, the LaTeX-math metrics (olmOCR `arxiv_math`, READoc
-  `inline_eds`) and every key of READoc arXiv (decided 2026-11-11: that suite's ground truth is
-  LaTeX throughout and its text metric strips `$…$`) are measured with `--math=latex`, everything
-  else in the default mode. 0.1.0 was released with one key open, READoc arXiv `table_teds`
-  (decided 2026-11-11, after the key had been held to docling's number under (b)).
+  `/ActualText`) is LaTeX is written as it is instead (0.3.0), and a formula whose accents the
+  greedy rebuild cannot attach is read again as a minimum-cost arborescence of its glyphs (0.3.0,
+  `math_tree.h`). The default stays Unicode and its output byte-identical. For the release bar,
+  the LaTeX-math metrics (olmOCR `arxiv_math`, READoc `inline_eds`) and every key of READoc arXiv
+  (decided 2026-11-11: that suite's ground truth is LaTeX throughout and its text metric strips
+  `$…$`) are measured with `--math=latex`, everything else in the default mode. 0.1.0 was
+  released with one key open, READoc arXiv `table_teds` (decided 2026-11-11, after the key had
+  been held to docling's number under (b)).
 - Benchmark profiles (decided 2026-11-13). The default output is the faithful one: page
   furniture left out, emphasis, links and scripts as Markdown, tables GFM unless a span needs
   HTML, formulas as Unicode. Benchmarks' ground truths contradict each other on some of these

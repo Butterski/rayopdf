@@ -6,6 +6,7 @@
 #include "common/utf8.h"
 #include "layout/lines.h"
 #include "layout/math_tables.h"
+#include "layout/math_tree.h"
 
 #include <algorithm>
 #include <cmath>
@@ -485,9 +486,15 @@ class Builder {
 public:
     explicit Builder(const MathInput& in) : in_(in) {}
     MathStatus Run(bool display, std::string& out, std::string& tag);
+    // ReadMathSymbols.
+    bool Symbols(bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs, std::string& tag);
+    // Whether the rebuild's first failure was Row's attachment (an accent with no base under it, a
+    // second accent on one base): the only Unsure the arborescence is tried on.
+    bool UnsureAttaching() const { return attaching_; }
 
 private:
     bool Resolve();
+    void SplitTag(std::vector<uint32_t>& all, std::string& tag) const;
     bool ResolveAtom(const MathGlyph& g, Atom& a);
     bool Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_t>& rules, int depth, std::string& out);
     bool Layout(std::vector<Item>& items, int depth, std::string& out);
@@ -506,6 +513,10 @@ private:
         if (status_ == MathStatus::Ok) status_ = s;
         return false;
     }
+    bool FailAttaching() {
+        if (status_ == MathStatus::Ok) attaching_ = true;
+        return Fail(MathStatus::Unsure);
+    }
 
     const MathInput& in_;
     BuilderScratch& scratch_ = PerThread<BuilderScratch>();
@@ -513,6 +524,7 @@ private:
     std::vector<uint8_t>& ruleUsed_ = scratch_.ruleUsed;
     uint64_t budget_ = uint64_t(1) << 24;
     MathStatus status_ = MathStatus::Ok;
+    bool attaching_ = false;
     // Row's scratch, used before it recurses.
     std::vector<SortKey>& sortKeys_ = scratch_.sortKeys;
     std::vector<Item>& sortItems_ = scratch_.sortItems;
@@ -1282,7 +1294,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             const float o = Fmin(acc.u1, b.u1) - Fmax(acc.u0, b.u0);
             if (target == n || o > overlap) target = k, overlap = o;
         }
-        if (target == n) return Fail(MathStatus::Unsure);
+        if (target == n) return FailAttaching();
         Item& b = items[target];
         // A wide accent over several glyphs.
         std::vector<size_t> under;
@@ -1305,7 +1317,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             head.atom = -1;
             continue;
         }
-        if (!b.accent.empty()) return Fail(MathStatus::Unsure);
+        if (!b.accent.empty()) return FailAttaching();
         b.accent = acc.latex;
     }
     // Limits, function words and joined symbols, each per item.
@@ -1450,26 +1462,16 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             if (upper[i].empty()) upper[i].swap(upper[k]);
             wordPart[k] = 1;
         }
-        if (IsFunctionName(word)) {
-            words[i] = "\\" + word;
-        } else if (word == "argmax" || word == "argmin") {
-            words[i] = "\\operatorname*{" + word + "}";
-        } else if (word.size() <= 3 && !IsConnective(word)) {
-            words[i] = "\\mathrm{" + word + "}";
-        } else {
-            // Text, with the space after it kept when the formula goes on after a gap.
-            words[i] = "\\text{" + word;
-            if (end < n && items[end].u0 - items[end - 1].u1 >= 0.2f * em) words[i].push_back(' ');
-            words[i].push_back('}');
-        }
+        words[i].clear();
+        AppendUprightWord(word, end < n && items[end].u0 - items[end - 1].u1 >= 0.2f * em, words[i]);
         i = end - 1;
     }
     // Three dots in a row, close together on one baseline: \ldots or \cdots.
     for (size_t i = 0; i + 2 < n; ++i) {
         if (role[i] != 0 || wordPart[i] || items[i].atom < 0) continue;
         const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
-        const bool low = cp == '.';
-        if (!low && cp != 0x22C5 && cp != 0xB7 && cp != 0x2219) continue;
+        const std::string_view dots = DotsOf(cp);
+        if (dots.empty()) continue;
         size_t at = i, count = 1;
         for (size_t k = i + 1; k < n && count < 3; ++k) {
             if (role[k] == 3) continue;
@@ -1481,7 +1483,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             ++count;
         }
         if (count < 3) continue;
-        words[i] = low ? "\\ldots" : "\\cdots";
+        words[i] = dots;
         for (size_t k = i + 1; k <= at; ++k)
             if (role[k] == 0) wordPart[k] = 1;
         items[i].u1 = items[at].u1;
@@ -1495,22 +1497,8 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         while (k < n && role[k] == 3) ++k;
         if (k >= n || role[k] != 0 || wordPart[k] || items[k].atom < 0 || !words[k].empty()) continue;
         const uint32_t a = atoms_[static_cast<uint32_t>(items[i].atom)].cp, b = atoms_[static_cast<uint32_t>(items[k].atom)].cp;
-        const float gap = items[k].u0 - items[i].u1;
         std::string joined;
-        if (a == 0x338 && gap < 0.3f * em) {
-            joined = b == '=' ? "\\neq" : b == 0x2208 ? "\\notin" : "\\not" + items[k].latex;
-        } else if (b == 0x338 && gap < 0) {
-            joined = a == '=' ? "\\neq" : a == 0x2208 ? "\\notin" : "\\not" + items[i].latex;
-        } else if (gap < 0.15f * em) {
-            const bool bar = a == '-' || a == 0x2212;
-            if (bar && b == 0x2192) joined = "\\longrightarrow";
-            else if (a == 0x2190 && (b == '-' || b == 0x2212)) joined = "\\longleftarrow";
-            else if (a == '=' && b == 0x21D2) joined = "\\Longrightarrow";
-            else if (a == 0x21D0 && b == '=') joined = "\\Longleftarrow";
-            else if (a == 0x2190 && b == 0x2192) joined = "\\longleftrightarrow";
-            else if (a == 0x21D0 && b == 0x21D2) joined = "\\Longleftrightarrow";
-        }
-        if (joined.empty()) continue;
+        if (!JoinMathSymbols(a, b, items[i].latex, items[k].latex, items[k].u0 - items[i].u1, em, joined)) continue;
         words[i] = std::move(joined);
         wordPart[k] = 1;
         items[i].u1 = items[k].u1;
@@ -1648,36 +1636,7 @@ MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
     all.resize(atoms_.size());
     for (uint32_t i = 0; i < atoms_.size(); ++i) all[i] = i;
     std::string tagText;
-    if (display) {
-        // An equation number: "(", digits, letters and dots, ")" set apart at the right end.
-        std::vector<uint32_t>& byU = scratch_.byU;
-        byU.assign(all.begin(), all.end());
-        std::sort(byU.begin(), byU.end(), [&](uint32_t a, uint32_t b) { return atoms_[a].u0 < atoms_[b].u0; });
-        const size_t m = byU.size();
-        if (m >= 4 && atoms_[byU[m - 1]].cp == ')') {
-            size_t k = m - 1;
-            while (k > 0 && m - k < 10 && atoms_[byU[k - 1]].cp != '(') --k;
-            if (k > 0 && atoms_[byU[k - 1]].cp == '(' && k + 1 < m) {
-                const size_t openAt = k - 1;
-                const Atom& open = atoms_[byU[openAt]];
-                bool plain = true;
-                for (size_t j = openAt + 1; j + 1 < m && plain; ++j) {
-                    const uint32_t cp = atoms_[byU[j]].cp;
-                    plain = (cp >= '0' && cp <= '9') || IsAsciiLetter(cp) || cp == '.' || cp == '-' || cp == 0x2032 || cp == '*';
-                    plain = plain && std::fabs(atoms_[byU[j]].v - open.v) < 0.2f * open.size;
-                }
-                float before = -INFINITY;
-                for (size_t j = 0; j < openAt; ++j) before = Fmax(before, atoms_[byU[j]].u1);
-                for (const MathRule& r : in_.rules) before = Fmax(before, r.u1);
-                if (plain && openAt > 0 && open.u0 - before >= 1.5f * open.size) {
-                    for (size_t j = openAt + 1; j + 1 < m; ++j) tagText += atoms_[byU[j]].latex;
-                    all.clear();
-                    for (size_t j = 0; j < openAt; ++j) all.push_back(byU[j]);
-                    std::sort(all.begin(), all.end());
-                }
-            }
-        }
-    }
+    if (display) SplitTag(all, tagText);
     std::vector<uint32_t>& rules = scratch_.rules;
     rules.resize(in_.rules.size());
     for (uint32_t r = 0; r < in_.rules.size(); ++r) rules[r] = r;
@@ -1700,7 +1659,125 @@ MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
     return MathStatus::Ok;
 }
 
+// An equation number: "(", digits, letters and dots, ")" set apart at the right end, out of
+// `all` (its text to `tag`).
+void Builder::SplitTag(std::vector<uint32_t>& all, std::string& tag) const {
+    std::vector<uint32_t>& byU = scratch_.byU;
+    byU.assign(all.begin(), all.end());
+    std::sort(byU.begin(), byU.end(), [&](uint32_t a, uint32_t b) { return atoms_[a].u0 < atoms_[b].u0; });
+    const size_t m = byU.size();
+    if (m < 4 || atoms_[byU[m - 1]].cp != ')') return;
+    size_t k = m - 1;
+    while (k > 0 && m - k < 10 && atoms_[byU[k - 1]].cp != '(') --k;
+    if (k == 0 || atoms_[byU[k - 1]].cp != '(' || k + 1 >= m) return;
+    const size_t openAt = k - 1;
+    const Atom& open = atoms_[byU[openAt]];
+    bool plain = true;
+    for (size_t j = openAt + 1; j + 1 < m && plain; ++j) {
+        const uint32_t cp = atoms_[byU[j]].cp;
+        plain = (cp >= '0' && cp <= '9') || IsAsciiLetter(cp) || cp == '.' || cp == '-' || cp == 0x2032 || cp == '*';
+        plain = plain && std::fabs(atoms_[byU[j]].v - open.v) < 0.2f * open.size;
+    }
+    float before = -INFINITY;
+    for (size_t j = 0; j < openAt; ++j) before = Fmax(before, atoms_[byU[j]].u1);
+    for (const MathRule& r : in_.rules) before = Fmax(before, r.u1);
+    if (!plain || openAt == 0 || open.u0 - before < 1.5f * open.size) return;
+    for (size_t j = openAt + 1; j + 1 < m; ++j) tag += atoms_[byU[j]].latex;
+    all.clear();
+    for (size_t j = 0; j < openAt; ++j) all.push_back(byU[j]);
+    std::sort(all.begin(), all.end());
+}
+
+bool Builder::Symbols(bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs, std::string& tag) {
+    if (!Resolve()) return false;
+    glyphs.resize(atoms_.size());
+    for (uint32_t i = 0; i < atoms_.size(); ++i) glyphs[i] = i;
+    if (display) SplitTag(glyphs, tag);
+    float em = 0;
+    for (const Atom& a : atoms_)
+        if (a.font != static_cast<uint8_t>(MathFont::Extension)) em = Fmax(em, a.size);
+    symbols.resize(atoms_.size());
+    for (size_t i = 0; i < atoms_.size(); ++i) {
+        const Atom& a = atoms_[i];
+        MathSymbol& s = symbols[i];
+        s.latex = a.latex;
+        s.word = a.word;
+        s.bottom = a.bottom, s.top = a.top, s.cp = a.cp;
+        s.role = 0;
+        if (a.upright) s.role |= kSymbolUpright;
+        if (a.kind == Kind::Radical) s.role |= kSymbolRadical;
+        if (a.kind == Kind::Prime) s.role |= kSymbolPrime;
+        if (a.kind == Kind::Accent) s.role |= kSymbolAccent;
+        if (a.kind == Kind::Piece || a.kind == Kind::Brace) s.role |= kSymbolStructure;
+        if (a.kind == Kind::BigOp) s.role |= kSymbolBigOp;
+        // A tall delimiter at a fixed size (\bigl( … \Bigr)), as Row writes it.
+        Item item;
+        ItemOf(static_cast<uint32_t>(i), item);
+        if (item.tall && (a.kind == Kind::Open || a.kind == Kind::Close || a.kind == Kind::Bar) && em > 0) {
+            s.latex.assign(SizePrefix((a.top - a.bottom) / em));
+            s.latex += a.kind == Kind::Open ? "l" : a.kind == Kind::Close ? "r" : "";
+            if (a.latex.empty() || IsAsciiLetter(static_cast<unsigned char>(a.latex[0]))) s.latex.push_back(' ');
+            s.latex += a.latex;
+        }
+    }
+    return true;
+}
+
 } // namespace
+
+bool ReadMathSymbols(const MathInput& in, bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs,
+                     std::string& tag) {
+    tag.clear();
+    Builder builder(in);
+    return builder.Symbols(display, symbols, glyphs, tag);
+}
+
+void AppendLatexToken(std::string& out, std::string_view token) { AppendToken(out, token); }
+
+std::string_view DotsOf(uint32_t cp) {
+    if (cp == '.') return "\\ldots";
+    if (cp == 0x22C5 || cp == 0xB7 || cp == 0x2219) return "\\cdots";
+    return {};
+}
+
+bool JoinMathSymbols(uint32_t a, uint32_t b, std::string_view latexA, std::string_view latexB, float gap, float em,
+                     std::string& joined) {
+    if (a == 0x338 && gap < 0.3f * em) {
+        joined = b == '=' ? "\\neq" : b == 0x2208 ? "\\notin" : "\\not" + std::string(latexB);
+    } else if (b == 0x338 && gap < 0) {
+        joined = a == '=' ? "\\neq" : a == 0x2208 ? "\\notin" : "\\not" + std::string(latexA);
+    } else if (gap < 0.15f * em) {
+        const bool bar = a == '-' || a == 0x2212;
+        if (bar && b == 0x2192) joined = "\\longrightarrow";
+        else if (a == 0x2190 && (b == '-' || b == 0x2212)) joined = "\\longleftarrow";
+        else if (a == '=' && b == 0x21D2) joined = "\\Longrightarrow";
+        else if (a == 0x21D0 && b == '=') joined = "\\Longleftarrow";
+        else if (a == 0x2190 && b == 0x2192) joined = "\\longleftrightarrow";
+        else if (a == 0x21D0 && b == 0x21D2) joined = "\\Longleftrightarrow";
+    }
+    return !joined.empty();
+}
+
+void AppendUprightWord(const std::string& word, bool spaceAfter, std::string& out) {
+    if (IsFunctionName(word)) {
+        out.push_back('\\');
+        out.append(word);
+    } else if (word == "argmax" || word == "argmin") {
+        out.append("\\operatorname*{");
+        out.append(word);
+        out.push_back('}');
+    } else if (word.size() <= 3 && !IsConnective(word)) {
+        out.append("\\mathrm{");
+        out.append(word);
+        out.push_back('}');
+    } else {
+        // Text, with the space after it kept when the formula goes on after a gap.
+        out.append("\\text{");
+        out.append(word);
+        if (spaceAfter) out.push_back(' ');
+        out.push_back('}');
+    }
+}
 
 MathFont MathFontOf(std::string_view name) {
     if (name.size() > 128) return MathFont::None;
@@ -1734,10 +1811,13 @@ MathFont MathFontOf(std::string_view name) {
     return MathFont::None;
 }
 
-MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::string& tag) {
+MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::string& tag, bool tree) {
     tag.clear();
     Builder builder(in);
-    return builder.Run(display, out, tag);
+    const MathStatus status = builder.Run(display, out, tag);
+    // A structure the greedy rebuild cannot attach in a row: the arborescence of the formula's glyphs.
+    if (!tree || status != MathStatus::Unsure || !builder.UnsureAttaching() || in.glyphs.size() > kMaxTreeGlyphs) return status;
+    return BuildLatexTree(in, display, out, tag) == MathStatus::Ok ? MathStatus::Ok : status;
 }
 
 bool LatexAlt(std::string_view alt) {
