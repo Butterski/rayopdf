@@ -827,6 +827,9 @@ struct EdgeRow {
     float nextSize = 0;  // the size of the line inside it, across the gap
     uint32_t chars = 0;
     uint32_t rank = 0;  // rows outside it on its side
+    // Its text left to right and its running key, as the rules built them: edges.texts[textAt,
+    // textAt + textLength), then keyLength bytes of key.
+    uint32_t textAt = 0, textLength = 0, keyLength = 0;
     bool bold = false;
     bool rules = false;  // removed by the rules
 };
@@ -844,11 +847,16 @@ struct EdgeRows {
     const std::unordered_map<std::string, KeyCount>* counts = nullptr;
     int pages = 0;
     std::vector<EdgeRow> rows;  // the page's, reused from page to page
+    std::string texts;          // the rows' texts and keys
     std::string lookup;         // a band-prefixed running key
 };
 
+// An edge row in the outer kWideGapBand lies in kNumberBand, where the rules build its text and key.
+static_assert(kWideGapBand < kNumberBand, "edge rows reuse the rules' row text");
+
 int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& key, EdgeRows& edges) {
     edges.rows.clear();
+    edges.texts.clear();
     std::vector<uint32_t> lines;
     lines.reserve(page.lines.size());
     for (uint32_t i = 0; i < page.lines.size(); ++i) {
@@ -1084,6 +1092,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 out.nextSize = nextSize;
                 out.rank = static_cast<uint32_t>(row);
                 out.bold = bold;
+                out.textAt = static_cast<uint32_t>(edges.texts.size());
+                out.textLength = static_cast<uint32_t>(text.size());
+                out.keyLength = static_cast<uint32_t>(key.size());
+                edges.texts += text;
+                edges.texts += key;
             }
             const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
@@ -1129,22 +1142,17 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     // The features of an examined row (layout/features.h), its box, and its text left to right in
     // `text`.
     const auto features = [&](const EdgeRow& row, float* f, float* box) {
-        rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(row.begin),
-                        lines.begin() + static_cast<std::ptrdiff_t>(row.begin + row.count));
-        std::sort(rowLines.begin(), rowLines.end(), [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
-        text.clear();
+        text.assign(edges.texts, row.textAt, row.textLength);
+        key.assign(edges.texts, row.textAt + row.textLength, row.keyLength);
         float y0 = INFINITY, y1 = -INFINITY;
         uint32_t artifactChars = 0;
         bool italic = true;
-        for (uint32_t li : rowLines) {
-            const Line& l = page.lines[li];
-            if (!text.empty()) text.push_back(' ');
-            AppendLineText(page, l, text);
+        for (uint32_t k = row.begin; k < row.begin + row.count; ++k) {
+            const Line& l = page.lines[lines[k]];
             y0 = Fmin(y0, l.vb), y1 = Fmax(y1, l.vt);
             if (l.flags & kLineArtifact) artifactChars += l.chars;
             italic = italic && (l.flags & kLineAllItalic);
         }
-        RunningKey(text, key);
         float digitShare = 0, capitalShare = 0;
         bool endsInDigit = false;
         TextShares(text, digitShare, capitalShare, endsInDigit);
@@ -1208,7 +1216,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         if (edges.sink)
             edges.sink->edgeRow(edges.sink->context, static_cast<uint32_t>(page.number), f, box[0], box[1], box[2], box[3],
                                 text, row.rules);
-        if (!candidate || f[16] != 0 || RawScore(kEdgeRowModel, f) < kEdgeRowRawTau || IsCaption(text)) continue;
+        if (!candidate || f[16] != 0 || IsCaption(text) || !ScoreReaches(kEdgeRowModel, f, kEdgeRowRawTau)) continue;
         for (uint32_t k = row.begin; k < row.begin + row.count; ++k) {
             Line& l = page.lines[lines[k]];
             if (!(l.flags & kLineRemoved)) l.flags |= kLineEdgeModel;

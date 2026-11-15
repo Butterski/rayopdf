@@ -9,11 +9,12 @@
 namespace RayoPdf::Layout {
 
 // A node of a tree: a split sends features[feature] <= threshold to `left`, else to `right` (the
-// numerical split of LightGBM; features are never NaN); a leaf (feature -1) holds `value`. Children
-// are indices inside the node's tree and follow their parent (preorder), so a walk ends.
+// numerical split of LightGBM; features are never NaN); a leaf (feature -1) holds the index of its
+// value in the model's `leaves` in `left`. Children are indices inside the node's tree and follow
+// their parent (preorder), so a walk ends. The threshold is the largest float at or below
+// LightGBM's double threshold: a float feature goes the same way as against the double.
 struct TreeNode {
-    double threshold;
-    double value;
+    float threshold;
     int16_t feature;
     uint16_t left, right;
 };
@@ -21,6 +22,11 @@ struct TreeNode {
 struct TreeModel {
     const TreeNode* nodes;
     const uint32_t* trees;  // tree t's nodes are nodes[trees[t], trees[t + 1])
+    const double* leaves;   // the leaves' values
+    // Bounds of what the trees from t on add: upper[t] (lower[t]) is the sum of the largest
+    // (smallest) leaf of each tree t, t + 1, ...; treeCount + 1 entries, the last 0.
+    const double* upper;
+    const double* lower;
     uint32_t treeCount;
     uint32_t featureCount;
     double base;  // added to the sum of the leaves
@@ -34,6 +40,11 @@ struct TreeModel {
 // The model's raw score (log-odds) of a feature vector of model.featureCount values: the base plus
 // the leaf each tree reaches.
 double RawScore(const TreeModel& model, const float* features);
+
+// Whether RawScore(model, features) >= raw, deciding as soon as the trees left cannot change the
+// answer (upper and lower, with a margin of 1e-6 for the order of the additions): the same answer,
+// mostly after a few trees.
+bool ScoreReaches(const TreeModel& model, const float* features, double raw);
 
 // Edge rows as page furniture (layout/features.h's kEdgeRowFeatures features; used by
 // RemoveRunningLines): a row the rules keep in the outer tenth of a page, at most

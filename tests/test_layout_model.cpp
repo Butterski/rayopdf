@@ -33,6 +33,19 @@ void TestCheckScores(const TreeModel& model, int code) {
     RAYOPDF_CHECK(same, code);
 }
 
+// ScoreReaches answers as RawScore >= raw does, at thresholds next to each check vector's score,
+// at the engine's threshold and beyond every score.
+void TestScoreReaches(const TreeModel& model, double engineRaw, int code) {
+    bool same = model.checkCount > 0;
+    for (uint32_t i = 0; i < model.checkCount; ++i) {
+        const float* f = model.checkFeatures + size_t(i) * model.featureCount;
+        const double score = RawScore(model, f);
+        for (const double raw : {score - 1e-3, score, score + 1e-3, engineRaw, -1e9, 1e9})
+            same = same && ScoreReaches(model, f, raw) == (score >= raw);
+    }
+    RAYOPDF_CHECK(same, code);
+}
+
 // Every split names a feature of the model and has its children inside its tree, after itself
 // (so every walk ends at a leaf).
 void TestTrees(const TreeModel& model, int code) {
@@ -173,6 +186,7 @@ int main() {
     TestTrees(kEdgeRowModel, 2253);
     // The raw threshold is τ's log-odds.
     RAYOPDF_CHECK(std::fabs(1 / (1 + std::exp(-kEdgeRowRawTau)) - kEdgeRowTau) <= 1e-12, 2253);
+    TestScoreReaches(kEdgeRowModel, kEdgeRowRawTau, 2258);
     TestModelRemovalIsLocal();
     TestCaptionGuard();
     TestSentenceGuard();

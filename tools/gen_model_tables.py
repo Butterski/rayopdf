@@ -5,9 +5,12 @@
 Reads every trained model eval/models/<name>.json (LightGBM's dump_model() of a binary
 classifier, written by eval/train/<name>.py) with its <name>.meta.json, and writes per model:
 
-- its nodes, tree after tree, each tree in preorder (a child after its parent): split feature
-  (int16_t, -1 for a leaf), threshold (double: features[f] <= threshold goes left), left and right
-  child (uint16_t, indices inside the tree) and leaf value (double);
+- its nodes, tree after tree, each tree in preorder (a child after its parent): threshold (float:
+  the largest float at or below LightGBM's double threshold, so that a float feature goes the same
+  way: features[f] <= threshold goes left), split feature (int16_t, -1 for a leaf), left and right
+  child (uint16_t, indices inside the tree; a leaf's left is the index of its value);
+- the leaves' values (double), and per tree t the sums of the largest and of the smallest leaf
+  of the trees from t on (the bounds with which the engine stops early);
 - the offsets of its trees in the node array, its base score (0: LightGBM folds the initial score
   into the first tree), its feature count;
 - the decision thresholds of its meta file (edge rows: τ_p, the meta's "tau_precision", the
@@ -62,6 +65,25 @@ def single(value: float) -> str:
     """A C++ float literal of `value` rounded to single precision."""
     rounded = struct.unpack("<f", struct.pack("<f", float(value)))[0]
     return double(rounded) + "f"
+
+
+def float_below(value: float) -> float:
+    """The largest float (single precision) at or below `value`."""
+    if not math.isfinite(value) or abs(value) > 3.4e38:
+        raise SystemExit(f"gen_model_tables: a threshold outside the float range: {value}")
+    bits = struct.unpack("<I", struct.pack("<f", value))[0]
+    rounded = struct.unpack("<f", struct.pack("<I", bits))[0]
+    if rounded > value:
+        if rounded > 0:
+            bits -= 1
+        elif rounded == 0:
+            bits = 0x80000001  # the negative float closest to zero
+        else:
+            bits += 1
+        rounded = struct.unpack("<f", struct.pack("<I", bits))[0]
+    if not rounded <= value:
+        raise SystemExit(f"gen_model_tables: no float at or below {value}")
+    return rounded
 
 
 def flatten(name: str, tree: dict, features: int) -> list[tuple[int, float, int, int, float]]:
@@ -123,16 +145,37 @@ def model_tables(name: str, cpp: str, needs: tuple[str, ...]) -> list[str]:
            "namespace {", "",
            f"constexpr TreeNode k{cpp}Nodes[] = {{"]
     offsets = [0]
+    leaves: list[float] = []
     for t, nodes in enumerate(trees):
         out.append(f"    // tree {t}")
         for feature, threshold, left, right, value in nodes:
-            out.append(f"    {{{double(threshold)}, {double(value)}, {feature}, {left}, {right}}},")
+            if feature < 0:
+                left = len(leaves)
+                leaves.append(value)
+                if left > MAX_NODES:
+                    raise SystemExit(f"gen_model_tables: {name}: more than {MAX_NODES + 1} leaves")
+            out.append(f"    {{{single(float_below(threshold))}, {feature}, {left}, {right}}},")
         offsets.append(offsets[-1] + len(nodes))
     out.append("};")
     out.append(f"constexpr uint32_t k{cpp}Trees[] = {{")
     for i in range(0, len(offsets), 12):
         out.append("    " + ", ".join(str(o) for o in offsets[i:i + 12]) + ",")
     out.append("};")
+    out.append(f"constexpr double k{cpp}Leaves[] = {{")
+    for i in range(0, len(leaves), 4):
+        out.append("    " + ", ".join(double(v) for v in leaves[i:i + 4]) + ",")
+    out.append("};")
+    # The bounds of what trees t, t + 1, ... add (summed from the last tree).
+    upper, lower = [0.0], [0.0]
+    for nodes in reversed(trees):
+        values = [n[4] for n in nodes if n[0] < 0]
+        upper.append(upper[-1] + max(values))
+        lower.append(lower[-1] + min(values))
+    for label, bounds in (("Upper", upper[::-1]), ("Lower", lower[::-1])):
+        out.append(f"constexpr double k{cpp}{label}[] = {{")
+        for i in range(0, len(bounds), 4):
+            out.append("    " + ", ".join(double(v) for v in bounds[i:i + 4]) + ",")
+        out.append("};")
     out.append(f"constexpr float k{cpp}CheckFeatures[] = {{")
     for check in checks:
         out.append("    " + ", ".join(single(v) for v in check["features"]) + ",")
@@ -144,8 +187,8 @@ def model_tables(name: str, cpp: str, needs: tuple[str, ...]) -> list[str]:
     out.append("")
     out.append("} // namespace")
     out.append("")
-    out.append(f"const TreeModel k{cpp}Model = {{k{cpp}Nodes, k{cpp}Trees, {len(trees)}, {features}, 0.0,")
-    out.append(f"                                k{cpp}CheckFeatures, k{cpp}CheckScores, {CHECKS}}};")
+    out.append(f"const TreeModel k{cpp}Model = {{k{cpp}Nodes, k{cpp}Trees, k{cpp}Leaves, k{cpp}Upper, k{cpp}Lower,")
+    out.append(f"                                {len(trees)}, {features}, 0.0, k{cpp}CheckFeatures, k{cpp}CheckScores, {CHECKS}}};")
     if needs[0].startswith("tau"):
         tau = float(meta[needs[0]])
         if not 0 < tau < 1:
