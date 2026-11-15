@@ -297,11 +297,12 @@ one worker) grow by at most 0.5 %; the generated model data is at most 256 KiB; 
 give byte-identical dumps; it learns only from DocLayNet's train subset and RayoPDF's generated
 tables. The features are the converter's own, written by `rayopdf --features`; the training runs
 in the `train` image without network ([evaluation.md](evaluation.md#training-data-of-the-small-models)).
-**No model ships in 0.3.0.**
+**No model ships in 0.3.0.** In 0.4.0 the edge-row model ships with local removals: it met every
+criterion (gate of 2026-11-15, below).
 
 |Model|Training data|Validation|Strict gate|odl instructions|Generated data|Two trainings|Shipped|
 |---|---|---|---|---|---|---|---|
-|Edge rows (furniture the rules keep)|20,000 DocLayNet train pages: 46,947 rows, 21,425 furniture|doclaynet-dev: furniture F1 of rows 0.855 (rules) → 0.878 (rules and model)|failed: doclaynet-val heading_f1 −0.0003|+0.24 %|1,740 nodes, about 46.6 KB|identical|no|
+|Edge rows (furniture the rules keep)|20,000 DocLayNet train pages: 46,947 rows, 21,425 furniture|doclaynet-dev: furniture F1 of rows 0.855 (rules) → 0.878 (rules and model)|0.3.0: failed, doclaynet-val heading_f1 −0.0003; 0.4.0 with local removals: passed, doclaynet-dev and doclaynet-val furniture_f1 +0.0020 and +0.0024|+0.24 %|1,740 nodes, about 46.6 KB|identical|0.4.0|
 |Table gaps (borderless columns)|2,400 generated tables (400 fixtures, 6 producers): 3,884 candidate gaps|1,109 gaps, all boundaries|not run|–|–|identical|no|
 
 **Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
@@ -316,7 +317,7 @@ doclaynet-val furniture_f1 0.4753 → 0.4781 and olmOCR `headers_footers` 0.8486
 0.002 the criteria ask for, but doclaynet-val heading_f1 fell 0.69590 → 0.69562 (−0.00028, the
 gate's epsilon is 0.0001): not shipped.
 
-**Edge rows, local removals (after 0.3.0, awaiting the gate).** The same trees and τ_p. A first
+**Edge rows, local removals (shipped in 0.4.0).** The same trees and τ_p. A first
 retry left out rows the semantics would make headings or captions; the gate still measured
 doclaynet-val heading_f1 0.695899 → 0.695616 (−0.00028), so the drop came from another way. On
 DocLayNet's train selection (the model's own training pages, read only to see what a removal does
@@ -341,7 +342,9 @@ PubMed Central pages); each change only leaves blocks out. doclaynet-dev furnitu
 roles unchanged; olmOCR `headers_footers` 0.848606 → 0.849934 (+0.0013), the other categories
 unchanged; omni-dev unchanged. Tests 2254 (a row the model takes is left out and the rest of the
 output is that of `--furniture=keep` less the row's block) and 2255 (a caption under a figure,
-scored furniture, stays).
+scored furniture, stays). The strict gate passed (2026-11-15, master `8811572` → `0893b96`):
+doclaynet-dev furniture_f1 +0.0020, doclaynet-val furniture_f1 0.4753 → 0.4777 (+0.0024) with
+heading_f1 unchanged, olmOCR `headers_footers` +0.0013; odl instructions +0.24 %. It ships.
 
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled

@@ -361,7 +361,12 @@ wordnet baked in). Keys: `text_eds`, `text_f1` (text edit similarity and vocabul
 `head_eds`, `head_teds` (heading concatenation and ToC tree), `inline_eds`, `outline_eds`
 (formulas), `table_eds`, `table_teds`, `seg_kt`, `word_kt`, `seg_sp`, `word_sp` (reading order,
 Kendall tau and Spearman, block and token level); the GitHub subset has no formula or table keys.
-READoc normalises headings, formulas and tables and strips links and images before scoring.
+READoc normalises headings, formulas and tables and strips links and images before scoring. A
+pipe table with `%` or `&` in a cell counts as no table: the evaluator turns the Markdown into
+HTML and then into LaTeX without escaping those characters, so pandoc reads no table back (on
+readoc-dev arXiv 31 of RayoPDF's 258 tables in 19 documents in 0.4.0, and 33 of docling's in 20).
+It hits every tool alike and is left as it is: only a doubled backslash (`\\%`) gets through,
+which no Markdown reader shows as `%`.
 
 `readoc-dev` and `readoc-dev2` are scored by `eval/scorer/readoc_docs.py` in the same image. It
 imports the evaluator from the clone (nothing of it is copied): `file_evaluate` scores each

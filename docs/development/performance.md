@@ -1072,6 +1072,34 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
   missed the bar's 1 ms. A first measurement at 00:29-00:31 UTC, while unrelated services loaded
   the other CPUs, had shown +3.8 % warm.
 
+## 0.4.0 (2026-11-15)
+
+No round of its own: the 0.4.0 program's quality steps were each checked for their cost when they
+landed (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with `--math=latex`), and two of
+them were rewritten before landing, each byte-identical to the measured rule:
+
+|Commit|Change|Effect (`instr.sh`, the rule as written → as landed)|
+|---|---|---|
+|`8811572`|A table cell's emphasis measured once (`CellStyleless` returns at once for a cell that does not start with a star, and the writer cuts the delimiter length its first pass measured instead of calling it again); the rule pieces' vector sized once|the synthetic table rules' cost: odl +0.115 → +0.042 %, `tables` +0.47 → +0.14 %, SafeDocs +0.21 → +0.07 %|
+|`50e3bda`|Rows of cells set to the middle: each run judged as it grows from its first line, and the search from a line stopped at the first failure no longer run escapes (a line too far below its cell's, uneven lines, a line short of its column, every column of two lines or more); 3,986 PDFs compared, none differs|`tables` +3.13 → +0.18 %, `multi_column` +0.36 → +0.02 %, odl +0.07 → +0.01 %|
+
+The edge-row model (M9) costs odl +0.24 % (`multi_column` +0.29 %, syn6 +0.32 %): the 16 features
+of each row the rules keep in a page's outer tenth and 60 trees of 15 leaves. `src/hot.ld` was
+regenerated over the release's code (`a1db445`; 815 sections, 799 before; output byte-identical,
+G-bytes 0 of 997 differ): CPU 3, 2026-11-15 13:37-13:39 UTC, against the same code with the old
+list, warm odl 2,187 → 2,190 pages/s (medians of three runs), fresh 0.911 → 0.909 ms (12 rotated
+rounds), page faults median 152 → 149.
+
+### Result (0.3.0 against 0.4.0)
+
+User instructions, as above, CPU 11: odl +0.32 %, heavy10 +0.17 %, syn6 +0.37 %, SafeDocs +0.22 %,
+`multi_column` +0.40 %, `tables` +0.59 %, `arxiv_math` +0.46 %. Times on CPU 3, the 0.3.0 release
+binary and 0.4.0's interleaved, 2026-11-15 13:39-13:44 UTC, nothing of this project running (other
+services used about 8 % of the CPUs): warm odl (three runs) 2,206-2,214 → 2,188-2,189 pages/s
+(-1.1 %), p95 0.692-0.730 → 0.703-0.717 ms a page; fresh 0.896 → 0.906 ms (12 rotated rounds, +1.1 %
+paired), page faults median 148 → 149; `--batch --workers=1` over odl, task-clock 96.6 → 98.0 ms;
+a JPEG 2000 page with its image written (40 documents, 100 pages) 107.4 → 108.8 ms median.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** the empty-clip flag folded into the SSE2 clip test (about 3 instructions a
@@ -1082,9 +1110,11 @@ Each against `613f071` (`instr.sh`); none reached its threshold.
   `StyleWords` (33 M on `multi_column`). Round 10's rewrites of both gained nothing (tenth round,
   Tried and rejected).
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
-  tagged documents); images encoded on the page threads (a gain in wall time only, not measured in
-  round 10); a fuzz target that converts with several workers (the fuzz targets convert with one;
-  the sanitizer sweeps and tests cover the rest).
+  tagged documents); the image round overlapped with the layout: images are encoded on the page
+  threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
+  one large image holds the layout up. Overlapping them needs the decisions and the files' naming
+  apart and a round that runs beside the layout's, for untagged pages without inline images (a
+  gain in wall time only).
 - **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
   same peak RSS, but freed memory stays with the process (wall time only, not measured in round 10).
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
