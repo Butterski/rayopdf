@@ -17,7 +17,10 @@ read (omni_parse_bench.views):
 
 Text comes from each block's Markdown without its markup (md_text): emphasis delimiters, links
 (their text kept), images' syntax, <sup>/<sub> tags, heading marks, list markers, code fences and
-backslash escapes. A missing or unreadable output gives an empty page, which fails its tests.
+backslash escapes. Formulas of --math=latex stay as they are, their underscores, asterisks and
+backslashes being LaTeX: $$…$$, and $…$ by pandoc's rule (the opening dollar followed by a
+non-space, the closing one preceded by a non-space and followed by no digit; a dollar after a
+backslash is text). A missing or unreadable output gives an empty page, which fails its tests.
 Runs in rayopdf-eval-omni:1 (standard library only).
 """
 
@@ -36,6 +39,7 @@ ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 HEADING = re.compile(r"^#{1,6} ")
 MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?: \[[ xX]\])? ")
 NOTE = re.compile(r"^\[\^(\d+)\]: ")
+MATH = re.compile(r"(?<!\\)\$\$.+?(?<!\\)\$\$|(?<![\\$])\$(?![\s$])[^$\n]*?(?<![\s\\])\$(?!\d)")
 
 
 def md_text(markdown):
@@ -49,10 +53,12 @@ def md_text(markdown):
         line = NOTE.sub(r"\1 ", line)
         lines.append(line)
     text = "\n".join(lines)
+    held = []
+    hold = lambda kept: held.append(kept) or f"\ue000{len(held) - 1}\ue001"
+    text = MATH.sub(lambda m: hold(m.group(0)), text)
     text = LINK.sub(r"\1", text)
     text = TAGS.sub("", text)
-    held = []
-    text = ESCAPE.sub(lambda m: held.append(m.group(1)) or f"\ue000{len(held) - 1}\ue001", text)
+    text = ESCAPE.sub(lambda m: hold(m.group(1)), text)
     text = EMPHASIS.sub("", text)
     text = re.sub("\ue000(\\d+)\ue001", lambda m: held[int(m.group(1))], text)
     return text.strip()
