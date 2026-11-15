@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <string_view>
 
 namespace RayoPdf::Layout {
@@ -126,8 +127,9 @@ void MergeEdges(std::vector<Edge>& edges) {
 }
 
 // A box on the upright page in the frame of baseline direction `dir` (page.h): the page turned so
-// that text of that direction reads left to right.
-Ruling ToFrame(const Ruling& r, uint8_t dir) {
+// that text of that direction reads left to right. Inlined: the loops over a page's rulings call it
+// for each.
+RAYOPDF_HOT_INLINE Ruling ToFrame(const Ruling& r, uint8_t dir) {
     switch (dir) {
     case 1: return Ruling{r.y0, -r.x1, r.y1, -r.x0, r.flags};
     case 2: return Ruling{-r.x1, -r.y1, -r.x0, -r.y0, r.flags};
@@ -512,6 +514,17 @@ struct WordKey {
     uint32_t word;
 };
 
+// TextGrid's facts of a column's cell in a run of lines read as one row of cells set to the middle.
+struct MiddleCell {
+    float first, last;          // the baselines of its first and last line
+    float gapLo, gapHi;         // the least and largest gap between its lines
+    float lineRight, fillLow;   // its last line's right edge; the least right edge of the lines before
+    const TWord* lastWord;      // its last line's last word
+    uint16_t lines;
+    uint8_t values;             // every line so far starts with a number
+    uint8_t continued;          // a line continues the text of the line above
+};
+
 // The detector's vectors, kept by each thread between pages and directions so that a page grows
 // none of them anew: one detector runs at a time (DetectTables runs them one after another), and
 // Run() empties what it does not refill.
@@ -537,6 +550,18 @@ struct TableScratch {
     std::vector<float> widths;
     std::vector<float> middles;  // WordColumns: the gaps' middles (ColumnOf's bounds)
     std::vector<FigureRegion> axes;  // DropChartText: the page's chart axes
+    // TextGrid's own (it calls no TextGrid): its gaps and the header labels' ink over each, the
+    // columns' extents, the rows' first lines, per line its columns' mask, `cut` and `centred`
+    // flags, per column of the lines above and here their right edges and first and last words'
+    // numbers, per column a cell set to the middle, and runs of lines that are such rows.
+    std::vector<Gap> gridGaps, gridInks;
+    std::vector<float> colLeft, colRight, gridAbove, gridHere;
+    std::vector<size_t> gridStarts;
+    std::vector<uint64_t> gridMask;
+    std::vector<uint8_t> gridCut, centred, gridAboveFirst, gridAboveLast, gridHereFirst, gridHereLast;
+    std::vector<Progression> gridNumbers;  // per cell, its numbers' progression
+    std::vector<MiddleCell> middleCells;
+    std::vector<std::pair<size_t, size_t>> middleRows;
 };
 constexpr size_t kKeptWords = size_t(1) << 16;  // a page with more words releases the scratch
 
@@ -1234,9 +1259,10 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // middle of the gap beside it (labels centred over narrow columns of figures; a label centred
     // over the gap spans both columns instead): the gap narrows to its widest stretch clear of the
     // labels of the header lines with such a label, when it has one a point wide.
-    std::vector<Gap> gaps(bodyGaps);
+    std::vector<Gap>& gaps = scratch_.gridGaps;
+    gaps.assign(bodyGaps.begin(), bodyGaps.end());
     {
-        std::vector<Gap> inks;
+        std::vector<Gap>& inks = scratch_.gridInks;
         const size_t headerEnd = std::min<size_t>(rowBegin + headerRows, rowEnd);
         for (Gap& gap : gaps) {
             const float mid = (gap.a + gap.b) / 2;
@@ -1275,6 +1301,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     float left = INFINITY, right = -INFINITY;
     for (size_t r = rowBegin; r < rowEnd; ++r) left = Fmin(left, rows[r].x0), right = Fmax(right, rows[r].x1);
     left = Fmax(left, xa) - 1, right = Fmin(Fmax(right, left + 2), xb) + 1;
+    g.xs.reserve(static_cast<size_t>(cols) + 1);
     g.xs.push_back(left);
     for (const Gap& gap : gaps) g.xs.push_back((gap.a + gap.b) / 2);
     g.xs.push_back(right);
@@ -1284,7 +1311,10 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const uint32_t base = rows[rowBegin].first;
     // The columns' extents, from the body's lines under a header set off by a rule (a header label
     // over several columns reaches past the column its centre lies in).
-    std::vector<float> colLeft(static_cast<size_t>(cols), INFINITY), colRight(static_cast<size_t>(cols), -INFINITY);
+    std::vector<float>& colLeft = scratch_.colLeft;
+    std::vector<float>& colRight = scratch_.colRight;
+    colLeft.assign(static_cast<size_t>(cols), INFINITY);
+    colRight.assign(static_cast<size_t>(cols), -INFINITY);
     const size_t bodyBegin = ruled && rowBegin + headerRows < rowEnd ? rowBegin + headerRows : rowBegin;
     for (size_t r = bodyBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(labels && (*labels)[r]); ++k) {
@@ -1299,9 +1329,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // above that reach their column's right edge (wrapped text in cells set to the top). A label
     // is a row of its own, the line after it starts one, and so does a line flagged in `ruled` (a
     // rule of the table runs above it): the lines between such starts are judged on their own.
-    std::vector<size_t> starts{rowBegin};
+    std::vector<size_t>& starts = scratch_.gridStarts;
+    starts.assign(1, rowBegin);
     const size_t n = rowEnd - rowBegin;
-    std::vector<uint64_t> mask(n, 0);
+    std::vector<uint64_t>& mask = scratch_.gridMask;
+    mask.assign(n, 0);
     for (size_t r = rowBegin; r < rowEnd; ++r)
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k)
             mask[r - rowBegin] |= uint64_t(1) << columns[k - base];
@@ -1309,7 +1341,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // \cmidrule under a label over columns): a header row ends above each (`cut`), and the words of
     // the line right above one that lie over it, a label, span the columns under it (`spans`: the
     // line, the rule).
-    std::vector<uint8_t> cut(n, 0);
+    std::vector<uint8_t>& cut = scratch_.gridCut;
+    cut.assign(n, 0);
     std::vector<std::pair<size_t, const Edge*>> spans;
     for (size_t e = 0; partial && e < partial->size() && e < 64; ++e) {
         const Edge& rule = (*partial)[e];
@@ -1352,7 +1385,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // A label alone in the first column, set halfway between two body lines whose first cells are
     // empty (a \multirow label centred over an even number of rows): it belongs to the row above
     // and parts no rows; the lines around it are judged as if it were not there.
-    std::vector<uint8_t> centred(n, 0);
+    std::vector<uint8_t>& centred = scratch_.centred;
+    centred.assign(n, 0);
     for (size_t q = rowBegin + 1; q + 1 < rowEnd; ++q) {
         const size_t i = q - rowBegin;
         const uint64_t up = mask[i - 1], down = mask[i + 1];
@@ -1374,9 +1408,15 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const auto gapAbove = [&](size_t r) { return offset(r) ? -INFINITY : rows[lineBefore(r)].bottom - rows[r].top; };
     // Per column of a line: the right edge of its words, whether its first word is a number and
     // whether its last word is one.
-    std::vector<float> above(static_cast<size_t>(cols)), here(static_cast<size_t>(cols));
-    std::vector<uint8_t> aboveFirst(static_cast<size_t>(cols)), aboveLast(static_cast<size_t>(cols));
-    std::vector<uint8_t> hereFirst(static_cast<size_t>(cols)), hereLast(static_cast<size_t>(cols));
+    std::vector<float>& above = scratch_.gridAbove;
+    std::vector<float>& here = scratch_.gridHere;
+    std::vector<uint8_t>& aboveFirst = scratch_.gridAboveFirst;
+    std::vector<uint8_t>& aboveLast = scratch_.gridAboveLast;
+    std::vector<uint8_t>& hereFirst = scratch_.gridHereFirst;
+    std::vector<uint8_t>& hereLast = scratch_.gridHereLast;
+    above.assign(static_cast<size_t>(cols), 0), here.assign(static_cast<size_t>(cols), 0);
+    aboveFirst.assign(static_cast<size_t>(cols), 0), aboveLast.assign(static_cast<size_t>(cols), 0);
+    hereFirst.assign(static_cast<size_t>(cols), 0), hereLast.assign(static_cast<size_t>(cols), 0);
     const auto rights = [&](size_t r, std::vector<float>& out, std::vector<uint8_t>& first, std::vector<uint8_t>& last) {
         std::fill(out.begin(), out.end(), -INFINITY);
         for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
@@ -1396,80 +1436,83 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // above (in lower case, or after a hyphen), and not values stacked (every line starting with a
     // number). Sub-rows beside a label spanning them, cells all of one line, or cells centred at
     // different heights (set to the top) are no such row.
-    std::vector<float> cellFirst(static_cast<size_t>(cols)), cellLast(static_cast<size_t>(cols));
-    std::vector<uint16_t> cellLines(static_cast<size_t>(cols));
-    std::vector<uint8_t> cellValues(static_cast<size_t>(cols));  // every line so far starts with a number
-    std::vector<float> gapLo(static_cast<size_t>(cols)), gapHi(static_cast<size_t>(cols));  // between its lines
-    std::vector<float> lineRight(static_cast<size_t>(cols)), fillLow(static_cast<size_t>(cols));  // its lines' right edges
-    std::vector<const TWord*> lastWord(static_cast<size_t>(cols));
-    std::vector<uint8_t> continued(static_cast<size_t>(cols));  // a line continues the text of the line above
+    std::vector<MiddleCell>& cells = scratch_.middleCells;  // per column (read only where lines > 0)
+    cells.resize(static_cast<size_t>(cols));
     std::string wordText;
     // The end e of the longest such run [s, e) of 2 to 16 lines ending at b at most, 0 if none. The
     // cells are read one line at a time and every run from s is judged as it grows, so each line is
     // read once for each s; a line too far below its cell's line above ends every longer run too.
     const auto longestMiddleRow = [&](size_t s, size_t b) {
         const float em = TextSize(rows[s]);
-        std::fill(cellLines.begin(), cellLines.end(), uint16_t(0));
+        for (MiddleCell& m : cells) m.lines = 0;
         size_t found = 0, stacked = 0;  // stacked: columns of two lines or more (none left for a one-line cell)
         for (size_t r = s; r < b && r < s + 16; ++r) {
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
-                const size_t c = static_cast<size_t>(columns[k - base]);
+                MiddleCell& m = cells[static_cast<size_t>(columns[k - base])];
                 const TWord& w = words_[rowWords[k]];
-                if (cellLines[c] > 0 && cellLast[c] == rows[r].base) {
-                    lineRight[c] = Fmax(lineRight[c], w.x1);
-                    lastWord[c] = &w;
+                if (m.lines > 0 && m.last == rows[r].base) {
+                    m.lineRight = Fmax(m.lineRight, w.x1);
+                    m.lastWord = &w;
                     continue;
                 }
                 const uint8_t value = Numeric(Chars(w)) ? 1 : 0;
-                const float gap = cellLast[c] - rows[r].base;
-                if (cellLines[c] == 0) {
-                    cellFirst[c] = rows[r].base, cellValues[c] = value, gapLo[c] = INFINITY, gapHi[c] = -INFINITY;
-                    fillLow[c] = INFINITY, continued[c] = 0;
+                if (m.lines == 0) {
+                    m.first = rows[r].base, m.values = value, m.gapLo = INFINITY, m.gapHi = -INFINITY;
+                    m.fillLow = INFINITY, m.continued = 0;
                 } else {
+                    const float gap = m.last - rows[r].base;
                     if (gap > 1.6f * em) return found;
-                    cellValues[c] = cellValues[c] && value;
-                    gapLo[c] = Fmin(gapLo[c], gap), gapHi[c] = Fmax(gapHi[c], gap);
-                    fillLow[c] = Fmin(fillLow[c], lineRight[c]);
-                    // Text continued: a line starting in lower case, or after a hyphen.
-                    const unsigned char head = FirstByte(w);
-                    const std::string_view before = WordText(*lastWord[c], wordText);
-                    continued[c] = continued[c] || (head >= 'a' && head <= 'z') || (!before.empty() && before.back() == '-') ||
-                                   (before.size() >= 2 && before.substr(before.size() - 2) == "\xC2\xAD");
+                    m.values = m.values && value;
+                    m.gapLo = Fmin(m.gapLo, gap), m.gapHi = Fmax(m.gapHi, gap);
+                    m.fillLow = Fmin(m.fillLow, m.lineRight);
+                    // Text continued: a line starting in lower case, or after a hyphen (read only
+                    // while the cell has no continued line yet).
+                    if (!m.continued) {
+                        const unsigned char head = FirstByte(w);
+                        if (head >= 'a' && head <= 'z') {
+                            m.continued = 1;
+                        } else {
+                            const std::string_view before = WordText(*m.lastWord, wordText);
+                            m.continued = (!before.empty() && before.back() == '-') ||
+                                          (before.size() >= 2 && before.substr(before.size() - 2) == "\xC2\xAD");
+                        }
+                    }
                 }
-                lineRight[c] = w.x1;
-                lastWord[c] = &w;
-                cellLast[c] = rows[r].base;
-                stacked += ++cellLines[c] == 2;
+                m.lineRight = w.x1;
+                m.lastWord = &w;
+                m.last = rows[r].base;
+                stacked += ++m.lines == 2;
             }
             if (stacked == static_cast<size_t>(cols)) return found;
             const size_t e = r + 1;
             if (e - s < 2) continue;
             int filled = 0, multi = 0, single = 0;
             float lo = INFINITY, hi = -INFINITY, pitch = 0;
-            bool cells = true;
-            for (size_t c = 0; c < static_cast<size_t>(cols) && cells; ++c) {
-                if (cellLines[c] == 0) continue;
-                if (cellLines[c] < 2) {
+            bool one = true;  // every filled column one cell
+            for (size_t c = 0; c < static_cast<size_t>(cols) && one; ++c) {
+                const MiddleCell& m = cells[c];
+                if (m.lines == 0) continue;
+                if (m.lines < 2) {
                     single++;
                 } else {
                     // Lines unevenly set (a label row over a cell's wrapped text) or a line but the
                     // last ending short of its column's right part (a label): no one cell, in any
                     // longer run either. Stacked values, or no line continuing the text above
                     // (entries of sub-rows beside a label spanning them): no one cell yet.
-                    if (gapHi[c] - gapLo[c] > 0.1f * em || fillLow[c] < colLeft[c] + 0.6f * (colRight[c] - colLeft[c]))
+                    if (m.gapHi - m.gapLo > 0.1f * em || m.fillLow < colLeft[c] + 0.6f * (colRight[c] - colLeft[c]))
                         return found;
-                    if (cellValues[c] || !continued[c]) {
-                        cells = false;
+                    if (m.values || !m.continued) {
+                        one = false;
                         break;
                     }
                     multi++;
                 }
                 filled++;
-                const float middle = (cellFirst[c] + cellLast[c]) / 2;
+                const float middle = (m.first + m.last) / 2;
                 lo = Fmin(lo, middle), hi = Fmax(hi, middle);
-                if (cellLines[c] >= 2) pitch = Fmax(pitch, gapHi[c]);
+                if (m.lines >= 2) pitch = Fmax(pitch, m.gapHi);
             }
-            if (!cells || !(filled >= 2 && multi >= 1 && single >= 1 && hi - lo <= 0.2f * em)) continue;
+            if (!one || !(filled >= 2 && multi >= 1 && single >= 1 && hi - lo <= 0.2f * em)) continue;
             // A row of its own: the lines of the table next to it stand further off than its
             // cells' lines stand apart (cell padding), else the lines are rows set on one pitch.
             const float apart = pitch + 0.15f * em;
@@ -1479,7 +1522,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         }
         return found;
     };
-    std::vector<std::pair<size_t, size_t>> windows;  // part: runs of lines [s, e) that are such rows
+    // part's runs of lines [s, e) that are such rows.
+    std::vector<std::pair<size_t, size_t>>& windows = scratch_.middleRows;
     // The rows of lines [a, b).
     const auto part = [&](size_t a, size_t b) {
         const size_t k0 = starts.size() - 1;  // starts[k0] == a
@@ -1697,6 +1741,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     };
     float top = 0, bottom = 0, previousBottom = 0;
     extent(0, top, bottom);
+    g.ys.reserve(starts.size() + 1);
     g.ys.push_back(top + 1);
     previousBottom = bottom;
     for (size_t s = 1; s < starts.size(); ++s) {
@@ -1711,7 +1756,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     g.vb.assign(static_cast<size_t>(nrows) * static_cast<size_t>(cols + 1), 1);
     g.hb.assign(static_cast<size_t>(nrows + 1) * static_cast<size_t>(cols), 1);
     int group = -1;
-    std::vector<Progression> numbers(static_cast<size_t>(nrows) * static_cast<size_t>(cols));
+    std::vector<Progression>& numbers = scratch_.gridNumbers;
+    numbers.assign(static_cast<size_t>(nrows) * static_cast<size_t>(cols), Progression{});
     std::string scratch;
     bool numbersOnly = true;  // every word a plain number, no label row
     for (size_t r = rowBegin; r < rowEnd; ++r) {
@@ -4501,13 +4547,32 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
     if (parts.empty()) return;
     const uint16_t cols = parts[0].table->cols;
     bool first = true;
+    // A cell's text, a pipe escaped and a line break a space: most cells hold neither and go in
+    // whole, the others a run at a time.
     const auto put = [&](std::string_view text) {
-        for (char ch : text) {
-            if (ch == '|') out.push_back('\\');
-            out.push_back(ch == '\n' ? ' ' : ch);
+        if (text.empty()) return;
+        if (!std::memchr(text.data(), '|', text.size()) && !std::memchr(text.data(), '\n', text.size())) {
+            out.append(text);
+            return;
         }
+        size_t from = 0;
+        for (size_t i = 0; i < text.size(); ++i) {
+            const char ch = text[i];
+            if (ch != '|' && ch != '\n') continue;
+            out.append(text.data() + from, i - from);
+            if (ch == '|') out += "\\|";
+            else out.push_back(' ');
+            from = i + 1;
+        }
+        out.append(text.data() + from, text.size() - from);
     };
-    std::vector<uint8_t> whole;            // per cell of a part: the delimiter length of emphasis over all of it
+    // Per cell of a part: the delimiter length of emphasis over all of it and, without such
+    // emphasis, its text's length without dot leaders (TrimLeaders, a prefix).
+    struct Facts {
+        uint32_t trimmed;
+        uint8_t whole;
+    };
+    std::vector<Facts> facts;
     std::vector<uint16_t> perRow, perCol;  // per row and column and delimiter length: cells with it
     for (size_t p = 0; p < parts.size(); ++p) {
         const TablePart& part = parts[p];
@@ -4518,24 +4583,30 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
         // column of labels, an italic total): it goes. A body cell beside plain cells, alone in
         // its row and column with it (a word set bold in a column of examples), keeps it.
         const uint16_t header = p == 0 ? std::max<uint16_t>(1, table.headerRows) : table.headerRows;
-        whole.assign(table.cellCount, 0);
+        facts.assign(table.cellCount, Facts{0, 0});
         perRow.assign(size_t(table.rows) * 4, 0);  // body cells; [0]: plain cells with text
         perCol.assign(size_t(cols) * 4, 0);
         for (uint32_t k = 0; k < table.cellCount; ++k) {
             const TableCell& tc = part.page->tableCells[table.firstCell + k];
             const std::string_view t = part.cellText[k];
-            whole[k] = static_cast<uint8_t>((t.size() - CellStyleless(t).size()) / 2);
-            if ((whole[k] == 0 && TrimLeaders(t).empty()) || tc.row < header || tc.row >= table.rows || tc.col >= cols) continue;
-            perRow[size_t(tc.row) * 4 + whole[k]]++;
-            perCol[size_t(tc.col) * 4 + whole[k]]++;
+            Facts& f = facts[k];
+            f.whole = static_cast<uint8_t>((t.size() - CellStyleless(t).size()) / 2);
+            if (f.whole == 0) f.trimmed = static_cast<uint32_t>(TrimLeaders(t).size());
+            if ((f.whole == 0 && f.trimmed == 0) || tc.row < header || tc.row >= table.rows || tc.col >= cols) continue;
+            perRow[size_t(tc.row) * 4 + f.whole]++;
+            perCol[size_t(tc.col) * 4 + f.whole]++;
         }
-        const auto styleless = [&](uint32_t k) {
+        // The cell's text as written: without emphasis that is the table's styling, without dot
+        // leaders.
+        const auto written = [&](uint32_t k) {
             const TableCell& tc = part.page->tableCells[table.firstCell + k];
             const std::string_view t = part.cellText[k];
-            if (whole[k] == 0 || tc.row < header || tc.row >= table.rows || tc.col >= cols || perRow[size_t(tc.row) * 4] == 0 ||
-                perRow[size_t(tc.row) * 4 + whole[k]] >= 2 || perCol[size_t(tc.col) * 4 + whole[k]] >= 2)
-                return t.substr(whole[k], t.size() - 2u * whole[k]);  // CellStyleless(t), measured above
-            return t;
+            const uint8_t whole = facts[k].whole;
+            if (whole == 0) return t.substr(0, facts[k].trimmed);
+            if (tc.row < header || tc.row >= table.rows || tc.col >= cols || perRow[size_t(tc.row) * 4] == 0 ||
+                perRow[size_t(tc.row) * 4 + whole] >= 2 || perCol[size_t(tc.col) * 4 + whole] >= 2)
+                return TrimLeaders(t.substr(whole, t.size() - 2u * whole));  // CellStyleless(t), measured above
+            return TrimLeaders(t);
         };
         uint32_t i = 0;
         for (uint16_t r = 0; r < table.rows; ++r) {
@@ -4550,7 +4621,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
                 if (write) out.push_back(' ');
                 if (i < table.cellCount && part.page->tableCells[table.firstCell + i].row == r &&
                     part.page->tableCells[table.firstCell + i].col == c) {
-                    const std::string_view text = TrimLeaders(styleless(i));
+                    const std::string_view text = written(i);
                     if (write) put(text);
                     const uint16_t span = part.page->tableCells[table.firstCell + i].colSpan;
                     spanned = text, spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;
