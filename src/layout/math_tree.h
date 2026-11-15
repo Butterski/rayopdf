@@ -51,8 +51,10 @@ constexpr uint32_t kMaxTreeGlyphs = 256;
 // number set apart in a display formula to `tag`, as BuildLatex: Unsure when the arborescence
 // leaves a node out, costs too much or holds a structure it does not build (a delimiter piece, a
 // horizontal brace, an accent without a base, limits); Unreadable when a glyph has no symbol;
-// TooLarge past kMaxTreeGlyphs glyphs or kMaxFormulaRules rules.
-MathStatus BuildLatexTree(const MathInput& in, bool display, std::string& out, std::string& tag);
+// TooLarge past kMaxTreeGlyphs glyphs or kMaxFormulaRules rules. `resolved`: the calling thread's
+// last BuildLatex ran its greedy rebuild on this very `in` and read every glyph (BuildLatex's own
+// fallback), so the glyphs are not read again (ReadMathSymbols).
+MathStatus BuildLatexTree(const MathInput& in, bool display, std::string& out, std::string& tag, bool resolved = false);
 
 // A formula glyph read as a symbol, as BuildLatex reads it (math.cpp).
 enum MathSymbolRole : uint8_t {
@@ -72,9 +74,10 @@ struct MathSymbol {
 };
 // Reads the glyphs of `in` as BuildLatex does into `symbols` (one per glyph) and lists in `glyphs`
 // those of the formula: in a display formula, an equation number set apart at the right end is
-// left out and its text goes to `tag`. False when a glyph has no trustworthy symbol.
+// left out and its text goes to `tag`. False when a glyph has no trustworthy symbol. `resolved`:
+// as BuildLatexTree's.
 bool ReadMathSymbols(const MathInput& in, bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs,
-                     std::string& tag);
+                     std::string& tag, bool resolved = false);
 // Appends an upright word as BuildLatex writes it: \sin, \operatorname*{argmax}, \mathrm{d},
 // \text{for} (with a space inside when `spaceAfter`).
 void AppendUprightWord(const std::string& word, bool spaceAfter, std::string& out);

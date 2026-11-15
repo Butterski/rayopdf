@@ -32,6 +32,9 @@ bool Holds(std::string_view name, std::string_view part) {
 }
 
 bool Finite(float x) { return x == x && x - x == 0; }
+// Finite() of four values at once: x - x is 0 for a finite x and NaN for an infinite or NaN one,
+// and a NaN term makes the sum NaN.
+bool Finite4(float a, float b, float c, float d) { return (a - a) + (b - b) + (c - c) + (d - d) == 0; }
 
 // ---------------------------------------------------------------------------------------------
 // Unicode facts.
@@ -178,11 +181,19 @@ constexpr Override kOverrides[] = {
     {0x2011, "-"},       {0x02C6, "\\hat{}"}, {0x02DC, "\\tilde{}"}, {0x2329, "\\langle"}, {0x232A, "\\rangle"},
     {0x3008, "\\langle"}, {0x3009, "\\rangle"}, {0x2307, "\\wr"}, {0x2205, "\\emptyset"}, {0x00F8, "\\emptyset"},
 };
-
-// KaTeX's command for `cp`, or empty.
-std::string_view CommandOf(uint32_t cp) {
+constexpr bool OverridesFromA0() {
     for (const Override& o : kOverrides)
-        if (o.cp == cp) return o.latex;
+        if (o.cp < 0xA0) return false;
+    return true;
+}
+static_assert(OverridesFromA0(), "CommandOf scans the overrides from U+00A0 only");
+
+// KaTeX's command for `cp`, or empty. Every override is U+00A0 or above: ASCII goes straight to
+// the sorted table.
+std::string_view CommandOf(uint32_t cp) {
+    if (cp >= 0xA0)
+        for (const Override& o : kOverrides)
+            if (o.cp == cp) return o.latex;
     size_t lo = 0, hi = MathTables::kCommandCount;
     while (lo < hi) {
         const size_t mid = (lo + hi) / 2;
@@ -283,26 +294,30 @@ constexpr uint64_t Pack(std::string_view word) {
 }
 
 constexpr size_t kFunctionCount = sizeof(kFunctions) / sizeof(kFunctions[0]);
-// The names' keys with the length in the top byte (every name is shorter than 8), sorted.
+// The names' keys with the length in the top byte (every name is shorter than 8), each in its slot
+// of 64 by a multiplicative hash under which no two collide (checked at compile time); an empty
+// slot holds 0, which no key is.
+constexpr uint64_t kFunctionHash = 0x0e780da6a9f0c4b1;
+constexpr size_t FunctionSlot(uint64_t key) { return static_cast<size_t>((key * kFunctionHash) >> 58); }
 struct FunctionKeys {
-    uint64_t key[kFunctionCount] = {};
+    uint64_t key[64] = {};
+    bool unique = true;
     constexpr FunctionKeys() {
         for (size_t i = 0; i < kFunctionCount; ++i) {
-            uint64_t k = Pack(kFunctions[i]) | uint64_t(kFunctions[i].size()) << 56;
-            size_t at = i;
-            for (; at > 0 && key[at - 1] > k; --at) key[at] = key[at - 1];
-            key[at] = k;
+            const uint64_t k = Pack(kFunctions[i]) | uint64_t(kFunctions[i].size()) << 56;
+            uint64_t& slot = key[FunctionSlot(k)];
+            unique = unique && slot == 0;
+            slot = k;
         }
     }
 };
 constexpr FunctionKeys kFunctionKeys;
+static_assert(kFunctionKeys.unique, "two function names share a slot: choose another kFunctionHash");
 
 bool IsFunctionName(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every name has 2 to 6 letters
     const uint64_t key = Pack(word) | uint64_t(word.size()) << 56;
-    const uint64_t* const end = kFunctionKeys.key + kFunctionCount;
-    const uint64_t* const at = std::lower_bound(kFunctionKeys.key, end, key);
-    return at != end && *at == key;
+    return kFunctionKeys.key[FunctionSlot(key)] == key;
 }
 
 // Short English words set upright in formulas ("for", "if", "and"): \text, not \mathrm.
@@ -453,14 +468,20 @@ struct Item {
     std::string accent;    // an accent command over it
 };
 
+// Whether JoinMathSymbols may join a and b: a negation slash on either side, or a bar, an arrow or
+// an equals sign first (keep in step with JoinMathSymbols).
+bool MayJoin(uint32_t a, uint32_t b) {
+    return a == 0x338 || b == 0x338 || a == '-' || a == 0x2212 || a == 0x2190 || a == '=' || a == 0x21D0;
+}
+
 void AppendToken(std::string& out, std::string_view token) {
     if (token.empty()) return;
-    // A command name ending in a letter runs into a following letter: a space between.
-    if (!out.empty()) {
+    // A command name ending in a letter runs into a following letter: a space between (only a
+    // token starting with a letter can run into one).
+    if (!out.empty() && IsAsciiLetter(static_cast<unsigned char>(token[0]))) {
         size_t i = out.size();
         while (i > 0 && IsAsciiLetter(static_cast<unsigned char>(out[i - 1]))) --i;
-        const bool command = i > 0 && i < out.size() && out[i - 1] == '\\';
-        if (command && IsAsciiLetter(static_cast<unsigned char>(token[0]))) out.push_back(' ');
+        if (i > 0 && i < out.size() && out[i - 1] == '\\') out.push_back(' ');
     }
     out.append(token);
 }
@@ -486,8 +507,9 @@ class Builder {
 public:
     explicit Builder(const MathInput& in) : in_(in) {}
     MathStatus Run(bool display, std::string& out, std::string& tag);
-    // ReadMathSymbols.
-    bool Symbols(bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs, std::string& tag);
+    // ReadMathSymbols; `resolved`: the thread's atoms already hold this input's (BuildLatex).
+    bool Symbols(bool display, bool resolved, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs,
+                 std::string& tag);
     // Whether the rebuild's first failure was Row's attachment (an accent with no base under it, a
     // second accent on one base): the only Unsure the arborescence is tried on.
     bool UnsureAttaching() const { return attaching_; }
@@ -535,7 +557,7 @@ private:
 bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
     a.u0 = g.u0, a.u1 = g.u1, a.v = g.v, a.size = g.size, a.font = g.font;
     a.lineStart = (g.flags & kMathLineStart) != 0;
-    if (!Finite(g.u0) || !Finite(g.u1) || !Finite(g.v) || !Finite(g.size) || g.size <= 0 || g.u1 < g.u0)
+    if (!Finite4(g.u0, g.u1, g.v, g.size) || g.size <= 0 || g.u1 < g.u0)
         return false;
     if (g.flags & kMathUnmapped) return false;
     if (size_t(g.text) + g.length > in_.text.size()) return false;
@@ -739,7 +761,7 @@ bool Builder::Resolve() {
         if (!ResolveAtom(in_.glyphs[i], atoms_[i])) return Fail(MathStatus::Unreadable);
     }
     for (const MathRule& r : in_.rules)
-        if (!Finite(r.u0) || !Finite(r.u1) || !Finite(r.v0) || !Finite(r.v1) || r.u1 < r.u0 || r.v1 < r.v0)
+        if (!Finite4(r.u0, r.u1, r.v0, r.v1) || r.u1 < r.u0 || r.v1 < r.v0)
             return Fail(MathStatus::Unreadable);
     return true;
 }
@@ -1497,6 +1519,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         while (k < n && role[k] == 3) ++k;
         if (k >= n || role[k] != 0 || wordPart[k] || items[k].atom < 0 || !words[k].empty()) continue;
         const uint32_t a = atoms_[static_cast<uint32_t>(items[i].atom)].cp, b = atoms_[static_cast<uint32_t>(items[k].atom)].cp;
+        if (!MayJoin(a, b)) continue;
         std::string joined;
         if (!JoinMathSymbols(a, b, items[i].latex, items[k].latex, items[k].u0 - items[i].u1, em, joined)) continue;
         words[i] = std::move(joined);
@@ -1688,8 +1711,9 @@ void Builder::SplitTag(std::vector<uint32_t>& all, std::string& tag) const {
     std::sort(all.begin(), all.end());
 }
 
-bool Builder::Symbols(bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs, std::string& tag) {
-    if (!Resolve()) return false;
+bool Builder::Symbols(bool display, bool resolved, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs,
+                      std::string& tag) {
+    if (!resolved && !Resolve()) return false;
     glyphs.resize(atoms_.size());
     for (uint32_t i = 0; i < atoms_.size(); ++i) glyphs[i] = i;
     if (display) SplitTag(glyphs, tag);
@@ -1726,10 +1750,10 @@ bool Builder::Symbols(bool display, std::vector<MathSymbol>& symbols, std::vecto
 } // namespace
 
 bool ReadMathSymbols(const MathInput& in, bool display, std::vector<MathSymbol>& symbols, std::vector<uint32_t>& glyphs,
-                     std::string& tag) {
+                     std::string& tag, bool resolved) {
     tag.clear();
     Builder builder(in);
-    return builder.Symbols(display, symbols, glyphs, tag);
+    return builder.Symbols(display, resolved, symbols, glyphs, tag);
 }
 
 void AppendLatexToken(std::string& out, std::string_view token) { AppendToken(out, token); }
@@ -1815,9 +1839,10 @@ MathStatus BuildLatex(const MathInput& in, bool display, std::string& out, std::
     tag.clear();
     Builder builder(in);
     const MathStatus status = builder.Run(display, out, tag);
-    // A structure the greedy rebuild cannot attach in a row: the arborescence of the formula's glyphs.
+    // A structure the greedy rebuild cannot attach in a row: the arborescence of the formula's glyphs,
+    // read from the atoms the rebuild resolved (an attaching failure comes after every glyph read).
     if (!tree || status != MathStatus::Unsure || !builder.UnsureAttaching() || in.glyphs.size() > kMaxTreeGlyphs) return status;
-    return BuildLatexTree(in, display, out, tag) == MathStatus::Ok ? MathStatus::Ok : status;
+    return BuildLatexTree(in, display, out, tag, true) == MathStatus::Ok ? MathStatus::Ok : status;
 }
 
 bool LatexAlt(std::string_view alt) {
@@ -1962,7 +1987,7 @@ void PrepareMathGlyphs(PageData& page) {
                 uint32_t bcp = 0;
                 if (lead < 0x80 ? lead == '^' || lead == '~' : Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty())
                     continue;
-                finite = finite && Finite(b.u0) && Finite(b.u1) && Finite(b.v) && Finite(b.size);
+                finite = finite && Finite4(b.u0, b.u1, b.v, b.size);
                 reach.push_back(Reach{b.u0 - 0.1f * b.size, b.u1 + 0.1f * b.size, static_cast<uint32_t>(k)});
             }
         }
@@ -2156,12 +2181,10 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     bool any = false;
     for (size_t w = 0; w < words; ++w) {
         const uint32_t b = wordStart[w], e = wordStart[w + 1];
-        uint32_t letters = 0, greek = 0;
-        for (uint32_t i = b; i < e; ++i) {
-            const uint32_t c = FirstCp(glyphs[i].text);
-            letters += IsLetterCp(c) ? 1 : 0;
-            greek += IsGreekScript(c) ? 1 : 0;
-        }
+        uint32_t letters = 0;
+        for (uint32_t i = b; i < e; ++i) letters += IsLetterCp(FirstCp(glyphs[i].text)) ? 1 : 0;
+        // The word's glyphs of the Greek script, counted when a glyph first asks (UINT32_MAX before).
+        uint32_t greek = UINT32_MAX;
         bool strongWord = false;  // a strong glyph in the word: its class is final once set
         for (uint32_t i = b; i < e; ++i) {
             const InlineGlyph& g = glyphs[i];
@@ -2169,8 +2192,13 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             cls[i] = ClassOf(g.font, g.glyph->flags, g.text, letters == 1);
             // Greek in a word of Greek letters (Greek prose, accented or polytonic too) is text.
             if (cls[i] == kClassStrong && g.font == static_cast<uint8_t>(MathFont::None) && IsGreek(FirstCp(g.text)) &&
-                letters > 1 && greek == letters)
-                cls[i] = kClassText;
+                letters > 1) {
+                if (greek == UINT32_MAX) {
+                    greek = 0;
+                    for (uint32_t k = b; k < e; ++k) greek += IsGreekScript(FirstCp(glyphs[k].text)) ? 1 : 0;
+                }
+                if (greek == letters) cls[i] = kClassText;
+            }
             // Raised or lowered glyphs next to math are its scripts.
             if (cls[i] == kClassText && g.script && i > b && cls[i - 1] != kClassText) cls[i] = kClassNeutral;
             any = any || cls[i] == kClassStrong;

@@ -781,13 +781,13 @@ MathStatus Tree::Part(std::string& out) {
 
 } // namespace
 
-MathStatus BuildLatexTree(const MathInput& in, bool display, std::string& out, std::string& tag) {
+MathStatus BuildLatexTree(const MathInput& in, bool display, std::string& out, std::string& tag, bool resolved) {
     tag.clear();
     if (in.glyphs.empty()) return MathStatus::Empty;
     if (in.glyphs.size() > kMaxTreeGlyphs || in.rules.size() > kMaxFormulaRules) return MathStatus::TooLarge;
     TreeScratch& s = PerThread<TreeScratch>();
     std::string tagText;
-    if (!ReadMathSymbols(in, display, s.symbols, s.glyphs, tagText)) return MathStatus::Unreadable;
+    if (!ReadMathSymbols(in, display, s.symbols, s.glyphs, tagText, resolved)) return MathStatus::Unreadable;
     // An inline formula broken over lines: line by line. An accent is no line of its own (it may
     // have been set apart from its base's line): a line its glyph starts begins at the next glyph.
     std::string text;
