@@ -1226,7 +1226,9 @@ bool LineNumber(std::string_view t) {
 }
 
 // A first column of list markers (bullets, enumerators, the line numbers of a listing) is a list
-// or the steps of an algorithm, not a table.
+// or the steps of an algorithm, not a table. A bullet or dash on a line with figures in two other
+// columns at least ("- Female  1102  (52.73)") sets off a row label of a table: it counts as no
+// marker.
 bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin,
                         size_t rowEnd, const std::vector<Gap>& gaps) {
     int markers = 0, filled = 0;
@@ -1238,7 +1240,15 @@ bool Detector::ListLike(const std::vector<Row>& rows, const std::vector<uint32_t
         filled++;
         uint32_t value = 0;
         const std::string_view text = WordText(w, scratch);
-        if (ParseMarker(text, value) != Marker::None || LineNumber(text)) markers++;
+        const Marker marker = ParseMarker(text, value);
+        if (marker == Marker::None && !LineNumber(text)) continue;
+        uint64_t figures = 0;
+        for (uint32_t k = rows[r].first + 1; k < rows[r].first + rows[r].count; ++k) {
+            const TWord& v = words_[rowWords[k]];
+            const int c = ColumnOf(gaps, (v.x0 + v.x1) / 2);
+            if (c > 0 && Numeric(Chars(v))) figures |= uint64_t(1) << std::min(c, 63);
+        }
+        if (marker != Marker::Bullet || Bits(figures) < 2) markers++;
     }
     return filled > 0 && markers * 2 > filled;
 }
@@ -3206,11 +3216,16 @@ void Detector::RuleStacks() {
             // No rule of the stack close above the run's first rule: that rule may be the one under
             // the header, with no top rule; the header lines above it are looked for below.
             const bool headless = !single && (i == 0 || s.ys[i - 1] > top + 6 * em);
+            // A rule of the stack less than 12 ems above the run's first rule: the table's top rule,
+            // the band between them its header (lines set apart, a rule under a label over columns:
+            // a band that did not pass as tabular itself). Its lines are looked for below.
+            const float capTop = !single && i > 0 && s.ys[i - 1] <= top + 12 * em ? s.ys[i - 1] : NAN;
             {
                 const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
                 ylo = open ? Fmax(below, bottom - 80 * em) : bottom;
                 if (single) yhi = Fmin(i > 0 ? s.ys[i - 1] : INFINITY, top + 80 * em);
                 if (headless) yhi = top + 5 * em;
+                if (!std::isnan(capTop)) yhi = Fmax(yhi, capTop);
             }
             BuildRows(xa, xb, ylo, yhi, rows, rowWords);
             label.assign(rows.size(), 0);
@@ -3432,6 +3447,62 @@ void Detector::RuleStacks() {
                     if (lifted > 0) begin -= lifted, header = static_cast<uint16_t>(lifted);
                 }
                 if (header == end - begin) header = 0;
+                // Header lines in the band under the table's top rule (capTop) that did not pass as
+                // tabular itself, a drawn rule narrower than the table inside it (a \cmidrule under a
+                // label over columns): every line between the top rule and the run's first, five at
+                // most, none larger than the body's text, none mostly of numbers, none one phrase from
+                // the first column across a column gap, none with a label across two gaps or more
+                // without a rule under it (a caption, a note), the first filling two columns or
+                // holding a label over a rule narrower than the table (no title line). They head the
+                // rows of the run.
+                if (!std::isnan(capTop) && begin == coreBegin && begin > 0 && begin <= 5 && !open && end - begin >= 3 &&
+                    Free(xa, top, xb, capTop)) {
+                    bool fits = false;
+                    for (auto e = std::lower_bound(h_.begin(), h_.end(), top + 1, [](const Edge& p, float y) { return p.pos < y; });
+                         e != h_.end() && e->pos < capTop - 1 && !fits; ++e)
+                        fits = !e->area && e->b - e->a >= em && (e->a > xa + em || e->b < xb - em);
+                    float largest = 0;
+                    for (size_t q = begin; q < end; ++q) largest = Fmax(largest, TextSize(rows[q]));
+                    uint64_t filled = 0;
+                    for (size_t q = 0; q < begin && fits; ++q) {
+                        const Row& r = rows[q];
+                        uint32_t numeric = 0, labelCount = 0;
+                        uint64_t rowFilled = 0;
+                        bool opening = false;   // a first label across a gap
+                        bool unruled = false;   // a label over three columns or more without a rule under it
+                        bool spanning = false;  // a label over columns with a rule under it
+                        for (uint32_t k = r.first; k < r.first + r.count;) {
+                            numeric += Numeric(Chars(words_[rowWords[k]]));
+                            const float a = words_[rowWords[k]].x0;
+                            float b = words_[rowWords[k]].x1;
+                            for (++k; k < r.first + r.count; ++k) {
+                                const TWord& w = words_[rowWords[k]];
+                                if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) break;
+                                numeric += Numeric(Chars(w));
+                                b = Fmax(b, w.x1);
+                            }
+                            labelCount++;
+                            rowFilled |= uint64_t(1) << std::min(ColumnOf(gaps, (a + b) / 2), 63);
+                            int crossed = 0;
+                            for (const Gap& gap : gaps) crossed += a < gap.a && b > gap.b;
+                            opening = opening || (labelCount == 1 && crossed > 0 && ColumnOf(gaps, a) == 0);
+                            // A label over columns stands over a drawn rule narrower than the table
+                            // that spans it, between it and the run's first rule.
+                            if (crossed > 0) {
+                                bool ruledUnder = false;
+                                auto e = std::lower_bound(h_.begin(), h_.end(), top + 1, [](const Edge& p, float y) { return p.pos < y; });
+                                for (; e != h_.end() && e->pos < r.bottom + 1 && !ruledUnder; ++e)
+                                    ruledUnder = !e->area && (e->a > xa + em || e->b < xb - em) && e->a <= a + 0.5f * em && e->b >= b - 0.5f * em;
+                                spanning = spanning || ruledUnder;
+                                unruled = unruled || (crossed >= 2 && !ruledUnder);
+                            }
+                        }
+                        filled |= rowFilled;
+                        fits = TextSize(r) <= 1.15f * largest && !running(q) && 2 * numeric <= r.count &&
+                               !(opening && labelCount == 1) && !unruled && (q > 0 || Bits(rowFilled) >= 2 || spanning);
+                    }
+                    if (fits && Bits(filled) >= 2) header = static_cast<uint16_t>(header + begin), begin = 0;
+                }
                 // No rule under the header (a top and a bottom rule only): the leading rows without
                 // a number, three at most, over three rows or more that start with one.
                 if (header == 0) {

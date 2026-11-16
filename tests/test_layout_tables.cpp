@@ -2595,6 +2595,77 @@ void TestContentsLists() {
     RAYOPDF_CHECK(Contains(md, "Introduction .......") && !Contains(md, ". . ."), 1727);
 }
 
+// Header lines between a top and a mid rule set further apart than a line pitch (a label over two
+// columns, a rule under it, the sub-labels below): the band is no table of its own, but its lines
+// head the rows under the mid rule. Two lines of a note set there instead, the first running from
+// the first column across the others, head nothing.
+void TestHeaderBandUnderTopRule() {
+    for (const bool caption : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        HLine(page, 72, 400, 624);
+        if (caption) {
+            AddText(page, "Results of every trial in the study", 76, 612, 10, 0, 0.4f);
+            AddText(page, "second year", 76, 582, 10, 0, 0.4f);
+        } else {
+            AddText(page, "Name", 76, 612);
+            AddText(page, "Cells", 250, 612);
+            AddText(page, "Source", 340, 612);
+            HLine(page, 230, 320, 597);
+            AddText(page, "One", 236, 582);
+            AddText(page, "Two", 290, 582);
+        }
+        HLine(page, 72, 400, 576);
+        const char* const names[] = {"Alpha", "Beta", "Gamma", "Delta"};
+        for (int r = 0; r < 4; ++r) {
+            const float y = 562 - 14.0f * float(r);
+            AddText(page, names[r], 76, y);
+            AddText(page, std::to_string(2 + r) + ".10", 236, y);
+            AddText(page, std::to_string(4 + r) + ".60", 290, y);
+            AddText(page, "lab", 340, y);
+        }
+        HLine(page, 72, 400, 512);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("header band under top rule", md);
+        if (caption)
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Results of every trial in the study") && !Contains(md, "| Results") &&
+                              Contains(md, "| Alpha | 2.10 | 4.60 | lab |"),
+                          898);
+        else
+            RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Name | Cells | Cells | Source |\n| --- | --- | --- | --- |\n"
+                                                             "|  | One | Two |  |\n| Alpha | 2.10 | 4.60 | lab |"),
+                          897);
+    }
+}
+
+// Booktabs rows whose labels start with a dash, figures in the other columns ("- Female  1102
+// (52.73)"): a table, the dashes no list markers. The same dashed lines without figures stay a list.
+void TestDashedRowLabels() {
+    for (const bool figures : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        HLine(page, 72, 400, 716);
+        AddText(page, "Variable", 76, 704);
+        AddText(page, "Cases", 236, 704);
+        AddText(page, "Share", 320, 704);
+        HLine(page, 72, 400, 698);
+        const char* const labels[] = {"Female", "Male", "Young", "Old"};
+        for (int r = 0; r < 4; ++r) {
+            const float y = 684 - 14.0f * float(r);
+            AddText(page, "-", 76, y);
+            AddText(page, labels[r], 84, y);
+            AddText(page, figures ? std::to_string(110 + 7 * r) : std::string("many"), 236, y);
+            AddText(page, figures ? "(" + std::to_string(40 + r) + ".50)" : std::string("some"), 320, y);
+        }
+        HLine(page, 72, 400, 624);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("dashed row labels", md);
+        RAYOPDF_CHECK(figures ? report.tables == 1 && Contains(md, "Female | 110 | (40.50) |") : report.tables == 0, 899);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2685,6 +2756,8 @@ int main(int argc, char** argv) {
     TestHeaderAboveRules();
     TestCloseNumberColumns();
     TestContentsLists();
+    TestHeaderBandUnderTopRule();
+    TestDashedRowLabels();
     std::puts("test_layout_tables: ok");
     return 0;
 }
