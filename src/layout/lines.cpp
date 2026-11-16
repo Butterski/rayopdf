@@ -1177,6 +1177,210 @@ void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t
     page.lines.push_back(line);
 }
 
+// Spacing accents drawn as glyphs of their own over (or, for the cedilla and the ogonek, under) a
+// letter: TeX's \accent with OT1 fonts, and some word processors, which draw the accent before or
+// after its letter. Their combining marks, in the order of kSpacingAccents' rows.
+constexpr uint16_t kAccentMarks[13] = {0x300, 0x301, 0x302, 0x303, 0x304, 0x306, 0x307,
+                                       0x308, 0x30A, 0x30B, 0x30C, 0x327, 0x328};
+constexpr int kAccentDotAbove = 6, kAccentFirstBelow = 11;  // the dot; the cedilla and the ogonek
+// The NFC composition of A-Z then a-z with each accent's mark, 0 where Unicode has none.
+constexpr uint16_t kAccentComposed[13][52] = {
+    // ` grave: U+0300
+    {0x00C0, 0, 0, 0, 0x00C8, 0, 0, 0, 0x00CC, 0, 0, 0, 0, 0x01F8, 0x00D2, 0, 0, 0, 0, 0, 0x00D9, 0, 0x1E80, 0, 0x1EF2, 0,
+     0x00E0, 0, 0, 0, 0x00E8, 0, 0, 0, 0x00EC, 0, 0, 0, 0, 0x01F9, 0x00F2, 0, 0, 0, 0, 0, 0x00F9, 0, 0x1E81, 0, 0x1EF3, 0},
+    // ´ acute: U+0301
+    {0x00C1, 0, 0x0106, 0, 0x00C9, 0, 0x01F4, 0, 0x00CD, 0, 0x1E30, 0x0139, 0x1E3E, 0x0143, 0x00D3, 0x1E54, 0, 0x0154, 0x015A, 0, 0x00DA, 0, 0x1E82, 0, 0x00DD, 0x0179,
+     0x00E1, 0, 0x0107, 0, 0x00E9, 0, 0x01F5, 0, 0x00ED, 0, 0x1E31, 0x013A, 0x1E3F, 0x0144, 0x00F3, 0x1E55, 0, 0x0155, 0x015B, 0, 0x00FA, 0, 0x1E83, 0, 0x00FD, 0x017A},
+    // ˆ circumflex: U+0302
+    {0x00C2, 0, 0x0108, 0, 0x00CA, 0, 0x011C, 0x0124, 0x00CE, 0x0134, 0, 0, 0, 0, 0x00D4, 0, 0, 0, 0x015C, 0, 0x00DB, 0, 0x0174, 0, 0x0176, 0x1E90,
+     0x00E2, 0, 0x0109, 0, 0x00EA, 0, 0x011D, 0x0125, 0x00EE, 0x0135, 0, 0, 0, 0, 0x00F4, 0, 0, 0, 0x015D, 0, 0x00FB, 0, 0x0175, 0, 0x0177, 0x1E91},
+    // ˜ tilde: U+0303
+    {0x00C3, 0, 0, 0, 0x1EBC, 0, 0, 0, 0x0128, 0, 0, 0, 0, 0x00D1, 0x00D5, 0, 0, 0, 0, 0, 0x0168, 0x1E7C, 0, 0, 0x1EF8, 0,
+     0x00E3, 0, 0, 0, 0x1EBD, 0, 0, 0, 0x0129, 0, 0, 0, 0, 0x00F1, 0x00F5, 0, 0, 0, 0, 0, 0x0169, 0x1E7D, 0, 0, 0x1EF9, 0},
+    // ¯ macron: U+0304
+    {0x0100, 0, 0, 0, 0x0112, 0, 0x1E20, 0, 0x012A, 0, 0, 0, 0, 0, 0x014C, 0, 0, 0, 0, 0, 0x016A, 0, 0, 0, 0x0232, 0,
+     0x0101, 0, 0, 0, 0x0113, 0, 0x1E21, 0, 0x012B, 0, 0, 0, 0, 0, 0x014D, 0, 0, 0, 0, 0, 0x016B, 0, 0, 0, 0x0233, 0},
+    // ˘ breve: U+0306
+    {0x0102, 0, 0, 0, 0x0114, 0, 0x011E, 0, 0x012C, 0, 0, 0, 0, 0, 0x014E, 0, 0, 0, 0, 0, 0x016C, 0, 0, 0, 0, 0,
+     0x0103, 0, 0, 0, 0x0115, 0, 0x011F, 0, 0x012D, 0, 0, 0, 0, 0, 0x014F, 0, 0, 0, 0, 0, 0x016D, 0, 0, 0, 0, 0},
+    // ˙ dot above: U+0307
+    {0x0226, 0x1E02, 0x010A, 0x1E0A, 0x0116, 0x1E1E, 0x0120, 0x1E22, 0x0130, 0, 0, 0, 0x1E40, 0x1E44, 0x022E, 0x1E56, 0, 0x1E58, 0x1E60, 0x1E6A, 0, 0, 0x1E86, 0x1E8A, 0x1E8E, 0x017B,
+     0x0227, 0x1E03, 0x010B, 0x1E0B, 0x0117, 0x1E1F, 0x0121, 0x1E23, 0, 0, 0, 0, 0x1E41, 0x1E45, 0x022F, 0x1E57, 0, 0x1E59, 0x1E61, 0x1E6B, 0, 0, 0x1E87, 0x1E8B, 0x1E8F, 0x017C},
+    // ¨ diaeresis: U+0308
+    {0x00C4, 0, 0, 0, 0x00CB, 0, 0, 0x1E26, 0x00CF, 0, 0, 0, 0, 0, 0x00D6, 0, 0, 0, 0, 0, 0x00DC, 0, 0x1E84, 0x1E8C, 0x0178, 0,
+     0x00E4, 0, 0, 0, 0x00EB, 0, 0, 0x1E27, 0x00EF, 0, 0, 0, 0, 0, 0x00F6, 0, 0, 0, 0, 0x1E97, 0x00FC, 0, 0x1E85, 0x1E8D, 0x00FF, 0},
+    // ˚ ring above: U+030A
+    {0x00C5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x016E, 0, 0, 0, 0, 0,
+     0x00E5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x016F, 0, 0x1E98, 0, 0x1E99, 0},
+    // ˝ double acute: U+030B
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0150, 0, 0, 0, 0, 0, 0x0170, 0, 0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0151, 0, 0, 0, 0, 0, 0x0171, 0, 0, 0, 0, 0},
+    // ˇ caron: U+030C
+    {0x01CD, 0, 0x010C, 0x010E, 0x011A, 0, 0x01E6, 0x021E, 0x01CF, 0, 0x01E8, 0x013D, 0, 0x0147, 0x01D1, 0, 0, 0x0158, 0x0160, 0x0164, 0x01D3, 0, 0, 0, 0, 0x017D,
+     0x01CE, 0, 0x010D, 0x010F, 0x011B, 0, 0x01E7, 0x021F, 0x01D0, 0x01F0, 0x01E9, 0x013E, 0, 0x0148, 0x01D2, 0, 0, 0x0159, 0x0161, 0x0165, 0x01D4, 0, 0, 0, 0, 0x017E},
+    // ¸ cedilla: U+0327
+    {0, 0, 0x00C7, 0x1E10, 0x0228, 0, 0x0122, 0x1E28, 0, 0, 0x0136, 0x013B, 0, 0x0145, 0, 0, 0, 0x0156, 0x015E, 0x0162, 0, 0, 0, 0, 0, 0,
+     0, 0, 0x00E7, 0x1E11, 0x0229, 0, 0x0123, 0x1E29, 0, 0, 0x0137, 0x013C, 0, 0x0146, 0, 0, 0, 0x0157, 0x015F, 0x0163, 0, 0, 0, 0, 0, 0},
+    // ˛ ogonek: U+0328
+    {0x0104, 0, 0, 0, 0x0118, 0, 0, 0, 0x012E, 0, 0, 0, 0, 0, 0x01EA, 0, 0, 0, 0, 0, 0x0172, 0, 0, 0, 0, 0,
+     0x0105, 0, 0, 0, 0x0119, 0, 0, 0, 0x012F, 0, 0, 0, 0, 0, 0x01EB, 0, 0, 0, 0, 0, 0x0173, 0, 0, 0, 0, 0},
+};
+
+// The row of kAccentMarks of a glyph text that is one spacing accent, else -1:
+// ` ´ ˆ ˜ ¯ ˘ ˙ ¨ ˚ ˝ ˇ ¸ ˛.
+int SpacingAccent(std::string_view t) {
+    if (t.size() == 1) return t[0] == '`' ? 0 : -1;
+    if (t.size() != 2) return -1;
+    const unsigned char a = static_cast<unsigned char>(t[0]), b = static_cast<unsigned char>(t[1]);
+    if (a == 0xC2) return b == 0xB4 ? 1 : b == 0xAF ? 4 : b == 0xA8 ? 7 : b == 0xB8 ? 11 : -1;
+    if (a != 0xCB) return -1;
+    switch (b) {
+    case 0x86: return 2;
+    case 0x9C: return 3;
+    case 0x98: return 5;
+    case 0x99: return 6;
+    case 0x9A: return 8;
+    case 0x9D: return 9;
+    case 0x87: return 10;
+    case 0x9B: return 12;
+    default: return -1;
+    }
+}
+
+// A letter an accent may sit on: Latin, dotless ı and ȷ included.
+bool AccentBase(uint32_t cp) {
+    if (cp < 0x80) return (cp | 0x20) >= 'a' && (cp | 0x20) <= 'z';
+    return (cp >= 0xC0 && cp <= 0x24F && cp != 0xD7 && cp != 0xF7) || (cp >= 0x1E00 && cp <= 0x1EFF);
+}
+
+// Whether the page text may hold a spacing accent: a ` byte, a lead byte CB, or C2 before B4, AF,
+// A8 or B8 (´ ¯ ¨ ¸; C2 also leads the no-break space and other common Latin-1 signs).
+bool MayHoldAccent(std::string_view text) {
+    const char* const begin = text.data();
+    const size_t n = text.size();
+    if (std::memchr(begin, 0xCB, n) || std::memchr(begin, '`', n)) return true;
+    const char* const end = begin + n;
+    for (const char* at = begin; (at = static_cast<const char*>(std::memchr(at, 0xC2, size_t(end - at)))) != nullptr;) {
+        if (++at == end) break;
+        const unsigned char b = static_cast<unsigned char>(*at);
+        if (b == 0xB4 || b == 0xAF || b == 0xA8 || b == 0xB8) return true;
+    }
+    return false;
+}
+
+bool MathFontGlyph(const PageData& page, const Glyph& g) {
+    return g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0;
+}
+
+// Accents composed with their letters (ComposeAccents): their geometry, in the size of the letter.
+constexpr float kAccentReach = 0.08f;     // the accent's centre within the letter's advance, or this close
+constexpr float kAccentRaise = 0.5f;      // the most an accent above sits above the letter's baseline
+constexpr float kAccentDrop = 0.05f;      // ... and below it; an accent below, both ways
+constexpr float kAccentSizeRatio = 1.3f;  // sizes differ by at most this ratio
+
+// Whether spacing accent `a` (row `accent` of kAccentMarks) sits on letter `b` of its font;
+// `distance` is how far its centre is from the letter's.
+bool AccentOver(const PageData& page, const Glyph& a, const Glyph& b, int accent, float& distance) {
+    if (b.font != a.font || b.dir != a.dir || (b.flags & kGlyphSpace) || ((a.flags ^ b.flags) & kGlyphInvisible))
+        return false;
+    if (!(a.size <= kAccentSizeRatio * b.size && b.size <= kAccentSizeRatio * a.size)) return false;
+    const float cx = (a.u0 + a.u1) / 2, reach = kAccentReach * b.size;
+    if (!(cx >= b.u0 - reach && cx <= b.u1 + reach)) return false;
+    const float dv = a.v - b.v;
+    const bool above = accent < kAccentFirstBelow;
+    if (!(dv >= -kAccentDrop * b.size && dv <= (above ? kAccentRaise : kAccentDrop) * b.size)) return false;
+    uint32_t cp = 0;
+    size_t length = 0;
+    const std::string_view t = page.GlyphText(b);
+    if (!Utf8::Decode(t, 0, cp, length) || length != t.size() || !AccentBase(cp)) return false;
+    distance = std::fabs(cx - (b.u0 + b.u1) / 2);
+    return true;
+}
+
+// Whether glyph `n` is a letter of `b`'s font set beside it in one word (or the spacing accent of
+// such a letter): on its baseline, at most a word gap (kWordGap) away.
+bool LetterBeside(const PageData& page, const Glyph& b, const Glyph& n) {
+    if (n.font != b.font || n.dir != b.dir || (n.flags & kGlyphSpace) || !(std::fabs(n.v - b.v) <= 0.25f * b.size)) return false;
+    if (!(Fmax(n.u0 - b.u1, b.u0 - n.u1) <= kWordGap * b.size)) return false;
+    uint32_t cp = 0;
+    size_t length = 0;
+    const std::string_view t = page.GlyphText(n);
+    return Utf8::Decode(t, 0, cp, length) && (AccentBase(cp) || SpacingAccent(t) >= 0);
+}
+
+// Composes each spacing accent of `vis` (content order) with the letter next to it in that order
+// that it is drawn over (or under) in the same font: the letter's text becomes the NFC precomposed
+// character, else the letter and the combining mark (a dotless ı or ȷ under an accent above becomes
+// i or j); the letter's box grows to the accent's height (not its width), and the accent leaves
+// `vis`, dropped. Math's accents stay apart (layout/math.h): those of math fonts, and TeX's \hat or
+// \bar, drawn in a text font over a letter of a math or another font. With `mathScripts`
+// (--math=latex), whose formulas read an accent over a lone letter themselves, a bold letter takes
+// its accent only with another letter of its font beside it, in a word: \tilde{\mathbf{u}} sets
+// accent and letter in one bold font.
+void ComposeAccents(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
+    if (!MayHoldAccent(page.text)) return;
+    GlyphVector& glyphs = page.glyphs;
+    // A glyph whose text may be a spacing accent: one byte `, or two from C2 or CB.
+    const auto candidate = [&](const Glyph& g) {
+        const uint32_t length = g.textLength;
+        if (length - 1u > 1u || (g.flags & kGlyphSpace) || size_t(g.text) + length > page.text.size()) return false;
+        const unsigned char lead = static_cast<unsigned char>(page.text[g.text]);
+        return length == 1 ? lead == '`' : lead == 0xC2 || lead == 0xCB;
+    };
+    const size_t n = vis.size();
+    size_t k = 0;
+    while (k < n && !candidate(glyphs[vis[k]])) ++k;
+    size_t out = k;
+    for (; k < n; ++k) {
+        Glyph& a = glyphs[vis[k]];
+        const int accent = candidate(a) ? SpacingAccent(page.GlyphText(a)) : -1;
+        if (accent < 0 || MathFontGlyph(page, a)) {
+            vis[out++] = vis[k];
+            continue;
+        }
+        // The letter before it (already in place at out - 1) or after it, the nearer of two.
+        float before = 0, after = 0;
+        const bool b0 = out > 0 && AccentOver(page, a, glyphs[vis[out - 1]], accent, before);
+        const bool b1 = k + 1 < vis.size() && AccentOver(page, a, glyphs[vis[k + 1]], accent, after);
+        if ((!b0 && !b1) || page.text.size() >= (size_t(1) << 30)) {
+            vis[out++] = vis[k];
+            continue;
+        }
+        const bool next = b1 && (!b0 || after < before);
+        Glyph& b = glyphs[next ? vis[k + 1] : vis[out - 1]];
+        if (mathScripts && (b.flags & kGlyphBold)) {
+            // The glyphs before and after the letter, the accent left out.
+            const size_t left = next ? out : out - 1, right = next ? k + 2 : k + 1;
+            if (!((left > 0 && LetterBeside(page, b, glyphs[vis[left - 1]])) ||
+                  (right < vis.size() && LetterBeside(page, b, glyphs[vis[right]])))) {
+                vis[out++] = vis[k];
+                continue;
+            }
+        }
+        uint32_t cp = 0;
+        size_t length = 0;
+        Utf8::Decode(page.GlyphText(b), 0, cp, length);
+        const bool dotless = cp == 0x131 || cp == 0x237;
+        if (dotless && accent < kAccentFirstBelow) cp = cp == 0x131 ? 'i' : 'j';
+        const size_t letter = cp < 0x80 ? (cp >= 'a' ? 26 + cp - 'a' : cp - 'A') : 52;
+        const uint32_t composed = letter < 52 ? kAccentComposed[accent][letter] : 0;
+        const size_t at = page.text.size();
+        if (composed != 0) {
+            Utf8::Append(page.text, composed);
+        } else {
+            Utf8::Append(page.text, cp);
+            if (!(dotless && accent == kAccentDotAbove)) Utf8::Append(page.text, kAccentMarks[accent]);
+        }
+        b.text = static_cast<uint32_t>(at);
+        b.textLength = static_cast<uint16_t>(page.text.size() - at);
+        // The letter keeps its advance: an accent wider than it (an acute over a dotless ı) must not
+        // narrow the word gap after it ("Jiří Sgall").
+        b.vb = Fmin(b.vb, a.vb), b.vt = Fmax(b.vt, a.vt);
+        a.flags |= kGlyphDropped;
+    }
+    vis.resize(out);
+}
+
 // Lines from the placed glyphs `vis` (content order), M the page's min and max.
 template <typename M>
 void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
@@ -1695,7 +1899,9 @@ void BuildLines(PageData& page, bool mathScripts) {
     const bool keepInvisible = !visibleText && invisibleText;
     PlaceScratch& place = PerThread<PlaceScratch>();
     std::vector<uint32_t>& vis = place.vis;
-    if (CollectAndFold(page, vis, keepInvisible))
+    const bool finite = CollectAndFold(page, vis, keepInvisible);
+    ComposeAccents(page, vis, mathScripts);
+    if (finite)
         PlaceGlyphs<FiniteMinMax>(page, vis, mathScripts);
     else
         PlaceGlyphs<CheckedMinMax>(page, vis, mathScripts);

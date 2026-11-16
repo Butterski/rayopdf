@@ -10,6 +10,7 @@
 #include "layout/convert.h"
 #include "layout/glyph_box.h"
 #include "layout/lines.h"
+#include "layout/math.h"
 #include "layout/metadata.h"
 #include "layout/page.h"
 #include "layout/path_box.h"
@@ -1782,6 +1783,126 @@ void TestJsonTurnedBox() {
     RAYOPDF_CHECK(inside && turned && boxes == 2, 1916);
 }
 
+// A glyph of `text` in `font`, its advance [x, x + width] on the baseline y.
+void AddGlyph(PageData& page, std::string_view text, float x, float width, float y, float size, uint16_t font = 0) {
+    Glyph g;
+    g.u0 = x, g.u1 = x + width, g.vb = y - 0.2f * size, g.vt = y + 0.8f * size, g.v = y;
+    g.size = size;
+    g.text = static_cast<uint32_t>(page.text.size());
+    page.text.append(text);
+    g.textLength = static_cast<uint16_t>(text.size());
+    g.font = font;
+    page.glyphs.push_back(g);
+}
+
+std::string FirstLineText(PageData& page, bool mathScripts = false) {
+    BuildLines(page, mathScripts);
+    std::string text;
+    if (!page.lines.empty()) LineText(page, page.lines[0], text);
+    return text;
+}
+
+// A spacing accent drawn over (or under) a letter of its font becomes one character with it.
+void TestSpacingAccents() {
+    {
+        // TeX: the accent first, then a dotless ı under it (\'{\i}); the accent is wider.
+        PageData page = NewPage(1);
+        const float x = AddText(page, "Santamar", 72, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x - 1.1f, 5, 700, 10);  // ´
+        AddGlyph(page, "\xC4\xB1", x, 2.8f, 700, 10);       // ı
+        AddText(page, "a word", x + 2.8f, 700, 10);
+        const std::string text = FirstLineText(page);
+        RAYOPDF_CHECK(text == "Santamar\xC3\xAD" "a word", 1925);  // í
+        // The letter keeps its advance; the accent is no glyph of the line (8 + 1 + 5 glyphs).
+        const Glyph& i = page.glyphs[9];
+        RAYOPDF_CHECK(page.lines.size() == 1 && page.lines[0].count == 14 && i.u0 == x && i.u1 == x + 2.8f &&
+                          (page.glyphs[8].flags & kGlyphDropped) != 0,
+                      1926);
+    }
+    {
+        // The word gap after an accented letter is measured from the letter, not from its wider
+        // accent: on a line with space glyphs (a word break past 0.3 em), 0.33 em after an ı under an
+        // acute that reaches all but 0.02 em of that gap ("Jiří Sgall").
+        PageData page = NewPage(1);
+        const float x = AddText(page, "Pavel and Ji", 72, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x - 1.1f, 7, 700, 10);  // ´
+        AddGlyph(page, "\xC4\xB1", x, 2.8f, 700, 10);       // ı
+        AddText(page, "Sgall", x + 2.8f + 3.3f, 700, 10);
+        RAYOPDF_CHECK(FirstLineText(page) == "Pavel and Ji\xC3\xAD Sgall", 1933);
+    }
+    {
+        // A word processor: the accent after its letter, over it; the raised ring over a capital.
+        PageData page = NewPage(1);
+        float x = AddText(page, "Herna", 72, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x - 4.0f, 3, 700, 10);  // ´ over the a
+        x = AddText(page, "ndez ", x, 700, 10);
+        AddGlyph(page, "\xCB\x9A", x + 1, 3, 702.5f, 10);  // ˚ raised a quarter em
+        AddGlyph(page, "A", x, 5, 700, 10);
+        AddText(page, "ngstr", x + 5, 700, 10);
+        RAYOPDF_CHECK(FirstLineText(page) == "Hern\xC3\xA1ndez \xC3\x85ngstr", 1927);  // á Å
+    }
+    {
+        // The cedilla under its letter; a letter Unicode has no precomposed form of keeps the mark.
+        PageData page = NewPage(1);
+        float x = AddText(page, "avanc", 72, 700, 10);
+        AddGlyph(page, "\xC2\xB8", x - 4.0f, 3, 700, 10);  // ¸ under the c
+        x = AddText(page, "o q", x, 700, 10);
+        AddGlyph(page, "\xC2\xA8", x - 4.0f, 3, 700, 10);  // ¨ over the q
+        RAYOPDF_CHECK(FirstLineText(page) == "avan\xC3\xA7o q\xCC\x88", 1928);  // ç, q + U+0308
+    }
+    {
+        // An accent over no letter stays: between words, and beside a letter it is not over.
+        PageData page = NewPage(1);
+        float x = AddText(page, "the ", 72, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x, 3, 700, 10);
+        x = AddText(page, " key n", x + 3, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x + 0.5f, 3, 700, 10);
+        AddText(page, "t", x + 3.5f, 700, 10);
+        RAYOPDF_CHECK(FirstLineText(page) == "the \xC2\xB4 key n\xC2\xB4t", 1929);
+    }
+    {
+        // Math's accents stay apart: an accent of a math font over its letter, and a text font's
+        // accent over a math font's letter (TeX's \hat{x}).
+        PageData page = NewPage(1);
+        page.fontMath = {static_cast<uint8_t>(MathFont::None), static_cast<uint8_t>(MathFont::Italic)};
+        float x = AddText(page, "with ", 72, 700, 10);
+        AddGlyph(page, "\xCB\x86", x, 5, 700, 10, 1);  // ˆ of the math font
+        AddGlyph(page, "y", x, 5, 700, 10, 1);
+        x = AddText(page, " and ", x + 5, 700, 10);
+        AddGlyph(page, "\xCB\x86", x, 5, 700, 10, 0);  // ˆ of the text font
+        AddGlyph(page, "x", x, 5, 700, 10, 1);
+        RAYOPDF_CHECK(FirstLineText(page) == "with \xCB\x86y and \xCB\x86x", 1930);
+    }
+    // With --math=latex a lone bold letter keeps its accent for the formula's rebuild (TeX's
+    // \tilde{\mathbf{u}}: both of one bold font); a letter of a word, or of regular weight (the
+    // unit Å), takes its accent all the same.
+    const auto lone = [](bool mathScripts) {
+        PageData page = NewPage(1);
+        float x = AddText(page, "Gr", 72, 700, 10);
+        AddGlyph(page, "\xC2\xA8", x, 5, 700, 10);  // ¨ over the o
+        x = AddText(page, "obner ", x, 700, 10);
+        AddGlyph(page, "\xCB\x9C", x, 5, 700, 10, 1);  // ˜ over a lone bold u
+        AddGlyph(page, "u", x, 5, 700, 10, 1);
+        page.glyphs[page.glyphs.size() - 2].flags = page.glyphs.back().flags = kGlyphBold;
+        x = AddText(page, " = 10 ", x + 5, 700, 10);
+        AddGlyph(page, "\xCB\x9A", x + 1, 3, 702.5f, 10);  // ˚ over a lone A
+        AddGlyph(page, "A", x, 5, 700, 10);
+        return FirstLineText(page, mathScripts);
+    };
+    RAYOPDF_CHECK(lone(true) == "Gr\xC3\xB6" "bner \xCB\x9Cu = 10 \xC3\x85" &&
+                      lone(false) == "Gr\xC3\xB6" "bner \xC5\xA9 = 10 \xC3\x85",
+                  1932);
+}
+
+// The same through whole conversions: Helvetica's acute (StandardEncoding \302) kerned over the
+// letter before it, over a dotless i after it, and the cedilla (\313) under a c.
+void TestPdfSpacingAccents() {
+    const std::string md = ConvertPdf(Test::OnePage("BT /F1 12 Tf 72 700 Td [(Herna) 444.5 (\\302) -111.5 (ndez and Santamar)"
+                                                    " 0 (\\302) 305.5 (\\365a avanc) 416.5 (\\313) -83.5 (o.)] TJ ET\n"));
+    Show("pdf accents", md);
+    RAYOPDF_CHECK(Contains(md, "Hern\xC3\xA1ndez and Santamar\xC3\xAD" "a avan\xC3\xA7o."), 1931);
+}
+
 } // namespace
 
 int main() {
@@ -1831,6 +1952,8 @@ int main() {
     TestNotesInFlow();
     TestFigureObstacle();
     TestNumberedListing();
+    TestSpacingAccents();
+    TestPdfSpacingAccents();
     TestMathIsNoHeading();
     TestJustifiedLineStaysWhole();
     TestSmallTitle();

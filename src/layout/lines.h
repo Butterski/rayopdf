@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Glyphs to words and lines (algorithms §4, roadmap D4 step 4): hidden and clipped glyphs dropped,
-// overprinted duplicates folded into one bold glyph (PDFBox / MuPDF style, §4.2), fragments built
-// in content order and merged per baseline and direction, superscripts and subscripts kept in
-// their line, and word breaks from space glyphs and from font-size-relative gaps (MuPDF-style
-// thresholds, §4.1).
+// overprinted duplicates folded into one bold glyph (PDFBox / MuPDF style, §4.2), spacing accents
+// drawn apart over or under a letter of their font (TeX's OT1 \accent, some word processors)
+// composed with it into one glyph (§4.4: NFC, else the letter and its combining mark; math's
+// accents stay apart), fragments built in content order and merged per baseline and direction,
+// superscripts and subscripts kept in their line, and word breaks from space glyphs and from
+// font-size-relative gaps (MuPDF-style thresholds, §4.1).
 #pragma once
 
 #include "layout/page.h"
@@ -26,7 +28,9 @@ constexpr float kMarkerGap = 4.0f;         // a list marker joins the text this 
 // Fills page.lines and page.lineGlyphs from page.glyphs, and page.hiddenGlyphs. Lines come
 // unordered; OrderLines orders them. `mathScripts` (--math=latex) also joins a script's own
 // script to its line: a lone fragment of math-font glyphs at 0.87 of the size of a script glyph
-// of the line or smaller, its baseline from 0.6 em below to 0.9 em above the line's.
+// of the line or smaller, its baseline from 0.6 em below to 0.9 em above the line's; and composes
+// a spacing accent with a bold letter only when another letter of its font is beside it (a word: a
+// formula's \tilde{\mathbf{u}} keeps its accent for the formula's rebuild).
 void BuildLines(PageData& page, bool mathScripts = false);
 
 // Run-in headings (LaTeX \paragraph, the fourth and fifth levels of many templates): in an ordered
