@@ -845,6 +845,20 @@ bool DashWrapped(const PageData& page, const Line& line, std::string_view first)
     return (last.flags & kGlyphSpaceBefore) && page.GlyphText(last) == first;
 }
 
+// A line of three or more rule characters and nothing else ("________", "-----", "═══"): a rule
+// typed as text under a running head or over a foot, no text of the page.
+bool IsRuleLine(const PageData& page, const Line& line) {
+    if (line.count < 3) return false;
+    for (uint32_t k = 0; k < line.count; ++k) {
+        const std::string_view t = page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]]);
+        if (t != "_" && t != "-" && t != "=" && t != "\xE2\x80\x93" && t != "\xE2\x80\x94" && t != "\xE2\x80\x95" &&
+            t != "\xE2\x80\x97" && t != "\xE2\x94\x80" && t != "\xE2\x94\x81" && t != "\xE2\x95\x90" && t != "\xC2\xAF" &&
+            t != "\xE2\x80\xBE")
+            return false;
+    }
+    return true;
+}
+
 struct EdgeRows {
     const FeatureSink* sink = nullptr;  // null: no features reported
     const std::unordered_map<std::string, KeyCount>* counts = nullptr;
@@ -862,9 +876,12 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     edges.texts.clear();
     std::vector<uint32_t> lines;
     lines.reserve(page.lines.size());
+    // The upright lines not removed, rules typed as text left out: a running head is set apart
+    // from the text by the space past its rule. The rule itself stays (DocLayNet's pages hold
+    // such lines as text).
     for (uint32_t i = 0; i < page.lines.size(); ++i) {
         const Line& l = page.lines[i];
-        if (l.dir == 0 && l.count > 0 && !(l.flags & kLineRemoved)) lines.push_back(i);
+        if (l.dir == 0 && l.count > 0 && !(l.flags & kLineRemoved) && !IsRuleLine(page, l)) lines.push_back(i);
     }
     if (lines.empty() || body <= 0) return 0;
     const float h = page.height;

@@ -738,6 +738,22 @@ void TestSparsePageNumber() {
     RAYOPDF_CHECK(Find(md, "Page 11") == std::string::npos && Find(md, "Fig. 6") != std::string::npos, 1865);
 }
 
+// A running head over a rule typed as underscores: the head is set apart from the text past its
+// rule and goes; the text stays.
+void TestTypedRuleUnderHead() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "114 - Jet-Lube Extreme", 53, 746, 10);
+    AddText(pages[0], "Revision date 06-03-2019", 425, 746, 10);
+    AddText(pages[0], std::string(98, '_'), 53, 734, 10);
+    for (int i = 0; i < 30; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the safety data sheet, as it runs on here.", 53,
+                712 - 12.0f * i, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Revision date") == std::string::npos && Find(md, "Jet-Lube") == std::string::npos &&
+                      Find(md, "Body line 0 of") != std::string::npos,
+                  1868);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -773,6 +789,7 @@ int main() {
     TestScanStamps();
     TestEdgeOnlyPage();
     TestSparsePageNumber();
+    TestTypedRuleUnderHead();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
