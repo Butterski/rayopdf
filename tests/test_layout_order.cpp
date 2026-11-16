@@ -319,6 +319,61 @@ void TestAddressesAtEnd() {
     RAYOPDF_CHECK(Find(mixed, "A paper of the field") < Find(mixed, "Department of"), 785);
 }
 
+// An address run's first paragraph, too long for an address line, names an author whose name the
+// author line sets in capitals with an accent ("JÓZSEF" for "József"): the run moves whole.
+void TestAddressesAccentedCapitals() {
+    std::vector<PageData> pages{NewPage(), NewPage()};
+    pages[1].number = 2;
+    AddText(pages[0], "A Title of the Paper", 72, 740, 16);
+    AddText(pages[0], "JÓZSEF FARKAS AND BOB WRITER", 72, 712, 10);
+    AddText(pages[0], "Abstract. We study a question of the test and answer it here.", 72, 684, 9);
+    for (int i = 0; i < 30; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72, 650 - 12.0f * i, 10);
+    for (int i = 0; i < 10; ++i)
+        AddText(pages[1], "More body text on the second page, line " + std::to_string(i) + ".", 72, 700 - 12.0f * i, 10);
+    AddText(pages[1], "References", 72, 560, 12);
+    AddText(pages[1], "[1] A. Author, A paper of the field, Journal 1 (2000), 1-2.", 72, 540, 9);
+    AddText(pages[1],
+            "József Farkas, Division of Computing Science and Mathematics, University of Stirling, "
+            "Stirling FK9 4LA, Scotland, United Kingdom",
+            72, 500, 8);
+    AddText(pages[1], "E-mail address: jf@stir.ac.uk", 72, 488, 8);
+    AddText(pages[1], "Bob Writer, Institute of Beta, Betatown", 72, 464, 8);
+    AddText(pages[1], "E-mail address: bob@beta.org", 72, 452, 8);
+    const std::string md = Run(pages);
+    const size_t first = Find(md, "József Farkas, Division"), abstract = Find(md, "Abstract.");
+    RAYOPDF_CHECK(first != std::string::npos && first < Find(md, "Bob Writer, Institute") && Find(md, "bob@beta.org") < abstract,
+                  1866);
+}
+
+// amsart's labels of several authors' addresses: an author's surname in parentheses starts an
+// address that ends with a full stop, and a web address set in typewriter type (a code block)
+// stands between; the run moves whole.
+void TestAddressesSurnameLabels() {
+    std::vector<PageData> pages{NewPage(), NewPage()};
+    pages[1].number = 2;
+    AddText(pages[0], "A Title of the Paper", 72, 740, 16);
+    AddText(pages[0], "ANN AUTHOR AND BOB WRITER", 72, 712, 10);
+    AddText(pages[0], "Abstract. We study a question of the test and answer it here.", 72, 684, 9);
+    for (int i = 0; i < 30; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72, 650 - 12.0f * i, 10);
+    for (int i = 0; i < 10; ++i)
+        AddText(pages[1], "More body text on the second page, line " + std::to_string(i) + ".", 72, 700 - 12.0f * i, 10);
+    AddText(pages[1], "References", 72, 560, 12);
+    AddText(pages[1], "[1] A. Author, A paper of the field, Journal 1 (2000), 1-2.", 72, 540, 9);
+    AddText(pages[1], "(Author) Department of Mathematics, University of Alpha, Alphaville.", 72, 500, 8);
+    AddText(pages[1], "E-mail address: ann@alpha.edu", 72, 488, 8);
+    const size_t mono = pages[1].glyphs.size();
+    AddText(pages[1], "http://alpha.edu/~ann/", 72, 464, 8);
+    for (size_t i = mono; i < pages[1].glyphs.size(); ++i) pages[1].glyphs[i].flags |= kGlyphMonospace;
+    AddText(pages[1], "(Writer) Institute of Beta, Betatown.", 72, 440, 8);
+    AddText(pages[1], "E-mail address: bob@beta.org", 72, 428, 8);
+    const std::string md = Run(pages);
+    const size_t first = Find(md, "(Author) Department"), url = Find(md, "```\nhttp://alpha.edu"),
+                 abstract = Find(md, "Abstract.");
+    RAYOPDF_CHECK(first < url && url < Find(md, "(Writer) Institute") && Find(md, "bob@beta.org") < abstract, 1867);
+}
+
 // Body lines of `size` points from `top` down, `count` of them, 1.2 em apart, from x = 72.
 void AddBody(PageData& page, int count, float top, float size) {
     for (int i = 0; i < count; ++i)
@@ -669,6 +724,8 @@ int main() {
     TestWideLeading();
     TestParagraphAroundFloat();
     TestAddressesAtEnd();
+    TestAddressesAccentedCapitals();
+    TestAddressesSurnameLabels();
     TestArtifactRows();
     TestNameOverUrl();
     TestDeepFolioHead();

@@ -3,6 +3,7 @@
 
 #include "common/minmax.h"
 #include "common/robust.h"
+#include "common/utf8.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
 
@@ -1170,17 +1171,29 @@ void BlockText(const std::vector<PageData>& pages, const std::vector<BlockLine>&
     }
 }
 
-char AsciiLower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c | 0x20) : c; }
+// The lower case of a Latin letter (ASCII, Latin-1, Latin Extended-A), other code points as they
+// are: "JÓZSEF" in an author line set in capitals is "József" in an address.
+uint32_t FoldLatin(uint32_t cp) {
+    if (cp < 0x80) return cp >= 'A' && cp <= 'Z' ? cp | 0x20 : cp;
+    if (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) return cp + 0x20;
+    if ((cp >= 0x100 && cp <= 0x137) || (cp >= 0x14A && cp <= 0x177)) return cp | 1;
+    if ((cp >= 0x139 && cp <= 0x148) || (cp >= 0x179 && cp <= 0x17E)) return cp + (cp & 1);
+    return cp == 0x178 ? 0xFF : cp;
+}
 
-// `t` starts with `prefix`, ASCII case folded.
+// `t` starts with `prefix`, Latin letters case folded (FoldLatin).
 bool StartsFolded(std::string_view t, std::string_view prefix) {
-    if (t.size() < prefix.size()) return false;
-    for (size_t k = 0; k < prefix.size(); ++k)
-        if (AsciiLower(t[k]) != AsciiLower(prefix[k])) return false;
+    size_t i = 0, k = 0;
+    uint32_t a = 0, b = 0;
+    size_t la = 0, lb = 0;
+    while (Utf8::Decode(prefix, k, b, lb)) {
+        if (!Utf8::Decode(t, i, a, la) || FoldLatin(a) != FoldLatin(b)) return false;
+        i += la, k += lb;
+    }
     return true;
 }
 
-// `hay` holds `needle`, ASCII case folded.
+// `hay` holds `needle`, Latin letters case folded.
 bool ContainsFolded(std::string_view hay, std::string_view needle) {
     if (needle.empty() || hay.size() < needle.size()) return false;
     for (size_t at = 0; at + needle.size() <= hay.size(); ++at)
@@ -1234,9 +1247,12 @@ bool InCapitals(std::string_view t) {
 // Authors' addresses printed after the bibliography (amsart and the classes following it), which
 // the source, and a reader, has under the author line: when the title's author line is set in
 // capitals, the run of paragraphs that ends the document, each short and unpunctuated, an
-// e-mail address, an address label ("E-mail address:") or starting with an author's name, with
-// at least one of the last two kinds among them, moves to before the abstract (or the first
-// heading after the title). `blocks` and `lines` hold the body only (no notes yet).
+// e-mail address, an address label ("E-mail address:") or starting with an author's name (or an
+// author's surname in parentheses, amsart's label of each address of several authors), with at
+// least one of the last two kinds among them, moves to before the abstract (or the first heading
+// after the title). A code block of a line or two holding a web or e-mail address (amsart's
+// \urladdr, set in typewriter type) is an address too. `blocks` and `lines` hold the body only
+// (no notes yet).
 void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines) {
     if (blocks.size() < 3 || blocks[0].kind != BlockKind::Heading || lines[blocks[0].first].page != 0) return;
     std::string text, line, authors;
@@ -1274,18 +1290,24 @@ void MoveAddresses(const std::vector<PageData>& pages, std::vector<Block>& block
     bool named = false;
     while (start - 1 > abstract && blocks.size() - start < kMaxAddressBlocks) {
         const Block& b = blocks[start - 1];
-        if (b.kind != BlockKind::Paragraph || b.count == 0) break;
+        // A code block of a line or two: an address set in typewriter type, else the run's end.
+        const bool code = b.kind == BlockKind::Code && b.count <= 2;
+        if ((b.kind != BlockKind::Paragraph && !code) || b.count == 0) break;
         BlockText(pages, lines, b, text, line);
         std::string_view t = text;
+        const bool parenthesized = !t.empty() && t[0] == '(';
         while (!t.empty() && (t[0] == '(' || t[0] == ' ')) t.remove_prefix(1);
-        const std::string_view name = t.substr(0, t.find_first_of(",)"));
-        const bool author = name.size() > 3 && name.size() <= kMaxName && name.find(' ') != std::string_view::npos &&
-                            ContainsFolded(authors, name);
-        const bool address = HasEmail(t) || AddressLabel(t);
+        const size_t nameEnd = t.find_first_of(",)");
+        const std::string_view name = t.substr(0, nameEnd);
+        const bool surname = parenthesized && nameEnd != std::string_view::npos && t[nameEnd] == ')';
+        const bool author = !code && name.size() > 3 && name.size() <= kMaxName &&
+                            (surname || name.find(' ') != std::string_view::npos) && ContainsFolded(authors, name);
+        const bool address = HasEmail(t) || AddressLabel(t) || (code && HoldsAddress(t));
         const uint32_t cp = LastCodePoint(t);
-        const bool shortLine = t.size() <= kAddressLine && cp != '.' && cp != ';' && cp != ':' && !t.empty() && t[0] != '[';
+        const bool shortLine =
+            !code && t.size() <= kAddressLine && cp != '.' && cp != ';' && cp != ':' && !t.empty() && t[0] != '[';
         if (!author && !address && !shortLine) break;
-        named = named || author || address;
+        named = named || author || (address && !code);
         --start;
     }
     if (!named || start == blocks.size()) return;
