@@ -2256,6 +2256,71 @@ void TestHeaderLinesAtRowPitch() {
     }
 }
 
+// Two header lines between a top and a mid rule at the body's row pitch whose cells are set to the
+// bottom: the last line fills every column, the first leaves the one-line "Model" empty, and
+// "code" goes on from "PDB" in lower case: one header row of wrapped labels. With "Source" in its
+// place every cell of the last line starts a label of its own: two header rows (TeX's rows).
+void TestBottomAlignedHeader() {
+    for (const bool wrapped : {true, false}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        HLine(page, 72, 400, 714);
+        AddText(page, "PDB", 76, 700);
+        AddText(page, "Limit", 150, 700);
+        AddText(page, "Rate", 300, 700);
+        AddText(page, wrapped ? "code" : "Source", 76, 686);
+        AddText(page, "(nm)", 150, 686);
+        AddText(page, "Model", 220, 686);
+        AddText(page, "(%)", 300, 686);
+        HLine(page, 72, 400, 680);
+        const char* const names[] = {"1abc", "2def", "3ghi"};
+        float y = 668;
+        for (int r = 0; r < 3; ++r, y -= 14) {
+            AddText(page, names[r], 76, y);
+            AddText(page, std::to_string(2 + r) + ".10", 150, y);
+            AddText(page, r == 1 ? "Binary" : "None", 220, y);
+            AddText(page, std::to_string(4 + r) + ".60", 300, y);
+        }
+        HLine(page, 72, 400, y + 8);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("bottom-aligned header", md);
+        RAYOPDF_CHECK(report.tables == 1 &&
+                          Contains(md, wrapped ? "| PDB code | Limit (nm) | Model | Rate (%) |\n| --- | --- | --- | --- |\n| 1abc |"
+                                               : "| PDB | Limit |  | Rate |\n| --- | --- | --- | --- |\n| Source | (nm) | Model | (%) |\n"),
+                      1741);
+    }
+    // A header of levels: group labels over fewer than two thirds of the columns ("Analysis"
+    // centred over "df" between "X2" and "P"), the lower-case "df" no text wrapped: two rows.
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 440, 714);
+    AddText(page, "Men", 150, 700);
+    AddText(page, "Women", 220, 700);
+    AddText(page, "Analysis", 322.5f, 700);
+    AddText(page, "N", 150, 686);
+    AddText(page, "N", 220, 686);
+    AddText(page, "X2", 290, 686);
+    AddText(page, "df", 340, 686);
+    AddText(page, "P", 380, 686);
+    HLine(page, 72, 440, 680);
+    const char* const names[] = {"Age", "Stay", "Status"};
+    float y = 668;
+    for (int r = 0; r < 3; ++r, y -= 14) {
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(2 + r) + "1", 150, y);
+        AddText(page, std::to_string(4 + r) + "3", 220, y);
+        AddText(page, std::to_string(5 + r) + ".1", 290, y);
+        AddText(page, std::to_string(1 + r), 340, y);
+        AddText(page, "0.0" + std::to_string(1 + r), 380, y);
+    }
+    HLine(page, 72, 440, y + 8);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("header of levels", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Analysis |") && Contains(md, "| X2 | df | P |"), 1746);
+}
+
 // Rows between booktabs rules whose labels are set smaller than the figures (labels in small
 // capitals, or symbols with subscripts that set their line's size): one table of every row.
 void TestSmallerLabelRows() {
@@ -2750,6 +2815,7 @@ int main(int argc, char** argv) {
     TestGridMostlyInFigure();
     TestProseRiverUnderRule();
     TestHeaderLinesAtRowPitch();
+    TestBottomAlignedHeader();
     TestSmallerLabelRows();
     TestRuleJoints();
     TestMiddleSetRows();

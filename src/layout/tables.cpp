@@ -1701,10 +1701,30 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         }
         // Header lines set as far apart as the body's rows (the median pitch of the body rows' first
         // lines) are rows of their own: a line of units under the labels, as TeX sets two rows. The
-        // lines of one wrapped cell sit closer than rows with padding between them.
+        // lines of one wrapped cell sit closer than rows with padding between them. Cells set to
+        // the bottom with wrapped text are one row whatever their pitch: the last header line fills
+        // every column the header fills, the first holds the first lines of the wrapped cells, two
+        // thirds of the columns at least but not all (a header of levels has fewer group labels
+        // above), and a cell of the last line goes on in lower case from the first line's text over
+        // it (a one-line "Model" beside "PDB" over "code"; TeX's rows of labels each start a cell).
         if (!levels) {
+            uint64_t all = 0;
+            for (size_t r = rowBegin; r < headerEnd; ++r) all |= mask[r - rowBegin];
+            const size_t lastLine = headerEnd - 1;
+            const uint64_t first = mask[0], last = mask[lastLine - rowBegin];
+            bool bottom = last == all && first != all && 3 * Bits(first) >= 2 * Bits(all);
+            bool wrapped = false;
+            uint64_t seen = 0;
+            for (uint32_t k = rows[lastLine].first; bottom && k < rows[lastLine].first + rows[lastLine].count; ++k) {
+                const int c = columns[k - base];
+                if (seen >> c & 1) continue;
+                seen |= uint64_t(1) << c;
+                const unsigned char head = FirstByte(words_[rowWords[k]]);
+                wrapped = wrapped || ((first >> c & 1) && head >= 'a' && head <= 'z');
+            }
+            bottom = bottom && wrapped;
             std::vector<float> pitches;
-            for (size_t s = 1; s < starts.size() && pitches.size() < 256; ++s)
+            for (size_t s = 1; s < starts.size() && pitches.size() < 256 && !bottom; ++s)
                 if (starts[s - 1] >= headerEnd) pitches.push_back(rows[starts[s - 1]].base - rows[starts[s]].base);
             if (!pitches.empty()) {
                 std::nth_element(pitches.begin(), pitches.begin() + static_cast<std::ptrdiff_t>(pitches.size() / 2), pitches.end());
