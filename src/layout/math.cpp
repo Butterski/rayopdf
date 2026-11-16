@@ -623,6 +623,24 @@ struct SortKey {
     uint32_t index;
 };
 
+// Rows: clusters of the baselines of the set's ordinary-size items.
+struct RowBand {
+    float v = 0, bottom = 0, top = 0;
+    float weight = 0;
+};
+
+// Working storage of Expr, Layout and Row per formula depth (a nested call of each is always one
+// level deeper): kept across calls, so a formula allocates only what outgrows them.
+struct DepthScratch {
+    std::vector<uint8_t> used;     // Expr's
+    std::vector<Item> items;       // Expr's
+    std::vector<RowBand> rows;     // Layout's
+    std::vector<uint8_t> marks;    // Row's
+    std::vector<std::string> texts;
+    std::vector<Item> sup, sub;
+    std::string supText, subText;
+};
+
 // The builder's storage, kept by each thread from formula to formula (every use clears it first).
 struct BuilderScratch {
     std::vector<Atom> atoms;
@@ -632,6 +650,7 @@ struct BuilderScratch {
     std::vector<SortKey> sortKeys;
     std::vector<Item> sortItems;
     std::vector<float> baseV, baseW;
+    DepthScratch depths[kMaxFormulaDepth + 1];
 };
 
 class Builder {
@@ -944,8 +963,11 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         if (atoms_[a].font != static_cast<uint8_t>(MathFont::Extension)) em = Fmax(em, atoms_[a].size);
     if (em <= 0)
         for (uint32_t a : atoms) em = Fmax(em, atoms_[a].size);
-    std::vector<uint8_t> used(atoms.size(), 0);
-    std::vector<Item> items;
+    DepthScratch& own = scratch_.depths[depth];
+    std::vector<uint8_t>& used = own.used;
+    used.assign(atoms.size(), 0);
+    std::vector<Item>& items = own.items;
+    items.clear();
     items.reserve(atoms.size() + rules.size());  // a fraction per rule at most, else an item per atom
 
     // Fraction bars (longest first: an outer bar before the bars of its numerator), over- and
@@ -1146,12 +1168,6 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
     return Layout(items, depth, out);
 }
 
-// Rows: clusters of the baselines of the set's ordinary-size items.
-struct RowBand {
-    float v = 0, bottom = 0, top = 0;
-    float weight = 0;
-};
-
 void FindRows(const std::vector<Item>& items, float em, std::vector<RowBand>& rows) {
     rows.clear();
     std::vector<const Item*>& full = PerThread<BuilderScratch>().full;
@@ -1242,7 +1258,7 @@ bool Builder::Layout(std::vector<Item>& items, int depth, std::string& out) {
             return Layout(items, depth + 1, out);
         }
     }
-    std::vector<RowBand> rows;
+    std::vector<RowBand>& rows = scratch_.depths[depth].rows;
     FindRows(items, em, rows);
     if (rows.size() >= 2) {
         // Rows one under the other: aligned equations.
@@ -1403,9 +1419,14 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     std::sort(sortKeys_.begin(), sortKeys_.end(), [](const SortKey& a, const SortKey& b) {
         return a.u0 != b.u0 ? a.u0 < b.u0 : a.v > b.v;
     });
-    sortItems_.clear();
-    for (const SortKey& k : sortKeys_) sortItems_.push_back(std::move(items[k.index]));
-    items.swap(sortItems_);
+    // Items already in order (the permutation is the identity) stay where they are.
+    bool moved = false;
+    for (size_t i = 0; i < sortKeys_.size() && !moved; ++i) moved = sortKeys_[i].index != i;
+    if (moved) {
+        sortItems_.clear();
+        for (const SortKey& k : sortKeys_) sortItems_.push_back(std::move(items[k.index]));
+        items.swap(sortItems_);
+    }
     const float em = EmOf(items);
     // The main baseline: the baseline most ordinary-size ink sits on. The ink that counts is listed
     // once (in item order, so each sum adds in the same order); a weight depends only on a.v, so
@@ -1437,8 +1458,10 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     }
     const size_t n = items.size();
     // 0 base, 1 superscript, 2 subscript, 3 consumed (an accent, a limit).
-    // role and wordPart, and the limits and words below, each in one allocation.
-    std::vector<uint8_t> marks(2 * n, 0);
+    // role and wordPart, and the limits and words below, in this depth's storage.
+    DepthScratch& own = scratch_.depths[depth];
+    std::vector<uint8_t>& marks = own.marks;
+    marks.assign(2 * n, 0);
     uint8_t* const role = marks.data();
     for (size_t i = 0; i < n; ++i) {
         const Item& it = items[i];
@@ -1506,7 +1529,9 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         b.accent = acc.latex;
     }
     // Limits, function words and joined symbols, each per item.
-    std::vector<std::string> texts(3 * n);
+    std::vector<std::string>& texts = own.texts;
+    if (texts.size() < 3 * n) texts.resize(3 * n);
+    for (size_t k = 0; k < 3 * n; ++k) texts[k].clear();
     std::string* const lower = texts.data();
     std::string* const upper = lower + n;
     std::string* const words = upper + n;
@@ -1692,8 +1717,10 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     }
     // Emission: each base with the scripts after it (up to the next base); scripts before the
     // first base are prescripts.
-    std::vector<Item> sup, sub;
-    std::string supText, subText;
+    std::vector<Item>& sup = own.sup;
+    std::vector<Item>& sub = own.sub;
+    std::string& supText = own.supText;
+    std::string& subText = own.subText;
     float lastU1 = -INFINITY;
     size_t i = 0;
     const auto scripts = [&](size_t from, size_t to) -> bool {
