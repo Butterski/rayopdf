@@ -56,6 +56,7 @@ struct Block {
     uint8_t alert = 0;      // AlertKind: the first block of a GitHub alert (quote >= 1)
     uint8_t task = 0;       // list items: 0 none, 1 open, 2 done
     bool ordered = false;   // list items
+    bool closeParen = false; // ordered list items: the enumerator ends in ")" ("4)"), not "."
     bool listParagraph = false; // a further paragraph of the list item before it, at its `depth`
     // Ordered list items: the enumerator's value; comments: the page number; headings: when not
     // 0, the heading is the first `number` glyphs of its line only (a label run in with its

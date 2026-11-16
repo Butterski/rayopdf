@@ -160,7 +160,7 @@ void TestLists() {
     Show("lists", md);
     RAYOPDF_CHECK(Contains(md, "- first item\n- second item\n  - nested item"), 406);
     RAYOPDF_CHECK(Contains(md, "1. one\n2. two"), 407);
-    RAYOPDF_CHECK(Contains(md, "1. letter"), 408);
+    RAYOPDF_CHECK(Contains(md, "- a) letter"), 408);
 }
 
 void TestRunningHeaders() {
@@ -1231,6 +1231,58 @@ void TestVerbatimEnumerators() {
     RAYOPDF_CHECK(Contains(md, "(2) Paid service") && Contains(md, "(iv) Aumento") && !Contains(md, "2. Paid"), 721);
 }
 
+void TestListMarkerText() {
+    // Letters keep their marker as text; "4)" stays "4)" with its printed number.
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "Body text before the list runs long enough to be the body text.", 72, 740, 10);
+    AddText(pages[0], "4) Drainage, flooding, or grading of the land.", 72, 720, 10);
+    AddText(pages[0], "5) Outbuildings or unattached structures here.", 72, 706, 10);
+    AddText(pages[0], "Another paragraph sits between the two lists here.", 72, 680, 10);
+    AddText(pages[0], "(e) No charge has been made to the borrower.", 72, 660, 10);
+    AddText(pages[0], "f. The loan is insured under the program.", 72, 646, 10);
+    std::string md = Run(pages);
+    Show("list marker text", md);
+    RAYOPDF_CHECK(Contains(md, "4) Drainage") && Contains(md, "\n5) Outbuildings") && !Contains(md, "4. Drainage"), 1934);
+    RAYOPDF_CHECK(Contains(md, "- (e) No charge") && Contains(md, "- f. The loan") && !Contains(md, "5. No charge"), 1935);
+
+    // Reference entries numbered in brackets are list items; a citation that starts a line of a
+    // paragraph is not.
+    std::vector<PageData> refs{NewPage(1)};
+    AddText(refs[0], "Earlier work by the group, first described in", 72, 740, 10);
+    AddText(refs[0], "[12] showed the effect for the same samples.", 72, 728, 10);
+    AddText(refs[0], "[1] A. Author, A title of the first paper that runs on to", 72, 700, 10);
+    AddText(refs[0], "a second line, Journal 3 (2001) 1-9.", 82, 688, 10);
+    AddText(refs[0], "[2] B. Author, A second paper, Journal 4 (2002) 2-7.", 72, 676, 10);
+    md = Run(refs);
+    Show("reference entries", md);
+    RAYOPDF_CHECK(Contains(md, "- [1] A. Author, A title of the first paper that runs on to a second line") &&
+                      Contains(md, "\n- [2] B. Author"),
+                  1936);
+    RAYOPDF_CHECK(Contains(md, "described in [12] showed") && !Contains(md, "- [12]"), 1937);
+
+    // A bullet split from its text by a gutter (the nested items' markers start where the text
+    // does, nothing between them and the bullets): its own line, joined with the text beside it.
+    // A dash beside a number alone (a table's zero) takes no text.
+    std::vector<PageData> apart{NewPage(1)};
+    const struct {
+        float x, y;
+        const char* marker;
+        float textX;
+        const char* text;
+    } rows[] = {{72, 700, "\xE2\x80\xA2", 90, "Fruit"},   {90, 682, "\xE2\x80\x93", 102, "Apples"},
+                {90, 664, "\xE2\x80\x93", 102, "Pears"},  {72, 646, "\xE2\x80\xA2", 90, "Vegetables"},
+                {90, 628, "\xE2\x80\x93", 102, "Carrots"}, {90, 610, "\xE2\x80\x93", 102, "Leeks"},
+                {72, 592, "\xE2\x80\xA2", 90, "Grains"},  {72, 574, "\xE2\x80\x93", 90, "5,004"}};
+    for (const auto& row : rows) {
+        AddText(apart[0], row.marker, row.x, row.y, 12);
+        AddText(apart[0], row.text, row.textX, row.y, 12);
+    }
+    md = Run(apart);
+    Show("bullets apart", md);
+    RAYOPDF_CHECK(Contains(md, "- Vegetables\n  - Carrots\n  - Leeks\n- Grains"), 1938);
+    RAYOPDF_CHECK(!Contains(md, "- 5,004"), 1939);
+}
+
 void TestMonospaceDocument() {
     // A page set in a monospace font: its lines make paragraphs, with no code spans.
     std::vector<PageData> pages{NewPage(1)};
@@ -1992,6 +2044,7 @@ int main() {
     TestContentsAndChapterNumbers();
     TestWrappedListingLine();
     TestVerbatimEnumerators();
+    TestListMarkerText();
     TestInlineStyles();
     TestGlyphTextRuns();
     TestAlertAndListings();

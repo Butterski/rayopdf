@@ -55,7 +55,12 @@ struct Info {
     bool hasLetter = false;
     bool rowPeer = false;    // another line of its style shares its baseline (a table row)
     bool pageRef = false;    // a lone page number sits far to its right (a table-of-contents entry)
-    bool verbatimMarker = false;  // a list marker Markdown cannot write ("(2)", "(iv)"): kept as text
+    // A list marker Markdown cannot write: a letter or roman numeral ("a.", "(iv)"), a number in
+    // parentheses or brackets ("(2)", "[12]"). The item keeps it as its text.
+    bool verbatimMarker = false;
+    bool closeParen = false;   // an enumerator ending in ")" ("4)"), which Markdown writes so
+    bool markerAlone = false;  // the marker is the whole line: its text is the next line on its baseline
+    bool bracketed = false;    // a reference entry's number in brackets ("[12]")
     bool numbering = false;  // only a section or item number ("1.5.", "IV", "(3)")
     bool hollowBox = false;  // its marker is "□": an open task box beside done boxes (⊠, ☒)
     float stripX0 = 0, stripX1 = 0;  // a band of shading behind the line alone (stripX1 > stripX0)
@@ -73,6 +78,13 @@ struct Info {
     // ends in a period, and goes on in another style.
     bool runInLabel = false;
     bool listStart() const { return marker != Marker::None; }
+    // No list item after all: the marker is the line's text.
+    void ClearMarker() {
+        marker = Marker::None;
+        skip = 0;
+        task = 0;
+        verbatimMarker = closeParen = markerAlone = bracketed = false;
+    }
 };
 
 uint32_t FirstCodePoint(std::string_view s) {
@@ -587,6 +599,18 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
             if (t != "-" && t != "*" && t != "\xE2\x80\x93" && t != "\xE2\x80\x94") marker = single, skip = 1;
         }
     }
+    // A reference entry's number in brackets ("[12]"): an unordered item that keeps it as text.
+    // BuildBlocks keeps it only beside the entry before or after it.
+    bool bracketed = false;
+    if (marker == Marker::None && scratch.size() >= 3 && scratch.size() <= 5 && scratch.front() == '[' &&
+        scratch.back() == ']' && scratch[1] != '0') {
+        bracketed = true;
+        for (size_t c = 1; c + 1 < scratch.size(); ++c) bracketed = bracketed && scratch[c] >= '0' && scratch[c] <= '9';
+        if (bracketed) {
+            marker = Marker::Bullet;
+            for (size_t c = 1; c + 1 < scratch.size(); ++c) value = value * 10 + static_cast<uint32_t>(scratch[c] - '0');
+        }
+    }
     // A marker needs text after it on this line, unless the marker stands alone.
     if (marker != Marker::None && (skip < line.count || line.count == skip)) {
         // "-" and "*" and dashes are markers only when followed by text.
@@ -596,9 +620,13 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
         info.marker = marker;
         info.value = value;
         info.skip = skip;
-        // "(2)" and "(iv)" have no Markdown form: the item keeps them as its text. ("(a)", LaTeX's
-        // second enumerate level, stays an ordered item like "1." and "a.".)
-        info.verbatimMarker = !scratch.empty() && scratch[0] == '(' && (marker == Marker::Number || marker == Marker::Roman);
+        // Markdown writes "1." and "1)"; any other enumerator, a letter or roman numeral ("a.",
+        // "(iv)") or a number in parentheses ("(2)"), the item keeps as its text, unordered.
+        info.verbatimMarker = bracketed || marker == Marker::Letter || marker == Marker::Roman ||
+                              (marker == Marker::Number && scratch[0] == '(');
+        info.closeParen = marker == Marker::Number && !info.verbatimMarker && scratch.back() == ')';
+        info.bracketed = bracketed;
+        info.markerAlone = skip == line.count;
         info.task = marker == Marker::TaskOpen ? 1 : marker == Marker::TaskDone ? 2 : 0;
         info.hollowBox = marker == Marker::Bullet && page.GlyphText(firstGlyph) == "\xE2\x96\xA1";  // □
         info.textU0 = skip < line.count ? page.glyphs[page.lineGlyphs[line.first + skip]].u0 : line.u1;
@@ -759,6 +787,7 @@ struct RawBlock {
     // A label run in with its paragraph ("Abstract—"): the label's block is the first `take`
     // glyphs of its line; the paragraph's block, on the same line, starts `labelSkip` glyphs in.
     uint32_t take = 0, labelSkip = 0;
+    bool lead = false;  // the first line is a list marker alone, the second its text on its baseline
 };
 
 // A line that starts with the label "Abstract" run in with the abstract's text: the word and a
@@ -1589,11 +1618,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             // A display formula (--math=latex) is no list item, heading number or task.
             if (tl.flags & kLineFormula) {
                 Info& f = infos.back();
-                f.marker = Marker::None;
-                f.skip = 0;
+                f.ClearMarker();
                 f.numbering = false;
-                f.verbatimMarker = false;
-                f.task = 0;
             }
         }
         // Row peers: short lines of the same style side by side on one baseline are cells of a row
@@ -1654,10 +1680,33 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     }
                 }
             }
-            in.marker = Marker::None;
-            in.skip = 0;
-            in.verbatimMarker = false;
+            in.ClearMarker();
             in.textU0 = in.markerU0 = in.u0;
+        }
+        // A number in brackets starts a reference entry only next to another entry in the page's
+        // order, numbered one less or one more, its marker within an em of this one's; a citation
+        // that happens to start a line of a paragraph ("[12] showed that") stays text.
+        {
+            size_t prev = SIZE_MAX;
+            bool prevKept = false;
+            const auto drop = [&](Info& in) {
+                in.ClearMarker();
+                in.textU0 = in.markerU0 = in.u0;
+                in.startsLower = false;
+            };
+            for (size_t i = pageFirst; i < infos.size(); ++i) {
+                Info& in = infos[i];
+                if (!in.bracketed) continue;
+                bool kept = false;
+                if (prev != SIZE_MAX) {
+                    const Info& p = infos[prev];
+                    kept = in.value == p.value + 1 && in.dir == p.dir && std::fabs(in.markerU0 - p.markerU0) <= in.size;
+                    if (!kept && !prevKept) drop(infos[prev]);
+                }
+                prev = i;
+                prevKept = kept;
+            }
+            if (prev != SIZE_MAX && !prevKept) drop(infos[prev]);
         }
         // The page's topmost line, alone in the top 6 % of the page: a running head when set in
         // the body face with a wide gap below it (decided once the body size is known), even on a
@@ -1772,8 +1821,23 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 b.right = Fmax(b.right, in.u1);
                 b.bold = b.bold && (in.flags & kLineAllBold) != 0;
                 continue;
+            } else if (b.first + b.count == i && b.count == 1 && first.markerAlone && in.page == first.page &&
+                       in.dir == first.dir && std::fabs(in.baseline - first.baseline) <= 0.3f * first.size &&
+                       in.u0 >= first.u1 - 0.1f * first.size && in.u0 - first.u1 <= 4 * Fmax(first.size, in.size) &&
+                       in.hasLetter && !in.listStart() && !in.label && in.quoteBars == first.quoteBars &&
+                       !((in.flags | first.flags) & (kLineAnchor | kLineTable | kLineFormula | kLineFurniture))) {
+                // A list marker set apart from its text ("•", a tab, then the text) is the item's
+                // first line; its text, next on its baseline, takes the block's measures. A number
+                // alone beside a dash (a table's zero) is no item's text.
+                b.count++;
+                b.lead = true;
+                b.bodyU0 = in.u0;
+                b.right = Fmax(b.right, in.u1);
+                b.mono = in.mono >= kMonoShare && !monoDocument;
+                b.bold = (in.flags & kLineAllBold) != 0;
+                continue;
             } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument, firstPitch)) {
-                if (b.count == 1) {
+                if (b.count == 1 || (b.lead && b.count == 2)) {
                     b.pitch = last.baseline - in.baseline;
                     b.bodyU0 = in.u0;
                 } else {
@@ -3037,12 +3101,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     markerStack.back() = mu;
                 }
                 block.depth = static_cast<uint8_t>(markerStack.size() - 1);
-                block.ordered = !first.verbatimMarker && (first.marker == Marker::Number ||
-                                                          first.marker == Marker::Letter || first.marker == Marker::Roman);
+                block.ordered = first.marker == Marker::Number && !first.verbatimMarker;
                 block.number = first.value;
+                block.closeParen = first.closeParen;
                 block.task = first.task;
                 if (!first.verbatimMarker) lines[block.first].skip = first.skip;
-                itemTextU0 = first.textU0;
+                itemTextU0 = b.lead ? infos[b.first + 1].u0 : first.textU0;
                 itemMarkerU0 = first.markerU0;
                 itemPage = first.page;
                 itemDepth = block.depth;

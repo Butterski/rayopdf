@@ -246,7 +246,8 @@ void TestKicker() {
 
 void TestRunningTextStyle() {
     // A long list of authors in a smaller size makes that size the most common one; the running
-    // text set larger keeps its lone lines (a reference) as paragraphs, its bold sections headings.
+    // text set larger keeps its lone lines (reference entries) out of the headings, its bold
+    // sections headings.
     std::vector<PageData> paper{NewPage(1), NewPage(2)};
     AddText(paper[0], "1 Introduction", 72, 740, 12, kGlyphBold);
     for (int i = 0; i < 18; ++i)
@@ -259,7 +260,7 @@ void TestRunningTextStyle() {
                 740 - 10.0f * i, 8);
     const std::string md = Run(paper);
     Show("running text style", md);
-    RAYOPDF_CHECK(Contains(md, "\n[1] A. Author et al.") && !Contains(md, "# [1]"), 1822);
+    RAYOPDF_CHECK(Contains(md, "\n- [1] A. Author et al.") && !Contains(md, "# [1]"), 1822);
     RAYOPDF_CHECK(Contains(md, "# 1 Introduction\n"), 1823);
 }
 

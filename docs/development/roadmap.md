@@ -181,6 +181,17 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   (decided 2026-11-11: READoc-dev arXiv `seg_kt` with `--math=latex` 0.9713 → 0.9839, `text_eds`
   +0.0075; synthetic untagged NID and MHS −0.008 on xelatex, xelatex-eisvogel and rayomd-tech,
   whose fixtures keep the definitions at the end; odl unchanged).
+- List items keep their printed markers. Markdown has enumerators only for numbers followed by
+  `.` or `)`: those are written with their printed numbers and delimiters (`4)` stays `4)`, a
+  list may start at any number); any other marker, a letter or roman numeral (`a.`, `(e)`, `iv)`)
+  or a number in parentheses or brackets (`(2)`, `[12]`, a reference entry next to another one
+  numbered in sequence), is kept as the text of an unordered item (`- (e) No charge`), its JSON
+  block `"ordered": false`. A marker set apart from its text on a line of its own (a gutter
+  between them) is the item's first line when the text beside it has a letter (decided
+  2026-11-16, measured against master 82881a6: DocLayNet-dev `list_f1` 0.6305 → 0.7301,
+  `heading_f1` +0.0032; READoc-dev arXiv `head_eds` +0.0102, `text_eds` +0.0014, readoc-dev2
+  arXiv `head_eds` +0.0100, `seg_sp` +0.0012; OmniParseBench-dev text +0.0007; synthetic untagged
+  construct F1 +0.0022; odl NID +0.00005).
 - Images are written as `![alt](<stem>-images/p<page>-<n>.<ext>)`: DCT streams as `.jpg`, JPX
   streams as `.jp2`, everything else decoded to `.png`.
 - Math is Unicode, wrapped in `$…$` only for linear inline math. A formula's script (a raised or

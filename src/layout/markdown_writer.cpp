@@ -1600,7 +1600,8 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             const int depth = std::min<int>(block.depth, 8);
             const int indent = depth == 0 ? 0 : contentColumn[depth - 1];
             out.append(static_cast<size_t>(indent), ' ');
-            std::string marker = block.ordered ? std::to_string(block.number == 0 ? 1 : block.number) + "." : "-";
+            std::string marker =
+                block.ordered ? std::to_string(block.number == 0 ? 1 : block.number) + (block.closeParen ? ")" : ".") : "-";
             out += marker;
             out.push_back(' ');
             contentColumn[depth] = indent + static_cast<int>(marker.size()) + 1;

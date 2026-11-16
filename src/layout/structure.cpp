@@ -1593,6 +1593,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
             b.listParagraph = false;
             b.depth = g.depth;
             b.ordered = g.ordered;
+            b.closeParen = g.closeParen;
             b.number = g.number;
             b.task = g.task;
             fromTree = false;
@@ -1652,8 +1653,17 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
                 while (!marker.empty() && marker.back() == ' ') marker.pop_back();
             }
             uint32_t value = 0;
+            bool verbatim = false;
             const Marker m = marker.empty() ? Marker::None : ParseMarker(marker, value);
-            if (m == Marker::Number || m == Marker::Letter || m == Marker::Roman) {
+            if (m == Marker::Number && marker[0] != '(') {
+                b.ordered = true;
+                b.number = value;
+                b.closeParen = marker.back() == ')';
+            } else if ((m == Marker::Number || m == Marker::Letter || m == Marker::Roman) && skip > 0) {
+                // A letter, a roman numeral or a number in parentheses ("b)", "iv.", "(2)"): no
+                // Markdown enumerator, so the item keeps its label glyphs as its text.
+                verbatim = true;
+            } else if (m == Marker::Number || m == Marker::Letter || m == Marker::Roman) {
                 b.ordered = true;
                 b.number = value;
             } else if (m == Marker::TaskOpen || m == Marker::TaskDone) {
@@ -1663,7 +1673,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
                 b.number = owner->number;
             }
             // A task box right after the marker.
-            if (b.task == 0 && skip < firstLine.count) {
+            if (b.task == 0 && !verbatim && skip < firstLine.count) {
                 std::string word;
                 uint32_t end = skip;
                 while (end < firstLine.count) {
@@ -1683,7 +1693,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
                     skip = end;
                 }
             }
-            first.skip = skip;
+            first.skip = verbatim ? 0 : skip;
             // An item with no label at all that follows another item is that item's next paragraph
             // (a word processor tags a list paragraph's continuation as an item of its own).
             if (marker.empty() && !owner->labelContent && b.task == 0 && !b.ordered && !list.blocks.empty()) {
