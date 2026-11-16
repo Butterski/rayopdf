@@ -318,11 +318,12 @@ rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]   (developer 
 
 `--features` converts IN.pdf on one page thread and writes, one JSON object a line, the feature
 vectors of the decisions small models may learn (`src/layout/features.h`): every edge row the
-furniture rules examine in the outer tenth of a page, `{"page","box":[x0,y0,x1,y1],"text","f":[16
-values],"rules":0|1}` with whether the rules removed it, or every column gap of a candidate
-borderless table run, `{"page","box":[x0,x1],"f":[12 values],"rules":0|1}` with whether the run
-became a table. The rules' decisions are reported, not the edge-row model's (M9); the output is
-that of the same conversion without `--features`.
+furniture rules examine in the outer tenth of a page, `{"page","box":[x0,y0,x1,y1],"text","f":[23
+values],"rules":0|1}` with whether the rules removed it (none on a scanned page whose text lies
+only in its running bands: its lines are stamps, removed without examining rows), or every column
+gap of a candidate borderless table run, `{"page","box":[x0,x1],"f":[12 values],"rules":0|1}` with
+whether the run became a table. The rules' decisions are reported, not the edge-row model's (M9);
+the output is that of the same conversion without `--features`.
 
 `--no-exact` converts the pages of a RayoMD PDF that carries its source (D5 step 1,
 `src/layout/exact.h`; the record's `exact` counter says whether the source was used, and why not).
@@ -507,8 +508,9 @@ clean. (e): reported in the release check.
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn
   as images since 0.2.0; open: Hebrew, Kannada and Arabic quality.
 - **M9 Small models:** met in 0.4.0 ([decision](ocr_ml_decision.md#small-models-in-the-core-m9)):
-  the edge-row model ships with local removals (its rows count as text in every decision and only
-  the blocks they alone make are left out; DocLayNet `furniture_f1` +0.002 on both splits, odl
+  the edge-row model ships with local removals (its rows count as text in every decision; only
+  the blocks they alone make are left out, and after 0.4.0 also those rows at the start or end of
+  a paragraph that keeps two other lines); DocLayNet `furniture_f1` +0.002 on both splits, odl
   instructions +0.24 %). In 0.3.0 it had lowered DocLayNet validation `heading_f1` beyond the
   gate's epsilon; the table-gap model had no negative examples to learn from.
 

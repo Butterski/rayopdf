@@ -632,6 +632,29 @@ void TestDifferentFirstLines() {
     RAYOPDF_CHECK(all, 2156);
 }
 
+// A scanned page (one picture over the whole page) whose text is only lines at its edges: the
+// stamps a repository or a publisher set over the scan are furniture, though the page has fewer
+// lines than the sparse guard asks for; a caption over the scan stays. Without the picture the
+// page keeps its title line (TestSparseMetadata).
+void TestScanStamps() {
+    std::vector<PageData> pages{NewPage()};
+    ImageBox scan;
+    scan.x0 = 0, scan.y0 = 0, scan.x1 = 612, scan.y1 = 792;
+    pages[0].images.push_back(scan);
+    AddText(pages[0], "New Directions, Vol. 11, Art. 4", 242, 763, 10);
+    AddText(pages[0], "The Japan Society of Examples", 22, 22, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "New Directions") == std::string::npos && Find(md, "Japan Society") == std::string::npos, 1862);
+    std::vector<PageData> captioned{NewPage()};
+    captioned[0].images.push_back(scan);
+    AddText(captioned[0], "Repository stamp of the library", 200, 770, 10);
+    AddText(captioned[0], "Figure 3. The scanned plate of the survey", 150, 40, 10);
+    const std::string withCaption = Run(captioned);
+    RAYOPDF_CHECK(Find(withCaption, "Repository stamp") == std::string::npos &&
+                      Find(withCaption, "Figure 3. The scanned plate") != std::string::npos,
+                  1863);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -662,6 +685,7 @@ int main() {
     TestNotesAfterColumns();
     TestCountedPageNumbers();
     TestDifferentFirstLines();
+    TestScanStamps();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

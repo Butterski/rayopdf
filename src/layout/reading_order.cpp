@@ -814,6 +814,8 @@ constexpr float kWideGap = 2.5f;
 constexpr float kWideGapMaxSize = 1.35f;
 constexpr float kWideGapSizeTolerance = 0.05f;
 constexpr uint32_t kWideGapMaxChars = 80;
+// The share of a page one picture covers on a scanned page (RemoveEdgeRows).
+constexpr float kScanPicture = 0.9f;
 
 // The edge rows RemoveEdgeRows examines in the outer kWideGapBand, kept until the page's rules are
 // done: a row the rules keep may still be furniture by the edge-row model (layout/model.h), and a
@@ -863,10 +865,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         const Line& l = page.lines[i];
         if (l.dir == 0 && l.count > 0 && !(l.flags & kLineRemoved)) lines.push_back(i);
     }
-    if (lines.size() < 2 || body <= 0) return 0;
-    std::sort(lines.begin(), lines.end(), [&](uint32_t a, uint32_t b) {
-        return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
-    });
+    if (lines.empty() || body <= 0) return 0;
     const float h = page.height;
     // The horizontal extent of the page's text, against which a row's spread is measured: that of
     // the lines between the running bands, so that a download stamp reaching into the margin does
@@ -880,6 +879,32 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         textLeft = Fmin(textLeft, l.u0), textRight = Fmax(textRight, l.u1);
         inside++;
     }
+    // A scanned page (one picture covering kScanPicture of it) without upright text between the
+    // running bands: its text is a stamp at the edge of the scan (a repository's or a publisher's
+    // line, a licence note), furniture unless a line reads as a caption, is set larger than
+    // kWideGapMaxSize times the body or is longer than a head or a foot. The edge rows of such a
+    // page are not examined (no FeatureSink records).
+    float scan = 0;  // the largest picture's area inside the page
+    if (inside == 0)
+        for (const ImageBox& image : page.images)
+            scan = Fmax(scan, Fmax(0.0f, Fmin(image.x1, page.width) - Fmax(image.x0, 0.0f)) *
+                                  Fmax(0.0f, Fmin(image.y1, h) - Fmax(image.y0, 0.0f)));
+    if (inside == 0 && scan >= kScanPicture * page.width * h) {
+        int removed = 0;
+        for (uint32_t i : lines) {
+            Line& l = page.lines[i];
+            if (l.size > kWideGapMaxSize * body || l.chars > kEdgeMaxChars) continue;
+            LineText(page, l, text);
+            if (IsCaption(text)) continue;
+            l.flags |= kLineRemoved;
+            removed++;
+        }
+        return removed;
+    }
+    if (lines.size() < 2) return 0;
+    std::sort(lines.begin(), lines.end(), [&](uint32_t a, uint32_t b) {
+        return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
+    });
     if (inside < kEdgeMinLines) {
         textLeft = INFINITY, textRight = -INFINITY;
         for (uint32_t i : lines) textLeft = Fmin(textLeft, page.lines[i].u0), textRight = Fmax(textRight, page.lines[i].u1);

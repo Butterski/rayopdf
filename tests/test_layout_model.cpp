@@ -178,6 +178,27 @@ void TestSentenceGuard() {
     RAYOPDF_CHECK(c.score >= kEdgeRowRawTau && c.md.find("Sentinel start C01.") != std::string::npos, 2257);
 }
 
+// A running head the edge-row model takes for furniture that the blocks join to the paragraph
+// continued from the page before (double-spaced text, the head set off by little more than the
+// spacing) leaves that paragraph; the paragraph's other lines stay.
+void TestJoinedHead() {
+    std::vector<PageData> pages{NewPage()};
+    // The head flush with the text's right edge (540), 1.43 ems over double-spaced lines of 12 points.
+    AddText(pages[0], "Communication Between Teachers 39", 342, 729.2f, 12);
+    AddText(pages[0], "special education teachers. Two teachers were selected for interviews from the", 72, 700, 12);
+    for (int i = 1; i < 22; ++i) {
+        const std::string n = (i < 10 ? "0" : "") + std::to_string(i);
+        AddText(pages[0], "line " + n + " of the double spaced thesis text which runs on and on along the", 72,
+                700 - 26.3f * i, 12);
+    }
+    const Converted dropped = Convert(pages, "Communication Between Teachers 39");
+    const Converted kept = Convert(pages, "Communication Between Teachers 39", Furniture::Keep);
+    RAYOPDF_CHECK(dropped.score >= kEdgeRowRawTau && kept.md.find("Communication Between Teachers 39 special") != std::string::npos &&
+                      dropped.md.find("Communication") == std::string::npos &&
+                      dropped.md.compare(0, 27, "special education teachers.") == 0,
+                  2259);
+}
+
 } // namespace
 
 int main() {
@@ -190,5 +211,6 @@ int main() {
     TestModelRemovalIsLocal();
     TestCaptionGuard();
     TestSentenceGuard();
+    TestJoinedHead();
     return 0;
 }

@@ -17,22 +17,41 @@ namespace RayoPdf::Layout {
 
 namespace {
 
+// The lines a paragraph keeps when DropEdgeModelBlocks takes the edge-row model's rows off its
+// start or end: a short block (the lines of a title block) stays whole.
+constexpr uint32_t kTrimmedLines = 2;
+
 // Leaves out the paragraphs and headings made only of rows the edge-row model took for furniture
-// (kLineEdgeModel). Those rows took part in every earlier decision as text, as without the model,
-// so no other block changes; a row inside a block with other lines stays. Returns the lines left
-// out.
+// (kLineEdgeModel), and such rows at the start or the end of a paragraph that keeps at least
+// kTrimmedLines other lines (a running head joined to the paragraph continued from the page
+// before). Those rows took part in every earlier decision as text, as without the model, so no
+// other block changes; a row between other lines of a block stays. Returns the lines left out.
 uint32_t DropEdgeModelBlocks(const std::vector<PageData>& pages, BlockList& list) {
     uint32_t dropped = 0;
-    const auto own = [&](const Block& b) {
-        if ((b.kind != BlockKind::Paragraph && b.kind != BlockKind::Heading) || b.count == 0) return false;
-        for (uint32_t i = b.first; i < b.first + b.count; ++i) {
-            const BlockLine& bl = list.lines[i];
-            if (!(pages[bl.page].lines[bl.line].flags & kLineEdgeModel)) return false;
-        }
-        dropped += b.count;
-        return true;
+    const auto model = [&](uint32_t i) {
+        const BlockLine& bl = list.lines[i];
+        return (pages[bl.page].lines[bl.line].flags & kLineEdgeModel) != 0;
     };
-    list.blocks.erase(std::remove_if(list.blocks.begin(), list.blocks.end(), own), list.blocks.end());
+    size_t kept = 0;
+    for (size_t k = 0; k < list.blocks.size(); ++k) {
+        Block b = list.blocks[k];
+        if ((b.kind == BlockKind::Paragraph || b.kind == BlockKind::Heading) && b.count > 0) {
+            uint32_t lead = 0, trail = 0;
+            while (lead < b.count && model(b.first + lead)) ++lead;
+            if (lead == b.count) {
+                dropped += b.count;
+                continue;
+            }
+            while (model(b.first + b.count - 1 - trail)) ++trail;
+            if (b.kind == BlockKind::Paragraph && b.count - lead - trail >= kTrimmedLines) {
+                b.first += lead;
+                b.count -= lead + trail;
+                dropped += lead + trail;
+            }
+        }
+        list.blocks[kept++] = b;
+    }
+    list.blocks.resize(kept);
     return dropped;
 }
 
