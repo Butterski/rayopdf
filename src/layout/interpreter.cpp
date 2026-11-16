@@ -8,6 +8,7 @@
 #include "layout/path_box.h"
 #include "pdf/content_lexer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -399,6 +400,7 @@ private:
     void SetFontEntry(const PdfValue& entry, double size);
     void ApplyExtGState(const PdfValue& resources, std::string_view name);
     void DoXObject(const PdfValue& resources, std::string_view name, int depth);
+    const PdfValue* FindXObject(const PdfValue& xobjects, std::string_view name);
     void BeginMarked(std::string_view tag, const PdfValue* properties, const PdfValue& resources);
     void EndMarked();
     uint8_t MarkStream();
@@ -446,6 +448,18 @@ private:
     static constexpr size_t kFontMemos = 16;
     FontMemo fontMemo_[kFontMemos];
     bool OneHop(const PdfValue* value) const { return value && (!value->IsRef() || !doc_.Object(value->refNum).IsRef()); }
+    // XObject dictionaries of kIndexedDictionary entries or more looked up more than kIndexAfter
+    // times on the page: their keys sorted with their entry index (FindXObject).
+    struct NameIndex {
+        const void* entries = nullptr;
+        uint32_t count = 0;
+        uint32_t lookups = 0;
+        std::vector<std::pair<std::string_view, uint32_t>> sorted;
+    };
+    static constexpr uint32_t kIndexedDictionary = 64, kIndexAfter = 16;
+    static constexpr size_t kNameIndexes = 4;
+    NameIndex nameIndexes_[kNameIndexes];
+    size_t nextNameIndex_ = 0;
     std::vector<MarkedContent> marked_;
     uint32_t markedOverflow_ = 0;
     int artifactDepth_ = 0;
@@ -1000,9 +1014,33 @@ void Interpreter::ApplyExtGState(const PdfValue& resources, std::string_view nam
     if (doc_.Number(doc_.Get(state, "LW"), width)) gs_.lineWidth = width;
 }
 
+const PdfValue* Interpreter::FindXObject(const PdfValue& xobjects, std::string_view name) {
+    // Small dictionaries, and the first lookups in a large one, read it in order; a large one
+    // looked up again and again gets its keys sorted (with their entry order, so the first of
+    // repeated keys is found, as Find finds it).
+    if (!xobjects.IsDict() || xobjects.count < kIndexedDictionary) return xobjects.Find(name);
+    NameIndex* index = nullptr;
+    for (NameIndex& slot : nameIndexes_)
+        if (slot.entries == xobjects.data && slot.count == xobjects.count) index = &slot;
+    if (!index) {
+        index = &nameIndexes_[nextNameIndex_++ % kNameIndexes];
+        index->entries = xobjects.data, index->count = xobjects.count, index->lookups = 0;
+        index->sorted.clear();
+    }
+    if (++index->lookups <= kIndexAfter) return xobjects.Find(name);
+    const PdfSpan<PdfDictEntry> entries = xobjects.Entries();
+    if (index->sorted.empty()) {
+        index->sorted.reserve(entries.size());
+        for (uint32_t i = 0; i < entries.size(); ++i) index->sorted.emplace_back(entries[i].key, i);
+        std::sort(index->sorted.begin(), index->sorted.end());
+    }
+    const auto it = std::lower_bound(index->sorted.begin(), index->sorted.end(), std::make_pair(name, uint32_t(0)));
+    return it != index->sorted.end() && it->first == name ? &entries[it->second].value : nullptr;
+}
+
 void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, int depth) {
     const PdfValue& xobjects = doc_.Get(resources, "XObject");
-    const PdfValue* entry = xobjects.Find(name);
+    const PdfValue* entry = FindXObject(xobjects, name);
     if (!entry) return;
     const PdfValue& xobject = doc_.Resolve(*entry);
     if (!xobject.IsStream()) return;
