@@ -594,6 +594,7 @@ struct Item {
     Kind kind = Kind::Ord;
     int32_t atom = -1;     // its atom, or -1 for a structure
     bool structure = false;
+    bool lined = false;    // an over- or underline: on its content's baseline, ordinary ink for the row
     bool tall = false;     // a delimiter or operator that spans more than a line
     std::string accent;    // an accent command over it
 };
@@ -910,10 +911,28 @@ float EmOf(const std::vector<Item>& items) {
     float em = 0, any = 0;
     for (const Item& it : items) {
         any = Fmax(any, it.size);
-        if (it.structure || it.tall || it.kind == Kind::BigOp || it.kind == Kind::Piece || it.kind == Kind::Radical) continue;
+        if ((it.structure && !it.lined) || it.tall || it.kind == Kind::BigOp || it.kind == Kind::Piece || it.kind == Kind::Radical) continue;
         em = Fmax(em, it.size);
     }
     return em > 0 ? em : any;
+}
+
+// Whether `cp` is a lowercase letter without an ascender (u, x, α, γ: its ink ends at the
+// x-height), plain or as a mathematical alphanumeric.
+bool XHeightLetter(uint32_t cp) {
+    uint32_t letter = cp;
+    Alphabet alpha = kAlphaNone;
+    MathAlphanumeric(cp, letter, alpha);
+    switch (letter) {
+    case 'a': case 'c': case 'e': case 'g': case 'j': case 'm': case 'n': case 'o': case 'p': case 'q': case 'r':
+    case 's': case 'u': case 'v': case 'w': case 'x': case 'y': case 'z':
+    case 0x3B1: case 0x3B3: case 0x3B5: case 0x3B7: case 0x3B9: case 0x3BA: case 0x3BC: case 0x3BD: case 0x3BF:
+    case 0x3C0: case 0x3C1: case 0x3C2: case 0x3C3: case 0x3C4: case 0x3C5: case 0x3C7: case 0x3C9: case 0x3D6:
+    case 0x3F5:
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_t>& rules, int depth, std::string& out) {
@@ -936,7 +955,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         const float wa = in_.rules[a].u1 - in_.rules[a].u0, wb = in_.rules[b].u1 - in_.rules[b].u0;
         return wa != wb ? wa > wb : a < b;
     });
-    std::vector<uint32_t> num, den, numRules, denRules;
+    std::vector<uint32_t> num, den, numRules, denRules, low;
     // A rule that starts where a radical sign ends is its vinculum, no fraction bar or overline.
     const auto vinculum = [&](const MathRule& rule) {
         for (uint32_t a : atoms) {
@@ -953,7 +972,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         const MathRule& rule = in_.rules[r];
         const float mid = (rule.v0 + rule.v1) / 2;
         if (rule.v1 - rule.v0 > 0.3f * em || rule.u1 - rule.u0 < 0.25f * em) continue;
-        num.clear(), den.clear(), numRules.clear(), denRules.clear();
+        num.clear(), den.clear(), numRules.clear(), denRules.clear(), low.clear();
         // The stack's reach above and below, widened by the bars of nested fractions in it.
         float above = 1.6f * em, below = 1.6f * em;
         const float slack = 0.08f * em;
@@ -974,6 +993,16 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
                 num.push_back(static_cast<uint32_t>(i));
             else if (a.v + 0.6f * a.size < mid && mid - a.v <= below)
                 den.push_back(static_cast<uint32_t>(i));
+            else if (a.v + 0.4f * a.size <= mid && a.v < mid)
+                low.push_back(static_cast<uint32_t>(i));
+        }
+        // TeX sets an overline 3 rule widths over its content: over x-height letters (\overline{u})
+        // that is closer than a fraction's bar to its denominator, so they join the content of a
+        // bar with nothing over it.
+        if (num.empty() && !low.empty()) {
+            bool letters = true;
+            for (uint32_t i : low) letters = letters && XHeightLetter(atoms_[atoms[i]].cp);
+            if (letters) den.insert(den.end(), low.begin(), low.end());
         }
         if (num.empty() && den.empty()) continue;
         Item item;
@@ -1007,6 +1036,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
             if (nearest > 0.5f * em) continue;
             item.latex = num.empty() ? "\\overline{" + denText + "}" : "\\underline{" + numText + "}";
             item.v = atoms_[atoms[side[0]]].v;
+            item.lined = true;
         } else {
             item.latex = "\\frac{" + numText + "}{" + denText + "}";
         }
@@ -1382,12 +1412,13 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // an item on the baseline of the one before it repeats that weight, which never beats it.
     baseV_.clear(), baseW_.clear();
     for (const Item& b : items)
-        if (!b.structure && !b.tall && b.size >= 0.85f * em) baseV_.push_back(b.v), baseW_.push_back(b.u1 - b.u0 + 0.01f);
+        if ((!b.structure || b.lined) && !b.tall && b.size >= 0.85f * em) baseV_.push_back(b.v), baseW_.push_back(b.u1 - b.u0 + 0.01f);
     float mainV = items[0].v, best = -1;
     bool any = false;
     float lastV = 0;
     for (const Item& a : items) {
-        if (a.structure || a.tall || a.kind == Kind::BigOp || a.kind == Kind::Accent || a.kind == Kind::Brace || a.size < 0.85f * em)
+        if ((a.structure && !a.lined) || a.tall || a.kind == Kind::BigOp || a.kind == Kind::Accent || a.kind == Kind::Brace ||
+            a.size < 0.85f * em)
             continue;
         if (any && a.v == lastV) continue;
         any = true, lastV = a.v;
@@ -1950,7 +1981,8 @@ MathFont MathFontOf(std::string_view name) {
         {"eurb", MathFont::Italic},         {"lmmathitalic", MathFont::Italic}, {"lmmathsymbols", MathFont::Symbol},
         {"lmmathextension", MathFont::Extension}, {"rtxmi", MathFont::Italic}, {"txmi", MathFont::Italic},
         {"ntxmi", MathFont::Italic},        {"newtxmi", MathFont::Italic},     {"rpxmi", MathFont::Italic},
-        {"pxmi", MathFont::Italic},         {"txsy", MathFont::Symbol},        {"ntxsy", MathFont::Symbol},
+        {"pxmi", MathFont::Italic},         {"txsyb", MathFont::Blackboard},   {"ntxsyb", MathFont::Blackboard},
+        {"pxsyb", MathFont::Blackboard},    {"txsy", MathFont::Symbol},        {"ntxsy", MathFont::Symbol},
         {"pxsy", MathFont::Symbol},         {"txex", MathFont::Extension},     {"ntxex", MathFont::Extension},
         {"pxex", MathFont::Extension},      {"mnsymbol", MathFont::Symbol},    {"esint", MathFont::Extension},
         {"stmary", MathFont::Symbol},       {"wasy", MathFont::Symbol},        {"tex-matha", MathFont::Symbol},
@@ -1961,8 +1993,9 @@ MathFont MathFontOf(std::string_view name) {
     for (const Prefix& p : kPrefixes)
         if (Starts(name, p.prefix)) return p.font;
     // OpenType math fonts ("LatinModernMath-Regular", "STIXTwoMath", "CambriaMath"), MathDesign's
-    // "...-MathItalic-10" and other "Math" names.
+    // "...-MathItalic-10" and other "Math" names; double-struck alphabets ("BoondoxDoubleStruck").
     if (Holds(name, "mathitalic")) return MathFont::Italic;
+    if (Holds(name, "doublestruck")) return MathFont::Blackboard;
     if (Holds(name, "math")) return MathFont::Unicode;
     return MathFont::None;
 }
@@ -2684,11 +2717,26 @@ int MarkDisplayFormulas(PageData& page) {
         const LineFacts& f = facts[i];
         return f.usable && f.math >= 1 && (f.words == 0 || (f.words <= 2 && f.math >= 3 * f.words + 2));
     };
+    // A line indented from the lines before and after it by `indent` sizes or more.
+    const auto setOff = [&](size_t i, float indent) {
+        bool seen = false;
+        for (const size_t j : {i - 1, i + 1}) {
+            if (j >= n || !facts[j].usable) continue;
+            if (facts[i].u0 < facts[j].u0 + indent * facts[i].size) return false;
+            seen = true;
+        }
+        return seen;
+    };
     std::vector<int32_t> region(n, -1);
     std::vector<std::vector<uint32_t>> regions;
     uint64_t budget = uint64_t(1) << 22;
     for (size_t seed = 0; seed < n; ++seed) {
-        if (region[seed] >= 0 || !candidate(seed) || facts[seed].words > 0) continue;
+        if (region[seed] >= 0 || !candidate(seed)) continue;
+        // A formula with a word or two ("and", "for all") seeds a display only when set apart: well
+        // indented, as TeX centres one (a paragraph's first line is indented less), or indented at
+        // all when it is mostly math.
+        const LineFacts& sf = facts[seed];
+        if (sf.words > 0 && !setOff(seed, 2.5f) && !(sf.math >= 6 * sf.words + 6 && setOff(seed, 0.5f))) continue;
         std::vector<uint32_t> members{static_cast<uint32_t>(seed)};
         region[seed] = static_cast<int32_t>(regions.size());
         LineFacts box = facts[seed];
@@ -2727,13 +2775,13 @@ int MarkDisplayFormulas(PageData& page) {
             }
         }
         // One line alone is a display only when set off from the text around it: indented from
-        // the lines before and after it in reading order.
+        // the lines before and after it in reading order (a seed with words was tested above).
         bool keep = box.math >= 2;
         if (keep && members.size() == 1) {
             const LineFacts& f = facts[seed];
             bool indented = true;
             for (const size_t j : {seed - 1, seed + 1}) {
-                if (j >= n || !facts[j].usable) continue;
+                if (f.words > 0 || j >= n || !facts[j].usable) continue;
                 if (f.u0 < facts[j].u0 + 1.0f * f.size) indented = false;
             }
             keep = indented && f.glyphs >= 3;

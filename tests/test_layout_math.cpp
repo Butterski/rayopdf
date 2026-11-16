@@ -7,8 +7,9 @@
 // math modes (scripts of scripts out of content order), and the arborescence the rebuild falls
 // back on (stacked accents of olmOCR arxiv_math pages, a glyph cloud, not for a paragraph that is
 // a formula alone), mathabx glyphs that a ToUnicode built from T1 glyph names misreads, read back
-// by code, φ, ϕ, ε, ϵ by their code, and a subscript's prime. Exit codes 1550-1599, 2202-2229
-// and 2231-2232.
+// by code, φ, ϕ, ε, ϵ by their code, a subscript's prime, overlines over x-height letters,
+// blackboard fonts by name, a script's script out of content order, and a display formula holding
+// a word. Exit codes 1550-1599, 2202-2233, 2235-2238 and 2240.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -148,6 +149,26 @@ void TestFractions() {
         f.Add("AB", 0, 0, 10, kItalic);
         f.Rule(0, 10, 8.5f, 8.9f);
         Expect(f.Latex(), "\\overline{AB}", 1557);
+    }
+    {
+        // An overline over an x-height letter: TeX sets the bar three rule widths over the
+        // x-height, closer to the letter's baseline than a fraction bar to its denominator's. The
+        // overline stays on the letter's baseline, so the subscript after it is its subscript.
+        Formula f;
+        const float u = f.Add("u", 0, 0, 10, kItalic);
+        f.Add("j", u, -1.5f, 7);
+        f.Rule(0, 5, 5.5f, 5.9f);
+        Expect(f.Latex(), "\\overline{u}_{j}", 2230);
+        // A bar through the middle of a letter is no overline.
+        Formula g;
+        g.Add("u", 0, 0, 10, kItalic);
+        g.Rule(0, 5, 2.4f, 2.8f);
+        Expect(g.Latex(), "u", 2233);
+        // Nor is a bar that low over a letter with an ascender, which reaches it.
+        Formula h;
+        h.Add("d", 0, 0, 10, kItalic);
+        h.Rule(0, 5, 5.5f, 5.9f);
+        Expect(h.Latex(), "d", 2238);
     }
 }
 
@@ -902,6 +923,64 @@ void TestGreekVariants() {
     const std::string named = Convert({page}, MathMode::Latex);
     RAYOPDF_CHECK(named.find("Let $\\phi,\\varphi,\\epsilon$ and $\\phi$ hold.") != std::string::npos, 2225);
 }
+
+// newtx's and pxfonts' AMS-b fonts (txsyb, pxsyb: msbm's encoding, blackboard capitals) and
+// double-struck alphabets are blackboard fonts, not the symbol fonts whose capitals are
+// calligraphic.
+void TestBlackboardFonts() {
+    const uint8_t bb = static_cast<uint8_t>(MathFont::Blackboard);
+    RAYOPDF_CHECK(MathFontByte("txsyb") == bb && MathFontByte("pxsyb") == bb &&
+                      MathFontByte("BoondoxDoubleStruck-Regular") == bb && MathFontByte("txsys") == kSymbol &&
+                      MathFontByte("txsya") == kSymbol,
+                  2235);
+    Formula f;
+    const float u = f.Add("R", 0, 0, 10, kBlackboard);
+    f.Add("d", u, 4, 7);
+    Expect(f.Latex(), "\\mathbb{R}^{d}", 2236);
+}
+
+// A script's own script out of content order (Z^{W^{l}}): the lone fragment l joins W's fragment,
+// which then joins Z's line; l goes along with it instead of being lost.
+void TestScriptChain() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic};
+    float x = AddText(page, "Let ", 72, 700, 10);
+    const float z = AddText(page, "Z", x, 700, 10.9f, 1);
+    AddText(page, " be open.", z + 18, 700, 10);
+    // l drawn before W, as a fragment of its own.
+    AddText(page, "l", z + 5.5f, 707.3f, 6, 1);
+    AddText(page, "W", z + 0.5f, 704.5f, 8, 1);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    const char* want = "$Z^{W^{l}}$";
+    if (latex.find(want) == std::string::npos) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find(want) != std::string::npos, 2237);
+}
+
+// A display formula holding a word ("a = b and c = d"), centred apart from the text around it,
+// is a display.
+void TestDisplayWithWord() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic};
+    AddText(page, "We assume for the rest of this section that", 72, 700, 10);
+    float x = AddText(page, "a", 220, 680, 10, 1);
+    x = AddText(page, "=", x + 3, 680, 10);
+    x = AddText(page, "b", x + 3, 680, 10, 1);
+    x = AddText(page, " and ", x, 680, 10);
+    x = AddText(page, "c", x, 680, 10, 1);
+    x = AddText(page, "=", x + 3, 680, 10);
+    AddText(page, "d", x + 3, 680, 10, 1);
+    AddText(page, "hold for every pair of the families we study here.", 72, 660, 10);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    const bool display = latex.find("\n$$a=b") != std::string::npos && latex.find("c=d$$\n") != std::string::npos;
+    if (!display) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(display, 2240);
+}
 } // namespace
 
 int main() {
@@ -923,6 +1002,9 @@ int main() {
     TestTreeAlone();
     TestMathabx();
     TestGreekVariants();
+    TestBlackboardFonts();
+    TestScriptChain();
+    TestDisplayWithWord();
     std::puts("test_layout_math: ok");
     return 0;
 }

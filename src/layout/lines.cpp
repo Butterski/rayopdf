@@ -1572,6 +1572,15 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
             extra.emplace_back();
         }
         extra[extraOf[best]].push_back(members[small.first]);
+        // With `mathScripts`, fragments that joined this one before it joined a line go with it
+        // (a merged group is written with no line of its own): the l of Z^{W^{l}}. The default
+        // output keeps its lines as they were.
+        if (mathScripts && extraOf[s] != kEmpty) {
+            std::vector<uint32_t>& from = extra[extraOf[s]];
+            std::vector<uint32_t>& to = extra[extraOf[best]];
+            to.insert(to.end(), from.begin(), from.end());
+            from.clear();
+        }
     }
 
     // Proto lines in `proto`, which becomes the page's lineGlyphs: the lines split from them below
