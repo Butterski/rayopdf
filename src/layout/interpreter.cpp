@@ -432,6 +432,20 @@ private:
     Matrix pageMatrix_;  // default user space to the upright page
 
     std::vector<const Text::Font*> fontIds_;
+    // Tf's last fonts by resource dictionary and name: the dictionary by its entries (arena storage
+    // stays put and unchanged while the page is read), the font and its id as SetFont found them.
+    // Kept only where no lookup on the way could count a limit hit (no reference chains).
+    struct FontMemo {
+        const void* entries = nullptr;
+        uint32_t count = 0;
+        uint8_t nameSize = 0;
+        char name[19] = {};
+        const Text::Font* font = nullptr;
+        uint16_t id = 0;
+    };
+    static constexpr size_t kFontMemos = 16;
+    FontMemo fontMemo_[kFontMemos];
+    bool OneHop(const PdfValue* value) const { return value && (!value->IsRef() || !doc_.Object(value->refNum).IsRef()); }
     std::vector<MarkedContent> marked_;
     uint32_t markedOverflow_ = 0;
     int artifactDepth_ = 0;
@@ -922,13 +936,35 @@ void Interpreter::Paint(bool fill, bool stroke) {
 
 bool Interpreter::SetFont(const PdfValue& resources, std::string_view name, double size) {
     gs_.fontSize = std::isfinite(size) ? size : 0;
-    const PdfValue& fontsDict = doc_.Get(resources, "Font");
+    const PdfValue& own = doc_.Resolve(resources);
+    FontMemo* memo = nullptr;
+    if (own.IsDict() && !name.empty() && name.size() <= sizeof(FontMemo::name)) {
+        memo = &fontMemo_[(static_cast<unsigned char>(name.back()) + name.size()) % kFontMemos];
+        if (memo->entries == own.data && memo->count == own.count && memo->nameSize == name.size() &&
+            std::memcmp(memo->name, name.data(), name.size()) == 0) {
+            gs_.font = memo->font;
+            gs_.fontId = memo->id;
+            gs_.fontMath = memo->id < page_.fontMath.size() ? static_cast<uint8_t>(page_.fontMath[memo->id] & kMathFontClass) : 0;
+            return true;
+        }
+    }
+    // As doc_.Get(resources, "Font"): `own` is resolved already.
+    const PdfValue* fonts = own.Find("Font");
+    const PdfValue& fontsDict = fonts ? doc_.Resolve(*fonts) : doc_.Get(own, "Font");
     const PdfValue* entry = fontsDict.Find(name);
     if (!entry) {
         gs_.font = nullptr;
         return false;
     }
     SetFontEntry(*entry, size);
+    if (memo && gs_.fontId < fontIds_.size() && OneHop(fonts) && OneHop(entry)) {
+        memo->entries = own.data;
+        memo->count = own.count;
+        memo->nameSize = static_cast<uint8_t>(name.size());
+        std::memcpy(memo->name, name.data(), name.size());
+        memo->font = gs_.font;
+        memo->id = gs_.fontId;
+    }
     return true;
 }
 
