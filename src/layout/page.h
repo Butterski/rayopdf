@@ -245,8 +245,8 @@ struct UnsetAllocator : std::allocator<T> {
 };
 using GlyphVector = std::vector<Glyph, UnsetAllocator<Glyph>>;
 
-// A math font's glyph without text or with a code guessed as a space, any glyph of a mathabx font,
-// and its code (PageData::mathCodes).
+// A math font's glyph without text or with a code guessed as a space, any glyph of a mathabx or
+// kMathFontCoded font, and its code (PageData::mathCodes).
 struct MathCode {
     uint32_t glyph = 0;  // index into PageData::glyphs
     uint8_t code = 0;
@@ -273,11 +273,11 @@ struct PageData {
     // (Glyph::mcStream), at most kMaxMarkStreams.
     std::vector<uint32_t> markStreams;
     // Per page-local font (Glyph::font): its MathFont class (layout/math.h), from its name, with
-    // the bits kMathFontNamed and kMathFontAbx; fonts past the end are text fonts.
+    // the bits kMathFontNamed, kMathFontAbx and kMathFontCoded; fonts past the end are text fonts.
     std::vector<uint8_t> fontMath;
-    // Glyphs of math fonts left without text (kGlyphUnmapped) and every glyph of a mathabx font,
-    // with their one-byte code: --math=latex reads them through TeX's font encodings (layout/math.h
-    // PrepareMathGlyphs).
+    // Glyphs of math fonts left without text (kGlyphUnmapped) and every glyph of a mathabx or
+    // kMathFontCoded font, with their one-byte code: --math=latex reads them through TeX's font
+    // encodings (layout/math.h PrepareMathGlyphs).
     std::vector<MathCode> mathCodes;
     // Tagged formulas with LaTeX alternate text (the tagged path's Prepare), and per glyph the
     // formula it belongs to: index + 1 into formulaAlts, 0 for none; empty when the page has none

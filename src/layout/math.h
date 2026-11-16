@@ -73,8 +73,15 @@ constexpr uint8_t kMathFontNamed = 0x80;
 constexpr uint8_t kMathFontAbx = 0x30;
 constexpr uint8_t kMathFontAbxA = 0x10, kMathFontAbxB = 0x20, kMathFontAbxX = 0x30;
 constexpr uint8_t kMathFontClass = 0x0F;
+// PageData::fontMath bit: a TeX math font whose glyph texts do not follow its codes everywhere:
+// the Old Arrows font OAMathSymbols (cmsy10's codes under a WinAnsi /Encoding, so that → reads
+// "!") and newtx's txexs (cmex10's codes, with parenthesis pieces at 0xA9-0xAE and the large
+// operators again 125 codes up, which its ToUnicode leaves out and WinAnsi guesses). PrepareMathGlyphs
+// reads a glyph whose text is nothing or its code's WinAnsi character by its code (CodedSymbol).
+constexpr uint8_t kMathFontCoded = 0x40;
 
-// The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf and the mathabx bits.
+// The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf, the mathabx bits and
+// kMathFontCoded.
 uint8_t MathFontByte(std::string_view baseName);
 
 // Whether a glyph's text is φ (U+03C6), ϕ (U+03D5), ε (U+03B5) or ϵ (U+03F5): the letters TeX has

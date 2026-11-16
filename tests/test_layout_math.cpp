@@ -11,8 +11,9 @@
 // blackboard fonts by name, a script's script out of content order, a display formula holding
 // a word, TeX font codes KaTeX's tables leave out or WinAnsi guesses as a space (\Bigg(,
 // \mapstochar, \lhook), stacked bar pieces, \not\in and \notin, \cong, extensible
-// arrows with labels, \longmapsto, and italic and bold letters an inline formula takes. Exit
-// codes 1550-1599 and 2202-2248.
+// arrows with labels, \longmapsto, italic and bold letters an inline formula takes, and fonts
+// whose texts do not follow their codes (OAMathSymbols, newtx's txexs). Exit codes 1550-1599,
+// 2202-2249 and 2350-2351.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -1115,6 +1116,91 @@ void TestInlineLetters() {
     run = Runs("so T \xE2\x89\x83 N here", "..mmb....", store);
     RAYOPDF_CHECK(run[2] == 5, 2234);
 }
+
+// Fonts whose texts do not follow their TeX codes (kMathFontCoded): the Old Arrows font
+// OAMathSymbols under a WinAnsi /Encoding (cmsy10's → at 0x21 reads "!", \mapstochar at 0x37
+// "7"), and newtx's txexs, whose large operators past 0x7F its ToUnicode leaves to the WinAnsi
+// guess (∏ at 0xD6 reads "Ö") and gives others a variation selector (∑ as U+2211 U+FE01).
+void TestCodedFonts() {
+    const uint8_t arrows = static_cast<uint8_t>(kSymbol | kMathFontCoded), ex = static_cast<uint8_t>(kExtension | kMathFontCoded);
+    RAYOPDF_CHECK(MathFontByte("OAMathSymbols10") == arrows && MathFontByte("txexs") == ex &&
+                      MathFontByte("txex") == kExtension && MathFontByte("TeX-matha10") == (kSymbol | kMathFontAbxA),
+                  2249);
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, arrows, ex};
+    const auto code = [&page](std::string_view text, uint8_t value, float x, float y, uint16_t font, bool guessed) {
+        page.mathCodes.push_back(MathCode{static_cast<uint32_t>(page.glyphs.size()), value});
+        const float end = AddText(page, text, x, y, 10, font);
+        if (guessed) page.glyphs.back().flags = static_cast<uint16_t>(page.glyphs.back().flags | kGlyphGuessed);
+        return end;
+    };
+    float x = AddText(page, "Let ", 72, 700, 10);
+    x = AddText(page, "c", x, 700, 10, 1);
+    x = AddText(page, ":", x, 700, 10);
+    x = AddText(page, "X", x + 2, 700, 10, 1);
+    x = code("!", 0x21, x + 2, 700, 2, false);
+    x = AddText(page, "S", x + 2, 700, 10, 1);
+    x = AddText(page, " and ", x, 700, 10);
+    x = AddText(page, "x", x, 700, 10, 1);
+    code("7", 0x37, x + 2, 700, 2, false);
+    page.glyphs.back().u1 = x + 2;  // \mapstochar has no width
+    x = code("!", 0x21, x + 2, 700, 2, false);
+    x = AddText(page, "y", x + 2, 700, 10, 1);
+    x = AddText(page, " be maps, ", x, 700, 10);
+    x = AddText(page, "p", x, 700, 10, 1);
+    x = AddText(page, "=", x + 2, 700, 10);
+    x = code("\xC3\x96", 0xD6, x + 2, 709, 3, true);  // Ö: ∏ hangs from its top
+    x = AddText(page, "a", x + 1, 700, 10, 1);
+    x = AddText(page, " and ", x, 700, 10);
+    x = AddText(page, "q", x, 700, 10, 1);
+    x = AddText(page, "=", x + 2, 700, 10);
+    x = code("\xE2\x88\x91", 0xD5, x + 2, 709, 3, false);
+    page.text.append("\xEF\xB8\x81");  // its text ∑ U+FE01, in one glyph
+    page.glyphs.back().textLength = static_cast<uint16_t>(page.glyphs.back().textLength + 3);
+    x = AddText(page, "b", x + 1, 700, 10, 1);
+    AddText(page, " hold.", x, 700, 10);
+    const std::string md = Convert({page}, MathMode::Latex);
+    const bool oa = md.find("$c:X\\rightarrow S$") != std::string::npos && md.find("$x\\mapsto y$") != std::string::npos;
+    const bool tx = md.find("$p=\\prod a$") != std::string::npos && md.find("$q=\\sum b$") != std::string::npos;
+    if (!oa || !tx) std::fprintf(stderr, "latex page:\n%s\n", md.c_str());
+    RAYOPDF_CHECK(oa, 2350);
+    RAYOPDF_CHECK(tx, 2351);
+}
+
+// A display formula holding a word ("F = ∑ a and G = ∑ b") whose operators' limits are lines of
+// their own, next to it in reading order: it is set off from the text around them, not from its
+// limits, and is one display.
+void TestDisplayWordLimits() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, kSymbol, kExtension};
+    AddText(page, "The two polynomials of this section are written in the form", 72, 720, 10);
+    float x = AddText(page, "F", 180, 690, 10, 1);
+    x = AddText(page, "=", x + 3, 690, 10);
+    const float sum1 = x + 3;
+    x = AddText(page, "\xE2\x88\x91", sum1, 697, 10, 3);  // ∑ hangs from its top
+    x = AddText(page, "a", x + 1, 690, 10, 1);
+    x = AddText(page, " and ", x, 690, 10);
+    x = AddText(page, "G", x, 690, 10, 1);
+    x = AddText(page, "=", x + 3, 690, 10);
+    const float sum2 = x + 3;
+    x = AddText(page, "\xE2\x88\x91", sum2, 697, 10, 3);
+    AddText(page, "b", x + 1, 690, 10, 1);
+    AddText(page, "m", sum1 + 1, 702, 7, 1);
+    AddText(page, "n", sum2 + 1, 702, 7, 1);
+    AddText(page, "k=0", sum1 - 2, 682, 7, 1);
+    AddText(page, "k=0", sum2 - 2, 682, 7, 1);
+    AddText(page, "where the coefficients are numbers of the field we work over.", 72, 660, 10);
+    const std::string md = Convert({page}, MathMode::Latex);
+    const bool display = md.find("$$F=\\sum_{k=0}^{m}a") != std::string::npos && md.find("G=\\sum_{k=0}^{n}b$$") != std::string::npos;
+    if (!display) std::fprintf(stderr, "latex page:\n%s\n", md.c_str());
+    RAYOPDF_CHECK(display, 2352);
+}
 } // namespace
 
 int main() {
@@ -1145,6 +1231,8 @@ int main() {
     TestStackedTilde();
     TestExtensibleArrow();
     TestInlineLetters();
+    TestCodedFonts();
+    TestDisplayWordLimits();
     std::puts("test_layout_math: ok");
     return 0;
 }

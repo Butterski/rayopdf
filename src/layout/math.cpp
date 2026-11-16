@@ -397,6 +397,20 @@ bool TexSymbol(MathFont font, uint32_t guess, uint32_t& cp, uint8_t& family) {
     return TexCodeSymbol(font, WinAnsiCode(guess), cp, family);
 }
 
+// The symbol of code `code` of a kMathFontCoded font: TeX's encoding of its class (OAMathSymbols
+// follows cmsy10), and for newtx's txexs (the extension font of class Extension) its own codes
+// past 0x7F: parenthesis pieces at 0xA9-0xAE (left and right top, bottom, extension) and the
+// large operators of cmex10's 0x48-0x61 at 125 codes up (∑ at 0xD5, ∏ at 0xD6).
+bool CodedSymbol(MathFont font, int code, uint32_t& cp, uint8_t& family) {
+    if (code < 0 || code > 0xFF) return false;
+    if (code < 0x80) return TexCodeSymbol(font, code, cp, family);
+    if (font != MathFont::Extension) return false;
+    static constexpr uint8_t kPieces[6] = {0x30, 0x31, 0x40, 0x41, 0x42, 0x43};
+    if (code >= 0xA9 && code <= 0xAE) return TexCodeSymbol(font, kPieces[code - 0xA9], cp, family);
+    if (code >= 0x48 + 125 && code <= 0x61 + 125) return TexCodeSymbol(font, code - 125, cp, family);
+    return false;
+}
+
 // mathabx's encodings (mathabx.dcl, Anthony Phan): per code, the character the T1 (Cork) text
 // encoding gives it (what a ToUnicode built from the fonts' glyph names reads), its symbol, and
 // for TeX-mathx's delimiters their TexFamily by size (Size1, \big, for the first of each).
@@ -2152,7 +2166,7 @@ MathFont MathFontOf(std::string_view name) {
         {"stmary", MathFont::Symbol},       {"wasy", MathFont::Symbol},        {"tex-matha", MathFont::Symbol},
         {"tex-mathb", MathFont::Symbol},    {"tex-mathx", MathFont::Extension}, {"bbold", MathFont::Blackboard},
         {"dsrom", MathFont::Blackboard},    {"bbm", MathFont::Blackboard},     {"mtextra", MathFont::Symbol},
-        {"mt extra", MathFont::Symbol},
+        {"mt extra", MathFont::Symbol},     {"oamathsymbols", MathFont::Symbol},
     };
     for (const Prefix& p : kPrefixes)
         if (Starts(name, p.prefix)) return p.font;
@@ -2166,7 +2180,9 @@ MathFont MathFontOf(std::string_view name) {
 
 uint8_t MathFontByte(std::string_view name) {
     const uint8_t font = static_cast<uint8_t>(MathFontOf(name));
-    if (font == 0 || !Starts(name, "tex-math") || name.size() < 9) return font;
+    if (font == 0) return font;
+    if (Starts(name, "oamathsymbols") || Starts(name, "txexs")) return static_cast<uint8_t>(font | kMathFontCoded);
+    if (!Starts(name, "tex-math") || name.size() < 9) return font;
     const char which = Lower(name[8]);
     return static_cast<uint8_t>(font | (which == 'a' ? kMathFontAbxA : which == 'b' ? kMathFontAbxB : which == 'x' ? kMathFontAbxX : 0));
 }
@@ -2240,14 +2256,15 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
 
 void PrepareMathGlyphs(PageData& page) {
     // Math font glyphs without text whose code TeX's encodings know get its symbol as their text,
-    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character, and
-    // code 0x20 that WinAnsi guessed as a space (cmex10's \Bigg(, cmsy10's ←, cmmi10's ψ), which
-    // then is no space. A math italic font's φ, ϕ,
+    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character,
+    // glyphs of kMathFontCoded fonts whose text is their code's WinAnsi character, and code 0x20
+    // that WinAnsi guessed as a space (cmex10's \Bigg(, cmsy10's ←, cmmi10's ψ), which then is no
+    // space. A math italic font's φ, ϕ,
     // ε and ϵ from ToUnicode take the form of their code (TeX's "phi" at 0x1E is \phi ϕ, "phi1" at
     // 0x27 \varphi φ, which ToUnicode maps built on the Adobe Glyph List swap).
-    // The size families of the glyphs read from a guessed space (cmex10's \Bigg( is 3 em high),
-    // by glyph, in page order: their ink below takes it as a guessed glyph's does.
-    std::vector<std::pair<uint32_t, uint8_t>> spaceFamilies;
+    // The size families of the glyphs read from a guessed space or a coded font (cmex10's \Bigg(
+    // is 3 em high), by glyph, in page order: their ink below takes it as a guessed glyph's does.
+    std::vector<std::pair<uint32_t, uint8_t>> codeFamilies;
     for (const MathCode& c : page.mathCodes) {
         if (c.glyph >= page.glyphs.size() || page.text.size() >= (size_t(1) << 31)) continue;
         Glyph& g = page.glyphs[c.glyph];
@@ -2272,7 +2289,19 @@ void PrepareMathGlyphs(PageData& page) {
                 continue;
             cp = MathCharacter(cp, MathFont::Symbol, false);
             if (cp >= 0xE000 && cp <= 0xF8FF) continue;
-            if (family != 0) spaceFamilies.emplace_back(c.glyph, family);
+            if (family != 0) codeFamilies.emplace_back(c.glyph, family);
+        } else if (page.fontMath[g.font] & kMathFontCoded) {
+            if (g.textLength != 0 && !(g.flags & kGlyphUnmapped)) {
+                const std::string_view t = page.GlyphText(g);
+                uint32_t have = 0;
+                size_t length = 0;
+                if (!Utf8::Decode(t, 0, have, length) || length != t.size() || WinAnsiCode(have) != c.code) continue;
+            }
+            uint8_t family = 0;
+            if (!CodedSymbol(static_cast<MathFont>(page.fontMath[g.font] & kMathFontClass), c.code, cp, family)) continue;
+            cp = MathCharacter(cp, MathFont::Symbol, false);
+            if (cp >= 0xE000 && cp <= 0xF8FF) continue;
+            if (family != 0) codeFamilies.emplace_back(c.glyph, family);
         } else if (g.textLength != 0 && !(g.flags & kGlyphUnmapped)) {
             const uint8_t font = page.fontMath[g.font];
             if ((font & kMathFontClass) != static_cast<uint8_t>(MathFont::Italic) || (font & kMathFontNamed)) continue;
@@ -2315,9 +2344,9 @@ void PrepareMathGlyphs(PageData& page) {
             if (!TexSymbol(font, cp, symbol, family)) return false;
             cp = symbol;
         }
-        const auto at = std::lower_bound(spaceFamilies.begin(), spaceFamilies.end(), gi,
+        const auto at = std::lower_bound(codeFamilies.begin(), codeFamilies.end(), gi,
                                          [](const std::pair<uint32_t, uint8_t>& e, size_t i) { return e.first < i; });
-        if (at != spaceFamilies.end() && at->first == gi) family = at->second;
+        if (at != codeFamilies.end() && at->first == gi) family = at->second;
         uint8_t size = 0;
         return Finite(g.v) && Finite(g.size) && HangingInk(font, cp, family, g.size, g.u1 - g.u0, g.v, bottom, top, size);
     };
@@ -2327,6 +2356,13 @@ void PrepareMathGlyphs(PageData& page) {
     float stackV = 0;
     for (size_t gi = 0; gi < page.glyphs.size(); ++gi) {
         Glyph& g = page.glyphs[gi];
+        // ToUnicode maps of TeX's extension fonts (pdfTeX's for cmex10, newtx's txexs) tell a symbol's
+        // sizes apart by a variation selector (∑ as U+2211 U+FE01): the symbol alone.
+        if (g.textLength > 3 && g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0) {
+            const std::string_view t = page.GlyphText(g);
+            const unsigned char last = static_cast<unsigned char>(t.back());
+            if (t[t.size() - 3] == '\xEF' && t[t.size() - 2] == '\xB8' && last >= 0x80 && last <= 0x8F) g.textLength -= 3;
+        }
         if (g.dir == 0 && g.textLength != 0 && !(g.flags & (kGlyphInvisible | kGlyphSpace))) {
             const std::string_view t = page.GlyphText(g);
             if (!(t.size() == 1 && static_cast<unsigned char>(t[0]) < 0x80)) maybeAccents.push_back(static_cast<uint32_t>(gi));
@@ -2953,10 +2989,19 @@ int MarkDisplayFormulas(PageData& page) {
         const LineFacts& f = facts[i];
         return f.usable && f.math >= 1 && (f.words == 0 || (f.words <= 2 && f.math >= 3 * f.words + 2));
     };
-    // A line indented from the lines before and after it by `indent` sizes or more.
+    // A line indented from the lines before and after it by `indent` sizes or more. Lines of a few
+    // math glyphs close above or below it (an operator's limits, a script set on a line of its
+    // own) are passed over: they belong to the formula, not to the text around it.
+    const auto limitsOf = [&](size_t j, size_t i) {
+        const LineFacts &f = facts[j], &s = facts[i];
+        return f.usable && f.glyphs <= 3 && f.words == 0 && f.math > 0 && f.top > s.bottom - 0.6f * s.size &&
+               f.bottom < s.top + 0.6f * s.size;
+    };
     const auto setOff = [&](size_t i, float indent) {
         bool seen = false;
-        for (const size_t j : {i - 1, i + 1}) {
+        for (const bool up : {true, false}) {
+            size_t j = up ? i - 1 : i + 1;
+            for (int skipped = 0; j < n && limitsOf(j, i) && skipped < 8; ++skipped) j = up ? j - 1 : j + 1;
             if (j >= n || !facts[j].usable) continue;
             if (facts[i].u0 < facts[j].u0 + indent * facts[i].size) return false;
             seen = true;
