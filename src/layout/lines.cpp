@@ -1514,7 +1514,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
     // full-size line it sits in (algorithms §4.4, MuPDF's 0.8 em baseline tolerance). With
     // `mathScripts`, a lone fragment of math-font glyphs (the 2 of e^{x^2}, set above the line's
     // ink) joins a line holding a script glyph it is 0.87 of the size of or smaller, its baseline
-    // from 0.6 em below to 0.9 em above the line's.
+    // from 0.6 em below to 0.9 em above the line's, and a lone ∼ joins the line of the = it is
+    // stacked over (TeX's \cong: centred on it, about as wide, up to 0.6 em above it).
     std::vector<std::vector<uint32_t>> extra;  // fragments added to groups, by group, rarely used
     std::vector<uint32_t>& extraOf = place.extraOf;
     extraOf.assign(groups.size(), kEmpty);
@@ -1526,6 +1527,37 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
             if (!(g.flags & kGlyphSpace) && g.size < 0.87f * lineSize) most = M::Max(most, g.size);
         }
         return most;
+    };
+    // Whether fragment `f` is a ∼ alone stacked over an = of group `line` (TeX's \cong).
+    const auto stackedOver = [&](const Fragment& f, const Group& line, size_t o) {
+        const Glyph* top = nullptr;
+        for (uint32_t k = f.begin; k < f.end; ++k) {
+            const Glyph& g = glyphs[vis[k]];
+            if (g.flags & kGlyphSpace) continue;
+            if (top != nullptr) return false;
+            top = &g;
+        }
+        if (top == nullptr || page.GlyphText(*top) != "\xE2\x88\xBC") return false;
+        const float dv = top->v - line.baseline;
+        const float width = top->u1 - top->u0, centre = (top->u0 + top->u1) / 2;
+        if (!(dv >= 0.05f * line.size && dv <= 0.6f * line.size) || !(width > 0.2f * line.size)) return false;
+        const auto over = [&](const Fragment& h) {
+            for (uint32_t k = h.begin; k < h.end; ++k) {
+                const Glyph& g = glyphs[vis[k]];
+                if ((g.flags & kGlyphSpace) || std::fabs(g.v - line.baseline) > 0.1f * line.size || page.GlyphText(g) != "=")
+                    continue;
+                const float w = g.u1 - g.u0;
+                if (std::fabs((g.u0 + g.u1) / 2 - centre) <= 0.15f * line.size && w >= 0.7f * width && w <= 1.4f * width)
+                    return true;
+            }
+            return false;
+        };
+        for (uint32_t m = line.first; m < line.first + line.count; ++m)
+            if (over(frags[members[m]])) return true;
+        if (extraOf[o] != kEmpty)
+            for (uint32_t m : extra[extraOf[o]])
+                if (over(frags[m])) return true;
+        return false;
     };
     for (size_t s = 0; s < groups.size(); ++s) {
         Group& small = groups[s];
@@ -1546,7 +1578,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 const size_t o = side == 0 ? s - d : s + d;
                 if (o >= groups.size()) continue;
                 const Group& line = groups[o];
-                if (line.merged || line.dir != small.dir || line.size < small.size / 0.87f) continue;
+                if (line.merged || line.dir != small.dir) continue;
+                if (line.size < small.size / 0.87f) {
+                    if (!mathFragment || !stackedOver(f, line, o)) continue;
+                    best = o;
+                    break;
+                }
                 if (small.u0 < line.u0 - 0.3f * line.size || small.u0 - line.u1 > 0.6f * line.size) continue;
                 if (center < line.vb || center > line.vt) {
                     const float dv = small.baseline - line.baseline;

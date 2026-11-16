@@ -1590,11 +1590,13 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
             if (length == 0 && source != Text::UnicodeSource::None) flags |= kGlyphDropped;  // control characters
             if (!kFast && RAYOPDF_UNLIKELY(p.fontMath != 0)) {
                 // Math fonts (layout/math.h): glyphs left without text, every glyph of a mathabx
-                // font, and the φ, ϕ, ε and ϵ a math italic font's ToUnicode gives keep their code
-                // for --math=latex, and math italic fonts read through glyph names are marked (TeX's
-                // \phi is AGL's "phi1").
+                // font, a code WinAnsi guessed as a space (cmex10's \Bigg( at 0x20), and the φ, ϕ,
+                // ε and ϵ a math italic font's ToUnicode gives keep their code for --math=latex,
+                // and math italic fonts read through glyph names are marked (TeX's \phi is AGL's
+                // "phi1").
                 if (codeBytes == 1 && page_.mathCodes.size() < kMaxGlyphsPerPage &&
                     (source == Text::UnicodeSource::None ||
+                     (source == Text::UnicodeSource::Guess && (flags & kGlyphSpace) != 0) ||
                      (p.fontId < page_.fontMath.size() && (page_.fontMath[p.fontId] & kMathFontAbx) != 0) ||
                      (source == Text::UnicodeSource::ToUnicode && p.fontMath == static_cast<uint8_t>(MathFont::Italic) &&
                       IsGreekVariantText(unicode))))

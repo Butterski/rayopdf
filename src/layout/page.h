@@ -245,7 +245,8 @@ struct UnsetAllocator : std::allocator<T> {
 };
 using GlyphVector = std::vector<Glyph, UnsetAllocator<Glyph>>;
 
-// A math font's glyph without text, or any glyph of a mathabx font, and its code (PageData::mathCodes).
+// A math font's glyph without text or with a code guessed as a space, any glyph of a mathabx font,
+// and its code (PageData::mathCodes).
 struct MathCode {
     uint32_t glyph = 0;  // index into PageData::glyphs
     uint8_t code = 0;

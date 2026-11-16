@@ -245,9 +245,9 @@ bool IsRelation(uint32_t cp) {
     switch (cp) {
     case '=': case '<': case '>': case 0x2264: case 0x2265: case 0x2260: case 0x2261: case 0x2248: case 0x223C:
     case 0x2243: case 0x2245: case 0x2208: case 0x2209: case 0x2282: case 0x2283: case 0x2286: case 0x2287:
-    case 0x2192: case 0x2190: case 0x21D2: case 0x21D0: case 0x21D4: case 0x2194: case 0x21A6: case 0x226A:
-    case 0x226B: case 0x227A: case 0x227B: case 0x2AAF: case 0x2AB0: case 0x221D: case 0x2254: case 0x2A7D:
-    case 0x2A7E: case 0x2266: case 0x2267: case 0x22A2: case 0x2250: case 0x225C: case 0x2223:
+    case 0x2192: case 0x2190: case 0x21D2: case 0x21D0: case 0x21D4: case 0x2194: case 0x21A6: case 0x21AA: case 0x21A9:
+    case 0x226A: case 0x226B: case 0x227A: case 0x227B: case 0x2AAF: case 0x2AB0: case 0x221D: case 0x2254:
+    case 0x2A7D: case 0x2A7E: case 0x2266: case 0x2267: case 0x22A2: case 0x2250: case 0x225C: case 0x2223:
         return true;
     default:
         return false;
@@ -276,7 +276,7 @@ int DelimiterSide(uint32_t cp) {
 }
 
 // Delimiter pieces (U+239B-23AD, U+23B7 radical bottom, U+23D0 vertical line extension): which
-// stack they belong to, 0 for none: 1 ( 2 ) 3 [ 4 ] 5 { 6 } 7 √ 8 |.
+// stack they belong to, 0 for none: 1 ( 2 ) 3 [ 4 ] 5 { 6 } 7 √ 8 | 10 ‖ (9: either brace).
 int PieceFamily(uint32_t cp) {
     if (cp >= 0x239B && cp <= 0x239D) return 1;
     if (cp >= 0x239E && cp <= 0x23A0) return 2;
@@ -287,6 +287,14 @@ int PieceFamily(uint32_t cp) {
     if (cp == 0x23AA) return 9;  // brace extension: either side
     if (cp == 0x23B7 || cp == 0xE000 || cp == 0xE001) return 7;
     if (cp == 0x23D0) return 8;
+    return 0;
+}
+
+// TeX's extension font draws \big| and taller bars (\| too) as pieces 0.6 em high stacked on one
+// another (cmex10's 0x0C ∣, 0x0D ∥): their stack (PieceFamily) when `cp` is one, else 0.
+int BarPieceFamily(uint32_t cp) {
+    if (cp == '|' || cp == 0x2223 || cp == 0x23D0) return 8;
+    if (cp == 0x2225 || cp == 0x2016) return 10;
     return 0;
 }
 
@@ -368,6 +376,14 @@ bool TexCodeSymbol(MathFont font, int code, uint32_t& cp, uint8_t& family) {
     if (code >= 0xA1 && code <= 0xAC) code -= 0xA1;
     else if (code >= 0xAE && code <= 0xC4) code = code - 0xAE + 12;
     if (code < 0 || code >= 128) return false;
+    // Codes KaTeX's tables leave out: cmsy10's \mapstochar (0x37), drawn over the arrow after it
+    // (\mapsto), and cmmi10's hooks (0x2C \lhook, 0x2D \rhook), set against an arrow
+    // (\hookrightarrow, \hookleftarrow), read as the arrows they make; Row joins them.
+    if ((font == MathFont::Symbol && code == 0x37) || (font == MathFont::Italic && (code == 0x2C || code == 0x2D))) {
+        cp = code == 0x37 ? 0x21A6 : code == 0x2C ? 0x21AA : 0x21A9;
+        family = 0;
+        return true;
+    }
     const uint32_t entry = MathTables::kTexCodes[table][code];
     if ((entry & 0x1FFFFF) == 0) return false;
     cp = entry & 0x1FFFFF;
@@ -428,12 +444,12 @@ constexpr AbxCode kAbxA[] = {
     {0xCE, 0x00CE, 0x22D8, 0}, {0xCF, 0x00CF, 0x22D9, 0}, {0xD0, 0x00D0, 0x2190, 0}, {0xD1, 0x00D1, 0x2192, 0},
     {0xD2, 0x00D2, 0x2191, 0}, {0xD3, 0x00D3, 0x2193, 0}, {0xD4, 0x00D4, 0x2196, 0}, {0xD5, 0x00D5, 0x2197, 0},
     {0xD6, 0x00D6, 0x2199, 0}, {0xD7, 0x0152, 0x2198, 0}, {0xD8, 0x00D8, 0x2194, 0}, {0xD9, 0x00D9, 0x2195, 0},
-    {0xDA, 0x00DA, 0x219A, 0}, {0xDB, 0x00DB, 0x219B, 0}, {0xDC, 0x00DC, 0x21AE, 0}, {0xE0, 0x00E0, 0x21BC, 0},
-    {0xE1, 0x00E1, 0x21C0, 0}, {0xE2, 0x00E2, 0x21BD, 0}, {0xE3, 0x00E3, 0x21C1, 0}, {0xE4, 0x00E4, 0x21BF, 0},
-    {0xE5, 0x00E5, 0x21C3, 0}, {0xE6, 0x00E6, 0x21BE, 0}, {0xE7, 0x00E7, 0x21C2, 0}, {0xE8, 0x00E8, 0x21CB, 0},
-    {0xE9, 0x00E9, 0x21CC, 0}, {0xF0, 0x00F0, 0x21D0, 0}, {0xF1, 0x00F1, 0x21D2, 0}, {0xF2, 0x00F2, 0x21D1, 0},
-    {0xF3, 0x00F3, 0x21D3, 0}, {0xF4, 0x00F4, 0x21D4, 0}, {0xF5, 0x00F5, 0x21D5, 0}, {0xF6, 0x00F6, 0x21CD, 0},
-    {0xF7, 0x0153, 0x21CF, 0}, {0xF8, 0x00F8, 0x21CE, 0}
+    {0xDA, 0x00DA, 0x219A, 0}, {0xDB, 0x00DB, 0x219B, 0}, {0xDC, 0x00DC, 0x21AE, 0}, {0xDD, 0x00DD, 0x2212, 0},
+    {0xDE, 0x00DE, 0x21A6, 0}, {0xE0, 0x00E0, 0x21BC, 0}, {0xE1, 0x00E1, 0x21C0, 0}, {0xE2, 0x00E2, 0x21BD, 0},
+    {0xE3, 0x00E3, 0x21C1, 0}, {0xE4, 0x00E4, 0x21BF, 0}, {0xE5, 0x00E5, 0x21C3, 0}, {0xE6, 0x00E6, 0x21BE, 0},
+    {0xE7, 0x00E7, 0x21C2, 0}, {0xE8, 0x00E8, 0x21CB, 0}, {0xE9, 0x00E9, 0x21CC, 0}, {0xF0, 0x00F0, 0x21D0, 0},
+    {0xF1, 0x00F1, 0x21D2, 0}, {0xF2, 0x00F2, 0x21D1, 0}, {0xF3, 0x00F3, 0x21D3, 0}, {0xF4, 0x00F4, 0x21D4, 0},
+    {0xF5, 0x00F5, 0x21D5, 0}, {0xF6, 0x00F6, 0x21CD, 0}, {0xF7, 0x0153, 0x21CF, 0}, {0xF8, 0x00F8, 0x21CE, 0}
 };
 constexpr AbxCode kAbxB[] = {
     {0x00, 0x0060, 0x2214, 0}, {0x05, 0x02DD, 0x25A1, 0}, {0x0B, 0x00B8, 0x22C7, 0}, {0x0E, 0x2039, 0x2605, 0},
@@ -454,9 +470,10 @@ constexpr AbxCode kAbxB[] = {
     {0xC4, 0x00C4, 0x22E8, 0}, {0xC5, 0x00C5, 0x22E9, 0}, {0xC6, 0x00C6, 0x2AB7, 0}, {0xC7, 0x00C7, 0x2AB8, 0},
     {0xCA, 0x00CA, 0x2AB9, 0}, {0xCB, 0x00CB, 0x2ABA, 0}, {0xD0, 0x00D0, 0x21C7, 0}, {0xD1, 0x00D1, 0x21C9, 0},
     {0xD2, 0x00D2, 0x21C8, 0}, {0xD3, 0x00D3, 0x21CA, 0}, {0xD4, 0x00D4, 0x21C6, 0}, {0xD5, 0x00D5, 0x21C4, 0},
-    {0xE4, 0x00E4, 0x2571, 0}, {0xE5, 0x00E5, 0x2572, 0}, {0xE8, 0x00E8, 0x21B0, 0}, {0xE9, 0x00E9, 0x21B1, 0},
-    {0xEC, 0x00EC, 0x21AB, 0}, {0xED, 0x00ED, 0x21AC, 0}, {0xF0, 0x00F0, 0x21B6, 0}, {0xF1, 0x00F1, 0x21B7, 0},
-    {0xF6, 0x00F6, 0x21BA, 0}, {0xF7, 0x0153, 0x21BB, 0}, {0xF9, 0x00F9, 0x21DD, 0}, {0xFA, 0x00FA, 0x21AD, 0}
+    {0xE2, 0x00E2, 0x21A9, 0}, {0xE3, 0x00E3, 0x21AA, 0}, {0xE4, 0x00E4, 0x2571, 0}, {0xE5, 0x00E5, 0x2572, 0},
+    {0xE8, 0x00E8, 0x21B0, 0}, {0xE9, 0x00E9, 0x21B1, 0}, {0xEC, 0x00EC, 0x21AB, 0}, {0xED, 0x00ED, 0x21AC, 0},
+    {0xF0, 0x00F0, 0x21B6, 0}, {0xF1, 0x00F1, 0x21B7, 0}, {0xF6, 0x00F6, 0x21BA, 0}, {0xF7, 0x0153, 0x21BB, 0},
+    {0xF9, 0x00F9, 0x21DD, 0}, {0xFA, 0x00FA, 0x21AD, 0}
 };
 constexpr AbxCode kAbxX[] = {
     {0x00, 0x0060, 0x0028, 3}, {0x01, 0x00B4, 0x0028, 4}, {0x02, 0x02C6, 0x0028, 5}, {0x03, 0x02DC, 0x0028, 6},
@@ -511,7 +528,9 @@ bool HangingInk(MathFont font, uint32_t cp, uint8_t family, float size, float wi
     if (AccentOf(cp).size() > 0 || cp == 0x2C6 || cp == 0x2DC) return false;  // wide accents sit above
     const float w = size > 0 ? width / size : 0;
     float h = 1.0f;
-    if (family >= MathTables::kFamilySize1 && family <= MathTables::kFamilySize4) {
+    if (extension && BarPieceFamily(cp) != 0) {
+        h = 0.6f;  // a bar piece, whatever size family its code says
+    } else if (family >= MathTables::kFamilySize1 && family <= MathTables::kFamilySize4) {
         delimSize = static_cast<uint8_t>(family - MathTables::kFamilySize1 + 1);
         static constexpr float kHeights[4] = {1.2f, 1.8f, 2.4f, 3.0f};
         h = kHeights[delimSize - 1];
@@ -530,8 +549,10 @@ bool HangingInk(MathFont font, uint32_t cp, uint8_t family, float size, float wi
 }
 
 // Characters that stand for others in math: compatibility forms (∆ U+2206, µ U+00B5, Ω U+2126)
-// and math fonts' symbols that text fonts read differently (◦ is ∘, \ is ∖, ǫ is ϵ); with
-// `named`, a math italic font's Greek through the Adobe Glyph List (φ is TeX's \phi ϕ).
+// and math fonts' symbols that text fonts read differently (◦ is ∘, \ is ∖, ǫ is ϵ, and the
+// hooks pdfTeX's glyph names map to U+0592 and U+0593 are \lhook and \rhook, read as the arrows
+// they make); with `named`, a math italic font's Greek through the Adobe Glyph List (φ is TeX's
+// \phi ϕ).
 uint32_t MathCharacter(uint32_t cp, MathFont font, bool named) {
     switch (cp) {
     case 0x2206: return 0x394;
@@ -544,6 +565,8 @@ uint32_t MathCharacter(uint32_t cp, MathFont font, bool named) {
         if (cp == 0x25E6) return 0x2218;
         if (cp == '\\') return 0x2216;
         if (cp == 0x1EB) return 0x3F5;
+        if (cp == 0x592) return 0x21AA;
+        if (cp == 0x593) return 0x21A9;
     }
     if (named && font == MathFont::Italic) {
         if (cp == 0x3C6) return 0x3D5;
@@ -599,10 +622,11 @@ struct Item {
     std::string accent;    // an accent command over it
 };
 
-// Whether JoinMathSymbols may join a and b: a negation slash on either side, or a bar, an arrow or
-// an equals sign first (keep in step with JoinMathSymbols).
+// Whether JoinMathSymbols may join a and b: a negation slash or a slash on either side, or a bar,
+// an arrow, an equals sign, \mapstochar or a hook first (keep in step with JoinMathSymbols).
 bool MayJoin(uint32_t a, uint32_t b) {
-    return a == 0x338 || b == 0x338 || a == '-' || a == 0x2212 || a == 0x2190 || a == '=' || a == 0x21D0;
+    return a == 0x338 || b == 0x338 || a == '/' || b == '/' || a == '-' || a == 0x2212 || a == 0x2190 || a == '=' ||
+           a == 0x21D0 || a == 0x21A6 || a == 0x21AA;
 }
 
 void AppendToken(std::string& out, std::string_view token) {
@@ -797,7 +821,7 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
     // KaTeX's tables give the radical's extension and top private-use code points: only a cmex10
     // code means them.
     if ((cp == 0xE000 || cp == 0xE001) && family < MathTables::kFamilySize1) return false;
-    a.family = static_cast<uint8_t>(PieceFamily(cp));
+    a.family = static_cast<uint8_t>(font == MathFont::Extension && BarPieceFamily(cp) != 0 ? BarPieceFamily(cp) : PieceFamily(cp));
     if (a.family != 0) {
         a.kind = a.family == 7 ? Kind::Radical : Kind::Piece;
         if (a.family == 7) a.latex = "\\surd";
@@ -1152,10 +1176,10 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
             item.top = Fmax(item.top, a.top), item.bottom = Fmin(item.bottom, a.bottom);
             item.u0 = Fmin(item.u0, a.u0), item.u1 = Fmax(item.u1, a.u1);
         }
-        static constexpr std::string_view kStacks[] = {"", "(", ")", "[", "]", "\\{", "\\}", "", "|", "\\{"};
-        item.latex.assign(kStacks[family > 9 ? 0 : family]);
+        static constexpr std::string_view kStacks[] = {"", "(", ")", "[", "]", "\\{", "\\}", "", "|", "\\{", "\\|"};
+        item.latex.assign(kStacks[family > 10 ? 0 : family]);
         item.kind = family == 1 || family == 3 || family == 5 || family == 9 ? Kind::Open
-                    : family == 8                                          ? Kind::Bar
+                    : family == 8 || family == 10                          ? Kind::Bar
                                                                            : Kind::Close;
         item.tall = true;
         item.v = item.bottom + 0.3f * em;
@@ -1428,6 +1452,26 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         items.swap(sortItems_);
     }
     const float em = EmOf(items);
+    // \cong: TeX stacks a ∼ over an = (centred on it, about as wide, raised up to 0.6 em), one
+    // relation.
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].atom < 0 || atoms_[static_cast<uint32_t>(items[i].atom)].cp != 0x223C) continue;
+        const float width = items[i].u1 - items[i].u0, centre = (items[i].u0 + items[i].u1) / 2;
+        for (size_t k = 0; k < items.size(); ++k) {
+            Item& e = items[k];
+            if (k == i || e.atom < 0 || atoms_[static_cast<uint32_t>(e.atom)].cp != '=') continue;
+            const float w = e.u1 - e.u0, dv = items[i].v - e.v;
+            if (std::fabs((e.u0 + e.u1) / 2 - centre) > 0.15f * em || w < 0.7f * width || w > 1.4f * width ||
+                dv < 0.05f * em || dv > 0.6f * em)
+                continue;
+            e.latex = "\\cong";
+            e.atom = -1;
+            e.top = Fmax(e.top, items[i].top);
+            items.erase(items.begin() + static_cast<std::ptrdiff_t>(i));
+            --i;
+            break;
+        }
+    }
     // The main baseline: the baseline most ordinary-size ink sits on. The ink that counts is listed
     // once (in item order, so each sum adds in the same order); a weight depends only on a.v, so
     // an item on the baseline of the one before it repeats that weight, which never beats it.
@@ -1587,6 +1631,63 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         head.tall = false;
         head.u0 = Fmin(u0, brace.u0), head.u1 = Fmax(u1, brace.u1);
     }
+    // Extensible arrows: bars set end to end with an arrowhead at one end (amsmath's
+    // \xrightarrow draws \relbar's overlapping up to its \rightarrow), with a smaller label
+    // centred over it and or under it: \xrightarrow[below]{above}, \xleftarrow. Two bars or more
+    // without a label are a long arrow.
+    for (size_t i = 0; i < n; ++i) {
+        if (role[i] != 0 || items[i].atom < 0 || !words[i].empty()) continue;
+        const auto cp = [&](size_t k) { return atoms_[static_cast<uint32_t>(items[k].atom)].cp; };
+        const auto isBar = [&](size_t k) { return cp(k) == '-' || cp(k) == 0x2212; };
+        if (!isBar(i) && cp(i) != 0x2190) continue;
+        const bool left = cp(i) == 0x2190;
+        size_t last = i, bars = left ? 0 : 1;
+        bool head = left;
+        for (size_t k = i + 1; k < n; ++k) {
+            if (role[k] != 0) continue;  // the label's glyphs come between
+            if (items[k].atom < 0 || !words[k].empty() || items[k].u0 > items[last].u1 + 0.05f * em ||
+                std::fabs(items[k].v - items[i].v) > 0.1f * em)
+                break;
+            if (isBar(k)) {
+                ++bars, last = k;
+            } else if (!left && cp(k) == 0x2192) {
+                head = true, last = k;
+                break;
+            } else {
+                break;
+            }
+        }
+        if (!head || bars == 0) continue;
+        const Item& arrow = items[i];
+        const float u0 = arrow.u0, u1 = items[last].u1;
+        // The label: smaller scripts centred within the arrow's span.
+        const auto label = [&](size_t k) {
+            const Item& it = items[k];
+            const float cx = (it.u0 + it.u1) / 2;
+            return (role[k] == 1 || role[k] == 2) && cx >= u0 && cx <= u1 && it.size <= 0.9f * arrow.size &&
+                   it.u0 >= u0 - 0.2f * em && it.u1 <= u1 + 0.2f * em;
+        };
+        std::vector<Item> above, below;
+        for (size_t k = i + 1; k < n; ++k)
+            if (label(k)) (items[k].v > arrow.v ? above : below).push_back(items[k]);
+        if (above.empty() && below.empty() && bars < 2) continue;  // one bar: the joins below
+        std::string aboveText, belowText;
+        if (!Layout(above, depth + 1, aboveText) || !Layout(below, depth + 1, belowText)) return false;
+        std::string& w = words[i];
+        if (above.empty() && below.empty()) {
+            w = left ? "\\longleftarrow" : "\\longrightarrow";
+        } else {
+            w = left ? "\\xleftarrow" : "\\xrightarrow";
+            if (!belowText.empty()) w += "[" + belowText + "]";
+            w += "{" + aboveText + "}";
+        }
+        for (size_t k = i + 1; k < n; ++k)
+            if ((k <= last && role[k] == 0) || label(k)) role[k] = 3;
+        items[i].u1 = u1;
+        items[i].kind = Kind::Relation;
+        items[i].atom = -1;
+        i = last;
+    }
     // Large operators and function names with limits centred above and below them; a relation or
     // an arrow with a smaller run (0.8 of its size at most) centred over or under it (\overset,
     // \underset).
@@ -1700,13 +1801,40 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         i = at;
     }
     // A negation slash over the relation after it (≠, ∉), and long arrows set from a bar and an
-    // arrow (\longrightarrow is \relbar\joinrel\rightarrow).
+    // arrow (\longrightarrow is \relbar\joinrel\rightarrow). \mapstochar (read as ↦, set with no
+    // width at the start of an arrow, drawn before or after it) makes \mapsto, and with the bar of
+    // a long arrow \longmapsto.
+    const auto cpOf = [&](size_t k) { return atoms_[static_cast<uint32_t>(items[k].atom)].cp; };
     for (size_t i = 0; i + 1 < n; ++i) {
         if (role[i] != 0 || wordPart[i] || items[i].atom < 0 || !words[i].empty()) continue;
         size_t k = i + 1;
         while (k < n && role[k] == 3) ++k;
         if (k >= n || role[k] != 0 || wordPart[k] || items[k].atom < 0 || !words[k].empty()) continue;
-        const uint32_t a = atoms_[static_cast<uint32_t>(items[i].atom)].cp, b = atoms_[static_cast<uint32_t>(items[k].atom)].cp;
+        const uint32_t a = cpOf(i), b = cpOf(k);
+        const bool charFirst = a == 0x21A6 && items[i].u1 - items[i].u0 < 0.2f * em && items[k].u0 - items[i].u1 < 0.15f * em;
+        const bool charSecond =
+            b == 0x21A6 && items[k].u1 - items[k].u0 < 0.2f * em && std::fabs(items[k].u0 - items[i].u0) < 0.2f * em;
+        if (charFirst || charSecond) {
+            const size_t stem = charFirst ? k : i;
+            const uint32_t c = charFirst ? b : a;
+            size_t end = k;
+            if (c == '-' || c == 0x2212) {
+                // The bar of a long arrow: its arrow next.
+                size_t m = k + 1;
+                while (m < n && role[m] == 3) ++m;
+                if (m < n && role[m] == 0 && !wordPart[m] && items[m].atom >= 0 && words[m].empty() && cpOf(m) == 0x2192 &&
+                    items[m].u0 - items[stem].u1 < 0.15f * em)
+                    end = m;
+            }
+            if (c == 0x2192 || end != k) {
+                words[i] = end != k ? "\\longmapsto" : "\\mapsto";
+                for (size_t m = i + 1; m <= end; ++m)
+                    if (role[m] == 0) wordPart[m] = 1;
+                items[i].u1 = Fmax(items[i].u1, items[end].u1);
+                i = end;
+                continue;
+            }
+        }
         if (!MayJoin(a, b)) continue;
         std::string joined;
         if (!JoinMathSymbols(a, b, items[i].latex, items[k].latex, items[k].u0 - items[i].u1, em, joined)) continue;
@@ -1956,10 +2084,15 @@ std::string_view DotsOf(uint32_t cp) {
 
 bool JoinMathSymbols(uint32_t a, uint32_t b, std::string_view latexA, std::string_view latexB, float gap, float em,
                      std::string& joined) {
+    // TeX sets \not (a negation slash) before the relation it strikes: \not\in, \not\equiv; \neq
+    // too is \not=. \notin is a slash ("/") over the ∈, drawn before or after it.
     if (a == 0x338 && gap < 0.3f * em) {
-        joined = b == '=' ? "\\neq" : b == 0x2208 ? "\\notin" : "\\not" + std::string(latexB);
+        joined = b == '=' ? "\\neq" : "\\not" + std::string(latexB);
     } else if (b == 0x338 && gap < 0) {
-        joined = a == '=' ? "\\neq" : a == 0x2208 ? "\\notin" : "\\not" + std::string(latexA);
+        joined = a == '=' ? "\\neq" : "\\not" + std::string(latexA);
+    } else if ((a == '/' || b == '/') && gap < -0.3f * em && IsRelation(a == '/' ? b : a)) {
+        const uint32_t relation = a == '/' ? b : a;
+        joined = relation == '=' ? "\\neq" : relation == 0x2208 ? "\\notin" : "\\not" + std::string(a == '/' ? latexB : latexA);
     } else if (gap < 0.15f * em) {
         const bool bar = a == '-' || a == 0x2212;
         if (bar && b == 0x2192) joined = "\\longrightarrow";
@@ -1968,6 +2101,10 @@ bool JoinMathSymbols(uint32_t a, uint32_t b, std::string_view latexA, std::strin
         else if (a == 0x21D0 && b == '=') joined = "\\Longleftarrow";
         else if (a == 0x2190 && b == 0x2192) joined = "\\longleftrightarrow";
         else if (a == 0x21D0 && b == 0x21D2) joined = "\\Longleftrightarrow";
+        // \mapsto is \mapstochar (read as ↦) over the start of \rightarrow; hooks join their arrow.
+        else if (a == 0x21A6 && b == 0x2192) joined = "\\mapsto";
+        else if (a == 0x21AA && b == 0x2192) joined = "\\hookrightarrow";
+        else if (a == 0x2190 && b == 0x21A9) joined = "\\hookleftarrow";
     }
     return !joined.empty();
 }
@@ -2103,14 +2240,21 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
 
 void PrepareMathGlyphs(PageData& page) {
     // Math font glyphs without text whose code TeX's encodings know get its symbol as their text,
-    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character. A math
-    // italic font's φ, ϕ, ε and ϵ from ToUnicode take the form of their code (TeX's "phi" at 0x1E is
-    // \phi ϕ, "phi1" at 0x27 \varphi φ, which ToUnicode maps built on the Adobe Glyph List swap).
+    // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character, and
+    // code 0x20 that WinAnsi guessed as a space (cmex10's \Bigg(, cmsy10's ←, cmmi10's ψ), which
+    // then is no space. A math italic font's φ, ϕ,
+    // ε and ϵ from ToUnicode take the form of their code (TeX's "phi" at 0x1E is \phi ϕ, "phi1" at
+    // 0x27 \varphi φ, which ToUnicode maps built on the Adobe Glyph List swap).
+    // The size families of the glyphs read from a guessed space (cmex10's \Bigg( is 3 em high),
+    // by glyph, in page order: their ink below takes it as a guessed glyph's does.
+    std::vector<std::pair<uint32_t, uint8_t>> spaceFamilies;
     for (const MathCode& c : page.mathCodes) {
         if (c.glyph >= page.glyphs.size() || page.text.size() >= (size_t(1) << 31)) continue;
         Glyph& g = page.glyphs[c.glyph];
         if (g.font >= page.fontMath.size()) continue;
         uint32_t cp = 0;
+        // A guessed space is a symbol once read by its code: no space (and drawn).
+        const bool spaceGuess = (g.flags & (kGlyphGuessed | kGlyphSpace)) == (kGlyphGuessed | kGlyphSpace);
         if (const uint8_t abx = page.fontMath[g.font] & kMathFontAbx) {
             const AbxCode* e = AbxSymbol(abx, c.code);
             if (e == nullptr) continue;
@@ -2121,6 +2265,14 @@ void PrepareMathGlyphs(PageData& page) {
                 if (!Utf8::Decode(t, 0, have, length) || length != t.size() || have != e->cork) continue;
             }
             cp = e->cp;
+        } else if (spaceGuess) {
+            uint8_t family = 0;
+            if (c.code != 0x20 ||
+                !TexCodeSymbol(static_cast<MathFont>(page.fontMath[g.font] & kMathFontClass), c.code, cp, family))
+                continue;
+            cp = MathCharacter(cp, MathFont::Symbol, false);
+            if (cp >= 0xE000 && cp <= 0xF8FF) continue;
+            if (family != 0) spaceFamilies.emplace_back(c.glyph, family);
         } else if (g.textLength != 0 && !(g.flags & kGlyphUnmapped)) {
             const uint8_t font = page.fontMath[g.font];
             if ((font & kMathFontClass) != static_cast<uint8_t>(MathFont::Italic) || (font & kMathFontNamed)) continue;
@@ -2143,37 +2295,71 @@ void PrepareMathGlyphs(PageData& page) {
         Utf8::Append(page.text, cp);
         g.textLength = static_cast<uint16_t>(page.text.size() - g.text);
         g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphUnmapped | kGlyphGuessed));
+        if (spaceGuess) g.flags = static_cast<uint16_t>(g.flags & ~(kGlyphSpace | kGlyphDropped));
     }
     // Glyphs that may be accents, listed in this pass (in order); the accent pass below reads
     // their v after this one moved it. No ASCII character is an accent there (^ and ~ are not
     // taken).
     std::vector<uint32_t> maybeAccents;
+    // A glyph's ink when it hangs from its origin (HangingInk), with its symbol.
+    const auto hanging = [&](const Glyph& g, size_t gi, uint32_t& cp, float& bottom, float& top) {
+        if (g.dir != 0 || g.font >= page.fontMath.size() || (g.flags & (kGlyphInvisible | kGlyphUnmapped))) return false;
+        const MathFont font = static_cast<MathFont>(page.fontMath[g.font] & kMathFontClass);
+        if (font != MathFont::Extension && font != MathFont::Symbol) return false;
+        const std::string_view text = page.GlyphText(g);
+        size_t length = 0;
+        if (!Utf8::Decode(text, 0, cp, length) || length != text.size()) return false;
+        uint8_t family = 0;
+        if (g.flags & kGlyphGuessed) {
+            uint32_t symbol = 0;
+            if (!TexSymbol(font, cp, symbol, family)) return false;
+            cp = symbol;
+        }
+        const auto at = std::lower_bound(spaceFamilies.begin(), spaceFamilies.end(), gi,
+                                         [](const std::pair<uint32_t, uint8_t>& e, size_t i) { return e.first < i; });
+        if (at != spaceFamilies.end() && at->first == gi) family = at->second;
+        uint8_t size = 0;
+        return Finite(g.v) && Finite(g.size) && HangingInk(font, cp, family, g.size, g.u1 - g.u0, g.v, bottom, top, size);
+    };
+    // Bar pieces drawn one under the other (TeX's \Big| is three) take the baseline of their
+    // stack's middle, so that they stay on the line of the formula they stand in.
+    size_t stackEnd = 0;
+    float stackV = 0;
     for (size_t gi = 0; gi < page.glyphs.size(); ++gi) {
         Glyph& g = page.glyphs[gi];
         if (g.dir == 0 && g.textLength != 0 && !(g.flags & (kGlyphInvisible | kGlyphSpace))) {
             const std::string_view t = page.GlyphText(g);
             if (!(t.size() == 1 && static_cast<unsigned char>(t[0]) < 0x80)) maybeAccents.push_back(static_cast<uint32_t>(gi));
         }
-        if (g.dir != 0 || g.font >= page.fontMath.size() || (g.flags & (kGlyphInvisible | kGlyphUnmapped))) continue;
-        const MathFont font = static_cast<MathFont>(page.fontMath[g.font] & kMathFontClass);
-        if (font != MathFont::Extension && font != MathFont::Symbol) continue;
-        const std::string_view text = page.GlyphText(g);
         uint32_t cp = 0;
-        size_t length = 0;
-        if (!Utf8::Decode(text, 0, cp, length) || length != text.size()) continue;
-        uint8_t family = 0;
-        if (g.flags & kGlyphGuessed) {
-            uint32_t symbol = 0;
-            if (!TexSymbol(font, cp, symbol, family)) continue;
-            cp = symbol;
-        }
         float bottom = 0, top = 0;
-        uint8_t size = 0;
-        if (!Finite(g.v) || !Finite(g.size) || !HangingInk(font, cp, family, g.size, g.u1 - g.u0, g.v, bottom, top, size))
-            continue;
+        if (!hanging(g, gi, cp, bottom, top)) continue;
+        g.v = (bottom + top) / 2 - 0.25f * g.size;
+        if (gi < stackEnd) {
+            g.v = stackV;
+        } else if ((page.fontMath[g.font] & kMathFontClass) == static_cast<uint8_t>(MathFont::Extension) &&
+                   BarPieceFamily(cp) != 0) {
+            // The pieces after it of the same bar, each touching the one before it.
+            float low = bottom, high = top, last0 = bottom, last1 = top;
+            size_t end = gi + 1;
+            for (; end < page.glyphs.size() && end - gi < 64; ++end) {
+                const Glyph& p = page.glyphs[end];
+                uint32_t pcp = 0;
+                float pb = 0, pt = 0;
+                if (p.font != g.font || std::fabs(p.u0 - g.u0) > 0.1f * g.size || !hanging(p, end, pcp, pb, pt) ||
+                    BarPieceFamily(pcp) != BarPieceFamily(cp) ||
+                    !(std::fabs(pt - last0) <= 0.15f * g.size || std::fabs(pb - last1) <= 0.15f * g.size))
+                    break;
+                low = Fmin(low, pb), high = Fmax(high, pt), last0 = pb, last1 = pt;
+            }
+            if (end > gi + 1) {
+                stackEnd = end;
+                stackV = (low + high) / 2 - 0.25f * g.size;
+                g.v = stackV;
+            }
+        }
         g.vb = bottom;
         g.vt = top;
-        g.v = (bottom + top) / 2 - 0.25f * g.size;
     }
     // Accents float over the letter they mark, often far enough for a line of their own: each
     // accent glyph goes down onto the baseline of the glyph under it.
@@ -2436,8 +2622,9 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             any = any || cls[i] == kClassStrong;
             strongWord = strongWord || cls[i] == kClassStrong;
         }
-        // Letters of a text font in a word with math: a function name ("max_j", "log x") or up to
-        // four letters right before a script or a math glyph ("GoE_m", "h_1") are math too.
+        // Letters of a text font in a word with math: a function name ("max_j", "log x"), up to
+        // four letters right before a script or a math glyph ("GoE_m", "h_1"), or an italic letter
+        // alone between other glyphs (the v of "α_{i+1}(v)", the t of "Δx/Δt") are math too.
         if (!strongWord) continue;
         for (uint32_t s = b; s < e;) {
             if (cls[s] != kClassText || !IsLetterCp(FirstCp(glyphs[s].text))) {
@@ -2451,7 +2638,9 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             // ... or before the bracket of an argument at the word's start ("GELU(x)").
             const bool before = t < e && t - s <= 4 &&
                                 (glyphs[t].script || cls[t] == kClassStrong || (s == b && FirstCp(glyphs[t].text) == '('));
-            if (before || IsFunctionWord(word))
+            const bool italic = t == s + 1 && glyphs[s].glyph != nullptr && (glyphs[s].glyph->flags & kGlyphItalic) &&
+                                IsAsciiLetter(FirstCp(glyphs[s].text));
+            if (before || italic || IsFunctionWord(word))
                 for (uint32_t i = s; i < t; ++i) cls[i] = kClassNeutral;
             s = t;
         }
@@ -2542,6 +2731,26 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
                 }
             }
             if (!neutral && !function) {
+                // A run that ends in an operator or a relation right before this word ("T ≃ N",
+                // "u : X → R") takes it when it is the operand, one bold letter on its baseline (an
+                // italic one alone is neutral already), as operandBefore takes one before.
+                const uint32_t end = start != UINT32_MAX && last == b && b > start ? FirstCp(glyphs[b - 1].text) : 0;
+                if (end == '=' || end == '<' || end == '>' || end == '+' || end == 0x2212 || end == '/' ||
+                    (end >= 0x80 && IsInfixSymbol(end))) {
+                    uint32_t letter = UINT32_MAX;
+                    bool operand = true;
+                    for (uint32_t i = b; i < e && operand; ++i) {
+                        const InlineGlyph& g = glyphs[i];
+                        if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) operand = false;
+                        else if (g.script || FirstCp(g.text) == 0x2032 || FirstCp(g.text) == '\'') continue;
+                        else if (letter != UINT32_MAX || !IsAsciiLetter(FirstCp(g.text))) operand = false;
+                        else letter = i;
+                    }
+                    if (operand && letter != UINT32_MAX && (glyphs[letter].glyph->flags & kGlyphBold)) {
+                        last = e;
+                        continue;
+                    }
+                }
                 close();
                 continue;
             }

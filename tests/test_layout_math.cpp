@@ -8,8 +8,11 @@
 // back on (stacked accents of olmOCR arxiv_math pages, a glyph cloud, not for a paragraph that is
 // a formula alone), mathabx glyphs that a ToUnicode built from T1 glyph names misreads, read back
 // by code, φ, ϕ, ε, ϵ by their code, a subscript's prime, overlines over x-height letters,
-// blackboard fonts by name, a script's script out of content order, and a display formula holding
-// a word. Exit codes 1550-1599, 2202-2233, 2235-2238 and 2240.
+// blackboard fonts by name, a script's script out of content order, a display formula holding
+// a word, TeX font codes KaTeX's tables leave out or WinAnsi guesses as a space (\Bigg(,
+// \mapstochar, \lhook), stacked bar pieces, \not\in and \notin, \cong, extensible
+// arrows with labels, \longmapsto, and italic and bold letters an inline formula takes. Exit
+// codes 1550-1599 and 2202-2248.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -981,6 +984,137 @@ void TestDisplayWithWord() {
     if (!display) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
     RAYOPDF_CHECK(display, 2240);
 }
+
+// TeX's math fonts without ToUnicode, through codes the WinAnsi guess reads wrong (the
+// interpreter keeps their codes in PageData::mathCodes): cmex10's \Bigg( at 0x20 (a space) and
+// \Bigg) at 0x21 ("!"), cmsy10's \mapstochar (0x37, "7", no width) at the start of its arrow
+// (0x21), cmmi10's \lhook (0x2C, ",") before an arrow with \joinrel's overlap. --math=latex
+// reads them as \Biggl(, \mapsto and \hookrightarrow.
+void TestTexCodes() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, kSymbol, kExtension};
+    const auto code = [&page](std::string_view text, uint8_t value, float x, float y, uint16_t font) {
+        page.mathCodes.push_back(MathCode{static_cast<uint32_t>(page.glyphs.size()), value});
+        const float end = AddText(page, text, x, y, 10, font);
+        page.glyphs.back().flags = static_cast<uint16_t>(page.glyphs.back().flags | kGlyphGuessed);
+        return end;
+    };
+    float x = AddText(page, "Let ", 72, 700, 10);
+    x = AddText(page, "x", x, 700, 10, 1);
+    x = AddText(page, "=", x, 700, 10);
+    x = code(" ", 0x20, x, 717, 3);  // \Bigg( hangs from its top
+    x = AddText(page, "a", x, 700, 10, 1);
+    x = code("!", 0x21, x, 717, 3);
+    x = AddText(page, " hold, and let ", x, 700, 10);
+    x = AddText(page, "x", x, 700, 10, 1);
+    code("7", 0x37, x, 700, 2);
+    page.glyphs.back().u1 = x;  // \mapstochar has no width
+    x = code("!", 0x21, x, 700, 2);
+    x = AddText(page, "y", x, 700, 10, 1);
+    x = AddText(page, " be the map, and ", x, 700, 10);
+    x = AddText(page, "x", x, 700, 10, 1);
+    x = code(",", 0x2C, x, 700, 1);
+    x = code("!", 0x21, x - 1.67f, 700, 2);
+    x = AddText(page, "y", x, 700, 10, 1);
+    AddText(page, " an embedding.", x, 700, 10);
+    const std::string md = Convert({page}, MathMode::Latex);
+    const bool bigg = md.find("\\Biggl(a\\Biggr)") != std::string::npos;
+    const bool arrows = md.find("$x\\mapsto y$") != std::string::npos && md.find("$x\\hookrightarrow y$") != std::string::npos;
+    if (!bigg || !arrows) std::fprintf(stderr, "latex page:\n%s\n", md.c_str());
+    RAYOPDF_CHECK(bigg, 2241);
+    RAYOPDF_CHECK(arrows, 2242);
+}
+
+// TeX's extension font draws \Big| as three bar pieces, one under the other: one tall bar, which
+// takes the subscript after it.
+void TestBarPieces() {
+    Formula f;
+    const float u = f.Add("f", 0, 0);
+    for (const float v : {6.0f, 0.0f, -6.0f}) f.Add("\xE2\x88\xA3", u, v, 10, kExtension, 0, 0.33f);  // ∣
+    f.Add("x", u + 3.3f, -4, 7);
+    Expect(f.Latex(), "f\\Big|_{x}", 2243);
+}
+
+// Relations TeX sets from two glyphs: \not\in (the negation slash before ∈), \notin (a slash
+// over ∈, drawn after it), \cong (a ∼ over an =), \longmapsto (\mapstochar, no width, at the
+// start of a long arrow's bar).
+void TestComposedRelations() {
+    {
+        Formula f;
+        float u = f.Add("x", 0, 0);
+        f.Add("\xCC\xB8", u, 0, 10, kSymbol, 0, 0.0f);  // U+0338
+        u = f.Add("\xE2\x88\x88", u, 0, 10, kSymbol, 0, 0.67f);  // ∈
+        u = f.Add("A", u + 2.8f, 0);
+        u = f.Add(",", u, 0, 10, kText, 0, 0.28f);
+        u = f.Add("y", u + 1.7f, 0);
+        f.Add("/", u + 2.9f, 0, 10, kItalic, 0, 0.5f);
+        u = f.Add("\xE2\x88\x88", u + 2.8f, 0, 10, kSymbol, 0, 0.67f);
+        f.Add("B", u + 2.8f, 0);
+        Expect(f.Latex(), "x\\not\\in A,y\\notin B", 2245);
+    }
+    {
+        Formula f;
+        float u = f.Add("A", 0, 0);
+        f.Add("\xE2\x88\xBC", u + 2.8f, 3, 10, kSymbol, 0, 0.78f);  // ∼ raised over the =
+        u = f.Add("=", u + 2.8f, 0, 10, kText, 0, 0.78f);
+        f.Add("B", u + 2.8f, 0);
+        Expect(f.Latex(), "A\\cong B", 2244);
+    }
+    {
+        Formula f;
+        float u = f.Add("x", 0, 0);
+        f.Add("\xE2\x86\xA6", u + 2.8f, 0, 10, kSymbol, 0, 0.0f);  // \mapstochar read as ↦
+        f.Add("\xE2\x88\x92", u + 2.8f, 0, 10, kSymbol, 0, 0.78f);
+        u = f.Add("\xE2\x86\x92", u + 8.8f, 0, 10, kSymbol, 0, 1.0f);
+        f.Add("y", u + 2.8f, 0);
+        Expect(f.Latex(), "x\\longmapsto y", 2239);
+    }
+}
+
+// A ∼ drawn on a line of its own over the = of a line (\cong) joins that line.
+void TestStackedTilde() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, kSymbol};
+    float x = AddText(page, "Then ", 72, 700, 10);
+    x = AddText(page, "A", x, 700, 10, 1);
+    const float equals = x + 2;
+    x = AddText(page, "=", equals, 700, 10);
+    x = AddText(page, "B", x + 2, 700, 10, 1);
+    AddText(page, " holds.", x, 700, 10);
+    AddText(page, "\xE2\x88\xBC", equals, 703.5f, 10, 2);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    if (latex.find("$A\\cong B$") == std::string::npos) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(latex.find("$A\\cong B$") != std::string::npos, 2246);
+}
+
+// amsmath's \xrightarrow: bars overlapping up to an arrowhead, with a smaller label centred over
+// them.
+void TestExtensibleArrow() {
+    Formula f;
+    const float u = f.Add("a", 0, 0);
+    f.Add("\xE2\x88\x92", u + 1, 0, 10, kSymbol, 0, 0.78f);
+    f.Add("\xE2\x88\x92", u + 5, 0, 10, kSymbol, 0, 0.78f);
+    f.Add("\xE2\x86\x92", u + 9, 0, 10, kSymbol, 0, 1.0f);
+    f.Add("f", u + 8, 5, 7);
+    f.Add("b", u + 21, 0);
+    Expect(f.Latex(), "a\\xrightarrow{f}b", 2247);
+}
+
+// Letters an inline formula takes: an italic letter of a text font alone in a word with math
+// ("α(v)"), and a bold letter alone after a trailing relation ("T ≃ N").
+void TestInlineLetters() {
+    std::vector<Glyph> store;
+    std::vector<uint32_t> run = Runs("Let \xCE\xB1(v) hold", "...m.i.....", store);
+    RAYOPDF_CHECK(run[3] == 7, 2248);
+    run = Runs("so T \xE2\x89\x83 N here", "..mmb....", store);
+    RAYOPDF_CHECK(run[2] == 5, 2234);
+}
 } // namespace
 
 int main() {
@@ -1005,6 +1139,12 @@ int main() {
     TestBlackboardFonts();
     TestScriptChain();
     TestDisplayWithWord();
+    TestTexCodes();
+    TestBarPieces();
+    TestComposedRelations();
+    TestStackedTilde();
+    TestExtensibleArrow();
+    TestInlineLetters();
     std::puts("test_layout_math: ok");
     return 0;
 }

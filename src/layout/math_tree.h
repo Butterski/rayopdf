@@ -86,7 +86,8 @@ void AppendLatexToken(std::string& out, std::string_view token);
 // Three of the dot `cp` in a row: \ldots or \cdots; empty for other characters.
 std::string_view DotsOf(uint32_t cp);
 // Two symbols side by side, `gap` apart, that make one: a negation slash and the relation (\neq,
-// \notin, \not…), a bar and an arrow (\longrightarrow). False for others.
+// \not\in, \not…), a slash over a relation (\notin), a bar and an arrow (\longrightarrow),
+// \mapstochar or a hook and an arrow (\mapsto, \hookrightarrow). False for others.
 bool JoinMathSymbols(uint32_t a, uint32_t b, std::string_view latexA, std::string_view latexB, float gap, float em,
                      std::string& joined);
 
