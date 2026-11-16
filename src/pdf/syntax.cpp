@@ -21,8 +21,23 @@ int64_t PdfValue::Int(int64_t fallback) const {
 }
 
 const PdfValue* PdfValue::Find(std::string_view key) const {
+    // Keys of one dictionary often share their length and first bytes (/F1 … /F12, /Im3, /GS2):
+    // the last byte tells most of them apart before the comparison call.
+    const size_t n = key.size();
+    if (n == 0) {
+        for (const PdfDictEntry& entry : Entries())
+            if (entry.key.empty()) return &entry.value;
+        return nullptr;
+    }
+    const char last = key[n - 1];
+    const char* const k = key.data();
     for (const PdfDictEntry& entry : Entries()) {
-        if (entry.key == key) return &entry.value;
+        if (entry.key.size() != n || entry.key[n - 1] != last) continue;
+        // The rest byte by byte: keys are a few bytes, shorter than a comparison call.
+        const char* const e = entry.key.data();
+        size_t i = 0;
+        while (i + 1 < n && e[i] == k[i]) ++i;
+        if (i + 1 >= n) return &entry.value;
     }
     return nullptr;
 }
