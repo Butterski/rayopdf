@@ -1144,15 +1144,85 @@ Tried and rejected (2026-11-15):
   the callers that copy a line's text to read it), `StyleWords` and Breuel's `Topological` (round
   10's designs gained nothing; no new design was ready).
 
+## Twelfth round (2026-11-16)
+
+Master `65459c1` (0.5.0 program), profiled with callgrind (Release with `-g`, linked with gold;
+`--batch --workers=1`, images off; `arxiv_math` with `--math=latex`) over odl, `multi_column`,
+`tables` and `arxiv_math`. The ten largest self costs of each group, per function with the code
+inlined into it, in percent of the group's instructions:
+
+|Function|odl|`multi_column`|`tables`|`arxiv_math`|
+|---|---|---|---|---|
+|`Interpreter::RunStream` (with the content lexer)|15.67|6.85|13.45|13.94|
+|`Interpreter::ShowText`|10.28|12.08|9.74|6.11|
+|`Inflater::DecodeCodesBmi2`|12.53|6.00|7.57|11.64|
+|`PlaceGlyphs`|7.67|9.77|7.25|4.10|
+|`BuildLines`|6.41|7.81|6.06|3.70|
+|`Writer::Inline`|3.04|3.59|2.51|1.97|
+|`ContentLexer::ReadArray`|1.63|1.86|1.92|2.21|
+|`Detector::Run`|1.70|2.18|1.90|1.00|
+|`Writer::StyleWords`|1.79|1.92|1.01|1.45|
+|`Orderer::Cut`|0.69|2.49|0.79|0.89|
+|`ParseDict`|1.54|1.06|1.10|1.00|
+|`LoadToUnicode`|0.34|1.97|1.65|0.69|
+|`Detector::Commit`|0.56|0.20|2.07|0.01|
+|`MarkDisplayFormulas`|-|-|-|2.71|
+|`Builder::Row`|-|-|-|2.66|
+|`FindInlineFormulas`|-|-|-|2.53|
+|`PrepareMathGlyphs`|-|-|-|2.08|
+
+The first five were tuned in earlier rounds; the 0.5.0 landings' table, math and furniture code
+(`SplitRowsByLines` 0.77 % of `tables` inclusive, `SplitColumnsByText` 0.73 %) holds no single
+large cost. Below the top ten, three costs had cheaper equivalents: dictionary lookups
+(`PdfValue::Find` alone 0.42 % of odl, 0.86 % of `arxiv_math` and 7.05 % of the SafeDocs group,
+whose documents hold dictionaries of thousands of entries, besides its `memcmp` calls), the lookups
+of every `Tf` (about 180,000 on `arxiv_math`: `/Font`, the name, the font cache, the page's font
+ids) and the LaTeX rebuild's allocations (`malloc`, `free`, `new` and `delete` 2.76 % of
+`arxiv_math`, about two fifths from `Expr`, `Layout` and `Row`). Every step byte-identical
+(`bench.py identical` against `65459c1`, 0 differ): the branch head over the synthetic corpus, odl,
+olmOCR-Bench, READoc development (dev, dev2) and 1,000 SafeDocs documents with option sets images
+off, `--math=latex`, `--format=json`, `--plain`, `--tables=html`, `--tables=pipe`,
+`--no-structure` and images on; each earlier step over the synthetic corpus, odl, olmOCR-Bench and
+READoc dev with images off, `--math=latex`, `--format=json`, `--plain` and `--tables=html`.
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(pdf): a dictionary lookup tells keys apart by their last byte…`|`PdfValue::Find` tests a key's length and last byte, then compares the rest inline (keys of one dictionary share their length and first bytes: /F1 … /F12)|SafeDocs -2.815 %, `arxiv_math` -0.545 %, `multi_column` -0.341 %, syn6 -0.244 %, `tables` -0.190 %, odl -0.108 %, heavy10 -0.046 %|
+|`perf(layout): Tf finds a page's fonts again…`|The page's last font per resource dictionary and name (16 slots, keyed by the dictionary's entries and the name's bytes) set without the lookups; kept only where no lookup follows a reference chain, so no limit hit is skipped|`arxiv_math` -0.775 %, syn6 -0.505 %, SafeDocs -0.430 %, `tables` -0.420 %, `multi_column` -0.247 %, odl -0.139 %, heavy10 -0.106 %|
+|`perf(layout): the LaTeX rebuild's rows, expressions and layouts keep their storage per depth`|`Expr`'s items, `Layout`'s rows and `Row`'s roles, limit texts and scripts in the thread's builder scratch, one set per formula depth (a nested call is always one level deeper); a row already in order no longer goes through the sort buffer, which swapped a fresh buffer into every row|`arxiv_math` -1.652 %, the rest within 0.003 %|
+|`perf(layout): a large XObject dictionary looked up again and again is searched by sorted keys`|A dictionary of 64 entries or more looked up more than 16 times on a page gets its keys sorted with their entry index (the first of repeated keys is found, as before); four such indexes a page|SafeDocs -1.185 %, `multi_column` -0.014 %, the rest within 0.007 %|
+
+Against `65459c1`: odl -0.244 %, heavy10 -0.152 %, syn6 -0.747 %, SafeDocs -4.381 %, `multi_column`
+-0.603 %, `tables` -0.609 %, `arxiv_math` -2.939 %. No times were taken.
+
+Tried and rejected (2026-11-16, callgrind totals):
+
+- `PdfValue::Find` with the last-byte test but the rest still compared by `memcmp`: `arxiv_math`
+  -0.35 %, `multi_column` -0.25 % where the inline comparison gives -0.54 % and -0.34 % (kept the
+  inline one).
+- `StyleWords`' link test skipped for a word whose centre lies outside the box round its page's
+  links: odl -0.020 %, `multi_column` -0.006 % (the words' boxes, built anyway, are most of the
+  cost; under the 0.1 % bar).
+- Not attempted: line texts read in place (`AppendLineText` with `LineText` is 0.48 % of odl,
+  0.43 % of `multi_column`, 0.39 % of `tables` inclusive; the copies put in the word-break spaces
+  the page text lacks, so a view serves only lines of one word), and Breuel's `Topological`
+  (`Orderer::Cut` 2.49 % of `multi_column` self, spread over its pair tests; no design beyond round
+  10's).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
-  copied by the callers that only read them.
+  copied by the callers that only read them (twelfth round: only one-word lines are contiguous,
+  the copies being 0.4-0.5 % of odl, `multi_column` and `tables`).
 - **The OCR route's `MeasurePage`** (1.4 % of odl after round 11): counts per font slot are
   untried.
 - **Order and the writer:** Breuel's topological order (about 20 M on `multi_column`); the writer's
   `StyleWords` (33 M on `multi_column`). Round 10's rewrites of both gained nothing (tenth round,
-  Tried and rejected).
+  Tried and rejected), nor did skipping the link test of words outside the page's links (twelfth
+  round).
+- **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
+  1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
+  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
