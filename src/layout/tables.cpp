@@ -435,11 +435,15 @@ bool Relation(std::string_view t) {
 }
 
 // A relation sign alone: = < > := or ≠ ≡ ≤ ≥ ≈ ∼ ≃ ∝ ≔ → ⇒ ⇔ ⩽ ⩾ (U+2260 U+2261 U+2264 U+2265
-// U+2248 U+223C U+2243 U+221D U+2254 U+2192 U+21D2 U+21D4 U+2A7D U+2A7E).
+// U+2248 U+223C U+2243 U+221D U+2254 U+2192 U+21D2 U+21D4 U+2A7D U+2A7E), none longer than three
+// bytes.
 bool RelationSign(std::string_view t) {
-    for (const std::string_view s : {"=", "<", ">", ":=", "\xE2\x89\xA0", "\xE2\x89\xA1", "\xE2\x89\xA4", "\xE2\x89\xA5",
-                                     "\xE2\x89\x88", "\xE2\x88\xBC", "\xE2\x89\x83", "\xE2\x88\x9D", "\xE2\x89\x94",
-                                     "\xE2\x86\x92", "\xE2\x87\x92", "\xE2\x87\x94", "\xE2\xA9\xBD", "\xE2\xA9\xBE"})
+    static constexpr std::string_view kSigns[] = {
+        "=", "<", ">", ":=", "\xE2\x89\xA0", "\xE2\x89\xA1", "\xE2\x89\xA4", "\xE2\x89\xA5", "\xE2\x89\x88",
+        "\xE2\x88\xBC", "\xE2\x89\x83", "\xE2\x88\x9D", "\xE2\x89\x94", "\xE2\x86\x92", "\xE2\x87\x92",
+        "\xE2\x87\x94", "\xE2\xA9\xBD", "\xE2\xA9\xBE"};
+    if (t.empty() || t.size() > 3) return false;
+    for (const std::string_view s : kSigns)
         if (t == s) return true;
     return false;
 }
@@ -1453,7 +1457,11 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // else on any line; or the pieces of a tall bar ("∣" or "∥" alone) one above another on three
     // lines (|x| around a tall expression).
     {
-        std::string text;
+        // Both tests read a word's first bytes (Chars, which the cells' tests below read anyway):
+        // every sign and bar is three bytes at most.
+        const auto head = [](const WordChars& t) {
+            return std::string_view(reinterpret_cast<const char*>(t.head), std::min<uint32_t>(t.size, 3));
+        };
         // Per column: lines filling it, and lines filling it with a relation sign alone (a line's
         // words go left to right, each column's words one run).
         uint32_t filled[kMaxTableCols] = {}, relations[kMaxTableCols] = {};
@@ -1464,7 +1472,10 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 uint32_t next = k + 1;
                 while (next < after && columns[next - base] == c) ++next;
                 filled[c]++;
-                relations[c] += next == k + 1 && RelationSign(WordText(words_[rowWords[k]], text));
+                if (next == k + 1) {
+                    const WordChars& t = Chars(words_[rowWords[k]]);
+                    relations[c] += t.size <= 3 && RelationSign(head(t));
+                }
                 k = next;
             }
         }
@@ -1477,8 +1488,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         for (size_t r = rowBegin; r < rowEnd && pieces < kMaxPieces; ++r)
             for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && pieces < kMaxPieces; ++k) {
                 const TWord& w = words_[rowWords[k]];
-                const std::string_view t = WordText(w, text);
-                if (t == "\xE2\x88\xA3" || t == "\xE2\x88\xA5") pieceX[pieces] = w.x0, pieceRow[pieces++] = r;
+                const WordChars& t = Chars(w);
+                if (t.size == 3 && (head(t) == "\xE2\x88\xA3" || head(t) == "\xE2\x88\xA5")) pieceX[pieces] = w.x0, pieceRow[pieces++] = r;
             }
         for (size_t a = 0; a < pieces; ++a) {
             size_t stacked = 1, at = pieceRow[a];
