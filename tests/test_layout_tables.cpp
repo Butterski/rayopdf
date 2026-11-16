@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout/tables: lattice, partially ruled and borderless tables on pages built
 // glyph by glyph, the false tables that must not appear (prose in two columns, lists), a table
-// between columns of text, and hostile rulings. Exit codes 550-599, 850-899 and 1700-1749.
+// between columns of text, and hostile rulings. Exit codes 550-599, 850-899, 1700-1749 and
+// 2300-2349.
 //
 // `test_layout_tables --dump FILE.pdf [PAGE]` prints the rulings and tables found on the pages of
 // a PDF (a development aid; RAYOPDF_DUMP_LATEX=1 prepares the glyphs as --math=latex does).
@@ -1771,6 +1772,47 @@ void TestEquationArray() {
     RAYOPDF_CHECK(report.tables == 0 && first < number && number < second && second != std::string::npos, 886);
 }
 
+// Displayed formulas without equation numbers set in a grid: an array whose middle column holds an
+// equals sign alone on every line; a tall bar built of "∣" pieces on every line around an
+// expression. Neither is a table, every word stays.
+void TestEquationGrids() {
+    {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        float y = AddProse(page, 72, 450, 740, 3);
+        const char* const left[] = {"X11", "X12", "X22"};
+        const char* const right[] = {"Q(A + BK) + KQ,", "Q(B + FK),", "PEA + CPN"};
+        for (int r = 0; r < 3; ++r) {
+            y -= 16;
+            AddText(page, left[r], 200, y);
+            AddText(page, "=", 230, y);
+            AddText(page, right[r], 250, y);
+        }
+        AddProse(page, 72, 450, y - 24, 3);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("relation column", md);
+        RAYOPDF_CHECK(report.tables == 0 && Contains(md, "X12") && Contains(md, "PEA + CPN"), 2300);
+    }
+    {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        float y = AddProse(page, 72, 450, 740, 3);
+        const char* const middle[] = {"a + b", "c + d", "e + f", "g + h", "k + m"};
+        for (int r = 0; r < 5; ++r) {
+            y -= 12;
+            AddText(page, "\xE2\x88\xA3", 200, y);
+            AddText(page, middle[r], 230, y);
+            AddText(page, "\xE2\x88\xA3", 300, y);
+        }
+        AddProse(page, 72, 450, y - 24, 3);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show("tall bars", md);
+        RAYOPDF_CHECK(report.tables == 0 && Contains(md, "e + f"), 2302);
+    }
+}
+
 // Pieces of tall brackets around aligned figures: a matrix in display math, not a table.
 void TestBracketMatrix() {
     std::vector<PageData> pages{NewPage()};
@@ -2828,6 +2870,7 @@ int main(int argc, char** argv) {
     TestSparseLattice();
     TestTimingBoxes();
     TestEquationArray();
+    TestEquationGrids();
     TestBracketMatrix();
     TestLatticeRowsByVerticals();
     TestLatticeSections();

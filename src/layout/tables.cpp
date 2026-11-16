@@ -389,6 +389,16 @@ bool Relation(std::string_view t) {
     return false;
 }
 
+// A relation sign alone: = < > := or ≠ ≡ ≤ ≥ ≈ ∼ ≃ ∝ ≔ → ⇒ ⇔ ⩽ ⩾ (U+2260 U+2261 U+2264 U+2265
+// U+2248 U+223C U+2243 U+221D U+2254 U+2192 U+21D2 U+21D4 U+2A7D U+2A7E).
+bool RelationSign(std::string_view t) {
+    for (const std::string_view s : {"=", "<", ">", ":=", "\xE2\x89\xA0", "\xE2\x89\xA1", "\xE2\x89\xA4", "\xE2\x89\xA5",
+                                     "\xE2\x89\x88", "\xE2\x88\xBC", "\xE2\x89\x83", "\xE2\x88\x9D", "\xE2\x89\x94",
+                                     "\xE2\x86\x92", "\xE2\x87\x92", "\xE2\x87\x94", "\xE2\xA9\xBD", "\xE2\xA9\xBE"})
+        if (t == s) return true;
+    return false;
+}
+
 int Bits(uint64_t m) {
     int n = 0;
     for (; m; m &= m - 1) n++;
@@ -1391,6 +1401,45 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             related += relation;
         }
         if (equations && related >= 2 && 2 * related >= numbered) return;
+    }
+    // Displayed formulas set in a grid otherwise (an unnumbered align, eqnarray or array), no
+    // table: a column holding a relation sign alone ("=", "≤") on two lines at least and nothing
+    // else on any line; or the pieces of a tall bar ("∣" or "∥" alone) one above another on three
+    // lines (|x| around a tall expression).
+    {
+        std::string text;
+        // Per column: lines filling it, and lines filling it with a relation sign alone (a line's
+        // words go left to right, each column's words one run).
+        uint32_t filled[kMaxTableCols] = {}, relations[kMaxTableCols] = {};
+        for (size_t r = rowBegin; r < rowEnd; ++r) {
+            if (labels && (*labels)[r]) continue;
+            for (uint32_t k = rows[r].first, after = rows[r].first + rows[r].count; k < after;) {
+                const int c = columns[k - base];
+                uint32_t next = k + 1;
+                while (next < after && columns[next - base] == c) ++next;
+                filled[c]++;
+                relations[c] += next == k + 1 && RelationSign(WordText(words_[rowWords[k]], text));
+                k = next;
+            }
+        }
+        for (int c = 0; c < cols; ++c)
+            if (relations[c] >= 2 && relations[c] == filled[c]) return;
+        constexpr size_t kMaxPieces = 64;
+        float pieceX[kMaxPieces];
+        size_t pieceRow[kMaxPieces];
+        size_t pieces = 0;
+        for (size_t r = rowBegin; r < rowEnd && pieces < kMaxPieces; ++r)
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && pieces < kMaxPieces; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                const std::string_view t = WordText(w, text);
+                if (t == "\xE2\x88\xA3" || t == "\xE2\x88\xA5") pieceX[pieces] = w.x0, pieceRow[pieces++] = r;
+            }
+        for (size_t a = 0; a < pieces; ++a) {
+            size_t stacked = 1, at = pieceRow[a];
+            for (size_t b = a + 1; b < pieces; ++b)
+                if (pieceRow[b] != at && std::fabs(pieceX[b] - pieceX[a]) <= 1.0f) stacked++, at = pieceRow[b];
+            if (stacked >= 3) return;
+        }
     }
     // A label alone in the first column, set halfway between two body lines whose first cells are
     // empty (a \multirow label centred over an even number of rows): it belongs to the row above
