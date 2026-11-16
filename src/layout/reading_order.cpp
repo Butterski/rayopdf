@@ -1044,7 +1044,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // A lone page number may sit a little further in (a folio set 1 in from the edge of a
             // short page).
             const bool numberBand = side == 0 ? center > h * (1 - kNumberBand) : center < h * kNumberBand;
-            bool number = false, folio = false, note = false, metadata = false;
+            bool number = false, folio = false, note = false, metadata = false, entry = false;
             if (numberBand) {
                 // The row's text, left to right.
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
@@ -1063,6 +1063,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 // a listing never is one.
                 folio = (band || (count >= 2 && !mono)) && !bold && HasFolio(key, text);
                 metadata = band && IsMetadata(text);
+                // A row opening with a reference mark ("[29] ...") is an entry of a list run on
+                // from the page before, a URL in it or not.
+                entry = key.compare(0, 3, "[#]") == 0;
                 // A foot row that starts with a number or a reference mark is a footnote.
                 note = band && side == 1 && (key.compare(0, 2, "# ") == 0 || key.compare(0, 3, "#. ") == 0 ||
                                      key.compare(0, 3, "#) ") == 0 || text.compare(0, 1, "*") == 0 ||
@@ -1150,7 +1153,12 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 edges.texts += text;
                 edges.texts += key;
             }
-            const bool apart = marked || ((!sparse || (strong && metadata) || number || (folio && spread)) &&
+            // On a sparse page a page number holds one or two numbers ("12", "Page 3 of 9"): a row
+            // of more is data ("(3, 6, 192, 192)"); a list entry is no metadata or folio row.
+            const bool sparseAllowed = (strong && metadata && !entry) ||
+                                       (number && std::count(key.begin(), key.end(), '#') <= 2) ||
+                                       (folio && spread && !entry);
+            const bool apart = marked || ((!sparse || sparseAllowed) &&
                                           (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
                                            ((closeFolio || closeNumber || wide) && row < 2)));

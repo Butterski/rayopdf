@@ -738,6 +738,24 @@ void TestSparsePageNumber() {
     RAYOPDF_CHECK(Find(md, "Page 11") == std::string::npos && Find(md, "Fig. 6") != std::string::npos, 1865);
 }
 
+// A page whose text lies all at its edges keeps text that is no head or foot: the last entries of
+// a reference list run on from the page before (a URL in them is no publication stamp), and a row
+// of numbers printed by a program (a page number holds one or two).
+void TestEdgeOnlyContent() {
+    std::vector<PageData> refs{NewPage()};
+    AddText(refs[0], "[29]", 72, 757, 10);
+    AddText(refs[0], "\"Dynamic texture database,\" http://projects.example.org/dyntex/database.html.", 98, 757, 10);
+    AddText(refs[0], "[30]", 72, 745, 10);
+    AddText(refs[0], "\"Image sequence server,\" http://images.example.org/sequences/.", 98, 745, 10);
+    const std::string md = Run(refs);
+    std::vector<PageData> data{NewPage()};
+    AddText(data[0], "(3, 6, 192, 192)", 72, 757, 10);
+    const std::string shape = Run(data);
+    RAYOPDF_CHECK(Find(md, "[29]") != std::string::npos && Find(md, "Image sequence server") != std::string::npos &&
+                      Find(shape, "192, 192") != std::string::npos,
+                  1870);
+}
+
 // A running head over a rule typed as underscores: the head is set apart from the text past its
 // rule and goes; the text stays.
 void TestTypedRuleUnderHead() {
@@ -816,6 +834,7 @@ int main() {
     TestScanStamps();
     TestEdgeOnlyPage();
     TestSparsePageNumber();
+    TestEdgeOnlyContent();
     TestTypedRuleUnderHead();
     TestWrappedStamp();
     std::printf("test_layout_order: ok\n");
