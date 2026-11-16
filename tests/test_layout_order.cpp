@@ -754,6 +754,33 @@ void TestTypedRuleUnderHead() {
                   1868);
 }
 
+// A download stamp wrapped onto a last line in the outer margin of a two-column page, under a
+// folio row: the stamp's last line, set off the text's left edge on a page that is not set flush
+// left, waits with its first, and all three rows go. A paragraph in the body's size whose last
+// line ends in the margin under a line with a URL stays.
+void TestWrappedStamp() {
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 30; ++i)
+        for (const float x : {41.0f, 304.0f})
+            AddText(pages[0], "Line " + std::to_string(i) + " of the clinical study.", x, 700 - 9.0f * i, 7);
+    AddText(pages[0], "Clin Cancer Res 2006;12(15) August 1, 2006", 41, 25, 9);
+    AddText(pages[0], "4618", 285, 25, 9);
+    AddText(pages[0], "www.aacrjournals.org", 451, 25, 9);
+    AddText(pages[0], "Downloaded from clincancerres.aacrjournals.org on July 19, 2017. 2006 American Assoc.", 76, 11, 9);
+    AddText(pages[0], "Research.", 269, 1, 9);
+    const std::string md = Run(pages);
+    std::vector<PageData> paragraph{NewPage()};
+    for (int i = 0; i < 30; ++i)
+        AddText(paragraph[0], "Body line " + std::to_string(i) + " of the manual runs on here.", 41, 700 - 9.0f * i, 7);
+    AddText(paragraph[0], "http://www.cpan.org/ is the archive of Perl software, see the", 41, 24, 7);
+    AddText(paragraph[0], "question earlier in this document.", 41, 15, 7);
+    const std::string kept = Run(paragraph);
+    RAYOPDF_CHECK(Find(md, "Research.") == std::string::npos && Find(md, "Downloaded from") == std::string::npos &&
+                      Find(md, "Clin Cancer Res") == std::string::npos && Find(md, "Line 29 of the clinical") != std::string::npos &&
+                      Find(kept, "earlier in this document") != std::string::npos,
+                  1869);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -790,6 +817,7 @@ int main() {
     TestEdgeOnlyPage();
     TestSparsePageNumber();
     TestTypedRuleUnderHead();
+    TestWrappedStamp();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

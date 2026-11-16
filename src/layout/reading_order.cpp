@@ -977,6 +977,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         size_t start = side == 0 ? first : last;
         int pending = 0;
         bool weakPending = false;
+        bool tailPending = false;  // the row before waited only as a wrapped stamp's last line
         for (int row = 0; row < kEdgeMaxRows && last - first > (edgeOnly ? 0u : 1u); ++row) {
             const Line& edge = page.lines[lines[side == 0 ? first : last - 1]];
             // The row: lines on the edge line's baseline.
@@ -1156,8 +1157,18 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // A short row in the running band overlapping the row inside it waits with that row:
             // pieces of one head on offset baselines. Its block must still end in a strong row.
             const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;
-            if (!apart && !((strong || evidence || overlapping) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows)) {
-                // The block does not end set apart: the pending rows stay.
+            // The last line of a wrapped stamp at the edge ("... Association for Cancer" over
+            // "Research."): the page's outermost row, in its outer margin, one line in another size
+            // than the body (a paragraph's last line is in the body's) and in the size of the line
+            // inside it, no further from it than a paragraph's lines, waits with it when that
+            // line's row is publication metadata (tailPending).
+            const bool tail = row == 0 && margin && count == 1 && !note && !superscript && chars <= kRunningTitleChars &&
+                              std::fabs(largest - body) > kWideGapSizeTolerance * body && gap > -0.5f * body &&
+                              gap < closeGap && std::fabs(largest - nextSize) <= 0.05f * largest;
+            if ((tailPending && !metadata) ||
+                (!apart && !((strong || evidence || overlapping || tail) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows))) {
+                // The block does not end set apart, or a wrapped stamp's last line waited for a row
+                // that is no metadata: the pending rows stay.
                 if (side == 0)
                     first = start;
                 else
@@ -1171,6 +1182,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             if (!apart) {
                 pending++;
                 weakPending = weakPending || !strong;
+                tailPending = !(strong || evidence || overlapping);
                 continue;
             }
             for (size_t k = side == 0 ? start : last; k < (side == 0 ? first : start); ++k) {
@@ -1179,6 +1191,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             }
             pending = 0;
             weakPending = false;
+            tailPending = false;
             start = side == 0 ? first : last;
             // A page number set between dashes closes its edge's furniture: the rows inside it (a
             // numbered heading, "Buch 2") are content.
