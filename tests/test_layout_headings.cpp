@@ -3,8 +3,8 @@
 // above an outline that names the sections only, small capitals, numbering in the outline match,
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
 // cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
-// chapter's number and a display title's stacked lines. Pages are built glyph by glyph and
-// converted by the whole pipeline. Exit codes 1800-1849.
+// chapter's number and a display title's stacked lines; the centred headings of a page's own OCR
+// layer. Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -512,6 +512,59 @@ void TestChapterNumberAndStack() {
     RAYOPDF_CHECK(!HeadingWith(md, "SEAGRASS IN SOUTH FLORIDA").empty(), 1842);
 }
 
+// A page's own OCR layer (invisible text: no faces) heads a section with a block set centred in
+// its column, set off from the paragraph right under it; a table's label as OCR spells it
+// ("TABLE12"), the title under it and a "-continued" line head nothing.
+void TestOcrLayerHeadings() {
+    std::vector<PageData> scan{NewPage(1)};
+    PageData& page = scan[0];
+    const auto body = [&](float y, int count) {
+        for (int i = 0; i < count; ++i)
+            AddText(page, "Body text of the section that runs long enough to be a paragraph line.", 72, y - 12.0f * i, 10,
+                    kGlyphInvisible);
+    };
+    // Body lines span 72 to 427 (71 glyphs of 5 points): centred text is centred on 249.5.
+    body(740, 4);
+    AddText(page, "Example 4. Loading of the Liposomes", 249.5f - 87.5f, 680, 10, kGlyphInvisible);
+    body(668, 4);
+    AddText(page, "TABLE12", 249.5f - 17.5f, 600, 10, kGlyphInvisible);
+    AddText(page, "Results of the Loading", 249.5f - 55, 584, 10, kGlyphInvisible);
+    body(560, 4);
+    AddText(page, "-continued", 249.5f - 25, 490, 10, kGlyphInvisible);
+    body(470, 4);
+    const std::string md = Run(scan);
+    Show("ocr layer headings", md);
+    const std::string_view heading = HeadingWith(md, "Example 4. Loading of the Liposomes");
+    RAYOPDF_CHECK(!heading.empty() && heading.find("Body") == std::string_view::npos, 1843);
+    RAYOPDF_CHECK(HeadingWith(md, "TABLE12").empty() && HeadingWith(md, "continued").empty(), 1844);
+    RAYOPDF_CHECK(Contains(md, "Results of the Loading") && HeadingWith(md, "Results of the Loading").empty(), 1845);
+
+    // A layer set in its type's sizes (each line in one size) heads a section with a short line set
+    // larger; one whose sizes are fitted to its word boxes, word by word, does not.
+    for (const bool fitted : {false, true}) {
+        std::vector<PageData> sized{NewPage(1)};
+        PageData& p = sized[0];
+        const auto lines = [&](float y, int count) {
+            static const char* const kWords[] = {"Body", "text", "of", "the", "section", "that", "runs", "long",
+                                                 "enough", "to", "be", "a", "paragraph", "line."};
+            for (int i = 0; i < count; ++i) {
+                float x = 72;
+                for (int w = 0; w < 14; ++w) {
+                    const float size = fitted ? (w % 2 ? 9.0f : 11.0f) : 10.0f;
+                    x = AddText(p, kWords[w], x, y - 12.0f * i, size, kGlyphInvisible);
+                    x = AddText(p, " ", x, y - 12.0f * i, size, kGlyphInvisible);
+                }
+            }
+        };
+        lines(740, 4);
+        AddText(p, "Installation", 72, 680, 13, kGlyphInvisible);
+        lines(656, 4);
+        const std::string out = Run(sized);
+        Show(fitted ? "ocr layer fitted sizes" : "ocr layer typeset sizes", out);
+        RAYOPDF_CHECK(Contains(out, "Installation") && HeadingWith(out, "Installation").empty() == fitted, fitted ? 1847 : 1846);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -529,6 +582,7 @@ int main() {
     TestCardContent();
     TestCoverTitle();
     TestChapterNumberAndStack();
+    TestOcrLayerHeadings();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

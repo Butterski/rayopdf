@@ -19,6 +19,12 @@ namespace {
 
 constexpr float kMonoShare = 0.8f;   // a code line: at least this share of monospace characters
 constexpr float kHeadingSize = 1.12f; // a heading candidate: at least this times the body size
+constexpr float kOcrIndent = 1.5f;    // an OCR layer's centred heading: clear of its column's edges by this, in ems
+constexpr float kOcrAxis = 1.0f;      // ... its lines' centres this close to the column's, in ems
+constexpr size_t kOcrNeighbours = 2;  // ... the column: a block this many blocks away at most
+constexpr size_t kOcrRowWindow = 8;   // ... lines read on either side for another line on its baseline
+constexpr float kOcrSizedShare = 0.8f; // an OCR layer set in its type's sizes: this share of its lines in one size each
+constexpr float kOcrSizeSpread = 0.1f; // ... their glyphs this close to the line's size
 // The top heading level is a title (H1) from this times the body size up. Measured first levels:
 // LaTeX \section 1.44 (1.31 at 11 pt), typst 1.40, LibreOffice (pandoc's reference.docx) 1.67,
 // browsers 2.0; second levels: LaTeX \subsection and typst 1.20 (1.10 at 11 pt), LibreOffice 1.33.
@@ -400,6 +406,18 @@ void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
         }
     }
     key.resize(n);
+}
+
+// A table's or figure's label as an OCR layer spells it, by its match key (MatchKey): "table",
+// "figure" or "fig" and then a digit or a letter recognised for a roman numeral or a digit (i v x
+// l), the space before it kept or lost ("table28", "tableio", "figure3a").
+bool OcrLabel(std::string_view key) {
+    for (const std::string_view label : {std::string_view("table"), std::string_view("figure"), std::string_view("fig")}) {
+        if (key.size() <= label.size() || key.substr(0, label.size()) != label) continue;
+        const char c = key[label.size()];
+        return (c >= '0' && c <= '9') || c == 'i' || c == 'v' || c == 'x' || c == 'l';
+    }
+    return false;
 }
 
 // The text ends in a row of leader dots (four or more, spaced or not), with or without the page
@@ -864,6 +882,11 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     // A size change starts a block, except in an OCR layer whose sizes are fitted word boxes.
     const bool ocr = (last.flags & next.flags & kLineInvisible) != 0;
     if (!ocr && std::fabs(next.size - last.size) > 0.15f * em) return false;
+    // Nor does it have faces to set a heading off from its paragraph: there a line centred over a
+    // wider next line, clear of both its ends, ends its block (ocrCentred's measures).
+    if (ocr && next.u0 <= last.u0 - kOcrIndent * em && next.u1 >= last.u1 + kOcrIndent * em &&
+        std::fabs((next.u0 + next.u1) - (last.u0 + last.u1)) <= 2 * kOcrAxis * em)
+        return false;
     const float pitch = last.baseline - next.baseline;
     if (pitch <= 0.3f * em) return false;
     const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : firstPitch * em;
@@ -2031,6 +2054,70 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             cardTitle[r] = over >= 2 && 2 * over >= titles;
         }
     }
+    // Block r (upright) set centred in its column: the column is the extent of the nearest block
+    // of two lines or more before or after it on its page (within kOcrNeighbours blocks) whose
+    // extent holds it; every line of r is clear of both of the column's edges by kOcrIndent ems,
+    // centred on the column within kOcrAxis ems, and alone on its baseline in the column (a line
+    // of the other column may share it; a table row's other cells may not). The lines looked at
+    // for that are the kOcrRowWindow before and after the block in reading order, where a row's
+    // other lines stand.
+    const auto ocrCentred = [&](size_t r) {
+        const RawBlock& b = raws[r];
+        const Info& first = infos[b.first];
+        if (first.dir != 0) return false;
+        const float em = body;
+        float u0 = INFINITY, u1 = -INFINITY;
+        for (uint32_t i = b.first; i < b.first + b.count; ++i) u0 = Fmin(u0, infos[i].u0), u1 = Fmax(u1, infos[i].u1);
+        const auto centredIn = [&](size_t q) {
+            const RawBlock& c = raws[q];
+            const Info& top = infos[c.first];
+            if (c.count < 2 || top.page != first.page || top.dir != 0) return false;
+            float c0 = INFINITY, c1 = -INFINITY;
+            for (uint32_t i = c.first; i < c.first + c.count; ++i) c0 = Fmin(c0, infos[i].u0), c1 = Fmax(c1, infos[i].u1);
+            if (u0 < c0 + kOcrIndent * em || u1 > c1 - kOcrIndent * em) return false;
+            for (uint32_t i = b.first; i < b.first + b.count; ++i)
+                if (std::fabs((infos[i].u0 + infos[i].u1) - (c0 + c1)) > 2 * kOcrAxis * em) return false;
+            const size_t from = b.first > kOcrRowWindow ? b.first - kOcrRowWindow : 0;
+            const size_t to = std::min(infos.size(), size_t(b.first) + b.count + kOcrRowWindow);
+            for (size_t o = from; o < to; ++o) {
+                const Info& in = infos[o];
+                if ((o >= b.first && o < b.first + b.count) || in.page != first.page || in.dir != 0 || in.u1 <= c0 ||
+                    in.u0 >= c1 || (in.numbering && in.u1 <= u0))
+                    continue;
+                for (uint32_t i = b.first; i < b.first + b.count; ++i)
+                    if (std::fabs(in.baseline - infos[i].baseline) <= 0.3f * infos[i].size) return false;
+            }
+            return true;
+        };
+        for (size_t d = 1; d <= kOcrNeighbours; ++d) {
+            if (r >= d && centredIn(r - d)) return true;
+            if (r + d < raws.size() && centredIn(r + d)) return true;
+        }
+        return false;
+    };
+    // Whether the sizes of page p's OCR layer are its type's, so that a heading set larger reads
+    // larger: on at least kOcrSizedShare of its upright invisible lines of four glyphs or more,
+    // every glyph within kOcrSizeSpread of its line's size. A layer whose sizes are fitted to its
+    // word boxes one by one fails. Measured once a page.
+    std::vector<uint8_t> ocrSized(pages.size(), 0);  // 0 not measured, 1 fitted, 2 typeset
+    const auto ocrSizes = [&](uint32_t p) {
+        if (ocrSized[p] == 0) {
+            const PageData& page = pages[p];
+            uint32_t lines = 0, uniform = 0;
+            for (const Line& l : page.lines) {
+                if (!(l.flags & kLineInvisible) || l.dir != 0 || l.count < 4) continue;
+                lines++;
+                bool same = true;
+                for (uint32_t k = 0; k < l.count && same; ++k) {
+                    const Glyph& g = page.glyphs[page.lineGlyphs[l.first + k]];
+                    same = (g.flags & kGlyphSpace) || std::fabs(g.size - l.size) <= kOcrSizeSpread * l.size;
+                }
+                uniform += same ? 1 : 0;
+            }
+            ocrSized[p] = lines > 0 && float(uniform) >= kOcrSizedShare * float(lines) ? 2 : 1;
+        }
+        return ocrSized[p] == 2;
+    };
     for (size_t r = 0; r < raws.size(); ++r) {
         const RawBlock& b = raws[r];
         const Info& first = infos[b.first];
@@ -2108,12 +2195,6 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 }
             }
         }
-        // Invisible text (an OCR layer) carries no typographic signal: its sizes are fitted word
-        // boxes, so it makes paragraphs and lists only.
-        if (first.flags & kLineInvisible) {
-            if (k.kind != BlockKind::Heading && first.listStart()) k.kind = BlockKind::ListItem;
-            continue;
-        }
         // Text rotated to read upwards (an arXiv stamp in the margin) or upside down heads nothing,
         // nor does text that goes on a sentence in lowercase ("and", "yields", "with" between two
         // formulas), unless its first word is a hyphenated or numbered term ("p-adic Bounds").
@@ -2188,6 +2269,42 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         // and not much larger) titles nothing.
         const bool runningHead = first.topBand && b.count == 1 && !(first.flags & kLineAllBold) &&
                                  size <= 1.2f * body && first.gapBelow >= 2 * body;
+        // Invisible text (an OCR layer) has no faces: no bold, italic or fixed pitch tells its
+        // headings. What its geometry still shows is a block set centred in its column, clear of
+        // both of the column's edges: a heading, unless it only says that a table goes on
+        // ("-continued", "(Continued)", "52 -continued"), labels a table or figure as recognised
+        // text spells it ("TABLE28", "TABLE IO-continued"), or titles the table or figure whose
+        // label stands right above it. Where the layer is set in its type's sizes (ocrSizes, not
+        // fitted to its word boxes one by one), a short block set larger is a heading as in
+        // visible text.
+        if (first.flags & kLineInvisible) {
+            if (k.kind != BlockKind::Heading && b.count <= 6 && chars <= 300 && letter &&
+                !lowerLead && unpunctuated && !runningHead && !amongContents() && ocrCentred(r) && !caption()) {
+                MatchKey(text, scratch, false);
+                size_t digits = 0;
+                while (digits < scratch.size() && scratch[digits] >= '0' && scratch[digits] <= '9') ++digits;
+                bool heading = std::string_view(scratch).substr(digits) != "continued" && !OcrLabel(scratch);
+                if (heading && r > 0 && infos[raws[r - 1].first].page == first.page) {
+                    const Info& above = infos[raws[r - 1].first];
+                    LineText(pages[above.page], pages[above.page].lines[above.line], line);
+                    MatchKey(line, scratch, false);
+                    heading = !OcrLabel(scratch);
+                }
+                if (heading) {
+                    k.kind = BlockKind::Heading;
+                    k.boldHeading = true;
+                    continue;
+                }
+            }
+            if (k.kind != BlockKind::Heading && shortBlock && larger && !runningHead && last.lastCp != ',' &&
+                ocrSizes(first.page) && !caption()) {
+                k.kind = BlockKind::Heading;
+                k.styleKey = static_cast<int>(std::lround(size * 2)) * 2;
+                continue;
+            }
+            if (k.kind != BlockKind::Heading && first.listStart()) k.kind = BlockKind::ListItem;
+            continue;
+        }
         if (shortBlock && larger && !runningHead && last.lastCp != ',' && !caption()) {
             k.kind = BlockKind::Heading;
             k.styleKey = static_cast<int>(std::lround(size * 2)) * 2 + (b.bold ? 1 : 0);
