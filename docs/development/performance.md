@@ -1209,6 +1209,48 @@ Tried and rejected (2026-11-16, callgrind totals):
   (`Orderer::Cut` 2.49 % of `multi_column` self, spread over its pair tests; no design beyond round
   10's).
 
+## Thirteenth round (2026-11-16)
+
+The quality landings after the twelfth round's head (`a1163bc`) up to `59c95c1` cost user
+instructions (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with `--math=latex`):
+odl +0.233 %, heavy10 +0.105 %, syn6 +0.159 %, SafeDocs +0.183 %, `multi_column` +0.257 %, `tables`
++0.731 %, `arxiv_math` +1.396 %. Callgrind of both (Release with `-g`, linked with gold) over odl,
+`multi_column`, `tables` and `arxiv_math`; the growth per function, inclusive, with the function's
+share of its group at `59c95c1`:
+
+|Group|Growth|Where|
+|---|---|---|
+|`tables`|+7.75 M|`TextGrid` +4.59 M (1.12 %): the formula-grid tests (relation-sign column, tall-bar pieces) copied every word's text, `AppendGlyphTexts` +2.04 M, `strlen` +0.92 M; `SplitHeaderLevels` +1.85 M (0.17 %); the edge rows +0.58 M (`IsMetadata`, pages with text only at their edges); `PlaceGlyphs` +0.55 M (the `\cong` branch of the lone-script join)|
+|odl|+1.89 M|`TextGrid` +0.62 M; `SplitHeaderLevels` +0.53 M (0.07 %); the edge rows +0.37 M (`IsMetadata` 0.07 % self); `PlaceGlyphs` +0.14 M|
+|`multi_column`|+4.41 M|`BuildBlocks` +1.66 M (the OCR layer's centred headings and type sizes about 0.8 M); `TextGrid` +1.03 M; the edge rows +0.87 M; `SplitHeaderLevels` +0.74 M|
+|`arxiv_math`|+76.3 M|`PrepareMathGlyphs` +59.0 M (3.47 % of the group): its `hanging` lambda runs out of line for each of the 1.17 M glyphs, 55.6 M, 24.7 M of it the call's entry and exit; the LaTeX rebuild (`BuildLatex`) +21.5 M, `Builder::Row` +14.5 M of it (extensible arrows +6.5 M, variation selectors +3.5 M, `\cong` +2.7 M); `IsRelation` +2.1 M, now out of line|
+
+`src/layout/math.cpp` changed on another branch during this round, so its costs (+71.4 M self,
+1.28 % of `arxiv_math`) stay open candidates. The step is byte-identical (`bench.py identical`
+against `59c95c1` over the synthetic corpus, odl, olmOCR-Bench and READoc dev and dev2, 2,737
+documents, with images off, `--math=latex`, `--format=json`, `--plain`, `--tables=html` and
+`--tables=pipe`: 16,422 comparisons, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against `59c95c1`)|
+|---|---|---|
+|`perf(tables): the formula-grid tests read a word's first bytes, no text copy`|The relation-sign and tall-bar tests read a word's length and first three bytes from `Chars` (read for every word by the cells' tests anyway) instead of copying its text; `RelationSign`'s signs are `string_view`s, tried only for texts of one to three bytes (it took `strlen` of each of its 18 signs per call)|`tables` -0.336 %, odl -0.060 %, heavy10 -0.050 %, syn6 -0.044 %, `multi_column` -0.043 %, SafeDocs -0.014 %, `arxiv_math` -0.001 %|
+
+Against `a1163bc`: odl +0.173 %, heavy10 +0.055 %, syn6 +0.115 %, SafeDocs +0.169 %, `multi_column`
++0.214 %, `tables` +0.393 %, `arxiv_math` +1.394 %. No times were taken.
+
+Tried and rejected (2026-11-16, `instr.sh` against the step):
+
+- `SplitHeaderLevels` building no labels for a header row of one line (no label over another
+  line's run there): `tables` -0.023 %, odl -0.006 %. The rest is the header rows' words gathered
+  and located per row; the whole function is 0.17 % of `tables`.
+- `IsMetadata` skipping bytes no keyword starts with through a byte table, and read only where it
+  decides (a row shaped like a strong one, or after a wrapped stamp's last line): odl -0.025 %,
+  `multi_column` -0.026 %, `tables` -0.012 %.
+- Not attempted, measured under the bar: `SplitColumnsByText` scanning every located word once per
+  column (0.8 M of `tables`, under 0.08 % with the words bucketed by column); the `\cong` branch's
+  cost in `PlaceGlyphs` (0.05 % of `tables`, code layout); `BuildBlocks`' OCR heading tests (about
+  0.05 % of `multi_column`, work of their own).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1222,7 +1264,13 @@ Tried and rejected (2026-11-16, callgrind totals):
   round).
 - **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
-  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice.
+  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice. At the thirteenth round
+  (`59c95c1`, self costs in percent of `arxiv_math`): `PrepareMathGlyphs` 3.24 % (its `hanging`
+  lambda called out of line for every glyph of the page, 0.98 %, where the glyph's direction,
+  flags and font class tested before the call would leave the call to the extension and symbol
+  fonts' glyphs), `Builder::Row` 3.00 % (+0.28 % in the round: extensible arrows, variation
+  selectors, `\cong`), `MarkDisplayFormulas` 2.74 %, `FindInlineFormulas` 2.54 %, `ResolveAtom`
+  0.95 %; inclusive, `BuildLatex` 8.45 %, `Builder::Expr` 6.09 %, `Builder::Layout` 4.96 %.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
