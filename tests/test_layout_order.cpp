@@ -710,6 +710,34 @@ void TestScanStamps() {
                   1863);
 }
 
+// A page whose text lies all at its edges (a blank page of a manuscript collection): its head, a
+// folio row spread across the text, and its foot, a lone page number, are furniture though the
+// page has fewer lines than the sparse guard asks for, and though each is all the text left when
+// it is examined. A page holding only a title at its head keeps it.
+void TestEdgeOnlyPage() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "John Bibb Tate Memoir, 1921-1983", 72, 757, 10);
+    AddText(pages[0], "Manuscript Collection No. 117", 444, 757, 10);
+    AddText(pages[0], "3", 303, 62, 12);
+    const std::string md = Run(pages);
+    std::vector<PageData> titled{NewPage()};
+    AddText(titled[0], "Notes on the Survey", 72, 740, 10);
+    const std::string title = Run(titled);
+    RAYOPDF_CHECK(Find(md, "Memoir") == std::string::npos && Find(md, "Manuscript") == std::string::npos &&
+                      Find(md, "3") == std::string::npos && Find(title, "Notes on the Survey") != std::string::npos,
+                  1864);
+}
+
+// A figure page whose only other text is the figure's label: the page number at its foot is
+// furniture, the label stays.
+void TestSparsePageNumber() {
+    std::vector<PageData> pages{NewPage()};
+    AddText(pages[0], "Fig. 6", 280, 400, 12);
+    AddText(pages[0], "Page 11 of 15", 463, 52, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Page 11") == std::string::npos && Find(md, "Fig. 6") != std::string::npos, 1865);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -743,6 +771,8 @@ int main() {
     TestCountedPageNumbers();
     TestDifferentFirstLines();
     TestScanStamps();
+    TestEdgeOnlyPage();
+    TestSparsePageNumber();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

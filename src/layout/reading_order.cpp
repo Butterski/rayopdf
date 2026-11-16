@@ -793,7 +793,8 @@ struct Orderer {
 // no footnote marker, and either sits in the page's outer margin (kMarginBand) or reads as a page
 // number inside the running band. A second qualification: a short row in the outer tenth set apart
 // by a wide gap (kWideGapBand). A second row behind a removed one gets the same tests. Pages
-// with fewer than kEdgeMinLines other lines keep everything but publication metadata.
+// with fewer than kEdgeMinLines other lines keep everything but publication metadata, page
+// numbers and folio rows spread across the text.
 // The outer 6 % of the page height: Word's headers and footers at 0.5 in sit at about 5 %, LaTeX's
 // page number at 5 %. Body text can start that high too (RayoMD's compact layout at 5 %), hence
 // the gap, size and heading conditions.
@@ -901,7 +902,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         }
         return removed;
     }
-    if (lines.size() < 2) return 0;
+    // A page whose upright text lies all in its running bands (a figure page's or a blank page's
+    // head and foot): its rows are examined down to the last one, each set apart by the rest of
+    // the page.
+    const bool edgeOnly = inside == 0;
+    if (lines.size() < 2 && !edgeOnly) return 0;
     std::sort(lines.begin(), lines.end(), [&](uint32_t a, uint32_t b) {
         return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
     });
@@ -955,7 +960,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         size_t start = side == 0 ? first : last;
         int pending = 0;
         bool weakPending = false;
-        for (int row = 0; row < kEdgeMaxRows && last - first > 1; ++row) {
+        for (int row = 0; row < kEdgeMaxRows && last - first > (edgeOnly ? 0u : 1u); ++row) {
             const Line& edge = page.lines[lines[side == 0 ? first : last - 1]];
             // The row: lines on the edge line's baseline.
             size_t count = 0;
@@ -998,12 +1003,16 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                     }
                 }
             }
-            if (last - first - count < 1) break;
+            // The row holds the page's last lines: examined only on a page whose text lies all in
+            // its running bands (edgeOnly), where it is set apart by the rest of the page.
+            if (last - first == count && !edgeOnly) break;
             // A page with few other lines keeps its edge rows unless they are publication
-            // metadata (a nearly empty page with a repository stamp or a URL footer).
+            // metadata (a nearly empty page with a repository stamp or a URL footer), a page
+            // number or a folio row spread across the text (a figure page's or a blank page's
+            // head and foot).
             const bool sparse = last - first - count < kEdgeMinLines;
-            // The rest's outer edge toward this side.
-            float outer = side == 0 ? -INFINITY : INFINITY;
+            // The rest's outer edge toward this side; the page's other edge when nothing is left.
+            float outer = last - first == count ? (side == 0 ? 0 : h) : (side == 0 ? -INFINITY : INFINITY);
             float nextSize = 0;  // the size of the line the gap separates the row from
             for (size_t k = count; k < last - first; ++k) {
                 const Line& l = page.lines[lines[side == 0 ? first + k : last - 1 - k]];
@@ -1123,7 +1132,8 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 edges.texts += text;
                 edges.texts += key;
             }
-            const bool apart = marked || ((!sparse || (strong && metadata)) && (!weakPending || strong) &&
+            const bool apart = marked || ((!sparse || (strong && metadata) || number || (folio && spread)) &&
+                                          (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
                                            ((closeFolio || closeNumber || wide) && row < 2)));
             // A short row in the running band overlapping the row inside it waits with that row:
