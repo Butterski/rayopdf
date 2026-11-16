@@ -1129,6 +1129,36 @@ void TestRunInHeading() {
     RAYOPDF_CHECK(Contains(md, "**Results.** We find"), 717);
 }
 
+void TestRunInLabelParagraph() {
+    // A line opening with an emphasised run-in label ("Proof.") after a sentence's end starts a
+    // paragraph where more space than the paragraph's pitch sets it off (here 15 pt against 12,
+    // under the 1.3 times the pitch that ends any paragraph); at the paragraph's pitch, or without
+    // a label, the text runs on.
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    const float step[] = {15, 12, 15};
+    for (int c = 0; c < 3; ++c) {
+        const float top = 700 - 80.0f * c;
+        float x = AddText(page, "Theorem 3.1.", 72, top, 10, kGlyphBold);
+        AddText(page, " There is a character such that all these line bundles", x, top, 10, kGlyphItalic);
+        AddText(page, "descend to an exceptional sequence of line bundles on the surface.", 72, top - 12, 10,
+                kGlyphItalic);
+        const float y = top - 12 - step[c];
+        if (c < 2) {
+            x = AddText(page, "Proof.", 72, y, 10, kGlyphItalic);
+            AddText(page, " Because the surface has no holomorphic forms, each bundle L", x, y, 10);
+        } else {
+            AddText(page, "Because the surface has no holomorphic forms, every line bundle L", 72, y, 10);
+        }
+        AddText(page, "on it is an exceptional object, and so the whole sequence follows.", 72, y - 12, 10);
+    }
+    const std::string md = Run(pages);
+    Show("run-in label paragraph", md);
+    RAYOPDF_CHECK(Contains(md, "the surface.*\n\n*Proof.* Because"), 1921);
+    RAYOPDF_CHECK(Contains(md, "the surface. Proof.* Because"), 1922);
+    RAYOPDF_CHECK(Contains(md, "the surface.* Because the"), 1923);
+}
+
 void TestContentsAndChapterNumbers() {
     // Table-of-contents entries (a page number far right on the baseline) are no headings; a
     // chapter number set large above its title heads it with the title.
@@ -1958,6 +1988,7 @@ int main() {
     TestJustifiedLineStaysWhole();
     TestSmallTitle();
     TestRunInHeading();
+    TestRunInLabelParagraph();
     TestContentsAndChapterNumbers();
     TestWrappedListingLine();
     TestVerbatimEnumerators();

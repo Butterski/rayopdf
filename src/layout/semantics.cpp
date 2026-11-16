@@ -63,6 +63,9 @@ struct Info {
     // keeps it only where no text follows it on its baseline: an equation's number or a subfigure's
     // label, a paragraph of its own and never a list item waiting for its text.
     bool label = false;
+    // The line opens with a run-in label in bold or italic ("Proof.", "Lemma 2.", "Remark.") that
+    // ends in a period, and goes on in another style.
+    bool runInLabel = false;
     bool listStart() const { return marker != Marker::None; }
 };
 
@@ -592,6 +595,28 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
             }
         }
     }
+    // A run-in label: up to four words of one emphasis (bold, italic or both) from the line's
+    // first glyph, a capital letter, to a period (spaces after it aside), then text in another style.
+    if (const uint16_t emph = firstGlyph.flags & (kGlyphBold | kGlyphItalic); emph != 0 && line.count >= 3) {
+        const uint32_t cp0 = FirstCodePoint(page.GlyphText(firstGlyph));
+        if ((cp0 >= 'A' && cp0 <= 'Z') || (cp0 >= 0xC0 && cp0 <= 0xDE && cp0 != 0xD7)) {
+            constexpr uint32_t kMaxLabelGlyphs = 40;
+            uint32_t words = 1, e = 1;
+            bool restyled = false;  // a glyph in another style follows the label
+            for (; e < line.count && e <= kMaxLabelGlyphs && words <= 4; ++e) {
+                const uint16_t f = page.glyphs[page.lineGlyphs[line.first + e]].flags;
+                if ((f & (kGlyphBold | kGlyphItalic)) != emph) {
+                    restyled = true;
+                    break;
+                }
+                words += (f & kGlyphSpaceBefore) != 0;
+            }
+            uint32_t end = e;
+            while (end > 1 && (page.glyphs[page.lineGlyphs[line.first + end - 1]].flags & kGlyphSpace)) --end;
+            info.runInLabel = restyled && words <= 4 &&
+                              LastCodePoint(page.GlyphText(page.glyphs[page.lineGlyphs[line.first + end - 1]])) == '.';
+        }
+    }
     {
         const uint32_t cpFirst = FirstCodePoint(info.skip < line.count
                                                     ? page.GlyphText(page.glyphs[page.lineGlyphs[line.first + info.skip]])
@@ -843,6 +868,9 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     if (pitch <= 0.3f * em) return false;
     const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : firstPitch * em;
     if (pitch > limit) return false;
+    // A proof, a lemma or a remark opening with its emphasised run-in label after a sentence's end,
+    // set off by more space than the paragraph's own pitch, starts a paragraph.
+    if (next.runInLabel && last.endsTerminal && b.pitch > 0 && pitch >= b.pitch + 0.25f * em) return false;
     if (next.u0 > last.u1 || next.u1 < last.u0) return false;
     const bool monoNext = next.mono >= kMonoShare && !monoDocument;
     if (b.mono != monoNext) return false;
