@@ -87,7 +87,7 @@ TOOL_IMAGE = {"docling-ocr": "docling", "kordoc-ocr": "kordoc"}
 # readoc-dev: 300 READoc documents the holdout (readoc) did not take; development only.
 # readoc-val: 600 further READoc documents; validation, aggregate only.
 # readoc-dev2: up to 600 READoc documents after those; a second development split.
-# olmocr-math: olmOCR's arxiv_math category alone, for cli in its declared profile (--math=latex).
+# olmocr-math: olmOCR's arxiv_math category alone, for cli in its declared profile.
 # doclaynet-dev, doclaynet-val: DocLayNet pages (its val and test splits) scored by the roles of
 # their text cells (eval/scorer/doclaynet.py); development and validation (aggregate only).
 # omni-dev, omni-val: OmniParseBench's PDF pages, halves of its pages by the SHA-256 of their id,

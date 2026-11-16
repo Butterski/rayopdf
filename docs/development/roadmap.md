@@ -211,10 +211,11 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   furniture left out, emphasis, links and scripts as Markdown, tables GFM unless a span needs
   HTML, formulas as Unicode. Benchmarks' ground truths contradict each other on some of these
   conventions (odl keeps running headers and writes no inline markup and HTML tables; olmOCR's
-  `headers_footers` wants furniture absent; `arxiv_math` and READoc arXiv write LaTeX), so each
-  benchmark is measured with one fixed, published set of options, its declared profile in
-  `eval/profiles.json`: odl `--images=none --furniture=keep --plain --tables=html --quotes=ascii`
-  (quotes from 2026-11-14), olmOCR `arxiv_math` (the `olmocr-math` suite) `--math=latex`, READoc
+  `headers_footers` wants furniture absent and its tests read plain text; `arxiv_math` and READoc
+  arXiv write LaTeX), so each benchmark is measured with one fixed, published set of options, its
+  declared profile in `eval/profiles.json`: odl `--images=none --furniture=keep --plain
+  --tables=html --quotes=ascii` (quotes from 2026-11-14), olmOCR `--plain` and its `arxiv_math`
+  (the `olmocr-math` suite) `--math=latex --plain` (`--plain` from 2026-11-16), READoc
   `--math=latex --tables=pipe` (its evaluator reads pipe tables only), the others the default.
   Version records show the default row beside the declared row where they differ; the quality
   gate measures the declared rows only, and no gated metric may fall more than 0.0001 below its

@@ -3,8 +3,8 @@
   "declared": {
     "odl": "--images=none --furniture=keep --plain --tables=html --quotes=ascii",
     "synthetic": "",
-    "olmocr": "",
-    "olmocr-math": "--math=latex",
+    "olmocr": "--plain",
+    "olmocr-math": "--math=latex --plain",
     "readoc": "--math=latex --tables=pipe",
     "readoc-dev": "--math=latex --tables=pipe",
     "readoc-dev2": "--math=latex --tables=pipe",

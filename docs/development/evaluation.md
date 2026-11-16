@@ -28,7 +28,7 @@ harness answers each condition:
 |synthetic|`corpus/`|the valid items of `corpus/corpus.json`|`eval/fixtures/md/<fixture>.md`|development; the `weasyprint` producer is the holdout|
 |odl|`data/odl-bench/pdfs`|200 single-page PDFs|`data/odl-bench/ground-truth/markdown`|development|
 |olmocr|`data/olmOCR-bench/bench_data/pdfs`|1,269 single-page PDFs: `arxiv_math` 522, `headers_footers` 266, `long_tiny_text` 62, `multi_column` 231, `tables` 188|the benchmark's JSONL unit tests|development|
-|olmocr-math|`data/olmOCR-bench/bench_data/pdfs`|the 522 `arxiv_math` PDFs of `olmocr`, converted by `cli` alone in its declared profile (`--math=latex`)|`arxiv_math.jsonl`|development|
+|olmocr-math|`data/olmOCR-bench/bench_data/pdfs`|the 522 `arxiv_math` PDFs of `olmocr`, converted by `cli` alone in its declared profile (`--math=latex --plain`)|`arxiv_math.jsonl`|development|
 |readoc|`data/READoc-data/sel`|300 multi-page PDFs: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/sel-gt/<subset>/<stem>.md`|**holdout**|
 |readoc-dev|`data/READoc-data/dev`|300 other multi-page PDFs of READoc: `arxiv/<stem>` 150, `github/<stem>` 150|`data/READoc-data/dev-gt/<subset>/<stem>.md`|development (§ READoc development split)|
 |readoc-val|`data/READoc-data/val`|600 further multi-page PDFs of READoc: `arxiv/<stem>` 300, `github/<stem>` 300|`data/READoc-data/val-gt/<subset>/<stem>.md`|**validation**, aggregate only (§ READoc development split)|
@@ -352,10 +352,13 @@ scored suite's categories only (the benchmark requires a candidate file for ever
 `old_scans` and `old_scans_math` for `olmocr-scans`; their JSONLs; and
 `<tool>/<category>/<name>_pg1_repeat1.md`. Reported: pass rate per JSONL (tests passed / tests);
 for `olmocr` also the mean of the 4 born-digital JSONLs without `arxiv_math`, for `olmocr-scans`
-the mean of its 2 JSONLs. Markdown syntax is ignored by these tests; text presence/absence,
-reading order, table cell neighbourhood and KaTeX-rendered math are checked. `arxiv_math` tests
-formulas as LaTeX, so RayoPDF's default (Unicode) output fails nearly all of them: its number is
-the `olmocr-math` suite's, in the declared profile.
+the mean of its 2 JSONLs. The tests take only bold and italics out of the Markdown
+(`olmocr.bench.tests.normalize_text`, which also folds typographic quotes and dashes): links,
+`<sup>`/`<sub>` tags and footnote references stay in the text they compare, so both suites are
+measured with `--plain` (§ Benchmark profiles). Text presence/absence, reading order, table cell
+neighbourhood and KaTeX-rendered math are checked. `arxiv_math` tests formulas as LaTeX, so
+RayoPDF's default (Unicode) output fails nearly all of them: its number is the `olmocr-math`
+suite's, in the declared profile.
 
 ### READoc
 
@@ -568,8 +571,9 @@ a version's report as `docs/benchmarks/v<version>-<date>.md` and add it to the
 
 Benchmarks' ground truths contradict each other on some conventions: odl's Markdown has no
 running headers removed, no emphasis or links and its tables as HTML, olmOCR's `headers_footers`
-tests want page furniture absent, `arxiv_math` and READoc arXiv write formulas as LaTeX, and
-READoc's evaluator reads GFM pipe tables only (an HTML table counts as no table).
+tests want page furniture absent and its tests read plain text, `arxiv_math` and READoc arXiv
+write formulas as LaTeX, and READoc's evaluator reads GFM pipe tables only (an HTML table counts
+as no table).
 RayoPDF's default output stays faithful to the page (roadmap D6); each benchmark is measured with
 one fixed, published set of options, its declared profile, in `eval/profiles.json`
 (`"declared": {suite: options}`):
@@ -577,8 +581,9 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |Suite|Declared options|
 |---|---|
 |odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii`|
-|synthetic, olmocr|none (the default)|
-|olmocr-math|`--math=latex`|
+|synthetic|none (the default)|
+|olmocr|`--plain` (from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in)|
+|olmocr-math|`--math=latex --plain`|
 |readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe`|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
 |omni-dev, omni-val|`--format=json --images=none --math=latex` (the adapter builds the HTML and the layout blocks from the blocks; the math tests compare LaTeX)|
