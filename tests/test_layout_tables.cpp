@@ -1558,6 +1558,39 @@ void TestRuledGroupHeader() {
                   853);
 }
 
+// Booktabs rules over two groups of two columns of figures, each group's label on two lines
+// centred over it ("Chinese / experimenter"): the second line crosses the whitespace between its
+// group's columns, which only rows of figures part. Those columns part all the same, the label
+// spanning them; a value with its standard error a word space after it ("x (y)") stays one cell.
+void TestRuledSubColumnsUnderLabel() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 420, 712);
+    AddText(page, "Chinese", 187, 702);
+    AddText(page, "White", 332, 702);
+    AddText(page, "experimenter", 175, 690);
+    AddText(page, "experimenter", 315, 690);
+    AddText(page, "Response", 76, 678);
+    for (float x : {150.0f, 290.0f}) {
+        AddText(page, "Divided", x, 678);
+        AddText(page, "Full", x + 65, 678);
+    }
+    HLine(page, 72, 420, 672);
+    const char* const names[] = {"Nonverbal", "Verbal", "Written"};
+    const char* const values[3][4] = {{".34 (.22)", ".54 (.17)", ".12 (.27)", ".20 (.24)"},
+                                      {".25 (.23)", ".36 (.20)", ".12 (.27)", ".34 (.22)"},
+                                      {".18 (.21)", ".41 (.19)", ".22 (.25)", ".30 (.23)"}};
+    for (int r = 0; r < 3; ++r) {
+        AddText(page, names[r], 76, 660 - 14.0f * float(r));
+        for (int c = 0; c < 4; ++c) AddText(page, values[r][c], (c < 2 ? 150.0f : 290.0f) + 65.0f * float(c % 2), 660 - 14.0f * float(r));
+    }
+    HLine(page, 72, 420, 620);
+    const std::string md = Run(pages);
+    Show("ruled sub-columns under a label", md);
+    RAYOPDF_CHECK(Contains(md, "| Nonverbal | .34 (.22) | .54 (.17) | .12 (.27) | .20 (.24) |"), 1745);
+    RAYOPDF_CHECK(Contains(md, "| Response | Divided | Full | Divided | Full |"), 1746);
+}
+
 // A ruled table, a note under it, then its header row again at its columns over one more row (a
 // second table of the same columns): the repeated header starts a table of two rows.
 void TestRepeatedHeaderRow() {
@@ -2786,6 +2819,7 @@ int main(int argc, char** argv) {
     TestFormGrid();
     TestWideHeaderLabels();
     TestRuledGroupHeader();
+    TestRuledSubColumnsUnderLabel();
     TestRowsBelowLattice();
     TestRepeatedHeaderRow();
     TestMiddleHeaderCell();

@@ -2161,6 +2161,7 @@ void Detector::SplitColumnsByText(Grid& g) const {
     for (int c = 0; c < cols; ++c) {
         ink.clear();
         head.clear();
+        const size_t columnStart = xs.size();  // boundaries this column adds start here
         float size = 0;
         for (size_t i = 0; i < located.size() && ink.size() < 4096; ++i) {
             const Located& w = located[i];
@@ -2233,6 +2234,43 @@ void Detector::SplitColumnsByText(Grid& g) const {
                 }
             }
             reach = Fmax(reach, ink[i].b);
+        }
+        // Columns of figures under labels that span them: a header label centred over two
+        // sub-columns, or a note across the table at its foot, crosses the whitespace between
+        // them in its own rows only. The rows of figures alone (every word a number), two at least
+        // with only label rows above and below them, part the column where whitespace a quarter
+        // wider than a word space runs through all of them with a number on both sides in each;
+        // the labels across it span the new columns.
+        if (xs.size() == columnStart && !ink.empty()) {
+            std::fill(any.begin(), any.end(), 0);  // per row: 1 figures alone, 2 other words
+            for (const Ink& k : ink) {
+                uint8_t& state = any[static_cast<size_t>(k.row)];
+                state = !k.number ? 2 : state == 0 ? 1 : state;
+            }
+            int top = rows, bottom = -1, figures = 0;
+            for (int r = 1; r < rows; ++r)
+                if (any[static_cast<size_t>(r)] == 1) top = std::min(top, r), bottom = r, figures++;
+            bool body = figures >= 2;
+            for (int r = top; r <= bottom && body; ++r) body = any[static_cast<size_t>(r)] != 2;
+            float bodyReach = -INFINITY;
+            for (size_t i = 0; i < ink.size() && body; ++i) {
+                const Ink& k = ink[i];
+                if (k.row < top || k.row > bottom) continue;
+                if (bodyReach > -INFINITY && k.a - bodyReach >= numberGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
+                    const float x = (bodyReach + k.a) / 2;
+                    std::fill(left.begin(), left.end(), 0), std::fill(right.begin(), right.end(), 0);
+                    for (const Ink& o : ink)
+                        if (o.row >= top && o.row <= bottom) (o.b < x ? left : right)[static_cast<size_t>(o.row)] = 1;
+                    int parted = 0;
+                    for (int r = top; r <= bottom; ++r) parted += left[static_cast<size_t>(r)] && right[static_cast<size_t>(r)];
+                    if (parted == figures) {
+                        xs.push_back(x);
+                        parent.push_back(c);
+                        oldBoundary.push_back(-1);
+                    }
+                }
+                bodyReach = Fmax(bodyReach, k.b);
+            }
         }
         xs.push_back(g.xs[static_cast<size_t>(c + 1)]);
         parent.push_back(c);
@@ -4232,6 +4270,13 @@ void Detector::DropChartText() {
 
 void Detector::Commit() {
     for (Grid& g : grids_) {
+        // A ruled table's columns come from whitespace through all its rows; columns of figures
+        // under a label that spans them part as a lattice's do (SplitColumnsByText).
+        if (g.kind == TableKind::Ruled) {
+            const int before = g.Cols();
+            SplitColumnsByText(g);
+            if (g.Cols() != before) g.cells.clear();
+        }
         if (g.cells.empty()) ComputeSpans(g);
         if (SplitSpanLines(g)) ComputeSpans(g);
     }
