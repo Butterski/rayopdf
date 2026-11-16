@@ -72,6 +72,51 @@ struct Span {
     uint16_t r = 0, c = 0, rs = 1, cs = 1;
 };
 
+// A header label of a lattice over a run of its columns, set without a rule under it (a
+// \multicolumn label): it spans [a, b] in row `row` (SplitHeaderLevels).
+struct LevelLabel {
+    int row = 0;
+    float a = 0, b = 0;
+};
+
+// A header label over the columns it heads (a \multicolumn label): label `k` of `above` (a line's
+// labels, words a word space apart, left to right) stands centred within half an em over a run of
+// two labels or more of `below` (a line under it, left to right, 64 at most) set at least 0.8 em
+// apart (columns, not the words of a wrapped cell), each of them nearer to it than to any other
+// label of its line (centre to centre); it lies within the run with half an em to spare, and no
+// other label of its line has its centre over the run; `clear(a, b)` vets the run's extent [a, b]
+// too. The run with the most labels; false when there is none.
+template <typename Clear>
+bool HeadedRun(const Gap* above, size_t aboveCount, size_t k, const Gap* below, size_t belowCount, float em, const Clear& clear,
+               Gap& run) {
+    constexpr size_t kMaxBelow = 64;
+    if (belowCount > kMaxBelow) return false;
+    const Gap label = above[k];
+    const float centre = (label.a + label.b) / 2;
+    bool nearest[kMaxBelow];
+    for (size_t p = 0; p < belowCount; ++p) {
+        const float bc = (below[p].a + below[p].b) / 2, d = std::fabs(bc - centre);
+        nearest[p] = true;
+        for (size_t o = 0; o < aboveCount && nearest[p]; ++o) nearest[p] = o == k || std::fabs(bc - (above[o].a + above[o].b) / 2) > d;
+    }
+    size_t best = 0;
+    for (size_t p = 0; p < belowCount; ++p) {
+        if (!nearest[p]) continue;
+        for (size_t q = p + 1; q < belowCount && nearest[q] && below[q].a - below[q - 1].b >= 0.8f * em; ++q) {
+            const float a = below[p].a, b = below[q].b;
+            if (q - p <= best || std::fabs((a + b) / 2 - centre) > 0.5f * em || label.a < a - 0.5f * em || label.b > b + 0.5f * em)
+                continue;
+            bool alone = true;
+            for (size_t o = 0; o < aboveCount && alone; ++o) {
+                const float oc = (above[o].a + above[o].b) / 2;
+                alone = o == k || !(oc > a && oc < b);
+            }
+            if (alone && clear(a, b)) best = q - p, run = Gap{a, b};
+        }
+    }
+    return best > 0;
+}
+
 // A table before its cells are filled.
 struct Grid {
     TableKind kind = TableKind::Lattice;
@@ -644,8 +689,9 @@ private:
     void SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& read) const;
     void SplitByText(Grid& g) const;
     void SplitRowsByLines(Grid& g) const;
+    void SplitHeaderLevels(Grid& g, const Component& comp, std::vector<LevelLabel>& levels) const;
     bool SplitSpanLines(Grid& g) const;
-    void SplitColumnsByText(Grid& g) const;
+    void SplitColumnsByText(Grid& g, const std::vector<LevelLabel>* levels = nullptr) const;
     bool HeaderAbove(Grid& g);
     bool HeaderOverColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t begin, size_t end,
                            const std::vector<uint8_t>& label, const Row& header, float minGap, std::vector<Gap>& gaps);
@@ -2127,6 +2173,200 @@ void Detector::SplitRowsByLines(Grid& g) const {
     g.hb.swap(hb);
 }
 
+// Levels of a lattice's header drawn without a rule between them (a \multicolumn label over the
+// columns it heads, its \cline left out): in one of the first four grid rows, with a row below it
+// and no number in the rows above it, whose text sits on two lines or more, a label of one line
+// (words a word space apart, no number on its line, ending at the lattice's rules) stands centred
+// over a run of labels of a line a full line below it (HeadedRun; a raised script, or labels of a
+// diagram set at their own heights, are no line above): the first line below with such a run,
+// past lines with nothing under the label and nothing over the run (cells set to the middle of
+// the header), and none past a line with something under the label but no run. No boundary drawn
+// in the row lies inside the run unless the label crosses it, and the row holds nothing over the
+// run above the label line or below the run's line (a header cell starts with its group label and
+// ends with its sub-labels). The row parts between the two lines, a little nearer the lower one:
+// in the run's columns a cell set to the middle of both goes with the upper one and spans the two
+// rows where the lower one holds nothing in its column; elsewhere a cell with text above the cut
+// spans both rows (wrapped labels stay whole). The label spans the run: the boundaries inside the
+// run go in its row, and `levels` holds the runs, by the new rows, for SplitColumnsByText.
+void Detector::SplitHeaderLevels(Grid& g, const Component& comp, std::vector<LevelLabel>& levels) const {
+    levels.clear();
+    const int rows = g.Rows(), cols = g.Cols();
+    if (cols < 1 || cols > 64 || rows < 2) return;
+    constexpr size_t kMaxWords = 1024, kMaxLines = 16, kMaxLabels = 32, kMaxParts = 8;
+    constexpr int kHeaderRows = 4;
+    struct Word {
+        float x0, x1, base, size, cy;
+        int c;
+        bool number;
+    };
+    struct Line {
+        float base, size;
+        size_t w0, w1;  // its words, left to right
+        size_t l0, l1;  // its labels, left to right
+        bool number;
+    };
+    struct Cut {
+        float y, a, b;  // where the row parts; the label's run
+    };
+    std::vector<Word> words;
+    std::vector<Line> lines;
+    std::vector<Gap> labels;
+    std::vector<Cut> cuts;
+    // The parted grid's boundaries, built from the first row with a cut on (the rows above it
+    // copied as they are).
+    std::vector<float> ys;
+    std::vector<uint8_t> vb, hb;
+    std::vector<LevelLabel> found;
+    bool header = true;  // no number in the rows above
+    Locator locate(g);   // g stays as it is until the end
+    for (int r = 0; r < rows; ++r) {
+        // Cuts come only from the header rows: with none by then, the grid stays as it is.
+        if (found.empty() && !(header && r < kHeaderRows && r + 1 < rows)) return;
+        const float top = g.ys[static_cast<size_t>(r)], bottom = g.ys[static_cast<size_t>(r + 1)];
+        words.clear();
+        lines.clear();
+        labels.clear();
+        cuts.clear();
+        bool number = false;
+        auto it = std::lower_bound(words_.begin(), words_.end(), top + 20, [](const TWord& w, float y) { return w.base > y; });
+        for (; it != words_.end() && it->base >= bottom - 20; ++it) {
+            int wr = 0, c = 0;
+            const float cy = (it->y0 + it->y1) / 2;
+            if (!locate.Find((it->x0 + it->x1) / 2, cy, wr, c) || wr != r) continue;
+            const bool numeric = Numeric(Chars(*it));
+            number = number || numeric;
+            if (words.size() < kMaxWords) words.push_back(Word{it->x0, it->x1, it->base, it->size, cy, c, numeric});
+        }
+        if (header && r < kHeaderRows && r + 1 < rows) {
+            // Lines: words within 0.35 of their size below a line's first baseline (words_ descend
+            // by baseline); each line's labels left to right.
+            for (size_t i = 0; i < words.size(); ++i) {
+                if (lines.empty() || lines.back().base - words[i].base > 0.35f * words[i].size) {
+                    if (lines.size() == kMaxLines) break;
+                    lines.push_back(Line{words[i].base, words[i].size, i, i, 0, 0, false});
+                }
+                lines.back().w1 = i + 1;
+                lines.back().number = lines.back().number || words[i].number;
+            }
+            for (Line& l : lines) {
+                std::sort(words.begin() + static_cast<std::ptrdiff_t>(l.w0), words.begin() + static_cast<std::ptrdiff_t>(l.w1),
+                          [](const Word& p, const Word& q) { return p.x0 < q.x0; });
+                // The boundaries a rule of the lattice runs through at the line's height: no label
+                // runs across one.
+                const float y = l.base + 0.3f * l.size;
+                uint64_t ruled = 0;
+                for (int c = 1; c < cols; ++c)
+                    for (size_t m = 0; m < comp.vCount && !(ruled >> c & 1); ++m) {
+                        const Edge& e = v_[comp.v[m]];
+                        if (std::fabs(e.pos - g.xs[static_cast<size_t>(c)]) <= kSnap && e.a <= y && e.b >= y) ruled |= uint64_t(1) << c;
+                    }
+                l.l0 = labels.size();
+                for (size_t i = l.w0; i < l.w1; ++i) {
+                    const Word& w = words[i];
+                    bool join = labels.size() > l.l0 && w.x0 - labels.back().b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
+                    for (int c = 1; c < cols && join; ++c)
+                        join = !(ruled >> c & 1) || !(labels.back().b <= g.xs[static_cast<size_t>(c)] && g.xs[static_cast<size_t>(c)] <= w.x0);
+                    if (join)
+                        labels.back().b = Fmax(labels.back().b, w.x1);
+                    else
+                        labels.push_back(Gap{w.x0, w.x1});
+                }
+                l.l1 = labels.size();
+            }
+            for (size_t i = 0; i + 1 < lines.size(); ++i) {
+                const Line& u = lines[i];
+                if (u.number || u.l1 - u.l0 > kMaxLabels) continue;
+                for (size_t k = u.l0; k < u.l1; ++k) {
+                    const Gap label = labels[k];
+                    // No boundary drawn in the row inside the run unless the label crosses it.
+                    const auto clear = [&](float a, float b) {
+                        for (int c = 1; c < cols; ++c) {
+                            const float x = g.xs[static_cast<size_t>(c)];
+                            if (g.vb[static_cast<size_t>(r * (cols + 1) + c)] && x > a && x < b && !(label.a < x && label.b > x)) return false;
+                        }
+                        return true;
+                    };
+                    // The lines below in turn: the first with a run under the label, past lines
+                    // with nothing under it (cells set to the middle of the header) that hold
+                    // nothing over the run either; none past a line under it without a run.
+                    for (size_t j = i + 1; j < lines.size(); ++j) {
+                        const Line& l = lines[j];
+                        Gap run;
+                        if (l.l1 - l.l0 <= kMaxLabels && u.base - l.base >= Fmax(u.size, l.size) &&
+                            HeadedRun(labels.data() + u.l0, u.l1 - u.l0, k - u.l0, labels.data() + l.l0, l.l1 - l.l0, u.size, clear, run)) {
+                            // Nothing over the run above the label line or between the lines,
+                            // and nothing under it below: a header cell starts with its group
+                            // label and ends with the sub-labels (prose or a list in a body cell
+                            // goes on).
+                            bool between = false, outside = false;
+                            for (size_t m = lines[i + 1].l0; m < l.l0 && !between; ++m) between = labels[m].a < run.b && labels[m].b > run.a;
+                            for (size_t m = lines[0].l0; m < u.l0 && !outside; ++m) outside = labels[m].a < run.b && labels[m].b > run.a;
+                            for (size_t m = l.l1; m < labels.size() && !outside; ++m) outside = labels[m].a < run.b && labels[m].b > run.a;
+                            const float y = (u.base + l.base) / 2 + 0.3f * l.size;
+                            if (!between && !outside && y < top && y > bottom) cuts.push_back(Cut{y, run.a, run.b});
+                            break;
+                        }
+                        bool under = false;
+                        for (size_t m = l.l0; m < l.l1 && !under; ++m) under = labels[m].a < label.b && labels[m].b > label.a;
+                        if (under) break;
+                    }
+                }
+            }
+        }
+        header = header && !number;
+        // The row's parts, top first: the cuts at least a point apart; per part boundary, the
+        // columns under the runs of its cuts.
+        std::sort(cuts.begin(), cuts.end(), [](const Cut& p, const Cut& q) { return p.y > q.y; });
+        float parts[kMaxParts];
+        uint64_t headed[kMaxParts] = {};
+        size_t partCount = 0;
+        if (!cuts.empty() && ys.empty()) {
+            ys.assign(g.ys.begin(), g.ys.begin() + r + 1);
+            vb.assign(g.vb.begin(), g.vb.begin() + r * (cols + 1));
+            hb.assign(g.hb.begin(), g.hb.begin() + (r + 1) * cols);
+        }
+        if (ys.empty()) continue;  // no cut yet
+        const size_t rowBase = ys.size() - 1;
+        for (const Cut& cut : cuts) {
+            if (partCount == 0 || parts[partCount - 1] - cut.y >= 1.0f) {
+                if (partCount == kMaxParts) break;
+                parts[partCount++] = cut.y;
+            }
+            for (int c = 0; c < cols; ++c)
+                if (g.xs[static_cast<size_t>(c)] < cut.b && g.xs[static_cast<size_t>(c + 1)] > cut.a) headed[partCount - 1] |= uint64_t(1) << c;
+            found.push_back(LevelLabel{static_cast<int>(rowBase + partCount - 1), cut.a, cut.b});
+        }
+        // Per part, the columns holding text.
+        uint64_t filled[kMaxParts + 1] = {};
+        for (const Word& w : words) {
+            size_t part = 0;
+            while (part < partCount && w.cy < parts[part]) ++part;
+            filled[part] |= uint64_t(1) << w.c;
+        }
+        // The part boundaries: drawn under a run unless only the part above holds text in the
+        // column; elsewhere only where the part above holds none.
+        for (size_t k = 0; k < partCount; ++k) {
+            ys.push_back(parts[k]);
+            vb.insert(vb.end(), g.vb.begin() + r * (cols + 1), g.vb.begin() + (r + 1) * (cols + 1));
+            for (int c = 0; c < cols; ++c) {
+                const bool above = filled[k] >> c & 1, below = filled[k + 1] >> c & 1;
+                hb.push_back(above && !(below && (headed[k] >> c & 1)) ? 0 : 1);
+            }
+        }
+        ys.push_back(bottom);
+        vb.insert(vb.end(), g.vb.begin() + r * (cols + 1), g.vb.begin() + (r + 1) * (cols + 1));
+        hb.insert(hb.end(), g.hb.begin() + (r + 1) * cols, g.hb.begin() + (r + 2) * cols);
+    }
+    if (found.empty() || static_cast<int>(ys.size()) - 1 > kMaxTableRows) return;
+    g.ys.swap(ys);
+    g.vb.swap(vb);
+    g.hb.swap(hb);
+    for (const LevelLabel& l : found)
+        for (int c = 1; c < cols; ++c)
+            if (g.xs[static_cast<size_t>(c)] > l.a && g.xs[static_cast<size_t>(c)] < l.b) g.vb[static_cast<size_t>(l.row * (cols + 1) + c)] = 0;
+    levels.swap(found);
+}
+
 // A cell spanning rows whose text is one line in each row it spans, the i-th line from the top
 // within the i-th row (a label written over two rows of a LaTeX table, its \cline under the
 // other columns only): a cell in each row. True when a grid's cell was split so.
@@ -2173,10 +2413,10 @@ bool Detector::SplitSpanLines(Grid& g) const {
 // below the first (three rows at least; through five, as narrow as two word spaces), with text on
 // both sides of it in two thirds of those rows, parts the column; under two rows, whitespace two
 // ems wide with text on both sides in both. A word across the new boundary (the group's label)
-// spans it; the boundary moves within the whitespace to a stretch half an em wide clear of the
-// first row's words when there is one (labels of neighbouring columns set closer than their
-// columns).
-void Detector::SplitColumnsByText(Grid& g) const {
+// spans it, and so does a label of `levels` over a run the new boundary lies in; the boundary
+// moves within the whitespace to a stretch half an em wide clear of the first row's words when
+// there is one (labels of neighbouring columns set closer than their columns).
+void Detector::SplitColumnsByText(Grid& g, const std::vector<LevelLabel>* levels) const {
     const int rows = g.Rows(), cols = g.Cols();
     if (rows < 3) return;
     std::vector<float> xs{g.xs.front()};
@@ -2236,13 +2476,15 @@ void Detector::SplitColumnsByText(Grid& g) const {
             if (i > 0 && ink[i].a - reach >= numberGap && static_cast<int>(xs.size()) <= kMaxTableCols) {
                 const bool narrow = ink[i].a - reach < minGap;
                 float x = (reach + ink[i].a) / 2;
-                // The widest stretch of the gap between two words of the first row that both reach
-                // into it.
+                // The widest stretch of the gap between two words of the first row, the right one
+                // reaching into it: from the left one's end or the gap's left side, whichever is
+                // further right (a label of the column on the left may end before the gap does).
                 bool crossed = false;
                 float at = -INFINITY, best = 0, bestX = x;
                 for (const Ink& h : head) {
                     crossed = crossed || (h.a < x - 0.5f && h.b > x + 0.5f);
-                    if (at > reach && h.a < ink[i].a && h.a - at > best) best = h.a - at, bestX = (at + h.a) / 2;
+                    const float from = Fmax(at, reach);
+                    if (at > -INFINITY && h.a < ink[i].a && h.a - from > best) best = h.a - from, bestX = (from + h.a) / 2;
                     at = Fmax(at, h.b);
                 }
                 if (crossed && best >= 0.5f * size) {
@@ -2339,6 +2581,12 @@ void Detector::SplitColumnsByText(Grid& g) const {
         for (int k = 1; k < n; ++k)
             if (oldBoundary[static_cast<size_t>(k)] < 0 && w.x0 < xs[static_cast<size_t>(k)] - 0.5f && w.x1 > xs[static_cast<size_t>(k)] + 0.5f)
                 vb[static_cast<size_t>(w.r * (n + 1) + k)] = 0;
+    for (size_t i = 0; levels && i < levels->size(); ++i) {
+        const LevelLabel& l = (*levels)[i];
+        for (int k = 1; k < n && l.row < rows; ++k)
+            if (oldBoundary[static_cast<size_t>(k)] < 0 && xs[static_cast<size_t>(k)] > l.a && xs[static_cast<size_t>(k)] < l.b)
+                vb[static_cast<size_t>(l.row * (n + 1) + k)] = 0;
+    }
     g.xs.swap(xs);
     g.vb.swap(vb);
     g.hb.swap(hb);
@@ -2771,6 +3019,7 @@ void Detector::Lattices() {
     std::vector<uint8_t> hUsed(nh, 0);
     std::vector<Edge> pieces;  // SplitRowsByVerticals': the vertical rule pieces as drawn
     bool piecesRead = false;
+    std::vector<LevelLabel> levels;  // SplitHeaderLevels' labels for SplitColumnsByText
     for (int32_t root : roots) {
         if (grids_.size() >= static_cast<size_t>(kMaxTablesPerPage)) break;
         const size_t ri = static_cast<size_t>(root);
@@ -2828,7 +3077,8 @@ void Detector::Lattices() {
         SplitRowsByVerticals(g, pieces, piecesRead);
         SplitByText(g);
         SplitRowsByLines(g);
-        SplitColumnsByText(g);
+        SplitHeaderLevels(g, comp, levels);
+        SplitColumnsByText(g, &levels);
         const int rows = g.Rows(), cols = g.Cols();
         ComputeSpans(g);
         // Rows that are one cell across, in most of the grid: verticals only frame the table (or

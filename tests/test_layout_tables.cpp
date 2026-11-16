@@ -2806,6 +2806,60 @@ void TestDashedRowLabels() {
     }
 }
 
+// A lattice framed by rules, a group of two sub-columns drawn without a rule between them: in its
+// header cell the group's label stands centred over the sub-labels on a line of their own. The
+// header cell parts into the label's row and the sub-labels' row, the label spanning the group; a
+// label of another column on three lines ("Full / long / name") stays one cell spanning both.
+void TestLatticeHeaderLevels() {
+    for (const bool wrapped : {false, true}) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        for (float y : {716.0f, 680.0f, 620.0f}) HLine(page, 72, 340, y);
+        for (float x : {72.0f, 140.0f, 340.0f}) VLine(page, x, 620, 716);
+        AddText(page, wrapped ? "Full" : "Name", 76, wrapped ? 706 : 702);
+        if (wrapped) AddText(page, "long", 76, 697);
+        if (wrapped) AddText(page, "name", 76, 688);
+        AddText(page, "Group", 212.5f, 702);
+        AddText(page, "A1", 160, 688);
+        AddText(page, "A2", 280, 688);
+        const char* const names[] = {"one", "two", "three"};
+        for (int r = 0; r < 3; ++r) {
+            AddText(page, names[r], 76, 666 - 14.0f * float(r));
+            AddText(page, "0.2" + std::to_string(r), 160, 666 - 14.0f * float(r));
+            AddText(page, "0.7" + std::to_string(r), 280, 666 - 14.0f * float(r));
+        }
+        const std::string md = Run(pages);
+        Show("lattice header levels", md);
+        if (wrapped)
+            RAYOPDF_CHECK(Contains(md, "| Full long name | Group | Group |\n| --- | --- | --- |\n|  | A1 | A2 |\n| one | 0.20 | 0.70 |"), 2307);
+        else
+            RAYOPDF_CHECK(Contains(md, "| Name | Group | Group |\n| --- | --- | --- |\n|  | A1 | A2 |\n| one | 0.20 | 0.70 |"), 2305);
+    }
+}
+
+// The same lattice, its group parted by whitespace whose middle the right column's label crosses
+// (centred over its narrow column), the left column's label ending before the left column's text
+// does: the boundary moves into the whitespace left of the right label, each label heading its
+// own column.
+void TestLatticeLabelInGap() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {716.0f, 696.0f, 620.0f}) HLine(page, 72, 340, y);
+    for (float x : {72.0f, 140.0f, 340.0f}) VLine(page, x, 620, 716);
+    AddText(page, "Name", 76, 702);
+    AddText(page, "Left", 165, 702);
+    AddText(page, "Right side", 208, 702);
+    const char* const names[] = {"one", "two", "three"};
+    for (int r = 0; r < 3; ++r) {
+        AddText(page, names[r], 76, 680 - 14.0f * float(r));
+        AddText(page, "12.34" + std::to_string(r), 160, 680 - 14.0f * float(r));
+        AddText(page, std::to_string(7 + r), 230, 680 - 14.0f * float(r));
+    }
+    const std::string md = Run(pages);
+    Show("lattice label in gap", md);
+    RAYOPDF_CHECK(Contains(md, "| Name | Left | Right side |\n| --- | --- | --- |\n| one | 12.340 | 7 |"), 2306);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2901,6 +2955,8 @@ int main(int argc, char** argv) {
     TestContentsLists();
     TestHeaderBandUnderTopRule();
     TestDashedRowLabels();
+    TestLatticeHeaderLevels();
+    TestLatticeLabelInGap();
     std::puts("test_layout_tables: ok");
     return 0;
 }
