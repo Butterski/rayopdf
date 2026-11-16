@@ -102,8 +102,11 @@ markup. Formulas stay as they are (`$$…$$`, and `$…$` by pandoc's rule): the
 asterisks and backslashes are LaTeX. Until 2026-11-15 the adapter took markup out of formulas
 too (`$N_{r}$` reached the grader as `$N{r}$`), so the OmniParseBench scores of the records up to
 0.4.0 understate the text family: master `8d38727` scored omni-dev text 0.441 and headline 0.577
-before, 0.665 and 0.651 after. `opb grade` then gives the share of each family's tests passed
-(`text`, `tables`, `layout`) and their mean, the headline score.
+before, 0.665 and 0.651 after. An `<ol>` starts at its first item's printed number and a new one
+opens where the numbers do not go on by one, since the grader writes each item's number from the
+list's `start` (before 2026-11-16 every list started at 1: omni-dev text 0.688487 -> 0.688816 on
+master `720083c`). `opb grade` then gives the share of each family's tests passed (`text`,
+`tables`, `layout`) and their mean, the headline score.
 Several suites of the dataset are olmOCR-bench's pages (`olmo_*`), so `omni-val` shares pages
 with the `olmocr` development suite: it guards against overfitting OmniParseBench's other sources
 and its test kinds, not olmOCR's pages. `omni-dev`'s score files keep the test lines

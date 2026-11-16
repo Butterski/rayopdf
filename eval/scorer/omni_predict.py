@@ -9,8 +9,10 @@ For each page id of --ids (one a line), --pred/<id>.md holds RayoPDF's JSON docu
 read (omni_parse_bench.views):
 
 - H, the page as HTML: headings <hN>, paragraphs and footnotes <p>, runs of list items <ul> or <ol>
-  by `ordered`, code <pre>, tables <table> from their cells (header rows <th>, row_span and
-  col_span as rowspan and colspan); images and comments are left out.
+  by `ordered` (an <ol> starts at its first item's printed number, and a new one opens where the
+  numbers do not go on by one, so the numbers the grader draws are those of the page), code <pre>,
+  tables <table> from their cells (header rows <th>, row_span and col_span as rowspan and colspan);
+  images and comments are left out.
 - B, one block per output block but comments: its box on the page as fractions of the page with
   the origin at the top left, and its label of views.LABELS (heading, table, list, code, footnote,
   figure for an image, text for the rest), with its text.
@@ -38,6 +40,7 @@ EMPHASIS = re.compile(r"(\*\*|__|\*|_|~~|`)")
 ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 HEADING = re.compile(r"^#{1,6} ")
 MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?: \[[ xX]\])? ")
+NUMBER = re.compile(r"(\d{1,9})[.)] ")
 NOTE = re.compile(r"^\[\^(\d+)\]: ")
 MATH = re.compile(r"(?<!\\)\$\$.+?(?<!\\)\$\$|(?<![\\$])\$(?![\s$])[^$\n]*?(?<![\s\\])\$(?!\d)")
 
@@ -88,6 +91,7 @@ def table_html(block):
 def page_html(blocks):
     out = []
     open_list = None  # "ul" or "ol" while list items run
+    next_number = None  # in an <ol>, the number the grader draws for its next item
     for block in blocks:
         kind = block["type"]
         if kind != "list_item" and open_list:
@@ -95,11 +99,16 @@ def page_html(blocks):
             open_list = None
         if kind == "list_item":
             tag = "ol" if block.get("ordered") else "ul"
-            if open_list != tag:
+            printed = NUMBER.match(block["markdown"]) if tag == "ol" else None
+            number = int(printed[1]) if printed else None
+            if open_list != tag or (number is not None and number != next_number):
                 if open_list:
                     out.append(f"</{open_list}>")
-                out.append(f"<{tag}>")
+                out.append(f'<ol start="{number}">' if number is not None else f"<{tag}>")
                 open_list = tag
+                next_number = number if number is not None else 1
+            if tag == "ol":
+                next_number += 1
             out.append(f"<li>{html.escape(md_text(block['markdown']))}</li>")
         elif kind == "heading":
             level = max(1, min(6, block.get("level", 1)))
