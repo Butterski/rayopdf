@@ -440,7 +440,7 @@ Also use the actual **space glyphs in the stream**:
 - Bare URLs in text → autolinks. Rejoin URLs broken across lines (no space at the line end, next line starts with URL characters) `[INFERENCE]`.
 
 ### 6.9 Footnotes, images, math
-- **Footnotes**: superscript markers in body text (§4.4) matched to small-font blocks at the bottom of the page that start with the same marker → `[^n]` definitions. Tagged files: `Note` (+ `Reference`) (§14.8.4.4 Table 338 `[unverified table #]`).
+- **Footnotes**: superscript markers in body text (§4.4) or in a table's cells (in a document with a line that starts with a raised mark) matched to small-font blocks at the bottom of the page that start with the same marker → `[^n]` definitions. A note's raised mark set at the margin a tab before its text stays on its line (no column gutter after it); an enumerator alone on its line takes the text a tab to its right (a page footnote only: a reference list's or a plot's lone number answers no endnote); a document whose notes start with a bold letter in parentheses (United Kingdom statutory instruments) has unraised references "(a)" glued to the word before them. Tagged files: `Note` (+ `Reference`) (§14.8.4.4 Table 338 `[unverified table #]`).
 - **Images**: placeholders `![alt](page-N-img-M.ext)`.
   - Extracting files means passing DCT as-is to `.jpg`, JPX to `.jp2`, and writing Flate raw pixels as PNG via RayoMD's PNG encoder.
   - Alt text from structure `Figure /Alt` (§14.8.4.5) when tagged; else empty alt plus a flag.

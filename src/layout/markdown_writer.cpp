@@ -135,7 +135,9 @@ public:
            bool plain)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
           boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math),
-          plainOutput_(plain) {}
+          plainOutput_(plain) {
+        for (const NoteRef& r : noteRefs_) letterRefs_ = letterRefs_ || r.count == 3;
+    }
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
@@ -226,6 +228,8 @@ private:
     MathMode math_ = MathMode::Unicode;
     // WriteSettings::plain: scripts without <sup>/<sub> tags, footnote references as their number.
     bool plainOutput_ = false;
+    // Some reference spans three glyphs: unraised "(a)" references (semantics.h) may be among them.
+    bool letterRefs_ = false;
     std::vector<GlyphRef> refs_;
     std::vector<Word> words_;
     std::vector<uint8_t> styles_;    // per GlyphRef: the styles it is written in
@@ -1109,10 +1113,17 @@ void Writer::Inline(const Block& block, bool styles) {
                     }
             }
             const uint8_t script = refs_[k].script;
+            // A footnote reference [k, refEnd): a raised run, or an unraised "(a)" (semantics.h's
+            // bold letter references).
+            uint32_t refEnd = 0;
             if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs_[k - 1].script != kScriptSup)) {
-                uint32_t supEnd = k + 1;
-                while (supEnd < end && refs_[supEnd].script == kScriptSup) ++supEnd;
-                if (const uint32_t number = NoteNumber(refs_[k], supEnd - k)) {
+                refEnd = k + 1;
+                while (refEnd < end && refs_[refEnd].script == kScriptSup) ++refEnd;
+            } else if (letterRefs_ && script == kScriptNone && k + 3 <= end && Text(refs_[k]) == "(") {
+                refEnd = k + 3;
+            }
+            if (refEnd != 0) {
+                if (const uint32_t number = NoteNumber(refs_[k], refEnd - k)) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                     if (plainOutput_) {
                         out_.append(std::to_string(number));
@@ -1122,7 +1133,7 @@ void Writer::Inline(const Block& block, bool styles) {
                         out_.push_back(']');
                     }
                     blockStart = false;
-                    k = supEnd;
+                    k = refEnd;
                     continue;
                 }
             }
@@ -1148,6 +1159,13 @@ void Writer::Inline(const Block& block, bool styles) {
             while (runEnd < stop && refs_[runEnd].script == script && styles_[runEnd] == styles_[k] &&
                    !(refs_[runEnd].flags & kGlyphImage))
                 ++runEnd;
+            // An unraised "(a)" reference inside the run ends it.
+            if (letterRefs_ && script == kScriptNone)
+                for (uint32_t j = k + 1; j < runEnd; ++j)
+                    if (j + 3 <= end && Text(refs_[j]) == "(" && NoteNumber(refs_[j], 3)) {
+                        runEnd = j;
+                        break;
+                    }
             SetStyle(styles_[k], k);
             if (depth_ > 0) blockStart = false;
             if (styles_[k] & kStyleCode) {
@@ -1288,6 +1306,12 @@ void Writer::FindFormulas() {
     // Footnote references are never math.
     if (!noteRefs_.empty()) {
         for (uint32_t k = 0; k < n;) {
+            if (letterRefs_ && refs_[k].script == kScriptNone && Text(refs_[k]) == "(" && k + 3 <= n &&
+                NoteNumber(refs_[k], 3)) {
+                for (uint32_t j = k; j < k + 3; ++j) inline_[j].note = true;
+                k += 3;
+                continue;
+            }
             if (refs_[k].script != kScriptSup || (k > 0 && refs_[k - 1].script == kScriptSup)) {
                 ++k;
                 continue;

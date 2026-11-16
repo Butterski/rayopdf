@@ -7,10 +7,12 @@
 // lines (§6.4), quotes from a left rule (§6.5). Paragraphs continue across columns and pages when
 // the first ends without terminal punctuation and the next starts in lowercase. Footnotes (§6.9):
 // a note starts with a marker (a superscript, or an enumerator in a smaller size or ending in a
-// back link) that matches a superscript reference earlier on its page, or anywhere before for
-// endnotes at the end of the document; notes are numbered in document order and written after
-// the last block. A note referenced from the title block (an author's affiliation) is front
-// matter instead, written with its mark under the title block.
+// back link; a page footnote's alone on its line when its text stands a tab away on its row) that matches a
+// superscript reference earlier on its page (in the text or a table's cell), or anywhere before
+// for endnotes at the end of the document; a bold letter in parentheses glued to the word before
+// ("Act 1965(a)") is a reference too in a document whose notes start with one. Notes are numbered
+// in document order and written after the last block. A note referenced from the title block (an
+// author's affiliation) is front matter instead, written with its mark under the title block.
 #pragma once
 
 #include "layout/page.h"

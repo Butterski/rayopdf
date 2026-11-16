@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout: the layout and semantic stages on pages built glyph by glyph, then the
 // whole conversion on PDFs built in memory (tests/pdf_builder.h), and the output options (front
-// matter, page markers, JSON). Exit codes 400-499, 700-749 and 1900-1949.
+// matter, page markers, JSON). Exit codes 400-499, 700-749, 1900-1949 and 2400-2449.
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -458,6 +458,101 @@ void TestFootnotes() {
     md = Run(refs);
     Show("footnotes: references", md);
     RAYOPDF_CHECK(!Contains(md, "[^") && Contains(md, "1. Smith, J. A cited work. 2020."), 480);
+}
+
+// Footnotes set in other ways. A raised mark in a ruled table's cell answers a note at the page
+// foot. A note's raised mark set at the margin a tab before its text (a word processor's) stays
+// with it. A bold letter in parentheses after a word ("Act 1965(a)") answers a note that starts
+// with it in a smaller size (United Kingdom statutory instruments). A note's number alone on its
+// line takes the text a tab to its right, on the reference's page only: a reference list's lone
+// number on a later page answers no unit's exponent ("cm²").
+void TestFootnoteKinds() {
+    std::vector<PageData> cell{NewPage(1)};
+    AddText(cell[0], "The table below lists the figures of the year in full detail.", 72, 740, 10);
+    for (float y : {700.0f, 680.0f, 660.0f}) cell[0].rulings.push_back(Ruling{72, y - 0.25f, 300, y + 0.25f, kRulingStroke});
+    for (float x : {72.0f, 180.0f, 300.0f}) cell[0].rulings.push_back(Ruling{x - 0.25f, 660, x + 0.25f, 700, kRulingStroke});
+    AddText(cell[0], "Item", 76, 686, 10);
+    AddText(cell[0], "Amount", 184, 686, 10);
+    float x = AddText(cell[0], "Net income", 76, 666, 10);
+    AddText(cell[0], "1", x, 670, 6);
+    AddText(cell[0], "42", 184, 666, 10);
+    AddText(cell[0], "More text after the table closes the page body here.", 72, 620, 10);
+    x = AddText(cell[0], "1", 72, 104, 5);
+    AddText(cell[0], "Restated for the merger.", x, 100, 8);
+    std::string md = Run(cell);
+    Show("footnote kinds: table", md);
+    RAYOPDF_CHECK(Contains(md, "Net income[^1]") && Contains(md, "[^1]: Restated for the merger."), 2400);
+
+    std::vector<PageData> tab{NewPage(1)};
+    x = AddText(tab[0], "Every tender needs a signature of each member of the group.", 90, 700, 10);
+    AddText(tab[0], "8", x, 704, 6);
+    x = AddText(tab[0], "The second paragraph of the body text runs on for a while.", 90, 680, 10);
+    AddText(tab[0], "9", x, 684, 6);
+    AddText(tab[0], "And a third one closes the body of the page before its notes.", 90, 660, 10);
+    AddText(tab[0], "8", 72, 134, 6);
+    AddText(tab[0], "Members sign on the last page of the form.", 90, 130, 9);
+    AddText(tab[0], "of the tender and on each annex to it, in ink.", 90, 119, 9);
+    AddText(tab[0], "A copy of the form goes with the tender.", 90, 108, 9);
+    AddText(tab[0], "9", 72, 101, 6);
+    AddText(tab[0], "The data serve to grant access to the building.", 90, 97, 9);
+    AddText(tab[0], "Details are in the statement on data protection.", 90, 86, 9);
+    md = Run(tab);
+    Show("footnote kinds: tab", md);
+    RAYOPDF_CHECK(Contains(md, "group.[^1]") && Contains(md, "[^1]: Members sign on the last page of the form.") &&
+                      Contains(md, "[^2]: The data serve to grant access"),
+                  2401);
+
+    std::vector<PageData> letters{NewPage(1)};
+    x = AddText(letters[0], "Section 11", 72, 700, 10);
+    x = AddText(letters[0], "(", x, 700, 10);
+    x = AddText(letters[0], "a", x, 700, 10, kGlyphBold);
+    x = AddText(letters[0], ")", x, 700, 10);
+    AddText(letters[0], " of the 1965 Act applies to the land.", x, 700, 10);
+    AddText(letters[0], "(1) A list item of the body in its own size.", 72, 680, 10);
+    x = AddText(letters[0], "(", 72, 100, 8);
+    x = AddText(letters[0], "a", x, 100, 8, kGlyphBold);
+    x = AddText(letters[0], ")", x, 100, 8);
+    AddText(letters[0], " Section 11 was amended by the 1981 Act.", x, 100, 8);
+    md = Run(letters);
+    Show("footnote kinds: letters", md);
+    RAYOPDF_CHECK(Contains(md, "Section 11[^1] of the 1965 Act") && Contains(md, "[^1]: Section 11 was amended by the 1981 Act."),
+                  2402);
+
+    std::vector<PageData> alone{NewPage(1)};
+    x = AddText(alone[0], "The first claim of the body text needs a source.", 72, 700, 10);
+    AddText(alone[0], "1", x, 704, 6);
+    x = AddText(alone[0], "The second claim of the body text needs one too.", 72, 680, 10);
+    AddText(alone[0], "2", x, 684, 6);
+    AddText(alone[0], "A third line closes the body of the page before its notes.", 72, 660, 10);
+    AddText(alone[0], "1.", 72, 120, 8);
+    AddText(alone[0], "The first source is a report of the board.", 96, 120, 8);
+    AddText(alone[0], "It was published in the spring of that year.", 96, 110, 8);
+    AddText(alone[0], "2.", 72, 96, 8);
+    AddText(alone[0], "The second source is the annual statement.", 96, 96, 8);
+    AddText(alone[0], "It covers every office of the company.", 96, 86, 8);
+    md = Run(alone);
+    Show("footnote kinds: number alone", md);
+    RAYOPDF_CHECK(Contains(md, "a source.[^1]") && Contains(md, "[^1]: The first source is a report of the board.") &&
+                      Contains(md, "[^2]: The second source is the annual statement."),
+                  2403);
+
+    std::vector<PageData> list{NewPage(1), NewPage(2)};
+    x = AddText(list[0], "The detector covers an area of 9500 cm", 72, 700, 10);
+    AddText(list[0], "2", x, 704, 6);
+    AddText(list[0], "The first page of the body text closes with this line.", 72, 680, 10);
+    AddText(list[1], "The second page of the body text runs on over a few lines of text.", 72, 700, 10);
+    AddText(list[1], "Its lines are set in the body size, ten points, as the first page's.", 72, 686, 10);
+    AddText(list[1], "So the body size of the document stays that of these lines.", 72, 672, 10);
+    AddText(list[1], "The second page of the body text ends before the references.", 72, 658, 10);
+    AddText(list[1], "1.", 72, 120, 8);
+    AddText(list[1], "A. Author, and others, The Journal 696, 1084 (2009).", 96, 120, 8);
+    AddText(list[1], "2.", 72, 108, 8);
+    AddText(list[1], "B. Author, and others, Science 325, 840 (2009).", 96, 108, 8);
+    AddText(list[1], "3.", 72, 96, 8);
+    AddText(list[1], "C. Author, and others, The Letters 700, 127 (2009).", 96, 96, 8);
+    md = Run(list);
+    Show("footnote kinds: reference list", md);
+    RAYOPDF_CHECK(!Contains(md, "[^") && Contains(md, "B. Author, and others, Science 325"), 2404);
 }
 
 void TestAffiliations() {
@@ -2008,6 +2103,7 @@ int main() {
     TestOutlineHeading();
     TestHeadingLevels();
     TestFootnotes();
+    TestFootnoteKinds();
     TestAffiliations();
     TestRightToLeft();
     TestPdfTjTj();

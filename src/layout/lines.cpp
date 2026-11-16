@@ -543,6 +543,22 @@ RAYOPDF_HOT_INLINE bool OpeningMark(const PageData& page, const Glyph& g) {
     return (c == 0xE2 || c == 0xC2) && OpeningQuote(page.GlyphText(g));
 }
 
+// Glyphs `at[0, count)` (1-3) are a note's raised mark before `next`: digits or * † ‡, smaller than
+// `next` and raised above it, as word processors set a note's mark at the margin a tab before its
+// text.
+bool RaisedNoteMark(const PageData& page, const uint32_t* at, uint32_t count, const Glyph& next) {
+    float size = 0, v = 0;
+    for (uint32_t k = 0; k < count; ++k) {
+        const Glyph& m = page.glyphs[at[k]];
+        const std::string_view t = page.GlyphText(m);
+        if (!((t.size() == 1 && t[0] >= '0' && t[0] <= '9') || t == "*" || t == "\xE2\x80\xA0" || t == "\xE2\x80\xA1"))
+            return false;
+        size = Fmax(size, m.size);
+        v = k == 0 ? m.v : Fmin(v, m.v);
+    }
+    return size < 0.87f * next.size && v - next.v > 0.2f * next.size;
+}
+
 // Punctuation that closes what is before it: , . ; : ! ? % ) ] } ” ’ ».
 bool ClosingMark(const PageData& page, const Glyph& g) {
     if (g.textLength == 0) return false;
@@ -1055,7 +1071,8 @@ struct Proto {
     float vb = 0, vt = 0, lineSize = 0;
     uint16_t allFlags = 0;
     uint8_t dir = 0;
-    bool split = false;  // a gutter splits it
+    bool split = false;    // a gutter splits it
+    bool markTab = false;  // a note's raised mark, then a tab, leads it: no gutter after the mark
 };
 
 struct Segment {
@@ -1732,6 +1749,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.
                 if (gap > kGutterCandidate * em) {
+                    // The first wide gap after a note's raised mark is a tab, no gutter.
+                    if (segmentCount == p.segFirst && protoCount - p.first <= 3 && gap <= 2.5f * g.size &&
+                        RaisedNoteMark(page, protoAt + p.first, protoCount - p.first, g))
+                        p.markTab = true;
                     segments[segmentCount++] = seg;
                     seg = Segment{g.u0, g.u1, protoCount};
                     prevTight = false;
@@ -1835,6 +1856,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 const float pad = 0.1f * l.size;
                 int blocked = 0, clear = 0, oneSide = 0;
                 bool leftSide = false, rightSide = false;  // some neighbour has text only left / right of it
+                // A note's mark before a tab stays with its text when no line around has ink left
+                // of it, at the margin (a patent's line numbers stand in the gutter between two
+                // columns). A line's segments run left to right.
+                const bool markTab = s == 1 && l.markTab;
+                bool inkLeft = false;
                 for (int side = 0; side < 2; ++side) {
                     for (size_t o = r;;) {
                         if (side == 0) {
@@ -1846,6 +1872,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                         const Proto& n = protos[byBase[o]];
                         if (n.dir != l.dir || std::fabs(n.baseline - l.baseline) > window) break;
                         if (n.u1 < a - 20 * l.size || n.u0 > b + 20 * l.size) continue;
+                        inkLeft = inkLeft || (markTab && n.segCount > 0 && segments[n.segFirst].u1 < l.u0);
                         bool ink = false, left = false, right = false;
                         for (uint32_t t = 0; t < n.segCount; ++t) {
                             const Segment& sg = segments[n.segFirst + t];
@@ -1864,6 +1891,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                         }
                     }
                 }
+                if (markTab && !inkLeft) continue;
                 const bool bounded = clear >= 1 || (leftSide && rightSide);
                 const bool gutter = bounded && (clear + oneSide >= 2) && blocked * 8 <= clear + oneSide;
                 if (gutter) splitBefore[start] = 1, splits++, protos[byBase[r]].split = true;

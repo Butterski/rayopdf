@@ -453,6 +453,19 @@ bool StandardSection(std::string_view t, std::string& key) {
     return false;
 }
 
+// Glyphs [k, k + 3) of `line` are "(", a bold lowercase letter and ")" with the parentheses in
+// another face: the letter's ordinal (1-26), else 0.
+uint32_t BoldLetterMark(const PageData& page, const Line& line, uint32_t k) {
+    if (k + 3 > line.count) return 0;
+    const Glyph& open = page.glyphs[page.lineGlyphs[line.first + k]];
+    const Glyph& letter = page.glyphs[page.lineGlyphs[line.first + k + 1]];
+    const Glyph& close = page.glyphs[page.lineGlyphs[line.first + k + 2]];
+    if (!(letter.flags & kGlyphBold) || ((open.flags | close.flags) & kGlyphBold)) return 0;
+    const std::string_view t = page.GlyphText(letter);
+    if (t.size() != 1 || t[0] < 'a' || t[0] > 'z' || page.GlyphText(open) != "(" || page.GlyphText(close) != ")") return 0;
+    return static_cast<uint32_t>(t[0] - 'a' + 1);
+}
+
 // Small painted shapes near the left of lines: vector bullets, task boxes, quote bars.
 struct Marks {
     std::vector<const Shape*> small;  // bullets and boxes
@@ -466,6 +479,12 @@ struct Marks {
     };
     std::vector<Height> byHeight;
     uint32_t scans = 0;
+    // Document-wide (CollectMarks keeps it): some line starts with a bold letter note's mark,
+    // "(a)" (FindNotes).
+    bool letterNotes = false;
+    // Document-wide too: some line starts with a raised glyph (a note's mark): FindNotes then
+    // looks for references in tables' cells.
+    bool raisedStarts = false;
 };
 
 // Below this many small marks a line tests each; from it on, after kScansBeforeIndex lines did,
@@ -520,7 +539,7 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     bool letter = false;
     bool numbering = line.chars <= 8;
     // A raised glyph after those the line starts with: a footnote reference FindNotes looks for.
-    bool lead = true, raised = false;
+    bool lead = true, raised = false, leadRaised = false;
     uint32_t k = 0;
     for (; k < line.count && !(letter && !numbering); ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
@@ -530,6 +549,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
             lead = false;
         else if (!lead)
             raised = true;
+        else
+            leadRaised = true;
         const uint32_t cp = FirstCodePoint(page.GlyphText(g));
         // Mathematical alphanumerics (𝑥, 𝐸) are math whatever the font's pitch: no code.
         if ((g.flags & kGlyphMonospace) && !(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
@@ -556,6 +577,7 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     bold += boldHere;
     italic += italicHere;
     info.raised = raised;
+    if (leadRaised) marks.raisedStarts = true;
     info.hasLetter = letter;
     info.numbering = numbering;
     info.mono = line.count ? float(mono) / float(line.count) : 0;
@@ -627,6 +649,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
         info.closeParen = marker == Marker::Number && !info.verbatimMarker && scratch.back() == ')';
         info.bracketed = bracketed;
         info.markerAlone = skip == line.count;
+        if ((marker == Marker::Letter || marker == Marker::Roman) && skip == 3 && !marks.letterNotes)
+            marks.letterNotes = BoldLetterMark(page, line, 0) != 0;
         info.task = marker == Marker::TaskOpen ? 1 : marker == Marker::TaskDone ? 2 : 0;
         info.hollowBox = marker == Marker::Bullet && page.GlyphText(firstGlyph) == "\xE2\x96\xA1";  // □
         info.textU0 = skip < line.count ? page.glyphs[page.lineGlyphs[line.first + skip]].u0 : line.u1;
@@ -978,6 +1002,8 @@ uint32_t NoteKey(std::string_view t) {
     return 0;
 }
 
+constexpr uint32_t kLetterKey = 3000;  // a bold letter note's key: kLetterKey + the letter's ordinal
+
 // Superscript glyphs [k, end) of `line` from `k` (at most 8), their text in `text`.
 uint32_t SuperscriptRun(const PageData& page, const Line& line, uint32_t k, std::string& text) {
     text.clear();
@@ -1086,15 +1112,19 @@ bool OffGrid(const std::vector<PageData>& pages, const std::vector<BlockLine>& l
     return fraction > 0.25f && fraction < 0.75f;
 }
 
-// Footnotes (algorithms §6.9). References are superscript runs inside lines whose text is a note
-// key. A note starts a line with a marker whose key matches an unused reference: a superscript
-// marker any size (LibreOffice sets notes in the body size), or an enumerator ("1.") in a smaller
-// size or before a back link (HTML endnotes), so that body-size numbered lists stay lists. A page
-// footnote's reference sits on its page above it and the note below the text (AtBottom); an
-// enumerated endnote's reference on an earlier page, and the line before the endnotes is no
+// Footnotes (algorithms §6.9). References are superscript runs inside lines, or inside a table's
+// cells, whose text is a note key. A note starts a line with a marker whose key matches an unused
+// reference: a superscript marker any size (LibreOffice sets notes in the body size), or an
+// enumerator ("1.") in a smaller size or before a back link (HTML endnotes), so that body-size
+// numbered lists stay lists; an enumerator alone on its line takes the text a tab to its right
+// (page footnotes only).
+// A page footnote's reference sits on its page above it and the note below the text (AtBottom);
+// an enumerated endnote's reference on an earlier page, and the line before the endnotes is no
 // heading ("References" sections keep their list). Lines of the note's size right below it
-// continue it.
-void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, float body, std::vector<NoteRef>& out) {
+// continue it. `marks`: whether a line starts with a raised glyph or a bold letter note's mark.
+void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, float body, const Marks& marks,
+               std::vector<NoteRef>& out) {
+    const bool letterNotes = marks.letterNotes;
     struct Ref {
         uint32_t info, page, glyph, count, key;
         float baseline, size;  // of the reference's line
@@ -1103,12 +1133,9 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
     std::vector<Ref> refs;
     std::unordered_map<uint32_t, std::vector<uint32_t>> byKey;
     std::string text;
-    for (uint32_t i = 0; i < infos.size() && refs.size() < kMaxNoteRefs; ++i) {
-        // A display formula's raised glyphs are its scripts and limits (--math=latex).
-        if (pages[infos[i].page].lines[infos[i].line].flags & kLineFormula) continue;
-        if (!infos[i].raised) continue;  // no superscript run after the line's first glyphs
+    // The references of line `line` of info i's page.
+    const auto collect = [&](uint32_t i, const Line& line) {
         const PageData& page = pages[infos[i].page];
-        const Line& line = page.lines[infos[i].line];
         uint32_t k = 0;
         while (k < line.count && IsSuperscript(page.glyphs[page.lineGlyphs[line.first + k]], line)) ++k;
         while (k < line.count && refs.size() < kMaxNoteRefs) {
@@ -1129,6 +1156,39 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
             k = end;
             while (k < line.count && IsSuperscript(page.glyphs[page.lineGlyphs[line.first + k]], line)) ++k;
         }
+    };
+    for (uint32_t i = 0; i < infos.size() && refs.size() < kMaxNoteRefs; ++i) {
+        const PageData& page = pages[infos[i].page];
+        const Line& line = page.lines[infos[i].line];
+        // A display formula's raised glyphs are its scripts and limits (--math=latex).
+        if (line.flags & kLineFormula) continue;
+        if (!infos[i].raised) continue;  // no superscript run after the line's first glyphs
+        // A table's cells hold references too ("Net income⁽²⁾" in a row label), in cell order,
+        // when a line starts with a raised mark to answer them.
+        if (line.flags & kLineTableAnchor) {
+            if (!marks.raisedStarts || line.first >= page.tables.size()) continue;
+            const Table& table = page.tables[line.first];
+            for (uint32_t l = table.firstLine; l < table.firstLine + table.lineCount && l < page.lines.size(); ++l)
+                collect(i, page.lines[l]);
+            continue;
+        }
+        collect(i, line);
+    }
+    // Notes keyed by a bold letter in parentheses ("(a)", as United Kingdom statutory instruments
+    // print them): a note line starting with one in a document (`letterNotes`), then references
+    // in the text that follow a word without a space ("Act 1965(a)"), unraised in the body size.
+    for (uint32_t i = 0; i < infos.size() && letterNotes && refs.size() < kMaxNoteRefs; ++i) {
+        const PageData& page = pages[infos[i].page];
+        const Line& line = page.lines[infos[i].line];
+        if (line.flags & (kLineFormula | kLineAnchor)) continue;
+        for (uint32_t k = 1; k + 2 < line.count && refs.size() < kMaxNoteRefs; ++k) {
+            const uint32_t value = BoldLetterMark(page, line, k);
+            if (value == 0 || (page.glyphs[page.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore)) continue;
+            byKey[kLetterKey + value].push_back(static_cast<uint32_t>(refs.size()));
+            refs.push_back(Ref{i, infos[i].page, page.lineGlyphs[line.first + k], 3, kLetterKey + value, line.baseline,
+                               line.size, false});
+            k += 2;
+        }
     }
     if (refs.empty()) return;
 
@@ -1136,6 +1196,7 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
     uint32_t current = 0;  // the note being continued
     float noteSize = 0, lastBaseline = 0;
     uint32_t notePage = 0;
+    bool markerAlone = false;  // the note's first line holds only its marker: its text is on its row
     uint32_t pageBegin = 0, pageEnd = 0;  // infos of the current page
     uint64_t budget = kBottomChecks;
     for (uint32_t i = 0; i < infos.size(); ++i) {
@@ -1151,12 +1212,23 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
         // document's characters, and so define its body size.
         uint32_t key = 0, skip = 0;
         bool enumerated = false, backLink = false;
+        // A marker alone on its line takes the text a tab to its right on its row.
+        const bool rowText = i + 1 < infos.size() && infos[i + 1].page == in.page && infos[i + 1].chars > 0 &&
+                             std::fabs(infos[i + 1].baseline - in.baseline) <= 0.3f * in.size &&
+                             infos[i + 1].u0 > in.u1 && infos[i + 1].u0 - in.u1 <= 4 * in.size;
         if (line.count >= 2 && !(line.flags & kLineFormula)) {
             const uint32_t end = SuperscriptRun(page, line, 0, text);
             if (end > 0 && end < line.count) {
                 key = NoteKey(text);
                 skip = end;
-            } else if (in.marker == Marker::Number && in.skip < line.count && in.value >= 1 && in.value <= 999) {
+            } else if (letterNotes && (in.marker == Marker::Letter || in.marker == Marker::Roman) && in.skip == 3 &&
+                       (in.skip < line.count || rowText) && BoldLetterMark(page, line, 0) != 0) {
+                // "(i)" parses as a roman numeral: the letter keys it.
+                key = kLetterKey + BoldLetterMark(page, line, 0);
+                skip = in.skip;
+                enumerated = true;
+            } else if (in.marker == Marker::Number && (in.skip < line.count || rowText) && in.value >= 1 &&
+                       in.value <= 999) {
                 key = in.value;
                 skip = in.skip;
                 enumerated = true;
@@ -1197,8 +1269,10 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
                             break;
                         }
                     }
-                    // A mark in larger print (an author list's) refers to no endnote.
-                    const bool endnote = enumerated && ref.page < in.page && endnoteContext && ref.size <= 1.05f * body;
+                    // A mark in larger print (an author list's) refers to no endnote, nor does a
+                    // number alone on its line (a reference list's, a plot's tick label).
+                    const bool endnote = enumerated && skip < line.count && ref.page < in.page && endnoteContext &&
+                                         ref.size <= 1.05f * body;
                     if (samePage || endnote) {
                         match = r;
                         break;
@@ -1217,13 +1291,16 @@ void FindNotes(const std::vector<PageData>& pages, std::vector<Info>& infos, flo
             noteSize = in.size;
             lastBaseline = in.baseline;
             notePage = in.page;
+            markerAlone = skip >= line.count;
             continue;
         }
         if (current && line.count > 0 && in.page == notePage && !in.listStart() &&
             std::fabs(in.size - noteSize) <= 0.15f * noteSize &&
-            in.baseline < lastBaseline && lastBaseline - in.baseline <= 2.4f * noteSize) {
+            ((in.baseline < lastBaseline && lastBaseline - in.baseline <= 2.4f * noteSize) ||
+             (markerAlone && std::fabs(in.baseline - lastBaseline) <= 0.3f * noteSize))) {
             in.note = current;
             lastBaseline = in.baseline;
+            markerAlone = false;
             continue;
         }
         current = 0;
@@ -1779,7 +1856,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     out.italicBody = faceGlyphs > 0 && italicGlyphs * 10 > faceGlyphs * 6;
     const bool boldDocument = totalChars > 0 && boldChars * 10 > totalChars * 6;
     const float firstPitch = Fmax(1.6f, WideLeading(infos, body));
-    FindNotes(pages, infos, body, out.noteRefs);
+    FindNotes(pages, infos, body, marks, out.noteRefs);
     // A bar beside text set at heading size is an accent rule (slide titles, call-outs), not a
     // quote, unless the quote goes on in body text next to it ("> ## Title" then its paragraph).
     for (size_t i = 0; i < infos.size();) {
