@@ -1472,6 +1472,63 @@ Tried and rejected (2026-11-17, `instr.sh`'s `arxiv_math` against the step befor
 - One-byte tokens appended as a byte in `AppendToken`, and a one-byte atom's LaTeX copied as a
   byte in `ItemOf`: -0.075 %.
 
+## Eighteenth round: the compound lexicon's cost won back (2026-11-17)
+
+Master `c77383a` (compound hyphens kept at line ends with a per-document lexicon of in-line
+compounds, hyphen-broken lines joined in `semantics.cpp`, a caption rule in `Order`) raised user
+instructions over `16565f7` (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with
+`--math=latex`): odl +0.173 %, heavy10 +0.090 %, syn6 +0.204 %, SafeDocs +0.161 %,
+`multi_column` +0.407 %, `tables` +0.151 %, `arxiv_math` +0.089 %. Callgrind of both (Release with
+`-g`, linked with gold) over odl, `multi_column`, syn6 and safe40; what `c77383a` added, in
+millions and in percent of the group at `c77383a`:
+
+|Code|odl|`multi_column`|syn6|safe40|Why it costs|
+|---|---|---|---|---|---|
+|`KnownCompound` (inclusive: the lexicon and the line ends' queries)|1.51 (0.19 %)|7.41 (0.43 %)|0.32 (0.25 %)|2.77 (0.18 %)|Built at the first query: for every "-" of the pages' texts the glyph found by `lower_bound` (about 120 instructions), both letter runs read through `GlyphText` and the out-of-line `WordLetter`, then hashed in a second pass|
+|`AddFragment` (inclusive)|0.12|0.57|0.00|0.16|Two `find` calls over each glyph text of the word before a line-end hyphen|
+|`LineInfo` (self, growth)|+0.32|+0.92|+0.08|+0.36|Not the hyphen-break test (0.04 M on `multi_column`): GCC's register allocation left the glyph loop past the line's first letter one instruction a glyph longer|
+|`Orderer::Order` and `Cut` (self, growth)|+0.04|+0.76|0.00|+0.12|`Beside`, and Breuel's order over the bands the caption rule now forms (output that changed on purpose: kept)|
+
+The costliest functions otherwise, self, in percent of the group at `c77383a`: odl `RunStream`
+(the content lexer) 12.2 %, `DecodeCodesBmi2` 12.0 %, `PlaceGlyphs` 7.2 %, `ShowText` 6.6 % (and
+1.6 % in its SSE code), `BuildLines` 6.4 %, `Writer::Inline` 1.9 %, `MeasurePage` 1.4 %,
+`StyleWords` 1.3 %, `CollectWords` 1.0 %, `LineInfo` 1.0 %; `multi_column` `PlaceGlyphs` 9.2 %,
+`ShowText` 7.8 %, `BuildLines` 7.8 %, `DecodeCodesBmi2` 5.8 %, `RunStream` 5.0 %, `Inline`
+2.2 %, `MeasurePage` 1.6 %, `LineInfo` 1.4 %, `StyleWords` 1.3 %. Every step is byte-identical
+(`bench.py identical` against the step before over the synthetic corpus, odl, olmOCR-Bench and
+READoc dev and dev2, 2,737 documents, with `--images=none` alone and with `--math=latex`,
+`--format=json`, `--plain`, `--tables=html`, `--tables=pipe`, `--tables=pipe-latex`,
+`--quotes=ascii` and `--small-caps=keep` beside it: 24,633 comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(writer): the compound lexicon keeps the hyphens between letters and reads a pair only when a line end asks for its bytes`|The lexicon keeps each in-line "-" between two letters on its baseline as a candidate, sorted by the folded bytes on either side of it; a candidate's runs are read and hashed (the old per-hyphen test) only when a line-end pair with the same bytes asks, once a candidate. Equal folded texts with no "-" but the hyphen have equal bytes; a line-end pair whose glyph texts hold a "-" of their own is compared with every candidate; over `kMaxCompounds` candidates the old sorted hashes are kept. Letter tests and hashes read a one-byte ASCII glyph text in place; `AddFragment` reads its text once|`multi_column` -0.137 %, syn6 -0.089 %, odl -0.083 %, SafeDocs -0.072 %, `tables` -0.062 %, `arxiv_math` -0.052 %, heavy10 -0.042 %|
+|`perf(semantics): LineInfo follows a line's leading raised glyphs in a loop of their own`|Past the first letter, one loop while the line's leading raised glyphs last, then one that tests each glyph's faces, monospace flag and raise with no other state|syn6 -0.090 %, `multi_column` -0.068 %, odl -0.058 %, `arxiv_math` -0.041 %, `tables` -0.034 %, SafeDocs -0.031 %, heavy10 -0.016 %|
+
+Against `c77383a`: odl -0.141 % (785.76 M), heavy10 -0.058 %, syn6 -0.180 %, SafeDocs -0.103 %,
+`multi_column` -0.206 %, `tables` -0.096 %, `arxiv_math` -0.087 %; against `16565f7` odl +0.032 %,
+heavy10 +0.033 %, syn6 +0.024 %, SafeDocs +0.058 %, `multi_column` +0.201 %, `tables` +0.055 %,
+`arxiv_math` +0.002 %. After the round `KnownCompound` holds 0.75 M of odl (0.09 %), 3.74 M of
+`multi_column` (0.22 %), 0.16 M of syn6 and 1.61 M of safe40, of which `InnerHyphen` (the glyph
+of each "-" by `lower_bound`) 0.14 M, 0.78 M, 0.04 M and 0.33 M; the rest is the scan of the
+pages' texts (`memchr`) and the line ends' own runs. Callgrind of the dynamic `-g` build also
+counted 1.1 M more in `memcpy` on odl after the first step: four more large `realloc` copies (the
+heap's layout), absent from `instr.sh`'s static binaries. No times were taken.
+
+Tried and rejected, or not attempted (2026-11-17, `instr.sh` against the step before):
+
+- The first step without the candidates (the letter tests and hashes reading one-byte texts in
+  place, the right run hashed as it is read, `AddFragment` in one pass): odl -0.035 %,
+  `multi_column` -0.072 %, under the bar alone; it is part of the step.
+- `LineInfo` with the leading and raised states in the loops' conditions (`k < count && lead`,
+  `k < count && !raised`): odl +0.010 %, `multi_column` +0.019 % (GCC combined the conditions
+  with `setcc` and `and` on every glyph).
+- Not attempted: `InnerHyphen` searching from the previous hyphen's glyph (0.78 M on
+  `multi_column`, 0.05 %, under the bar). It gives `lower_bound`'s glyph only when the glyphs'
+  text offsets never go down, which ActualText breaks (a span whose first glyph is dropped hands
+  its text to a later glyph). `PlaceGlyphs`, `BuildLines` and the writer's `Inline` and
+  `StyleWords` stay as earlier rounds left them; the extra Breuel order is output that changed.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1494,6 +1551,10 @@ Tried and rejected (2026-11-17, `instr.sh`'s `arxiv_math` against the step befor
   `math.cpp` has had its unit budget raised (sixteenth round).
 - **Blocks:** after the sixteenth round, `BuildBlocks`' tests spread over many loops (card titles,
   the OCR layer's headings, `Continues`, `NoTitle`); none holds 0.15 % of a group.
+- **The compound lexicon:** after the eighteenth round 0.22 % of `multi_column` and 0.09 % of odl
+  (`KnownCompound` inclusive); its largest part, each hyphen's glyph found by `lower_bound`
+  (`InnerHyphen`, 0.78 M on `multi_column`), needs glyph text offsets that never go down before a
+  cheaper search can give the same glyph.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
