@@ -585,7 +585,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 
 |Suite|Declared options|
 |---|---|
-|odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii`|
+|odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii --small-caps=keep` (`--small-caps=keep` from 2026-11-17: its Markdown writes small-capitals headings in capitals, as printed)|
 |synthetic|none (the default)|
 |olmocr|`--plain --small-caps=keep` (`--plain` from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in; `--small-caps=keep` from 2026-11-17: they compare small-capitals titles as printed)|
 |olmocr-math|`--math=latex --plain --small-caps=keep`|
