@@ -1529,6 +1529,68 @@ Tried and rejected, or not attempted (2026-11-17, `instr.sh` against the step be
   its text to a later glyph). `PlaceGlyphs`, `BuildLines` and the writer's `Inline` and
   `StyleWords` stay as earlier rounds left them; the extra Breuel order is output that changed.
 
+## Nineteenth round: the outline lookup and the line builder's glyph loops (2026-11-17)
+
+The landings after `54884b5` (DocLayNet heading rules, division labels, two table rounds) raised
+user instructions to `a4f94c8` (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with
+`--math=latex`): odl +0.060 %, heavy10 +0.024 %, syn6 +0.166 %, SafeDocs +0.069 %,
+`multi_column` +0.024 %, `tables` +0.094 %, `arxiv_math` +0.003 %. Callgrind of both (Release with
+`-g`, linked with gold) over odl, syn6, `multi_column` and safe40: in `semantics.cpp`,
+`reading_order.cpp` and `lines.cpp` the growth is `BuildBlocks` (odl +0.14 M self, `multi_column`
++0.46 M: the italic title and division label tests) and `MatchKey` (syn6 +0.15 M, SafeDocs +0.32
+M: more blocks reach the outline lookup); the rest of it is in `tables.cpp` (`Detector::Commit`).
+The costliest code of the three files, self, in percent of the group at `a4f94c8`: odl
+`PlaceGlyphs` 7.2 %, `BuildLines` (with `CollectAndFold` inlined) 6.4 %, `Folder::Place` 0.9 %,
+`LineInfo` 0.9 %, `BuildBlocks` 0.6 %; syn6 `PlaceGlyphs` 10.5 %, `BuildLines` 9.6 %, `MatchKey`
+1.9 % (the outline lookup, 3.7 % inclusive with its `LineText` calls); `multi_column` `PlaceGlyphs`
+9.2 %, `BuildLines` 7.8 %, `Orderer::Cut` 1.9 %, `LineInfo` 1.3 %, the gutter test of
+`PlaceGlyphs` 1.1 %. In `PlaceGlyphs` two lines stood out: the size bucket count (3.1 M on odl,
+a load, an add, a store and the leader's load at every glyph) and the fragment join test (4.3 M
+and 1.4 M for the script test, worked out for every glyph). Every step is byte-identical
+(`bench.py identical` against the step before over the synthetic corpus, odl, olmOCR-Bench and
+READoc dev and dev2, 2,737 documents, with `--images=none` alone and with `--math=latex`,
+`--format=json`, `--plain`, `--tables=html`, `--tables=pipe`, `--tables=pipe-latex`,
+`--quotes=ascii` and `--small-caps=keep` beside it: 24,633 comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(semantics): outline titles matched with one key pass a text, cut short once no title can match`|The key is built line by line with the text (a space adds nothing to it); the reading stops once it outgrows the longest title key by more than a numbering holds (72 bytes); keys longer than the longest title skip the hash lookup; the stripped key is the rest of the whole one after the numbering's letters and digits|syn6 -1.487 %, SafeDocs -0.198 %, the rest within 0.004 %|
+|`perf(lines): a line's size buckets counted a run of equal sizes at a time`|A run of glyphs in one bucket counts in a register and is added at its end, where the lead is decided once (within a run only its own count grows)|odl -0.576 %, heavy10 -0.171 %, syn6 -0.908 %, SafeDocs -0.355 %, `multi_column` -0.685 %, `tables` -0.453 %, `arxiv_math` -0.295 %|
+|`perf(lines): a fragment's join test leaves the script test to glyphs off its baseline`|Within 0.6 em, "on the baseline, a script or a space" is "on the baseline, a space, or smaller than the glyph before or the fragment": the size question only for a glyph off the baseline, the distance read once|odl -0.325 %, heavy10 -0.090 %, syn6 -0.506 %, SafeDocs -0.204 %, `multi_column` -0.383 %, `tables` -0.272 %, `arxiv_math` -0.163 %|
+|`perf(lines): a fragment's end set as it closes, not at each glyph that joins it`|Every glyph after a fragment's first joins it until one opens the next: its end is that glyph's index, which frees a register in the loop|odl -0.138 %, heavy10 -0.039 %, syn6 -0.214 %, SafeDocs -0.085 %, `multi_column` -0.163 %, `tables` -0.115 %, `arxiv_math` -0.077 %|
+|`perf(lines): a line's first glyph measured before the loop over the others`|Leading spaces passed over and the first glyph's segment, extent and size bucket opened before the loop, which then asks no "first glyph?" question|odl -0.185 %, heavy10 -0.053 %, syn6 -0.287 %, SafeDocs -0.120 %, `multi_column` -0.223 %, `tables` -0.160 %, `arxiv_math` -0.094 %|
+
+Against `a4f94c8`: odl -1.223 % (776.62 M), heavy10 -0.352 %, syn6 -3.358 %, SafeDocs -0.963 %,
+`multi_column` -1.446 %, `tables` -0.997 %, `arxiv_math` -0.620 %; against `54884b5` odl
+-1.164 %, heavy10 -0.328 %, syn6 -3.203 %, SafeDocs -0.896 %, `multi_column` -1.420 %, `tables`
+-0.901 %, `arxiv_math` -0.619 %. No times were taken.
+
+Tried and rejected (2026-11-17, `instr.sh` against the step before; the bar is 0.05 % of odl or
+0.1 % of a group):
+
+- `MoveAddresses` reading only a first line's first 8 bytes for "abstract" and finding the author
+  line in capitals from the glyphs' texts before making any block's text: odl -0.022 %,
+  `multi_column` -0.047 %, `arxiv_math` -0.028 %.
+- The edge-row model's guards (a row that ends a sentence or reads as a caption) tested before
+  its other features when no feature sink listens: odl -0.016 %, `multi_column` -0.010 %, syn6
+  -0.019 %.
+- The gutter test (`PlaceGlyphs`, 1.1 % of `multi_column`): a neighbour's segments read only until
+  one holds the gap's middle: `multi_column` -0.053 %, odl -0.023 %; with the test skipped on
+  pages without a line of two segments: `multi_column` -0.067 %, odl -0.035 %, syn6 -0.058 %;
+  with the neighbours copied into a compact array: `multi_column` -0.080 %, odl -0.024 %; the same
+  with each neighbour's test in a lambda: `multi_column` +0.279 %, odl +0.089 % (the counters left
+  the registers). Stopping at the first segment past the middle needs segments whose starts never
+  go back, which glyph boxes with u1 < u0 or NaN would break: not attempted.
+- `TallGutter` counting mates only while undecided: `multi_column` -0.041 %; with the right
+  group's baselines sorted and each line's nearest looked up: `multi_column` -0.088 %, odl
+  +0.014 %.
+- The fragment loop as a loop over fragments around a loop over the glyphs joining each (no
+  "open" flag): odl -0.030 %; with the fragment's opening in a lambda: odl +0.668 % (the fragment
+  went to memory).
+- The size-run count in a helper function instead of a lambda: odl +0.010 %.
+- Not attempted: the compound lexicon's glyph lookup per hyphen (`InnerHyphen`, in
+  `markdown_writer.cpp`, outside this round's files).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
