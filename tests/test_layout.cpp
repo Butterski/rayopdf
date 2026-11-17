@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/layout: the layout and semantic stages on pages built glyph by glyph, then the
 // whole conversion on PDFs built in memory (tests/pdf_builder.h), and the output options (front
-// matter, page markers, JSON). Exit codes 400-499, 700-749, 1900-1949 and 2400-2449.
+// matter, page markers, JSON). Exit codes 400-499, 700-749, 1900-1949, 2400-2449 and 2585-2599.
 #include "check.h"
 #include "pdf_builder.h"
 
@@ -210,7 +210,50 @@ void TestDehyphenation() {
     const std::string md = Run(pages);
     Show("dehyphenation", md);
     RAYOPDF_CHECK(Contains(md, "experiment that works"), 412);
-    RAYOPDF_CHECK(Contains(md, "well- Known"), 413);
+    RAYOPDF_CHECK(Contains(md, "well-Known"), 413);
+}
+
+// A compound broken at its own hyphen keeps it: the part before is one letter or holds a hyphen
+// already, the line goes on in a capital, or the document writes the pair as a two-part compound
+// inside a line elsewhere ("to-day" of "day-to-day" is none). A paragraph never ends inside a
+// word: a line ending in a word broken at a hyphen goes on below it however wide the leading (its
+// first line too; a list item keeps its own rules).
+void TestHyphenBreaks() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "The method is state-of-the-", 72, 700, 10);
+    AddText(pages[0], "art and the N-", 72, 688, 10);
+    AddText(pages[0], "fertilizer helps the experi-", 72, 676, 10);
+    AddText(pages[0], "mental plots.", 72, 664, 10);
+    std::string md = Run(pages);
+    Show("compound hyphens", md);
+    RAYOPDF_CHECK(Contains(md, "state-of-the-art and the N-fertilizer helps the experimental plots."), 2585);
+    std::vector<PageData> wide{NewPage(1)};
+    AddText(wide[0], "A first line of the paragraph that runs on", 72, 700, 10);
+    AddText(wide[0], "and a second line set close that ends in experi-", 72, 688, 10);
+    AddText(wide[0], "ment set far below it.", 72, 668, 10);
+    md = Run(wide);
+    Show("hyphen across wide leading", md);
+    RAYOPDF_CHECK(Contains(md, "ends in experiment set far below it."), 2586);
+    std::vector<PageData> first{NewPage(1)};
+    AddText(first[0], "A lone opening line of the paragraph that ends in experi-", 72, 700, 10);
+    AddText(first[0], "ment, set far below it, and a last line.", 72, 680, 10);
+    md = Run(first);
+    Show("hyphen after a paragraph's first line", md);
+    RAYOPDF_CHECK(Contains(md, "ends in experiment, set far below it"), 2587);
+    std::vector<PageData> longer{NewPage(1)};
+    AddText(longer[0], "The day-to-day work goes on and we meet again to-", 72, 700, 10);
+    AddText(longer[0], "day at noon.", 72, 688, 10);
+    md = Run(longer);
+    Show("part of a longer compound", md);
+    RAYOPDF_CHECK(Contains(md, "we meet again today at noon."), 2588);
+    std::vector<PageData> known{NewPage(1)};
+    AddText(known[0], "We compute the cross-correlation of both signals and the", 72, 700, 10);
+    AddText(known[0], "result shows that the cross-", 72, 688, 10);
+    AddText(known[0], "correlation peaks early while the experi-", 72, 676, 10);
+    AddText(known[0], "ment ends.", 72, 664, 10);
+    md = Run(known);
+    Show("known compound", md);
+    RAYOPDF_CHECK(Contains(md, "the cross-correlation peaks early while the experiment ends."), 2589);
 }
 
 // A soft hyphen right after a word break (a typesetter's hyphenation point at a word's start) is
@@ -2089,6 +2132,7 @@ int main() {
     TestLists();
     TestRunningHeaders();
     TestDehyphenation();
+    TestHyphenBreaks();
     TestSoftHyphenWordBreak();
     TestCodeBlock();
     TestDuplicateBold();

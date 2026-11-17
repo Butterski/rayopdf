@@ -927,6 +927,32 @@ void TestBodySizeFoot() {
                   1878);
 }
 
+// A wide caption beside the column it stands next to, over two columns below it, runs across those
+// columns but not across the page: the column beside it is read whole, the caption after it.
+void TestCaptionBesideColumn() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (int i = 0; i < 30; ++i) {
+        const std::string n = (i < 10 ? "0" : "") + std::to_string(i);
+        AddText(page, "Left column line " + n + " goes on here", 72, 700 - 12.0f * i, 10);
+    }
+    ImageBox figure;
+    figure.x0 = 270, figure.x1 = 560, figure.y0 = 535, figure.y1 = 700;
+    page.images.push_back(figure);
+    AddText(page, "ABOVE: The caption of the picture runs here wide", 270, 521, 12);
+    AddText(page, "over both columns of the text below the photo", 270, 507, 12);
+    for (int i = 0; i < 12; ++i) {
+        const std::string n = (i < 10 ? "0" : "") + std::to_string(i);
+        AddText(page, "Middle column line " + n + " runs", 270, 485 - 12.0f * i, 10);
+        AddText(page, "Right column line " + n + " runs on", 420, 485 - 12.0f * i, 10);
+    }
+    const std::string md = Run(pages);
+    const size_t caption = Find(md, "ABOVE: The caption");
+    RAYOPDF_CHECK(Find(md, "line 15 goes on here Left column line 16") != std::string::npos &&
+                      Find(md, "line 29 goes on here") < caption && caption < Find(md, "Middle column line 00"),
+                  1890);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -972,6 +998,7 @@ int main() {
     TestFootUnderShortText();
     TestLargeFoot();
     TestBodySizeFoot();
+    TestCaptionBesideColumn();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

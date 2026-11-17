@@ -52,6 +52,8 @@ struct Info {
     bool endsTerminal = false;
     uint32_t lastCp = 0;     // the last character
     bool startsLower = false;
+    // The line ends in a word broken at a hyphen: a letter, then "-", U+2010 or a soft hyphen.
+    bool hyphenBreak = false;
     bool hasLetter = false;
     bool rowPeer = false;    // another line of its style shares its baseline (a table row)
     bool pageRef = false;    // a lone page number sits far to its right (a table-of-contents entry)
@@ -619,6 +621,12 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     }
     info.endsTerminal = IsTerminal(last);
     info.lastCp = last;
+    if ((lastText == "-" || lastText == "\xE2\x80\x90" || lastText == "\xC2\xAD") && line.count >= 2 &&
+        !(lastGlyph.flags & kGlyphSpaceBefore)) {
+        const uint32_t b = LastCodePoint(page.GlyphText(page.glyphs[page.lineGlyphs[line.first + line.count - 2]]));
+        info.hyphenBreak = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+                           (b >= 0xC0 && b < 0x2000 && b != 0xD7 && b != 0xF7);
+    }
 
     // The first word: a marker? Its text is read in place when its glyphs' texts follow each other
     // in the page text (ForGlyphTextRuns: the same bytes), else copied into `scratch`.
@@ -1007,6 +1015,12 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
         return false;
     const float pitch = last.baseline - next.baseline;
     if (pitch <= 0.3f * em) return false;
+    // No paragraph ends inside a word: a line ending in a word broken at a hyphen goes on in the
+    // lowercase line below it, whatever the leading. (A list item keeps its own rules below.)
+    if (!first.listStart() && last.hyphenBreak && next.startsLower && pitch <= 2.5f * em && next.u0 <= last.u1 &&
+        next.u1 >= last.u0 &&
+        b.mono == (next.mono >= kMonoShare && !monoDocument) && b.bold == ((next.flags & kLineAllBold) != 0))
+        return true;
     const float limit = b.pitch > 0 ? Fmax(b.pitch * 1.3f, b.pitch + 0.25f * em) : firstPitch * em;
     if (pitch > limit) return false;
     // A proof, a lemma or a remark opening with its emphasised run-in label after a sentence's end,

@@ -756,6 +756,23 @@ struct Orderer {
         }
     }
 
+    // A line of text in another size (four ems wide at least, no figure, neither line monospace:
+    // a form's fields) beside `f`: overlapping its height and clear of its extent. A line with
+    // text of another size beside it is set inside a column (a caption beside the column it
+    // illustrates runs over the columns below it), not across the page's columns.
+    bool Beside(uint32_t f, const std::vector<uint32_t>& items) const {
+        const Line& lf = L(f);
+        if (lf.flags & kLineAllMono) return false;
+        for (uint32_t g : items) {
+            const Line& lg = L(g);
+            if (g != f && lg.count > 0 && !(lg.flags & kLineAllMono) && lg.vb < lf.vt && lf.vb < lg.vt &&
+                (lg.u1 <= lf.u0 || lg.u0 >= lf.u1) && lg.u1 - lg.u0 >= 4 * lg.size &&
+                std::fabs(lg.size - lf.size) > 0.1f * lf.size)
+                return true;
+        }
+        return false;
+    }
+
     // Cross-layout lines (XY-Cut++ §4 step 2): a line overlapping, along the baseline, two nearby
     // lines that do not overlap each other and are each at least a quarter of the content wide
     // spans a column gutter. Such lines cut the page into bands read one after another.
@@ -800,7 +817,7 @@ struct Orderer {
                 minRight = Fmin(minRight, lg.u1);
                 maxLeft = Fmax(maxLeft, lg.u0);
             }
-            if (maxLeft > minRight)
+            if (maxLeft > minRight && !Beside(f, items))
                 separators.push_back(f);
             else
                 rest.push_back(f);

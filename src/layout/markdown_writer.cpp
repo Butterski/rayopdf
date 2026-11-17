@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string_view>
 
 #ifndef RAYOPDF_VERSION
@@ -81,6 +82,20 @@ uint32_t LastOf(std::string_view t) {
     while (i > 0 && (static_cast<unsigned char>(t[i - 1]) & 0xC0) == 0x80) --i;
     return i > 0 ? FirstOf(t.substr(i - 1)) : 0;
 }
+
+// What dehyphenation needs to know of the part of a word before a hyphen ending its line: its
+// code points (counted up to 2) and whether it holds a hyphen of its own. Takes the part's text
+// whole or glyph by glyph.
+void AddFragment(std::string_view t, uint32_t& codePoints, bool& hyphen) {
+    for (const char c : t) codePoints += codePoints < 2 && (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+    hyphen = hyphen || t.find('-') != std::string_view::npos || t.find("\xE2\x80\x90") != std::string_view::npos;
+}
+
+// A hard hyphen ending a line between letters stays when the line goes on in a capital ("anti-" /
+// "American"), or in lowercase after a part of one letter ("N-" / "fertilization") or a part that
+// holds a hyphen already ("state-of-the-" / "art"): hyphenation breaks neither a single letter off
+// nor a word that has a hyphen of its own. The halves join without a space.
+bool CompoundBreak(bool upperNext, uint32_t codePoints, bool hyphen) { return upperNext || codePoints == 1 || hyphen; }
 
 // CJK ideographs, kana, Hangul, CJK punctuation and fullwidth forms.
 bool IsCjk(uint32_t cp) {
@@ -162,6 +177,12 @@ private:
     template <bool kLatex>
     bool InlinePlain(const Block& block, bool styles);
     void CollectWords(const Block& block);
+    // Dehyphenation's document lexicon: whether the letters before glyph `hyphen` of `line` (a
+    // hyphen ending it) and those `next` starts with (from glyph `from`) make a pair that the
+    // document writes with a hyphen inside a line somewhere ("cross-" / "correlation", "signal-" /
+    // "to" of "signal-to-noise"): a compound, whose hyphen stays.
+    bool KnownCompound(const PageData& page, const Line& line, uint32_t hyphen, const PageData& nextPage,
+                       const Line& next, uint32_t from);
     void StyleWords(bool styles);
     // Opens and closes delimiters so that exactly the styles `target` are open, nested properly;
     // `at` is the glyph they apply from (styles that run longer open first, outside).
@@ -246,12 +267,125 @@ private:
     std::string other_;
     std::vector<EscapedRun> runs_;   // the runs AppendEscaped wrote since the block's inline text began
     std::string forms_;  // ScriptForms' forms
+    // KnownCompound's lexicon: sorted hashes (CompoundHash) of the pairs of letter runs beside a
+    // hyphen inside a line, built from every page when first asked.
+    std::vector<uint64_t> compounds_;
+    bool compoundsBuilt_ = false;
     // LaTeX mode.
     std::vector<InlineGlyph> inline_;
     std::vector<uint32_t> mathRun_;  // per GlyphRef: the end of the formula starting there, or 0
     MathInput mathIn_;
     std::string latex_, tag_;
 };
+
+constexpr size_t kMaxCompounds = size_t(1) << 16;  // pairs a document's lexicon keeps at most
+
+// A glyph whose text is a letter (ASCII, or a letter or digit from U+00C0 up).
+bool WordLetter(std::string_view t) {
+    const uint32_t cp = FirstOf(t);
+    return cp < 0x80 ? ((cp | 0x20) >= 'a' && (cp | 0x20) <= 'z') : IsLetterOrDigit(cp);
+}
+
+bool HyphenText(std::string_view t) { return t == "-" || t == "\xE2\x80\x90"; }
+
+// FNV-1a over the texts of glyphs [a, b) of `line`, ASCII capitals folded, on from `h`.
+uint64_t HashGlyphs(const PageData& page, const Line& line, uint32_t a, uint32_t b, uint64_t h) {
+    for (uint32_t k = a; k < b; ++k) {
+        for (const char c : page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]])) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            h = (h ^ (u >= 'A' && u <= 'Z' ? u + 0x20 : u)) * 0x100000001B3ull;
+        }
+    }
+    return h;
+}
+
+// The hash of the pair of letter runs beside a hyphen: the run of one word's letters of `left`
+// that ends before glyph `end`, and the run of `right` from glyph `begin`; 0 when either is empty
+// or the pair is part of a longer compound (a hyphen right before or after it: "to-day" of
+// "day-to-day" is no compound of its own).
+uint64_t CompoundHash(const PageData& leftPage, const Line& left, uint32_t end, const PageData& rightPage,
+                      const Line& right, uint32_t begin) {
+    const auto text = [](const PageData& page, const Line& line, uint32_t k) {
+        return page.GlyphText(page.glyphs[page.lineGlyphs[line.first + k]]);
+    };
+    const auto spaced = [](const PageData& page, const Line& line, uint32_t k) {
+        return (page.glyphs[page.lineGlyphs[line.first + k]].flags & kGlyphSpaceBefore) != 0;
+    };
+    uint32_t a = end;
+    while (a > 0 && WordLetter(text(leftPage, left, a - 1))) {
+        --a;
+        if (spaced(leftPage, left, a)) break;
+    }
+    uint32_t b = begin;
+    while (b < right.count && WordLetter(text(rightPage, right, b)) && (b == begin || !spaced(rightPage, right, b))) ++b;
+    if (a == end || b == begin) return 0;
+    if ((a > 0 && !spaced(leftPage, left, a) && HyphenText(text(leftPage, left, a - 1))) ||
+        (b < right.count && !spaced(rightPage, right, b) && HyphenText(text(rightPage, right, b))))
+        return 0;
+    const uint64_t h = HashGlyphs(leftPage, left, a, end, 0xCBF29CE484222325ull);
+    return HashGlyphs(rightPage, right, begin, b, (h ^ '-') * 0x100000001B3ull);
+}
+
+// The lexicon's pairs from one page: every "-" of the page's text (found with memchr, the glyph
+// by its text offset) drawn between letters on one baseline, read in content order: no word
+// break before or after it, a run of one word's letters on each side, and no hyphen beyond either
+// run (a two-part compound). Pages without a hyphen cost one scan of their text.
+void AddCompounds(const PageData& page, std::vector<uint64_t>& out) {
+    const std::string& text = page.text;
+    const Glyph* const glyphs = page.glyphs.data();
+    const size_t n = page.glyphs.size();
+    const auto letter = [&](size_t i) {
+        return !(glyphs[i].flags & (kGlyphDropped | kGlyphSpace)) && WordLetter(page.GlyphText(glyphs[i]));
+    };
+    for (size_t at = 0; at < text.size() && out.size() < kMaxCompounds;) {
+        const void* found = std::memchr(text.data() + at, '-', text.size() - at);
+        if (!found) break;
+        const size_t offset = static_cast<size_t>(static_cast<const char*>(found) - text.data());
+        at = offset + 1;
+        const Glyph* g = std::lower_bound(glyphs, glyphs + n, offset, [](const Glyph& a, size_t o) { return a.text < o; });
+        if (g == glyphs + n || g->text != offset || g->textLength != 1 || (g->flags & (kGlyphDropped | kGlyphSpaceBefore)))
+            continue;
+        const size_t h = static_cast<size_t>(g - glyphs);
+        if (h == 0 || h + 1 >= n || (glyphs[h + 1].flags & kGlyphSpaceBefore)) continue;
+        const auto inLine = [&](size_t i) { return std::fabs(glyphs[i].v - g->v) <= 0.3f * g->size; };
+        size_t a = h;
+        while (a > 0 && letter(a - 1) && inLine(a - 1)) {
+            --a;
+            if (glyphs[a].flags & kGlyphSpaceBefore) break;
+        }
+        size_t b = h + 1;
+        while (b < n && letter(b) && inLine(b) && (b == h + 1 || !(glyphs[b].flags & kGlyphSpaceBefore))) ++b;
+        if (a == h || b == h + 1) continue;
+        if ((a > 0 && !(glyphs[a].flags & kGlyphSpaceBefore) && HyphenText(page.GlyphText(glyphs[a - 1]))) ||
+            (b < n && !(glyphs[b].flags & kGlyphSpaceBefore) && HyphenText(page.GlyphText(glyphs[b]))))
+            continue;
+        uint64_t hash = 0xCBF29CE484222325ull;
+        for (size_t i = a; i <= b - 1; ++i) {
+            if (i == h) {
+                hash = (hash ^ '-') * 0x100000001B3ull;
+                continue;
+            }
+            for (const char c : page.GlyphText(glyphs[i])) {
+                const unsigned char u = static_cast<unsigned char>(c);
+                hash = (hash ^ (u >= 'A' && u <= 'Z' ? u + 0x20 : u)) * 0x100000001B3ull;
+            }
+        }
+        out.push_back(hash);
+    }
+}
+
+bool Writer::KnownCompound(const PageData& page, const Line& line, uint32_t hyphen, const PageData& nextPage,
+                           const Line& next, uint32_t from) {
+    if (!compoundsBuilt_) {
+        compoundsBuilt_ = true;
+        for (const PageData& p : pages_) AddCompounds(p, compounds_);
+        std::sort(compounds_.begin(), compounds_.end());
+        compounds_.erase(std::unique(compounds_.begin(), compounds_.end()), compounds_.end());
+    }
+    if (compounds_.empty()) return false;
+    const uint64_t h = CompoundHash(page, line, hyphen, nextPage, next, from);
+    return h != 0 && std::binary_search(compounds_.begin(), compounds_.end(), h);
+}
 
 void Writer::CollectWords(const Block& block) {
     words_.clear();
@@ -325,7 +459,8 @@ void Writer::CollectWords(const Block& block) {
         }
         joinNext = false;
         // Dehyphenation (algorithms §4.4): a hyphen ending a line, after a letter, before a line
-        // that starts in lowercase, joins the halves of the word.
+        // that starts in lowercase, joins the halves of the word; a compound's hyphen
+        // (CompoundBreak) joins them and stays.
         if (bl + 1 >= block.first + block.count || n == 0) continue;
         const uint32_t wordFirst = words_.back().first;
         if (n - wordFirst < 2) continue;
@@ -341,13 +476,22 @@ void Writer::CollectWords(const Block& block) {
         const std::string_view next = nextPage.GlyphText(nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]]);
         const unsigned char n0 = next.empty() ? 0 : static_cast<unsigned char>(next[0]);
         const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
-        if (!letterBefore || !lowerNext) {
+        const bool upperNext = n0 >= 'A' && n0 <= 'Z';
+        if (!letterBefore || !(lowerNext || (upperNext && last != "\xC2\xAD"))) {
             // A soft hyphen that does not join still leaves no character.
             if (last == "\xC2\xAD") --n;
             continue;
         }
-        --n;
         joinNext = true;
+        if (last != "\xC2\xAD") {
+            uint32_t codePoints = 0;
+            bool hyphen = false;
+            for (uint32_t i = wordFirst; i + 1 < n; ++i) AddFragment(Text(refs[i]), codePoints, hyphen);
+            if (CompoundBreak(upperNext, codePoints, hyphen) ||
+                (ref.skip < line.count && KnownCompound(page, line, line.count - 1, nextPage, nextLine, nextRef.skip)))
+                continue;
+        }
+        --n;
     }
     refs_.resize(n);
     for (size_t i = 0; i < words_.size(); ++i)
@@ -928,8 +1072,20 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         const std::string_view next = nextPage.GlyphText(nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]]);
         const unsigned char n0 = next.empty() ? 0 : static_cast<unsigned char>(next[0]);
         const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
+        const bool upperNext = n0 >= 'A' && n0 <= 'Z';
+        const bool hard = last != "\xC2\xAD";
+        if (letterBefore && hard && (lowerNext || upperNext)) {
+            uint32_t codePoints = 0;
+            bool hyphen = false;
+            AddFragment(std::string_view(out_).substr(wordAt, out_.size() - wordAt - last.size()), codePoints, hyphen);
+            if (CompoundBreak(upperNext, codePoints, hyphen) ||
+                KnownCompound(page, line, line.count - 1, nextPage, nextLine, nextRef.skip)) {
+                joinNext = true;
+                continue;
+            }
+        }
         const bool join = letterBefore && lowerNext;
-        if (!join && last != "\xC2\xAD") continue;
+        if (!join && hard) continue;
         // The hyphen leaves (a soft hyphen that does not join leaves no character either).
         out_.resize(out_.size() - last.size());
         wordCount--;
