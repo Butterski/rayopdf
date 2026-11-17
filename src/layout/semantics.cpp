@@ -2006,7 +2006,9 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // text, each within an em of the box of the pieces before it (beside or below them), with a
     // math symbol among them, make one paragraph in reading order.
     {
-        // 0: no piece, 1: a piece, 2: a piece with a math symbol; worked out once per block.
+        // 0: no piece, 1: a piece, 2: a piece with a math symbol; worked out once per block. A
+        // block that may be a piece is tested only beside another that may: alone it joins nothing.
+        constexpr uint8_t kMayBePiece = 3;
         std::vector<uint8_t> pieceOf(raws.size(), 0);
         for (size_t r = 0; r < raws.size(); ++r) {
             const RawBlock& b = raws[r];
@@ -2014,8 +2016,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             if (b.count != 1 || b.note != 0 || b.mono || in.chars == 0 || in.chars > 40 || in.dir != 0 || in.label ||
                 in.listStart() || in.quoteBars != 0 || (in.flags & (kLineAnchor | kLineTable | kLineFormula)))
                 continue;
+            pieceOf[r] = kMayBePiece;
+        }
+        for (size_t r = 0; r < raws.size(); ++r) {
+            if (pieceOf[r] != kMayBePiece) continue;
+            if (!((r > 0 && pieceOf[r - 1] != 0) || (r + 1 < raws.size() && pieceOf[r + 1] != 0))) {
+                pieceOf[r] = 0;
+                continue;
+            }
+            const Info& in = infos[raws[r].first];
             LineText(pages[in.page], pages[in.page].lines[in.line], scratch);
-            if (NoTitle(scratch)) pieceOf[r] = MathSymbol(scratch) ? 2 : 1;
+            pieceOf[r] = NoTitle(scratch) ? (MathSymbol(scratch) ? 2 : 1) : 0;
         }
         size_t kept = 0;
         for (size_t r = 0; r < raws.size();) {
@@ -3320,9 +3331,16 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 size_t target = blocks.size() - 1;
                 const auto floats = [&](size_t f) {
                     if (floating[f] == 2) {
+                        // IsCaption takes only a text whose first byte starts a label (the line's
+                        // text, as FirstTextByte reads it).
                         const BlockLine& bl = lines[blocks[f].first];
-                        LineText(pages[bl.page], pages[bl.page].lines[bl.line], capText);
-                        floating[f] = IsFloatCaption(capText) ? 1 : 0;
+                        const Line& l = pages[bl.page].lines[bl.line];
+                        const unsigned char c0 = FirstTextByte(pages[bl.page], l) | 0x20;
+                        floating[f] = 0;
+                        if (c0 == 'f' || c0 == 't' || c0 == 'c' || c0 == 'e' || c0 == 'g' || c0 == 'd') {
+                            LineText(pages[bl.page], l, capText);
+                            floating[f] = IsFloatCaption(capText) ? 1 : 0;
+                        }
                     }
                     return floating[f] == 1;
                 };
