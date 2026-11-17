@@ -738,6 +738,53 @@ void TestSparsePageNumber() {
     RAYOPDF_CHECK(Find(md, "Page 11") == std::string::npos && Find(md, "Fig. 6") != std::string::npos, 1865);
 }
 
+// A figure's caption in small print at the foot of a page, set apart from the text and over the
+// page number, is the figure's, not furniture: the page number goes, the caption stays.
+void TestCaptionAtFoot() {
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 25; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72, 700 - 12.0f * i, 10);
+    AddText(pages[0], "Figure 3. Results of the second test.", 72, 46, 8);
+    AddText(pages[0], "12", 182, 24, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Figure 3. Results") != std::string::npos && Find(md, "\n12\n") == std::string::npos, 1884);
+}
+
+// A page whose text ends high, its page number set right under its last line (filings converted
+// from HTML): the number, alone, centred on the text and set apart from it, goes. Set flush left,
+// or close under the text, it stays.
+void TestPageNumberUnderShortText() {
+    // 20 body lines from 700 down, 12 points apart: the last at 472; the text runs from 72 to 302.
+    const auto build = [](float x, float y) {
+        std::vector<PageData> pages{NewPage()};
+        for (int i = 0; i < 20; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    700 - 12.0f * i, 10);
+        AddText(pages[0], "83", x, y, 10);
+        return Run(pages);
+    };
+    const std::string md = build(182, 440);
+    RAYOPDF_CHECK(Find(md, "83") == std::string::npos && Find(md, "Body line 19 of") != std::string::npos, 1885);
+    RAYOPDF_CHECK(Find(build(72, 440), "\n83\n") != std::string::npos, 1886);
+    RAYOPDF_CHECK(Find(build(182, 458), "83") != std::string::npos, 1887);
+}
+
+// A patent's running head, set close over the description's text: removed. The bare publication
+// number under a front page's barcode, without separators in its digits, stays.
+void TestPatentHead() {
+    const auto build = [](const char* head) {
+        std::vector<PageData> pages{NewPage()};
+        AddText(pages[0], head, 72, 740, 10);
+        for (int i = 0; i < 25; ++i)
+            AddText(pages[0], "[00" + std::to_string(10 + i) + "] The device of the invention holds a part.", 72,
+                    726 - 12.0f * i, 10);
+        return Run(pages);
+    };
+    const std::string md = build("US 2020/0159120 A1 May 21, 2020");
+    RAYOPDF_CHECK(Find(md, "0159120") == std::string::npos && Find(md, "[0010] The device") != std::string::npos, 1888);
+    RAYOPDF_CHECK(Find(build("US 20200081341A1"), "US 20200081341A1") != std::string::npos, 1889);
+}
+
 // A page whose text lies all at its edges keeps text that is no head or foot: the last entries of
 // a reference list run on from the page before (a URL in them is no publication stamp), and a row
 // of numbers printed by a program (a page number holds one or two).
@@ -834,6 +881,9 @@ int main() {
     TestScanStamps();
     TestEdgeOnlyPage();
     TestSparsePageNumber();
+    TestCaptionAtFoot();
+    TestPageNumberUnderShortText();
+    TestPatentHead();
     TestEdgeOnlyContent();
     TestTypedRuleUnderHead();
     TestWrappedStamp();

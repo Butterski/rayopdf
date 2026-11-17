@@ -187,6 +187,31 @@ bool IsMetadata(const std::string& text) {
     return false;
 }
 
+// A patent's running head: "US 2020/0159120 A1  May 21, 2020", "US 9,523,914 B2", "EP 2 000 001 B1"
+// (an office's code, the publication number with separators in its digits, a kind code; OCR reads
+// "A1" as "Al"), or a drawing sheet's "Patent Application Publication ... Sheet 4 of 6 ..." and
+// "U.S. Patent ... Sheet 6 of 24 ...". The bare number under a front page's barcode
+// ("US 20200081341A1") has no separator: no head.
+bool IsPatentHead(const std::string& text) {
+    if (text.compare(0, 30, "Patent Application Publication") == 0 || text.compare(0, 11, "U.S. Patent") == 0)
+        return text.find(" Sheet ") != std::string::npos;
+    if (text.size() < 12 || text[0] < 'A' || text[0] > 'Z' || text[1] < 'A' || text[1] > 'Z' || text[2] != ' ') return false;
+    const auto digit = [&](size_t i) { return i < text.size() && text[i] >= '0' && text[i] <= '9'; };
+    size_t i = 3, digits = 0, separators = 0;
+    for (; i < text.size(); ++i) {
+        if (digit(i))
+            ++digits;
+        else if (digits > 0 && (text[i] == '/' || text[i] == ',' || text[i] == ' ') && digit(i + 1))
+            ++separators;
+        else
+            break;
+    }
+    if (digits < 7 || separators == 0 || i + 2 >= text.size() || text[i] != ' ') return false;
+    const char kind = text[i + 1], code = text[i + 2];
+    return (kind == 'A' || kind == 'B' || kind == 'C') && ((code >= '1' && code <= '9') || code == 'l' || code == 'I') &&
+           (i + 3 == text.size() || text[i + 3] == ' ');
+}
+
 struct KeyCount {
     int total = 0;
     int odd = 0;
@@ -1044,8 +1069,13 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // A lone page number may sit a little further in (a folio set 1 in from the edge of a
             // short page).
             const bool numberBand = side == 0 ? center > h * (1 - kNumberBand) : center < h * kNumberBand;
-            bool number = false, folio = false, note = false, metadata = false, entry = false;
-            if (numberBand) {
+            bool number = false, folio = false, note = false, metadata = false, entry = false, caption = false;
+            bool deepNumber = false;  // the lowest row, above kNumberBand, holds a number alone
+            bool patent = false;      // a patent's running head (IsPatentHead) in the head band
+            // The page's lowest row as one short line is read wherever it lies: a page number set
+            // right under the last line of a page whose text ends high (deepNumber below).
+            const bool lowest = side == 1 && row == 0 && count == 1 && chars <= 4;
+            if (numberBand || lowest) {
                 // The row's text, left to right.
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
                            lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
@@ -1057,7 +1087,8 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                     AppendLineText(page, page.lines[li], text);
                 }
                 RunningKey(text, key);
-                number = count == 1 && IsPageNumberKey(key);
+                number = numberBand && count == 1 && IsPageNumberKey(key);
+                deepNumber = !numberBand && key == "#";
                 // A folio may sit as deep as a lone page number when it is a piece of its own
                 // beside the title ("164   Adam A. Zych" on a page with wide margins); a line of
                 // a listing never is one.
@@ -1071,6 +1102,13 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                                      key.compare(0, 3, "#) ") == 0 || text.compare(0, 1, "*") == 0 ||
                                      text.compare(0, 3, "\xE2\x80\xA0") == 0 || text.compare(0, 3, "\xE2\x80\xA1") == 0 ||
                                      text.compare(0, 2, "\xC2\xA7") == 0);
+                // A row that reads as a caption ("Figure 8-7. ...", two figures' captions side by
+                // side) belongs to a figure or a table at the edge of the page, not to its furniture.
+                caption = IsCaption(text);
+                // A patent's head is furniture whatever its gap or size: set close over the
+                // columns of a description page, or over a drawing sheet whose few labels set the
+                // body size.
+                patent = band && side == 0 && chars <= kEdgeMaxChars && IsPatentHead(text);
             }
             // A body-size row above a heading is the document's first paragraph, set high on a page
             // with narrow margins: a header must be smaller than the body to be told from it.
@@ -1122,6 +1160,11 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool closeNumber = number && !superscript && largest <= 1.3f * body &&
                                      ((gap >= closeGap && (centred || rowRight >= textRight - body)) ||
                                       (side == 1 && centred && gap >= 0.5f * body && figureGap >= 0.5f * body));
+            // A number alone under the last line of a page whose text ends high (filings converted
+            // from HTML set the page number right after the page's content): the page's lowest
+            // line, centred on the text, set apart from it, in no larger print than a page number.
+            const bool lowNumber = deepNumber && centred && !superscript && largest <= 1.3f * body && gap >= minGap &&
+                                   figureGap >= minGap;
             // A short row the producer marked as an artifact, within kNumberBand and at most twice
             // the body size (not a display heading), whatever its gap. A head or a foot is a few
             // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
@@ -1161,7 +1204,7 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool apart = marked || ((!sparse || sparseAllowed) &&
                                           (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
-                                           ((closeFolio || closeNumber || wide) && row < 2)));
+                                           lowNumber || ((closeFolio || closeNumber || wide) && row < 2)));
             // A short row in the running band overlapping the row inside it waits with that row:
             // pieces of one head on offset baselines. Its block must still end in a strong row.
             const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;
@@ -1173,10 +1216,20 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool tail = row == 0 && margin && count == 1 && !note && !superscript && chars <= kRunningTitleChars &&
                               std::fabs(largest - body) > kWideGapSizeTolerance * body && gap > -0.5f * body &&
                               gap < closeGap && std::fabs(largest - nextSize) <= 0.05f * largest;
-            if ((tailPending && !metadata) ||
+            // A patent's head the other rules do not take is left out as the model's rows are
+            // (kLineEdgeModel): its lines take part in every later decision as text, so that the rest
+            // of the page (claims read as list items, column numbers) is read as with the head, and
+            // only the blocks they alone make are left out.
+            if (patent && !apart && pending == 0) {
+                for (size_t k = first; k < first + count; ++k) page.lines[lines[k]].flags |= kLineEdgeModel;
+                first += count;
+                start = first;
+                continue;
+            }
+            if (caption || (tailPending && !metadata) ||
                 (!apart && !((strong || evidence || overlapping || tail) && gap > -0.5f * body && pending + 1 < kEdgeMaxRows))) {
-                // The block does not end set apart, or a wrapped stamp's last line waited for a row
-                // that is no metadata: the pending rows stay.
+                // A caption, a block that does not end set apart, or a wrapped stamp's last line that
+                // waited for a row that is no metadata: the pending rows stay.
                 if (side == 0)
                     first = start;
                 else
