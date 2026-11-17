@@ -2924,6 +2924,112 @@ void TestLatticeTallGlyphBoxes() {
     RAYOPDF_CHECK(Contains(md, "| Buffer Enzyme Sterile water | Tube rack |"), 2311);
 }
 
+// Booktabs whose header stands between a top rule more than six ems above the header rule (but
+// under twelve) and that rule: a stub label of two lines and two group labels, each over three
+// columns with a \cmidrule under it, above the columns' own labels (BMC's tables). The group
+// labels head the table (they used to stay text above it: only the line right over the header
+// rule was lifted).
+void TestRuledTallHeaderBand() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const auto text = [&](std::string_view t, float x, float y) { AddText(page, t, x, y, 8.2f, 0, 0.37f); };
+    HLine(page, 54, 553, 691);
+    text("Concentration", 123.2f, 679.4f);
+    text("Intra-assay variability", 237.8f, 679.4f);
+    text("Inter-assay variability", 424.6f, 679.4f);
+    text("[nM]", 139.6f, 670.2f);
+    HLine(page, 182.8f, 361.9f, 663.4f, 0.2f);
+    HLine(page, 369.9f, 553, 663.4f, 0.2f);
+    const float labelXs[] = {208, 250.4f, 322.7f, 395, 437.5f, 509.9f};
+    const char* const labels[] = {"n", "Accuracy (%)", "CV (%)", "n", "Accuracy (%)", "CV (%)"};
+    for (int c = 0; c < 6; ++c) text(labels[c], labelXs[c], 647.9f);
+    HLine(page, 54, 553, 641.1f, 0.2f);
+    const float xs[] = {139.5f, 208, 266.3f, 332.7f, 395.1f, 453.3f, 519.8f};
+    const char* const values[4][7] = {{"1000", "3", "89", "2", "5", "100", "2"},
+                                      {"100", "3", "103", "6", "5", "103", "3"},
+                                      {"10", "3", "111", "2", "5", "104", "9"},
+                                      {"1.2", "3", "104", "8", "5", "108", "14"}};
+    text("Paclitaxel", 69.7f, 625.6f);
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 7; ++c) text(values[r][c], xs[c], 625.6f - 10.2f * float(r));
+    HLine(page, 54, 553, 580, 0.2f);
+    const std::string md = Run(pages);
+    Show("ruled tall header band", md);
+    RAYOPDF_CHECK(Contains(md, "| Intra-assay variability | Intra-assay variability | Intra-assay variability | Inter-assay variability |"),
+                  2309);
+}
+
+// Two group labels over \cmidrules as wide as their columns with the cell padding (BMC's tables):
+// the first rule ends short of the gap's middle after its columns, the second starts past it.
+// Each label spans its own three columns, not the gap between the groups (both labels used to
+// make one cell over the six columns).
+void TestCmidruleInGap() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const auto text = [&](std::string_view t, float x, float y) { AddText(page, t, x, y, 8.2f, 0, 0.42f); };
+    HLine(page, 54.1f, 553, 691);
+    text("First PC (42%)", 318.7f, 679.4f);
+    text("Second PC (21%)", 453.9f, 679.4f);
+    // The figures' columns end at 409 and start again at 433: the gap's middle is at 421.
+    HLine(page, 277.2f, 408.8f, 672.6f, 0.2f);
+    HLine(page, 416.8f, 553, 672.6f, 0.2f);
+    text("CAM categories", 58.1f, 657.1f);
+    const float labelXs[] = {300.3f, 342.1f, 392.3f, 443.3f, 481.5f, 539.5f};
+    const char* const labels[] = {"lci", "Loading", "uci", "lci", "Loading", "uci"};
+    for (int c = 0; c < 6; ++c) text(labels[c], labelXs[c], 657.1f);
+    HLine(page, 54.1f, 553, 650.4f, 0.2f);
+    const char* const names[] = {"Alternative systems", "Biological therapies", "Energy therapies", "Body-based therapies"};
+    const float xs[] = {294.2f, 353.7f, 394.8f, 433.8f, 490.6f, 532.4f};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 634.9f - 10.2f * float(r);
+        text(names[r], 58.1f, y);
+        for (int c = 0; c < 6; ++c) text("0." + std::to_string(11 + 7 * r + c), xs[c] + 3, y);
+    }
+    HLine(page, 54.1f, 553, 585, 0.2f);
+    const std::string md = Run(pages);
+    Show("cmidrule in gap", md);
+    RAYOPDF_CHECK(Contains(md, "| First PC (42%) | First PC (42%) | First PC (42%) | Second PC (21%) |"), 2310);
+}
+
+// A ruled table's first rows, then a section label alone in the first column set a little further
+// down than the rows' pitch, then the rest of the rows without rules: one table, the label a row
+// of its own (it used to end the ruled table and leave the rest a second table without header).
+void TestSectionLabelBetweenParts() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    constexpr float kSize = 8;
+    const auto text = [&](std::string_view t, float x, float y) { AddText(page, t, x, y, kSize); };
+    HLine(page, 60, 540, 700);
+    text("Overall", 220, 690);
+    text("Cases", 320, 690);
+    text("Controls", 420, 690);
+    text("P", 520, 690);
+    HLine(page, 60, 540, 685);
+    text("Maternal age", 64, 674);
+    text("32.7 (29.1)", 220, 674);
+    text("33.0 (29.0)", 320, 674);
+    text("32.7 (29.1)", 420, 674);
+    text("0.62", 520, 674);
+    text("Body mass", 64, 660);
+    text("23.9 (21.4)", 220, 660);
+    text("29.8 (24.5)", 320, 660);
+    text("23.8 (21.3)", 420, 660);
+    text("0.01", 520, 660);
+    text("Maternal race", 64, 644);
+    const char* const names[] = {"White", "Black", "Asian", "Other"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 630 - 14.0f * float(r);
+        text(names[r], 72, y);
+        text(std::to_string(231 - 40 * r) + " (60.3%)", 220, y);
+        text(std::to_string(21 + r) + " (75.0%)", 320, y);
+        text(std::to_string(210 - 40 * r) + " (59.2%)", 420, y);
+        text("0." + std::to_string(11 + r), 520, y);
+    }
+    const std::string md = Run(pages);
+    Show("section label between parts", md);
+    RAYOPDF_CHECK(Count(md, "| --- | --- | --- | --- | --- |\n") == 1 && Contains(md, "| Maternal race |  |  |  |  |\n| White | 231 (60.3%) |"), 2312);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3023,6 +3129,9 @@ int main(int argc, char** argv) {
     TestLatticeLabelInGap();
     TestRuledHeaderGroupLabel();
     TestLatticeTallGlyphBoxes();
+    TestRuledTallHeaderBand();
+    TestCmidruleInGap();
+    TestSectionLabelBetweenParts();
     std::puts("test_layout_tables: ok");
     return 0;
 }
