@@ -11,9 +11,10 @@
 // blackboard fonts by name, a script's script out of content order, a display formula holding
 // a word, TeX font codes KaTeX's tables leave out or WinAnsi guesses as a space (\Bigg(,
 // \mapstochar, \lhook), stacked bar pieces, \not\in and \notin, \cong, extensible
-// arrows with labels, \longmapsto, italic and bold letters an inline formula takes, and fonts
-// whose texts do not follow their codes (OAMathSymbols, newtx's txexs). Exit codes 1550-1599,
-// 2202-2249 and 2350-2351.
+// arrows with labels, \longmapsto, italic and bold letters an inline formula takes, fonts whose
+// texts do not follow their codes (OAMathSymbols, newtx's txexs), fractions stacked as the rows of
+// cases, a radical over a fraction, \Re, lim inf and arg max, readings by spacing ("..." and
+// \ldots, \setminus and \backslash, \tfrac). Exit codes 1550-1599, 2202-2249 and 2350-2380.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -1252,6 +1253,106 @@ void TestDisplayWordLimits() {
     if (!display) std::fprintf(stderr, "latex page:\n%s\n", md.c_str());
     RAYOPDF_CHECK(display, 2352);
 }
+
+// Fractions set one over another (the rows of cases): a bar about as long as this one is another
+// fraction's, whose parts are its own; a numerator stops where its ink leaves a gap (a comma of the
+// row above). A radical's vinculum is the highest rule at its sign, a fraction under it starts
+// there too; the rules of an inline formula reach up to a tall sign's ink.
+void TestStackedFractions() {
+    {
+        Formula f;
+        f.Add("x", -20, 4);  // a glyph at text size beside them: the bars stand 1.4 em apart
+        f.Add("1", 0, 15.5f, 7, kText);
+        f.Add("2", 0, 8, 7, kText);
+        f.Rule(0, 4.3f, 13.8f, 14.2f);
+        f.Add("1", 0, 1.5f, 7, kText);
+        f.Add("k", 0, -6, 7);
+        f.Rule(0, 4.6f, -0.2f, 0.2f);
+        const std::string latex = f.Latex();
+        if (latex.find("\\frac{1}{2}") == std::string::npos || latex.find("\\frac{1}{k}") == std::string::npos)
+            std::fprintf(stderr, "code 2367: got \"%s\"\n", latex.c_str());
+        RAYOPDF_CHECK(latex.find("\\frac{1}{2}") != std::string::npos && latex.find("\\frac{1}{k}") != std::string::npos, 2367);
+    }
+    {
+        Formula f;
+        f.Add("1", 0, 2, 7, kText);
+        f.Add("2", 0, -6, 7, kText);
+        f.Rule(0, 4, -0.2f, 0.2f);
+        f.Add(",", 1, 15, 10, kItalic);
+        const std::string latex = f.Latex();
+        // The comma stays out of the numerator (it was \frac{1,}{2}).
+        if (latex.find("\\frac{1}{2}") == std::string::npos) std::fprintf(stderr, "code 2368: got \"%s\"\n", latex.c_str());
+        RAYOPDF_CHECK(latex.find("\\frac{1}{2}") != std::string::npos, 2368);
+    }
+    {
+        // √ ink from -8 to 18.5; the fraction's bar starts 0.5 pt after the sign, the vinculum 0.9 pt.
+        Formula f;
+        f.Add("\xE2\x88\x9A", 0, 0, 10, kSymbol, 0, 0.8f);
+        f.in.glyphs.back().bottom = -8, f.in.glyphs.back().top = 18.5f;
+        f.Rule(8.9f, 22, 18, 18.4f);
+        f.Rule(8.5f, 20, 2.4f, 2.8f);
+        f.Add("a", 12, 8);
+        f.Add("b", 12, -6);
+        Expect(f.Latex(), "\\sqrt{\\frac{a}{b}}", 2369);
+    }
+    {
+        PageData page;
+        page.rulings.push_back(Ruling{10, 20.4f, 30, 20.8f, kRulingFill});
+        MathInput in;
+        MathGlyph g;
+        g.u0 = 0, g.u1 = 10, g.v = 0, g.size = 10, g.bottom = -8, g.top = 20.6f;
+        in.glyphs.push_back(g);
+        AddMathRules(page, 0, 30, -4, 9, in);
+        RAYOPDF_CHECK(in.rules.size() == 1, 2370);
+    }
+}
+
+// Readings that depend on the font or the spacing: cmsy10's ℜ is \Re; lim inf and arg max with
+// limits under both words are one operator; periods typed one after the other are "...", not
+// \ldots; a backslash touching its neighbours is \backslash, not \setminus; a display's
+// text-style fraction is \tfrac.
+void TestSpacedSymbols() {
+    {
+        Formula f;
+        float u = f.Add("\xE2\x84\x9C", 0, 0, 10, kSymbol);
+        u = f.Add("(", u, 0, 10, kText);
+        u = f.Add("z", u, 0);
+        f.Add(")", u, 0, 10, kText);
+        Expect(f.Latex(), "\\Re(z)", 2371);
+    }
+    for (const char* word : {"inf", "max"}) {
+        Formula f;
+        f.Add(word[0] == 'i' ? "lim" : "arg", 0, 0, 10, kText);
+        const float u = f.Add(word, 18, 0, 10, kText);
+        f.Add("k=1", 11.25f, -9, 7, kText);
+        f.Add("a", u + 2, 0);
+        Expect(f.Latex(), word[0] == 'i' ? "\\liminf_{k=1}a" : "\\operatorname*{argmax}_{k=1}a", word[0] == 'i' ? 2373 : 2374);
+    }
+    {
+        Formula f;
+        float u = f.Add("x,", 0, 0);
+        u = f.Add("...", u, 0, 10, kItalic, 0, 0.28f);
+        f.Add(",y", u, 0);
+        Expect(f.Latex(), "x,...,y", 2375);
+    }
+    {
+        Formula g;
+        float u = g.Add("A", 0, 0);
+        u = g.Add("\\", u, 0, 10, kSymbol);
+        g.Add("B", u, 0);
+        Expect(g.Latex(), "A\\backslash B", 2379);
+    }
+    {
+        // x = 1/2 with its parts at 7 pt in a display: \tfrac.
+        Formula f;
+        float u = f.Add("x", 0, 0);
+        f.Add("=", u + 2, 0, 10, kText);
+        f.Add("1", 15, 4.5f, 7, kText);
+        f.Add("2", 15, -3.5f, 7, kText);
+        f.Rule(14, 19, 2.3f, 2.7f);
+        Expect(f.Latex(true), "x=\\tfrac{1}{2}", 2380);
+    }
+}
 } // namespace
 
 int main() {
@@ -1284,6 +1385,8 @@ int main() {
     TestInlineLetters();
     TestCodedFonts();
     TestDisplayWordLimits();
+    TestStackedFractions();
+    TestSpacedSymbols();
     std::puts("test_layout_math: ok");
     return 0;
 }

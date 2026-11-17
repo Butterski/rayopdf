@@ -714,6 +714,7 @@ struct BuilderScratch {
     std::vector<SortKey> sortKeys;
     std::vector<Item> sortItems;
     std::vector<float> baseV, baseW;
+    std::vector<SortKey> stack;  // Connected's: a fraction part's ink, nearest the bar first
     DepthScratch depths[kMaxFormulaDepth + 1];
 };
 
@@ -737,6 +738,8 @@ private:
     bool Row(std::vector<Item>& items, int depth, std::string& out);
     bool Matrix(std::vector<Item>& items, const Item& open, const Item* close, int depth, std::string& out);
     void ItemOf(uint32_t atom, Item& item) const;
+    void Connected(const std::vector<uint32_t>& atoms, std::vector<uint32_t>& part, std::vector<uint32_t>& partRules,
+                   float edge, bool up, float em);
     bool Spend(uint64_t n) {
         if (budget_ < n) {
             status_ = MathStatus::TooLarge;
@@ -761,6 +764,10 @@ private:
     uint64_t budget_ = uint64_t(1) << 24;
     MathStatus status_ = MathStatus::Ok;
     bool attaching_ = false;
+    // The formula's text size: its largest glyph outside the extension fonts (Resolve). TeX sets
+    // the spaces around binary operators and after punctuation only at that size, not in scripts.
+    float baseSize_ = 0;
+    bool display_ = false;  // Run's: the formula is displayed
     // Row's scratch, used before it recurses.
     std::vector<SortKey>& sortKeys_ = scratch_.sortKeys;
     std::vector<Item>& sortItems_ = scratch_.sortItems;
@@ -883,6 +890,11 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
         a.latex.assign(cp == 0x2033 ? "''" : cp == 0x2034 ? "'''" : "'");
         return true;
     }
+    // TeX's \Re and \Im are cmsy10 symbols (ℜ, ℑ); a Fraktur font's R and I are \mathfrak letters.
+    if ((cp == 0x211C || cp == 0x2111) && font == MathFont::Symbol) {
+        a.latex.assign(cp == 0x211C ? "\\Re" : "\\Im");
+        return true;
+    }
     uint32_t letter = cp;
     Alphabet alpha = kAlphaNone;
     const bool alnum = MathAlphanumeric(cp, letter, alpha);
@@ -973,6 +985,9 @@ bool Builder::Resolve() {
     atoms_.resize(in_.glyphs.size());
     for (size_t i = 0; i < in_.glyphs.size(); ++i) {
         if (!ResolveAtom(in_.glyphs[i], atoms_[i])) return Fail(MathStatus::Unreadable);
+        const Atom& a = atoms_[i];
+        if (in_.glyphs[i].font != static_cast<uint8_t>(MathFont::Extension) && (a.letter || (a.cp >= '0' && a.cp <= '9') || IsGreek(a.cp)))
+            baseSize_ = Fmax(baseSize_, a.size);
     }
     for (const MathRule& r : in_.rules)
         if (!Finite4(r.u0, r.u1, r.v0, r.v1) || r.u1 < r.u0 || r.v1 < r.v0)
@@ -1018,6 +1033,48 @@ bool XHeightLetter(uint32_t cp) {
     }
 }
 
+// Keeps the glyphs of a fraction's part (`part`: indices into `atoms`) that one stack of ink joins
+// to the bar's edge `edge`, going up (a numerator) or down: by their near edge, each starts within
+// 0.45 em of the ink reached so far, or within 0.7 em of the bar. The bars of fractions nested in
+// the part (`partRules`) carry the stack across them.
+void Builder::Connected(const std::vector<uint32_t>& atoms, std::vector<uint32_t>& part, std::vector<uint32_t>& partRules,
+                        float edge, bool up, float em) {
+    if (part.empty()) return;
+    std::vector<SortKey>& stack = scratch_.stack;
+    stack.clear();
+    // SortKey here: u0 the near edge's distance from the bar, v the far edge's.
+    for (size_t k = 0; k < part.size(); ++k) {
+        const Atom& a = atoms_[atoms[part[k]]];
+        stack.push_back(up ? SortKey{a.bottom - edge, a.top - edge, 0} : SortKey{edge - a.top, edge - a.bottom, 0});
+    }
+    for (uint32_t s : partRules) {
+        const MathRule& o = in_.rules[s];
+        stack.push_back(up ? SortKey{o.v0 - edge, o.v1 - edge, 1} : SortKey{edge - o.v1, edge - o.v0, 1});
+    }
+    std::sort(stack.begin(), stack.end(), [](const SortKey& a, const SortKey& b) { return a.u0 < b.u0; });
+    float reach = 0, cutoff = INFINITY;
+    for (const SortKey& s : stack) {
+        if (s.u0 > Fmax(reach + 0.45f * em, 0.7f * em)) {
+            cutoff = s.u0;
+            break;
+        }
+        reach = Fmax(reach, s.v);
+    }
+    if (cutoff == INFINITY) return;
+    size_t kept = 0;
+    for (const uint32_t k : part) {
+        const Atom& a = atoms_[atoms[k]];
+        if ((up ? a.bottom - edge : edge - a.top) < cutoff) part[kept++] = k;
+    }
+    part.resize(kept);
+    kept = 0;
+    for (const uint32_t s : partRules) {
+        const MathRule& o = in_.rules[s];
+        if ((up ? o.v0 - edge : edge - o.v1) < cutoff) partRules[kept++] = s;
+    }
+    partRules.resize(kept);
+}
+
 bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_t>& rules, int depth, std::string& out) {
     if (depth > kMaxFormulaDepth) return Fail(MathStatus::TooLarge);
     if (atoms.empty()) return true;
@@ -1041,7 +1098,7 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         const float wa = in_.rules[a].u1 - in_.rules[a].u0, wb = in_.rules[b].u1 - in_.rules[b].u0;
         return wa != wb ? wa > wb : a < b;
     });
-    std::vector<uint32_t> num, den, numRules, denRules, low;
+    std::vector<uint32_t> num, den, numRules, denRules, low, walls;
     // A rule that starts where a radical sign ends is its vinculum, no fraction bar or overline.
     const auto vinculum = [&](const MathRule& rule) {
         for (uint32_t a : atoms) {
@@ -1058,23 +1115,49 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         const MathRule& rule = in_.rules[r];
         const float mid = (rule.v0 + rule.v1) / 2;
         if (rule.v1 - rule.v0 > 0.3f * em || rule.u1 - rule.u0 < 0.25f * em) continue;
-        num.clear(), den.clear(), numRules.clear(), denRules.clear(), low.clear();
-        // The stack's reach above and below, widened by the bars of nested fractions in it.
+        num.clear(), den.clear(), numRules.clear(), denRules.clear(), low.clear(), walls.clear();
+        // The stack's reach above and below, widened by the bars of nested fractions in it. TeX sets
+        // a fraction between null delimiters (\nulldelimiterspace, 1.2 pt a side), so the bar of a
+        // fraction nested in a part is shorter than the bar over it; a bar about as long is another
+        // fraction set above or below this one (rows of cases or of a matrix): a wall, when it has
+        // parts of its own on its far side, whose glyphs nearer to it than to this bar are its own.
         float above = 1.6f * em, below = 1.6f * em;
         const float slack = 0.08f * em;
+        const float width = rule.u1 - rule.u0;
         for (uint32_t s : rules) {
             if (s == r || ruleUsed_[s]) continue;
             const MathRule& o = in_.rules[s];
-            if (o.u0 < rule.u0 - slack || o.u1 > rule.u1 + slack) continue;
             const float omid = (o.v0 + o.v1) / 2;
-            if (omid > mid && omid - mid < above) above = Fmax(above, omid - mid + 1.6f * em), numRules.push_back(s);
-            if (omid < mid && mid - omid < below) below = Fmax(below, mid - omid + 1.6f * em), denRules.push_back(s);
+            if (o.u0 >= rule.u0 - slack && o.u1 <= rule.u1 + slack && width - (o.u1 - o.u0) >= 0.08f * em) {
+                if (omid > mid && omid - mid < above) above = Fmax(above, omid - mid + 1.6f * em), numRules.push_back(s);
+                if (omid < mid && mid - omid < below) below = Fmax(below, mid - omid + 1.6f * em), denRules.push_back(s);
+                continue;
+            }
+            if (o.u0 >= rule.u1 || o.u1 <= rule.u0 || std::fabs(omid - mid) >= 1.6f * em || std::fabs(omid - mid) < 0.3f * em) continue;
+            bool far = false;
+            for (size_t i = 0; i < atoms.size() && !far; ++i) {
+                const Atom& a = atoms_[atoms[i]];
+                const float cx = (a.u0 + a.u1) / 2;
+                const float cy = (a.bottom + a.top) / 2;
+                far = cx >= o.u0 - slack && cx <= o.u1 + slack && (omid > mid ? cy > omid : cy < omid) &&
+                      std::fabs(cy - omid) <= 1.6f * em;
+            }
+            if (far) walls.push_back(s);
         }
         for (size_t i = 0; i < atoms.size(); ++i) {
             if (used[i]) continue;
             const Atom& a = atoms_[atoms[i]];
             const float cx = (a.u0 + a.u1) / 2;
             if (cx < rule.u0 - slack || cx > rule.u1 + slack) continue;
+            const float cy = (a.bottom + a.top) / 2;
+            bool walled = false;
+            for (uint32_t s : walls) {
+                const MathRule& o = in_.rules[s];
+                const float omid = (o.v0 + o.v1) / 2;
+                walled = walled || (cx >= o.u0 - slack && cx <= o.u1 + slack && std::fabs(cy - omid) < std::fabs(cy - mid) &&
+                                    (omid > mid) == (cy > mid));
+            }
+            if (walled) continue;
             if (a.v > mid && a.v - mid <= above)
                 num.push_back(static_cast<uint32_t>(i));
             else if (a.v + 0.6f * a.size < mid && mid - a.v <= below)
@@ -1082,6 +1165,11 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
             else if (a.v + 0.4f * a.size <= mid && a.v < mid)
                 low.push_back(static_cast<uint32_t>(i));
         }
+        // Each part is one stack of ink from the bar outwards (through the bars nested in it): a
+        // glyph past a gap of more than 0.45 em (0.7 em next to the bar) belongs to something else,
+        // such as the row of a case above or below a fraction set in a row of its own.
+        Connected(atoms, num, numRules, rule.v1, true, em);
+        Connected(atoms, den, denRules, rule.v0, false, em);
         // TeX sets an overline 3 rule widths over its content: over x-height letters (\overline{u})
         // that is closer than a fraction's bar to its denominator, so they join the content of a
         // bar with nothing over it.
@@ -1124,7 +1212,11 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
             item.v = atoms_[atoms[side[0]]].v;
             item.lined = true;
         } else {
-            item.latex = "\\frac{" + numText + "}{" + denText + "}";
+            // A fraction of a display whose parts are set at script size (0.6 to 0.8 of the text
+            // size: a text-style fraction, as \tfrac sets one) is \tfrac; Matrix makes its cells'
+            // \frac again (an array's cells are in text style).
+            const bool text = display_ && partSize >= 0.6f * baseSize_ && partSize <= 0.8f * baseSize_;
+            item.latex = (text ? "\\tfrac{" : "\\frac{") + numText + "}{" + denText + "}";
         }
         ruleUsed_[r] = 1;
         for (uint32_t s : numRules) ruleUsed_[s] = 1;
@@ -1140,15 +1232,16 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
     for (size_t i = 0; i < atoms.size(); ++i) {
         if (used[i] || atoms_[atoms[i]].kind != Kind::Radical) continue;
         const Atom& sign = atoms_[atoms[i]];
-        // Pieces of one built-up sign stand above each other: the lowest is the sign.
+        // Pieces of one built-up sign stand above each other: the lowest is the sign. Its vinculum
+        // is the highest rule starting where it ends (a fraction's bar under it may start there too).
         int32_t best = -1;
-        float bestGap = INFINITY;
+        float bestTop = -INFINITY;
         for (uint32_t r : rules) {
             if (ruleUsed_[r]) continue;
             const MathRule& rule = in_.rules[r];
             const float gap = std::fabs(rule.u0 - sign.u1);
             if (gap > 0.4f * em || rule.v0 < sign.bottom - 0.1f * em || rule.v0 > sign.top + 0.4f * sign.size) continue;
-            if (gap < bestGap) bestGap = gap, best = static_cast<int32_t>(r);
+            if (rule.v0 > bestTop) bestTop = rule.v0, best = static_cast<int32_t>(r);
         }
         if (best < 0) {
             used[i] = 1;
@@ -1455,6 +1548,8 @@ bool Builder::Matrix(std::vector<Item>& body, const Item& open, const Item* clos
             if (col > 0) out.push_back('&');
             std::string text;
             if (!Layout(cells[r][col], depth + 1, text)) return false;
+            // A cell is in text style: its fractions are plain \frac.
+            for (size_t at = text.find("\\tfrac{"); at != std::string::npos; at = text.find("\\tfrac{", at)) text.erase(at + 1, 1);
             out.append(text);
         }
     }
@@ -1479,11 +1574,11 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // Sorted by proxy: the same comparisons on the same order give std::sort's same permutation,
     // without moving the items' strings at each step.
     sortKeys_.clear();
-    // What the searches below for \cong, extensible arrows, dots and joined symbols need the row
-    // to hold, counted on the way: a ∼ and an =; a bar and an arrowhead (→ after bars, ← before
-    // them); three dots; a JoinPart. Nothing below gives an item another atom, so a search the
-    // row cannot serve finds nothing.
-    bool tilde = false, equals = false, arrowhead = false, join = false;
+    // What the searches below for \cong, extensible arrows, dots, joined symbols and backslashes need
+    // the row to hold, counted on the way: a ∼ and an =; a bar and an arrowhead (→ after bars, ←
+    // before them); three dots; a JoinPart; a backslash. Nothing below gives an item another atom, so
+    // a search the row cannot serve finds nothing.
+    bool tilde = false, equals = false, arrowhead = false, join = false, slash = false;
     size_t barCount = 0, dotCount = 0;
     for (size_t i = 0; i < items.size(); ++i) {
         sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
@@ -1495,6 +1590,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         barCount += cp == '-' || cp == 0x2212;
         dotCount += !DotsOf(cp).empty();
         join = join || JoinPart(cp);
+        slash = slash || cp == '\\' || cp == 0x2216;
     }
     std::sort(sortKeys_.begin(), sortKeys_.end(), [](const SortKey& a, const SortKey& b) {
         return a.u0 != b.u0 ? a.u0 < b.u0 : a.v > b.v;
@@ -1809,18 +1905,39 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // Upright letter runs: function names and text.
     for (size_t i = 0; i < n; ++i) {
         if (role[i] != 0 || items[i].atom < 0 || !atoms_[static_cast<uint32_t>(items[i].atom)].upright) continue;
-        size_t end = i + 1, prev = i;
-        std::string word = atoms_[static_cast<uint32_t>(items[i].atom)].word;
-        while (true) {
+        // The run of upright letters from `start` (its letters 0.12 em apart at most): its word, its
+        // end and its last letter.
+        const auto run = [&](size_t start, std::string& word, size_t& end, size_t& prev) {
+            end = start + 1, prev = start;
+            word = atoms_[static_cast<uint32_t>(items[start].atom)].word;
+            while (true) {
+                size_t next = end;
+                while (next < n && role[next] == 3) ++next;  // limits already taken
+                if (next >= n || role[next] != 0 || items[next].atom < 0 ||
+                    !atoms_[static_cast<uint32_t>(items[next].atom)].upright || items[next].u0 - items[prev].u1 >= 0.12f * em ||
+                    !items[next].accent.empty() || !items[prev].accent.empty())
+                    break;
+                word += atoms_[static_cast<uint32_t>(items[next].atom)].word;
+                prev = next;
+                end = next + 1;
+            }
+        };
+        std::string word;
+        size_t end = 0, prev = 0;
+        run(i, word, end, prev);
+        // Operators of two words set a space apart (arg min, lim inf): one operator, whose limits
+        // stand under both.
+        if (word == "arg" || word == "lim") {
             size_t next = end;
-            while (next < n && role[next] == 3) ++next;  // limits already taken
-            if (next >= n || role[next] != 0 || items[next].atom < 0 ||
-                !atoms_[static_cast<uint32_t>(items[next].atom)].upright || items[next].u0 - items[prev].u1 >= 0.12f * em ||
-                !items[next].accent.empty() || !items[prev].accent.empty())
-                break;
-            word += atoms_[static_cast<uint32_t>(items[next].atom)].word;
-            prev = next;
-            end = next + 1;
+            while (next < n && role[next] == 3) ++next;
+            if (next < n && role[next] == 0 && items[next].atom >= 0 && atoms_[static_cast<uint32_t>(items[next].atom)].upright &&
+                items[next].u0 - items[prev].u1 < 0.5f * em) {
+                std::string second;
+                size_t end2 = 0, prev2 = 0;
+                run(next, second, end2, prev2);
+                if (word == "arg" ? second == "min" || second == "max" : second == "inf" || second == "sup")
+                    word += second, end = end2;
+            }
         }
         if (end - i < 2 && word.size() < 2) continue;
         // Limits found on the run's letters belong to the run.
@@ -1833,6 +1950,23 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         AppendUprightWord(word, end < n && items[end].u0 - items[end - 1].u1 >= 0.2f * em, words[i]);
         i = end - 1;
     }
+    // TeX's \setminus is \backslash as a binary operator: set with a medium space (4/18 em) on
+    // either side, where \backslash (an ordinary symbol) touches its neighbours. Scripts get no
+    // such space: there the glyph keeps its own reading.
+    for (size_t i = 0; slash && i < n; ++i) {
+        if (role[i] != 0 || items[i].atom < 0) continue;
+        const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
+        if ((cp != '\\' && cp != 0x2216) || items[i].size < 0.9f * baseSize_) continue;
+        float left = -INFINITY, right = INFINITY;
+        for (size_t k = 0; k < n; ++k) {
+            if (k == i || role[k] == 3) continue;
+            if (items[k].u1 <= items[i].u0 + 0.05f * em) left = Fmax(left, items[k].u1);
+            if (items[k].u0 >= items[i].u1 - 0.05f * em) right = Fmin(right, items[k].u0);
+        }
+        const float gapL = items[i].u0 - left, gapR = right - items[i].u1;
+        if (gapL < 0.08f * em && gapR < 0.08f * em) items[i].latex = "\\backslash";
+        else if (gapL > 0.15f * em && gapR > 0.15f * em) items[i].latex = "\\setminus";
+    }
     // Three dots in a row, close together on one baseline: \ldots or \cdots.
     for (size_t i = 0; dotCount >= 3 && i + 2 < n; ++i) {
         if (role[i] != 0 || wordPart[i] || items[i].atom < 0) continue;
@@ -1840,17 +1974,21 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         const std::string_view dots = DotsOf(cp);
         if (dots.empty()) continue;
         size_t at = i, count = 1;
+        float widest = 0;
         for (size_t k = i + 1; k < n && count < 3; ++k) {
             if (role[k] == 3) continue;
             const Item& d = items[k];
             if (role[k] != 0 || d.atom < 0 || atoms_[static_cast<uint32_t>(d.atom)].cp != cp ||
                 d.u0 - items[at].u1 > 0.4f * em || std::fabs(d.v - items[i].v) > 0.1f * em)
                 break;
+            widest = Fmax(widest, d.u0 - items[at].u1);
             at = k;
             ++count;
         }
         if (count < 3) continue;
-        words[i] = dots;
+        // \ldots sets a thin space (1/6 em) after each period; periods typed one after the other
+        // ("...") touch. In scripts TeX sets no thin space: there the dots stay \ldots.
+        words[i] = cp == '.' && widest < 0.06f * em && items[i].size >= 0.9f * baseSize_ ? std::string_view("...") : dots;
         for (size_t k = i + 1; k <= at; ++k)
             if (role[k] == 0) wordPart[k] = 1;
         items[i].u1 = items[at].u1;
@@ -2026,6 +2164,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
 
 MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
     if (in_.glyphs.empty()) return MathStatus::Empty;
+    display_ = display;
     if (in_.glyphs.size() > kMaxFormulaGlyphs || in_.rules.size() > kMaxFormulaRules) return MathStatus::TooLarge;
     if (!Resolve()) return status_;
     ruleUsed_.assign(in_.rules.size(), 0);
@@ -2283,6 +2422,10 @@ void AddMathGlyph(const PageData& page, const Glyph& g, MathInput& in) {
 }
 
 void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, MathInput& in) {
+    // A radical's vinculum stands at the top of its sign's ink, which a large sign (of an
+    // extension font) lifts above the line's band: the band reaches the ink of such glyphs.
+    for (const MathGlyph& g : in.glyphs)
+        if (g.top > g.bottom && g.top + 0.15f * g.size > vt) vt = g.top + 0.15f * g.size;
     for (const Ruling& r : page.rulings) {
         if (in.rules.size() > kMaxFormulaRules) return;
         // Pure tests, the vertical band first: it leaves out most of a page's rulings.
