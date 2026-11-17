@@ -1016,6 +1016,10 @@ void AppendLineText(const PageData& page, const Line& line, std::string& out, ui
 // A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
 // "TABLE IV"), in any letter case.
 bool IsCaption(std::string_view t) {
+    // Most texts start with none of the labels' first letters (A-Z | 0x20 is a-z).
+    if (t.empty()) return false;
+    const char c0 = static_cast<char>(t[0] | 0x20);
+    if (c0 != 'f' && c0 != 't' && c0 != 'c' && c0 != 'e' && c0 != 'g' && c0 != 'd') return false;
     static const std::string_view kLabels[] = {"figure ", "fig. ", "table ", "chart ", "exhibit ", "graph ", "diagram "};
     for (const std::string_view label : kLabels) {
         if (t.size() < label.size() + 1) continue;

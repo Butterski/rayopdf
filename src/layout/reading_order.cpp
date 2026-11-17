@@ -159,7 +159,21 @@ bool HasFolio(const std::string& key, const std::string& text) {
 
 // Publication metadata in a running head or foot: a URL, a DOI, a copyright or licence notice, a
 // download stamp, an ISSN. ASCII case is folded; the copyright sign is matched as UTF-8. One pass:
-// the words are tried where the text has their first character.
+// the words are tried where the text has their first two characters (kMetadataSecond).
+struct MetadataSecond {
+    // Per byte that starts a word (either ASCII case), the word's second byte, lowercase; else 0.
+    char of[256] = {};
+    constexpr MetadataSecond() {
+        const char pairs[][2] = {{'h', 't'}, {'w', 'w'}, {'d', 'o'}, {'c', 'o'}, {'i', 's'}, {'r', 'i'}, {'l', 'i'}};
+        for (const auto& p : pairs) {
+            of[static_cast<unsigned char>(p[0])] = p[1];
+            of[static_cast<unsigned char>(p[0] - 'a' + 'A')] = p[1];
+        }
+        of[0xC2] = '\xA9';
+    }
+};
+constexpr MetadataSecond kMetadataSecond;
+
 bool IsMetadata(const std::string& text) {
     const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
     // Whether `word`, whose first character text[i] matches, is at i.
@@ -169,7 +183,10 @@ bool IsMetadata(const std::string& text) {
             if (lower(text[i + j]) != word[j]) return false;
         return true;
     };
-    for (size_t i = 0; i < text.size(); ++i) {
+    // Every word has two bytes at least: none starts at the last byte.
+    for (size_t i = 0; i + 1 < text.size(); ++i) {
+        const char second = kMetadataSecond.of[static_cast<unsigned char>(text[i])];
+        if (second == 0 || lower(text[i + 1]) != second) continue;
         bool found = false;
         switch (lower(text[i])) {
         case 'h': found = at(i, "http"); break;
