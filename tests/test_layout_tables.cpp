@@ -2860,6 +2860,70 @@ void TestLatticeLabelInGap() {
     RAYOPDF_CHECK(Contains(md, "| Name | Left | Right side |\n| --- | --- | --- |\n| one | 12.340 | 7 |"), 2306);
 }
 
+// Booktabs with a header of three rows: a group label centred over all the columns of figures
+// (no rule under it), above two labels each over three columns with a \cmidrule under it, above
+// the columns' own labels; the stub's label sits in the middle of the header. The group label
+// spans the six columns (its centre lies over one column's labels too, but the label under it
+// spans past them), and the stub's label spans the header's rows (a pipe table writes it in the
+// first).
+void TestRuledHeaderGroupLabel() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    constexpr float kSize = 7.2f, kAdvance = 0.42f;
+    const auto text = [&](std::string_view t, float x, float y) { AddText(page, t, x, y, kSize, 0, kAdvance); };
+    HLine(page, 77.9f, 517.4f, 770);
+    text("Training Datasets", 312.05f, 762.1f);
+    text("Properties", 103.4f, 753.1f);
+    text("Instruction", 222.4f, 753.1f);
+    text("Alignment", 402.2f, 753.1f);
+    HLine(page, 161, 311, 748.5f);
+    HLine(page, 315, 517.4f, 748.5f);
+    text("Alpaca-GPT4", 165.0f, 740.6f);
+    text("OpenOrca", 212.9f, 740.6f);
+    text("Synth. Math-Instruct", 250.4f, 740.6f);
+    text("Orca DPO Pairs", 318.8f, 740.6f);
+    text("Ultrafeedback Cleaned", 373.0f, 740.6f);
+    text("Synth. Math-Alignment", 447.1f, 740.6f);
+    HLine(page, 77.9f, 517.4f, 735.5f);
+    const char* const names[] = {"Total", "Maximum", "Open"};
+    const float xs[] = {178.8f, 218.2f, 272.7f, 333.1f, 397.2f, 473.8f};
+    const char* const values[3][6] = {{"52K", "2.91M", "126K", "12.9K", "60.8K", "126K"},
+                                      {"52K", "100K", "52K", "12.9K", "60.8K", "20.1K"},
+                                      {"O", "O", "X", "O", "O", "X"}};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 728.0f - 9.0f * float(r);
+        text(names[r], 90, y);
+        for (int c = 0; c < 6; ++c) text(values[r][c], xs[c], y);
+    }
+    HLine(page, 77.9f, 517.4f, 705);
+    const std::string md = Run(pages);
+    Show("ruled header group label", md);
+    RAYOPDF_CHECK(Contains(md, "| Properties | Training Datasets | Training Datasets | Training Datasets | Training Datasets | "
+                               "Training Datasets | Training Datasets |\n| --- |"),
+                  2308);
+}
+
+// A lattice whose last body line is set in a font with a padded bounding box (each glyph's box
+// reaching two sizes below its baseline): the line stays in its cell, by its baseline, though its
+// boxes' middles lie under the table's bottom rule.
+void TestLatticeTallGlyphBoxes() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    for (float y : {700.0f, 684.0f, 640.0f}) HLine(page, 72, 372, y);
+    for (float x : {72.0f, 222.0f, 372.0f}) VLine(page, x, 640, 700);
+    AddText(page, "Reagents", 76, 688);
+    AddText(page, "Equipment", 226, 688);
+    AddText(page, "Buffer", 76, 672);
+    AddText(page, "Tube rack", 226, 672);
+    AddText(page, "Enzyme", 76, 658);
+    const size_t first = page.glyphs.size();
+    AddText(page, "Sterile water", 76, 644);
+    for (size_t i = first; i < page.glyphs.size(); ++i) page.glyphs[i].vb = page.glyphs[i].v - 2.0f * page.glyphs[i].size;
+    const std::string md = Run(pages);
+    Show("lattice tall glyph boxes", md);
+    RAYOPDF_CHECK(Contains(md, "| Buffer Enzyme Sterile water | Tube rack |"), 2311);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2957,6 +3021,8 @@ int main(int argc, char** argv) {
     TestDashedRowLabels();
     TestLatticeHeaderLevels();
     TestLatticeLabelInGap();
+    TestRuledHeaderGroupLabel();
+    TestLatticeTallGlyphBoxes();
     std::puts("test_layout_tables: ok");
     return 0;
 }

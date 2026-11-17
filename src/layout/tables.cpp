@@ -1958,6 +1958,87 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             }
         }
     }
+    // A header of several rows, its levels set without rules. Per header row and column: the
+    // extent of its words, and its lines' lowest bottom and highest top.
+    if (g.headerRows >= 2 && g.headerRows <= 8) {
+        constexpr int kMaxHeader = 8;
+        const int hr = g.headerRows;
+        float lo[kMaxHeader][kMaxTableCols], hi[kMaxHeader][kMaxTableCols], low[kMaxHeader][kMaxTableCols],
+            high[kMaxHeader][kMaxTableCols];
+        for (int h = 0; h < hr; ++h)
+            for (int c = 0; c < cols; ++c) lo[h][c] = low[h][c] = INFINITY, hi[h][c] = high[h][c] = -INFINITY;
+        float bandTop = -INFINITY, bandBottom = INFINITY, em = 0;
+        int h = -1;
+        for (size_t r = rowBegin; r < rowEnd; ++r) {
+            if (h + 1 < nrows && starts[static_cast<size_t>(h + 1)] == r) ++h;
+            if (h >= hr) break;
+            bandTop = Fmax(bandTop, rows[r].top), bandBottom = Fmin(bandBottom, rows[r].bottom);
+            if (labels && (*labels)[r]) continue;
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
+                const TWord& w = words_[rowWords[k]];
+                const int c = columns[k - base];
+                lo[h][c] = Fmin(lo[h][c], w.x0), hi[h][c] = Fmax(hi[h][c], w.x1);
+                low[h][c] = Fmin(low[h][c], rows[r].bottom), high[h][c] = Fmax(high[h][c], rows[r].top);
+                em = Fmax(em, w.size);
+            }
+        }
+        const auto vb = [&](int row, int k) -> uint8_t& { return g.vb[static_cast<size_t>(row * (cols + 1) + k)]; };
+        const auto alone = [&](int row, int c) { return vb(row, c) && vb(row, c + 1); };  // a cell one column wide
+        // A label over a header row below it spans the narrowest run of columns, empty in its own
+        // row but for it, that the cells of the row below do not cross at its ends and whose labels
+        // below it is centred over within a third of an em (a \multicolumn label set without a
+        // \cmidrule; its own column's labels may be centred under it too when a cell below spans
+        // past them).
+        const float tolerance = Fmax(1.0f, 0.3f * em);
+        for (int row = 0; row + 1 < hr; ++row) {
+            for (int ca = 0; ca < cols;) {
+                int cb = ca;
+                while (cb + 1 < cols && !vb(row, cb + 1)) ++cb;
+                float x0 = INFINITY, x1 = -INFINITY;
+                for (int c = ca; c <= cb; ++c) x0 = Fmin(x0, lo[row][c]), x1 = Fmax(x1, hi[row][c]);
+                const int next = cb + 1;
+                if (x0 < INFINITY) {
+                    int left = ca, right = cb;
+                    while (left > 0 && lo[row][left - 1] == INFINITY && alone(row, left - 1)) --left;
+                    while (right + 1 < cols && lo[row][right + 1] == INFINITY && alone(row, right + 1)) ++right;
+                    const float centre = (x0 + x1) / 2;
+                    int bestA = -1, bestB = -1;
+                    for (int width = cb - ca; width <= right - left && bestA < 0; ++width)
+                        for (int a = std::max(left, cb - width); a <= ca && a + width <= right && bestA < 0; ++a) {
+                            const int b = a + width;
+                            if (!vb(row + 1, a) || !vb(row + 1, b + 1)) continue;
+                            float e0 = INFINITY, e1 = -INFINITY;
+                            bool headed = true;  // every column of the run labelled below
+                            for (int c = a; c <= b && headed; ++c) {
+                                float c0 = INFINITY, c1 = -INFINITY;
+                                for (int q = row + 1; q < hr; ++q) c0 = Fmin(c0, lo[q][c]), c1 = Fmax(c1, hi[q][c]);
+                                headed = c0 < INFINITY;
+                                e0 = Fmin(e0, c0), e1 = Fmax(e1, c1);
+                            }
+                            if (headed && std::fabs((e0 + e1) / 2 - centre) <= tolerance && x0 >= e0 - tolerance && x1 <= e1 + tolerance)
+                                bestA = a, bestB = b;
+                        }
+                    if (bestA >= 0 && (bestA < ca || bestB > cb))
+                        for (int k = bestA + 1; k <= bestB; ++k) vb(row, k) = 0;
+                }
+                ca = next;
+            }
+        }
+        // A label alone in its column through the header, one column wide in every header row and
+        // set in the middle third of the header's height (a stub's label centred beside the
+        // levels), spans the header's rows.
+        const float middle = (bandTop + bandBottom) / 2, third = (bandTop - bandBottom) / 6;
+        for (int c = 0; c < cols; ++c) {
+            int only = -1, count = 0;
+            bool single = true;
+            for (int q = 0; q < hr; ++q) {
+                if (lo[q][c] < INFINITY) only = q, count++;
+                single = single && alone(q, c);
+            }
+            if (count != 1 || !single || std::fabs((low[only][c] + high[only][c]) / 2 - middle) > third) continue;
+            for (int q = 1; q < hr; ++q) g.hb[static_cast<size_t>(q * cols + c)] = 0;
+        }
+    }
     // In a turned frame, rows of plain numbers alone are the tick labels of a plot's turned axis.
     if (dir_ != 0 && numbersOnly) return;
     MarkUsed(g);
@@ -4642,7 +4723,10 @@ void Detector::Commit() {
         uint32_t in = 0;
         for (uint32_t k = 0; k < line.count; ++k) {
             const Glyph& gl = page_.glyphs[page_.lineGlyphs[line.first + k]];
-            const float cx = (gl.u0 + gl.u1) / 2, cy = (gl.vb + gl.vt) / 2;
+            // A glyph box far taller than its size (a font's padded bounding box) says little of
+            // where the glyph stands: its middle is taken from the baseline instead.
+            const float cx = (gl.u0 + gl.u1) / 2;
+            const float cy = gl.vt - gl.vb > 1.6f * gl.size ? gl.v + 0.3f * gl.size : (gl.vb + gl.vt) / 2;
             for (uint32_t gi = 0; gi < grids_.size(); ++gi) {
                 const Grid& g = grids_[gi];
                 int r = 0, c = 0;
