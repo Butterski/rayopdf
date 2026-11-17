@@ -67,9 +67,10 @@ struct WrittenBlock {
 // "N text". `tables`: Html writes every table as HTML, not only those whose spans need it, with a
 // space between a row's tags and around each cell's text (WriteHtmlTable `spaced`); Pipe every
 // table as a GFM pipe table, a spanning cell's text in its first row and column only (the covered
-// cells empty). `smallCaps`: Keep writes a heading set in small capitals (Block::smallCaps) as
-// printed, every letter a capital, not in the source's case. `chunkChars`: WriteChunks only,
-// clamped to [kMinChunkChars, kMaxChunkChars].
+// cells empty); PipeLatex as Pipe, its cells' `%`, `#` and `&` outside math as the text `\%`,
+// `\#`, `\&` (WriteGfmTable `latexCells`). `smallCaps`: Keep writes a heading set in small
+// capitals (Block::smallCaps) as printed, every letter a capital, not in the source's case.
+// `chunkChars`: WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars].
 struct WriteSettings {
     bool pageMarkers = false;
     bool plain = false;

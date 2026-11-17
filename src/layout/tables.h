@@ -113,8 +113,10 @@ uint16_t RepeatedHeader(const TablePart& head, const TablePart& part);
 // written as body rows); header rows of a later part that repeat the first part's are dropped.
 // `|` in cells is escaped; a cell spanning rows is written in its first row (the rows below it
 // empty), a cell spanning columns in each of them with `repeatColumnSpans`, else in its first
-// column (the columns after it empty).
-void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans);
+// column (the columns after it empty). `latexCells` (TableFormat::PipeLatex): `%`, `#` and `&` of
+// the cells outside `$…$` math and code spans are written as the text `\%`, `\#`, `\&` (Markdown
+// `\\%`, ...), so that a reader taking the cells through LaTeX (READoc's evaluator) reads them.
+void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans, bool latexCells);
 
 // An HTML <table> with <th> header rows, colspan and rowspan, and HTML-escaped plain cell text
 // (a GFM HTML block: one line per row, no blank lines inside). `spaced`: a space between the tags

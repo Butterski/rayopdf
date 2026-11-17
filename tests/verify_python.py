@@ -90,7 +90,7 @@ def main() -> int:
         check(isinstance(result.data, dict) and result.data.get("schema") == 1 and result.text.startswith('{"rayopdf":'),
               "format=json parses, schema 1")
         result = rayopdf.convert(pdf_path, format="chunks", chunk_chars=256, plain=True, quotes="ascii",
-                                 small_caps="keep", pages=(1, None))
+                                 small_caps="keep", tables="pipe-latex", pages=(1, None))
         check(isinstance(result.data, list) and len(result.data) == 1 and
               "Hello from Python" in result.data[0]["markdown"] and result.data[0]["pages"] == [1, 1],
               "format=chunks gives a list of chunks")

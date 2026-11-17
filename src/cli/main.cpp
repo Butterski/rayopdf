@@ -6,8 +6,8 @@
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
-//                                   [--tables=auto|html|pipe] [--quotes=keep|ascii]
-//                                   [--small-caps=lower|keep]
+//                                   [--tables=auto|html|pipe|pipe-latex]
+//                                   [--quotes=keep|ascii] [--small-caps=lower|keep]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -141,7 +141,9 @@ void PrintUsage(std::FILE* out) {
         "                     stays), no <sup>/<sub> tags, footnote marks as numbers ([^1] is 1)\n"
         "  --tables=MODE      auto (default): pipe tables unless a span needs HTML; html: every\n"
         "                     table as HTML, a row a line, cells' text set off by spaces; pipe:\n"
-        "                     every table as a pipe table, spans flattened\n"
+        "                     every table as a pipe table, spans flattened; pipe-latex: as pipe,\n"
+        "                     the cells' % # & outside math written \\% \\# \\& for a LaTeX reader\n"
+        "                     (READoc's convention)\n"
         "  --quotes=MODE      keep (default): quotation marks as printed; ascii: typographic ones\n"
         "                     (curly, low) as ' and \"\n"
         "  --small-caps=MODE  lower (default): a heading set in small capitals in the source's\n"

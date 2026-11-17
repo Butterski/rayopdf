@@ -41,9 +41,10 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
     out.frontMatter = options.frontMatter;
     out.furniture = options.furniture == Furniture::Keep ? Layout::Furniture::Keep : Layout::Furniture::Drop;
     out.plain = options.plain;
-    out.tables = options.tables == Tables::Html   ? Layout::TableFormat::Html
-                 : options.tables == Tables::Pipe ? Layout::TableFormat::Pipe
-                                                  : Layout::TableFormat::Auto;
+    out.tables = options.tables == Tables::Html        ? Layout::TableFormat::Html
+                 : options.tables == Tables::Pipe      ? Layout::TableFormat::Pipe
+                 : options.tables == Tables::PipeLatex ? Layout::TableFormat::PipeLatex
+                                                       : Layout::TableFormat::Auto;
     out.quotes = options.quotes == Quotes::Ascii ? Layout::Quotes::Ascii : Layout::Quotes::Keep;
     out.smallCaps = options.smallCaps == SmallCaps::Keep ? Layout::SmallCaps::Keep : Layout::SmallCaps::Lower;
     out.pageWorkers = options.workers;

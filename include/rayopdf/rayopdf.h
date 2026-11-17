@@ -25,9 +25,10 @@ enum class Math : uint8_t { Unicode, Latex };
 enum class Ocr : uint8_t { Off, Auto, Force };
 // Page furniture (running headers, footers, page numbers): left out, or kept as text.
 enum class Furniture : uint8_t { Drop, Keep };
-// Tables as GFM pipe tables unless a span needs HTML, every table as HTML, or every table as a
-// GFM pipe table (spans flattened).
-enum class Tables : uint8_t { Auto, Html, Pipe };
+// Tables as GFM pipe tables unless a span needs HTML, every table as HTML, every table as a GFM
+// pipe table (spans flattened), or as one whose cells' `%`, `#` and `&` outside math are escaped
+// for a LaTeX reader (the text `\%`, `\#`, `\&`: READoc's convention).
+enum class Tables : uint8_t { Auto, Html, Pipe, PipeLatex };
 // Quotation marks as printed, or the typographic ones (U+2018-U+201F) as ' and ".
 enum class Quotes : uint8_t { Keep, Ascii };
 // Headings set in small capitals in the source's case (small capitals as lower-case letters), or
@@ -58,7 +59,7 @@ struct Options {
     bool frontMatter = false;                // Markdown: YAML front matter from the document's information
     Furniture furniture = Furniture::Drop;   // page furniture left out or kept
     bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
-    Tables tables = Tables::Auto;            // Html: every table as HTML; Pipe: every table as GFM
+    Tables tables = Tables::Auto;            // Html: every table as HTML; Pipe: every table as GFM; PipeLatex: LaTeX-escaped
     Quotes quotes = Quotes::Keep;            // Ascii: typographic quotation marks as ' and "
     SmallCaps smallCaps = SmallCaps::Lower;  // Keep: small-capitals headings as printed, in capitals
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)

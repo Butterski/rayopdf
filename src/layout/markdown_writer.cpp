@@ -1663,9 +1663,9 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             // D6: GFM unless a cell spans rows, or columns below the header rows, then HTML
             // (layout/tables.h); every table HTML, its cells spaced, with TableFormat::Html; every
             // table GFM with TableFormat::Pipe (a spanning cell's text in its first row and column
-            // only). A table broken across pages is one table from its parts, each its anchor line
-            // then its cell lines. GFM cells are inline Markdown, cut back out of `out` after the
-            // writer appends them.
+            // only), its cells escaped for a LaTeX reader with PipeLatex. A table broken across
+            // pages is one table from its parts, each its anchor line then its cell lines. GFM
+            // cells are inline Markdown, cut back out of `out` after the writer appends them.
             parts.clear();
             partFirst.clear();
             bool html = false;
@@ -1731,7 +1731,8 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
                 WriteHtmlTable(parts, out, settings.tables == TableFormat::Html);
                 break;
             }
-            WriteGfmTable(parts, out, settings.tables != TableFormat::Pipe);
+            WriteGfmTable(parts, out, settings.tables != TableFormat::Pipe && settings.tables != TableFormat::PipeLatex,
+                          settings.tables == TableFormat::PipeLatex);
             break;
         }
         case BlockKind::Image: {

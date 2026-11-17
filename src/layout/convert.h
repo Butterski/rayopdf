@@ -37,8 +37,11 @@ enum class Furniture : uint8_t { Drop, Keep };
 
 // Tables as GFM pipe tables unless a span needs HTML (the default), every table as HTML, or every
 // table as a GFM pipe table, a spanning cell's text in its first row and column only (the cells it
-// covers empty; header rows after the first written as body rows).
-enum class TableFormat : uint8_t { Auto, Html, Pipe };
+// covers empty; header rows after the first written as body rows). PipeLatex writes them as Pipe
+// does, the cells' text outside `$…$` and code spans escaped for a LaTeX reader (`%`, `#` and `&`
+// written as the text `\%`, `\#`, `\&`): READoc's convention, whose evaluator reads table cells
+// through LaTeX, where a bare `%` comments out the rest of the row.
+enum class TableFormat : uint8_t { Auto, Html, Pipe, PipeLatex };
 
 // Quotation marks as printed (the default), or the typographic ones (‘ ’ ‚ ‛ “ ” „ ‟) of the
 // pages' text as the ASCII ' and ". Dashes and other punctuation stay: ASCII has no dash apart

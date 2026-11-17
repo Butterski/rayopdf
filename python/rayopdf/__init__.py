@@ -154,7 +154,7 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
     format: markdown, json, chunks or inspect; math: unicode or latex; furniture: drop or keep;
-    tables: auto, html or pipe; quotes: keep or ascii; small_caps: lower or keep (headings in small
+    tables: auto, html, pipe or pipe-latex; quotes: keep or ascii; small_caps: lower or keep (headings in small
     capitals in the source's case or as printed); ocr: off, auto or force (the rayopdf-ocr add-on,
     found as the command line finds it, or `ocr_addon`); images: a folder the image files are
     written to, linked as FOLDER/NAME (default: no images); pages: 3, "2-5", (2, None); workers:

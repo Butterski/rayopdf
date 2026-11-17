@@ -229,7 +229,8 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   --tables=html --quotes=ascii` (quotes from 2026-11-14), olmOCR `--plain --small-caps=keep` and
   its `arxiv_math` (the `olmocr-math` suite) `--math=latex --plain --small-caps=keep` (`--plain`
   from 2026-11-16, `--small-caps=keep` from 2026-11-17), READoc
-  `--math=latex --tables=pipe` (its evaluator reads pipe tables only), the others the default.
+  `--math=latex --tables=pipe-latex` (its evaluator reads pipe tables only, their cells through
+  LaTeX; `--tables=pipe` until 2026-11-17), the others the default.
   Version records show the default row beside the declared row where they differ; the quality
   gate measures the declared rows only, and no gated metric may fall more than 0.0001 below its
   best (AGENTS.md rule 7).
@@ -268,7 +269,10 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   pretty-printers set them, odl's ground truth among them (2026-11-14), and `--tables=pipe` every
   table as GFM (2026-11-14; READoc's evaluator reads pipe tables only), a spanning cell's text in
   its first row and column, the cells it covers empty and header rows after the first as body
-  rows (`--tables=auto`, the default: GFM unless a span needs HTML, written without the spaces);
+  rows, `--tables=pipe-latex` (2026-11-17) those pipe tables with the cells' `%`, `#` and `&`
+  outside `$…$` and code spans written as the text `\%`, `\#`, `\&` (READoc's evaluator turns
+  the cells' text into LaTeX as it is, where a bare `%` comments out the rest of the row and pandoc
+  reads no table); `--tables=auto`, the default, writes GFM unless a span needs HTML, without the spaces;
   `--furniture=keep` removes no running header, footer, page number or margin line and writes
   them in paragraphs apart from the text, never as headings, the text read as if they were gone
   and they around it: lines turned sideways and those in a page's upper half before the page's
@@ -322,7 +326,7 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
         [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--page-markers] [--front-matter]
-        [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe]
+        [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe|pipe-latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
 rayopdf --serve --json [options] [--workers=N]
@@ -351,11 +355,12 @@ JSON object a line;
 
 - **`--format=json`**, **`--format=chunks`** (with **`--chunk-chars=N`**, 256 to 1,000,000,
   else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
-  **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--furniture=keep`**,
-  **`--quotes=ascii`** and **`--small-caps=keep`** choose what is written (D6): the JSON document,
-  chunks for retrieval or the layout inspector's HTML instead of Markdown, page markers in the
-  Markdown, front matter before it, text without inline markup, every table as HTML or every table
-  as a pipe table, page furniture kept, ASCII quotation marks, small-capitals headings as printed.
+  **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--tables=pipe-latex`**,
+  **`--furniture=keep`**, **`--quotes=ascii`** and **`--small-caps=keep`** choose what is
+  written (D6): the JSON document, chunks for retrieval or the layout inspector's HTML instead of
+  Markdown, page markers in the Markdown, front matter before it, text without inline markup,
+  every table as HTML or every table as a pipe table (its cells escaped for a LaTeX reader with
+  `pipe-latex`), page furniture kept, ASCII quotation marks, small-capitals headings as printed.
   A RayoMD payload is not used with any of them except
   `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,

@@ -4989,21 +4989,55 @@ bool TableNeedsHtml(const PageData& page, const Table& table) {
     return bodySpan && table.headerRows >= 2;
 }
 
-void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans) {
+void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans, bool latexCells) {
     if (parts.empty()) return;
     const uint16_t cols = parts[0].table->cols;
     bool first = true;
     // A cell's text, a pipe escaped and a line break a space: most cells hold neither and go in
-    // whole, the others a run at a time.
+    // whole, the others a run at a time. With `latexCells`, `%`, `#` and `&` outside `$…$` and
+    // code spans (a backslash escape of one of them included) get a backslash as text before them.
+    const auto latexSpecial = [](char ch) { return ch == '%' || ch == '#' || ch == '&'; };
     const auto put = [&](std::string_view text) {
         if (text.empty()) return;
-        if (!std::memchr(text.data(), '|', text.size()) && !std::memchr(text.data(), '\n', text.size())) {
+        if (!std::memchr(text.data(), '|', text.size()) && !std::memchr(text.data(), '\n', text.size()) &&
+            (!latexCells || std::none_of(text.begin(), text.end(), latexSpecial))) {
             out.append(text);
             return;
         }
         size_t from = 0;
+        bool math = false;
+        size_t code = 0;  // inside a code span: the length of its opening run of backticks
         for (size_t i = 0; i < text.size(); ++i) {
             const char ch = text[i];
+            if (latexCells) {
+                if (ch == '`') {
+                    size_t run = 1;
+                    while (i + run < text.size() && text[i + run] == '`') ++run;
+                    if (code == 0) code = run;
+                    else if (run == code) code = 0;
+                    i += run - 1;
+                    continue;
+                }
+                if (code > 0) {
+                    if (ch != '|' && ch != '\n') continue;
+                } else if (ch == '\\' && i + 1 < text.size() && text[i + 1] != '|' && text[i + 1] != '\n') {
+                    if (!math && latexSpecial(text[i + 1])) {
+                        out.append(text.data() + from, i - from);
+                        out += "\\\\";
+                        from = i;
+                    }
+                    ++i;  // the escaped character
+                    continue;
+                } else if (ch == '$') {
+                    math = !math;
+                    continue;
+                } else if (!math && latexSpecial(ch)) {
+                    out.append(text.data() + from, i - from);
+                    out += "\\\\";
+                    from = i;
+                    continue;
+                }
+            }
             if (ch != '|' && ch != '\n') continue;
             out.append(text.data() + from, i - from);
             if (ch == '|') out += "\\|";

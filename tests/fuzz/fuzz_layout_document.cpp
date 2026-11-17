@@ -5,8 +5,8 @@
 // that each input costs two conversions: JSON (--format=json), which must be one object and a line
 // break; chunks (--format=chunks with the smallest chunk size), every line one object; the
 // inspector (--format=inspect), one HTML file without a script; Markdown with the output options
-// --plain, --tables=html or --tables=pipe (by the size again), --furniture=keep, --quotes=ascii and
-// --small-caps=keep;
+// --plain, --tables=html, --tables=pipe or --tables=pipe-latex (by the size again),
+// --furniture=keep, --quotes=ascii and --small-caps=keep;
 // or Markdown with a feature sink (`rayopdf --features`) counting the edge rows and table gaps,
 // which must be the same Markdown.
 // Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
@@ -52,7 +52,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         break;
     case 3:
         options.plain = true;
-        options.tables = size % 10 == 3 ? RayoPdf::Layout::TableFormat::Html : RayoPdf::Layout::TableFormat::Pipe;
+        options.tables = size % 15 == 3   ? RayoPdf::Layout::TableFormat::Html
+                         : size % 15 == 8 ? RayoPdf::Layout::TableFormat::Pipe
+                                          : RayoPdf::Layout::TableFormat::PipeLatex;
         options.furniture = RayoPdf::Layout::Furniture::Keep;
         options.quotes = RayoPdf::Layout::Quotes::Ascii;
         options.smallCaps = RayoPdf::Layout::SmallCaps::Keep;

@@ -218,6 +218,54 @@ void TestPipeTables() {
     RAYOPDF_CHECK(!Contains(pipe, "<t") && Run(TablePage, settings) == Run(TablePage, OutputSettings()), 2024);
 }
 
+// A ruled table whose cells hold `%`, `#` and `&`.
+std::vector<PageData> LatexCellPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    const float xs[] = {72, 200, 320};
+    const float ys[] = {720, 700, 680, 660};
+    for (float y : ys) HLine(page, xs[0], xs[2], y);
+    for (float x : xs) VLine(page, x, ys[3], ys[0]);
+    const char* const cells[3][2] = {{"Item", "R&D #2"}, {"Alpha", "12%"}, {"Beta", "34"}};
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 2; ++c) AddText(page, cells[r][c], xs[c] + 6, ys[r] - 14, 10);
+    return pages;
+}
+
+// A ruled table whose second column is code, set in a monospace font, holding `%`.
+std::vector<PageData> LatexCodeCellPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    const float xs[] = {72, 200, 320};
+    const float ys[] = {720, 700, 680};
+    for (float y : ys) HLine(page, xs[0], xs[2], y);
+    for (float x : xs) VLine(page, x, ys[2], ys[0]);
+    AddText(page, "Test", xs[0] + 6, ys[0] - 14, 10);
+    AddText(page, "Code", xs[1] + 6, ys[0] - 14, 10);
+    AddText(page, "Odd 5%", xs[0] + 6, ys[1] - 14, 10);
+    AddText(page, "x % 2", xs[1] + 6, ys[1] - 14, 10, kGlyphMonospace);
+    return pages;
+}
+
+// --tables=pipe-latex: the pipe table of --tables=pipe, its cells' `%`, `#` and `&` written as the
+// text `\%`, `\#`, `\&` (Markdown `\\%`) for a reader that takes cells through LaTeX; --tables=pipe
+// writes them as printed. A code span's text stays as printed: Markdown takes it literally.
+void TestPipeLatexTables() {
+    OutputSettings settings;
+    settings.tables = TableFormat::Pipe;
+    const std::string pipe = Run(LatexCellPage, settings);
+    settings.tables = TableFormat::PipeLatex;
+    const std::string latex = Run(LatexCellPage, settings);
+    Show("pipe", pipe);
+    Show("pipe-latex", latex);
+    RAYOPDF_CHECK(Contains(pipe, "| Item | R&D #2 |\n| --- | --- |\n| Alpha | 12% |"), 2027);
+    RAYOPDF_CHECK(Contains(latex, "| Item | R\\\\&D \\\\#2 |\n| --- | --- |\n| Alpha | 12\\\\% |\n| Beta | 34 |"), 2028);
+    RAYOPDF_CHECK(Run(TablePage, settings) == Run(TablePage, OutputSettings()), 2029);
+    const std::string code = Run(LatexCodeCellPage, settings);
+    Show("pipe-latex code", code);
+    RAYOPDF_CHECK(Contains(code, "| Odd 5\\\\% | `x % 2` |"), 2034);
+}
+
 // Three pages under one running header and over page numbers.
 std::vector<PageData> RunningPages() {
     std::vector<PageData> pages;
@@ -417,7 +465,7 @@ void TestExactFormat() {
     Convert(*document, options, markdown, report);
     RAYOPDF_CHECK(report.exact == ExactUse::Used, 2008);
     bool format = true;
-    for (int variant = 0; variant < 6; ++variant) {
+    for (int variant = 0; variant < 7; ++variant) {
         ConvertOptions changed = options;
         if (variant == 0) changed.plain = true;
         if (variant == 1) changed.tables = TableFormat::Html;
@@ -425,6 +473,7 @@ void TestExactFormat() {
         if (variant == 3) changed.quotes = Quotes::Ascii;
         if (variant == 4) changed.tables = TableFormat::Pipe;
         if (variant == 5) changed.smallCaps = SmallCaps::Keep;
+        if (variant == 6) changed.tables = TableFormat::PipeLatex;
         Convert(*document, changed, markdown, report);
         format = format && report.exact == ExactUse::Format && Contains(markdown, "Revenue grew");
     }
@@ -627,6 +676,7 @@ int main() {
     TestPlain();
     TestHtmlTables();
     TestPipeTables();
+    TestPipeLatexTables();
     TestFurniture();
     TestKeptFurnitureText();
     TestKeptFurnitureOrder();

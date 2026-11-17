@@ -8,8 +8,8 @@ export interface ConvertOptions {
   math?: "unicode" | "latex";
   /** Running headers, footers and page numbers: left out (default) or kept. */
   furniture?: "drop" | "keep";
-  /** Pipe tables unless a span needs HTML (default), every table as HTML, or every table as a pipe table (spans flattened). */
-  tables?: "auto" | "html" | "pipe";
+  /** Pipe tables unless a span needs HTML (default), every table as HTML, every table as a pipe table (spans flattened), or as one whose cells' % # & outside math are escaped for a LaTeX reader (READoc's convention). */
+  tables?: "auto" | "html" | "pipe" | "pipe-latex";
   /** Quotation marks as printed (default), or the typographic ones (curly, low) as ' and ". */
   quotes?: "keep" | "ascii";
   /** Headings set in small capitals in the source's case (default), or as printed, in capitals. */

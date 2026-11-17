@@ -374,9 +374,10 @@ Kendall tau and Spearman, block and token level); the GitHub subset has no formu
 READoc normalises headings, formulas and tables and strips links and images before scoring. A
 pipe table with `%` or `&` in a cell counts as no table: the evaluator turns the Markdown into
 HTML and then into LaTeX without escaping those characters, so pandoc reads no table back (on
-readoc-dev arXiv 31 of RayoPDF's 258 tables in 19 documents in 0.4.0, and 33 of docling's in 20).
-It hits every tool alike and is left as it is: only a doubled backslash (`\\%`) gets through,
-which no Markdown reader shows as `%`.
+readoc-dev arXiv 31 of RayoPDF's 258 tables in 19 documents in 0.4.0, and 33 of docling's in 20;
+a `#` breaks it too). Only a doubled backslash (`\\%`, the text `\%`) gets through, which a
+Markdown reader shows with its backslash: `--tables=pipe-latex` writes cells so, READoc's
+declared option since 2026-11-17.
 
 `readoc-dev` and `readoc-dev2` are scored by `eval/scorer/readoc_docs.py` in the same image. It
 imports the evaluator from the clone (nothing of it is copied): `file_evaluate` scores each
@@ -588,7 +589,7 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |synthetic|none (the default)|
 |olmocr|`--plain --small-caps=keep` (`--plain` from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in; `--small-caps=keep` from 2026-11-17: they compare small-capitals titles as printed)|
 |olmocr-math|`--math=latex --plain --small-caps=keep`|
-|readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe`|
+|readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe-latex` (`--tables=pipe` until 2026-11-17: the evaluator reads the cells through LaTeX, where a bare `%` ends the row)|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
 |omni-dev, omni-val|`--format=json --images=none --math=latex` (the adapter builds the HTML and the layout blocks from the blocks; the math tests compare LaTeX)|
 

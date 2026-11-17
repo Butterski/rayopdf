@@ -259,7 +259,8 @@ rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B
                                 [--math=unicode|latex] [--workers=N]
                                 [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
                                 [--page-markers] [--front-matter]
-                                [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe]
+                                [--furniture=drop|keep] [--plain]
+                                [--tables=auto|html|pipe|pipe-latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
                                      [--workers=N] [--images=none] [--password=PW] ...
 rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -373,6 +374,11 @@ output faithful to the page.
 - `--tables=pipe` writes every table as a pipe table, for readers that take no HTML: a cell
   spanning rows or columns is written in its first row and column, the cells it covers left
   empty, and header rows after the first become body rows.
+- `--tables=pipe-latex` writes the pipe tables of `--tables=pipe` for a reader that takes table
+  cells through LaTeX, READoc's convention: its evaluator turns each cell's text into LaTeX as it
+  is, where a bare `%` comments out the rest of the row and `#` and `&` break it, so the cells'
+  `%`, `#` and `&` outside `$…$` math and code spans are written as the text `\%`, `\#`, `\&`
+  (in the Markdown `\\%`), which a Markdown reader shows with the backslash.
 - `--furniture=keep` keeps running headers, footers and page numbers as text: those in the upper
   half of a page before its text, the others after it (and after the footnotes printed above
   them), in paragraphs apart from the text and never as headings; by default they are left out. A
@@ -401,7 +407,7 @@ link targets beyond that allowance. The profile carries no images: the source's 
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
 with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html`, `--tables=pipe`, `--furniture=keep`, `--quotes=ascii` or `--small-caps=keep`,
+`--tables=html`, `--tables=pipe`, `--tables=pipe-latex`, `--furniture=keep`, `--quotes=ascii` or `--small-caps=keep`,
 which need the pages' layout), or why the payload was rejected and the pages converted instead:
 `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts
 the pages.
@@ -555,8 +561,8 @@ under the folders it is given with `--root`.
   yet; Arabic and Kannada are rough.
 - **Encrypted PDFs** need the password (`--password`); certificate encryption is not supported.
 - **Tables with cells spanning rows** (or columns below the header) are written as HTML tables
-  inside the Markdown, everything else as GFM; `--tables=pipe` writes those as GFM too, a
-  spanning cell's text in its first cell.
+  inside the Markdown, everything else as GFM; `--tables=pipe` (and `--tables=pipe-latex`) writes
+  those as GFM too, a spanning cell's text in its first cell.
 - **Memory** grows with the largest JPEG or JPEG 2000 image of a document when images are
   written, and with the input file, which is mapped.
 

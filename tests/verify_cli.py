@@ -371,6 +371,7 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
     r = c.run("--convert", pages, "-", "--format=json", "--page-markers", "--front-matter")
     c.check("json ignores markers and front matter", r.returncode == 0 and r.stdout == (work / "pages.json").read_bytes())
     for flag in ("--furniture=keep", "--furniture=drop", "--plain", "--tables=html", "--tables=auto", "--tables=pipe",
+                 "--tables=pipe-latex",
                  "--quotes=ascii", "--quotes=keep", "--small-caps=keep", "--small-caps=lower"):
         r = c.run("--convert", pages, "-", flag)
         c.check(f"output option {flag}", r.returncode == 0 and b"page" in r.stdout.lower(), repr(r.stderr[:200]))
