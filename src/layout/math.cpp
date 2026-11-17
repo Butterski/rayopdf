@@ -662,6 +662,13 @@ bool MayJoin(uint32_t a, uint32_t b) {
            a == 0x21D0 || a == 0x21A6 || a == 0x21AA;
 }
 
+// Whether `cp` is one of the symbols every pair JoinMathSymbols joins, and Row's \mapsto and
+// \longmapsto, holds: a negation slash, a slash, or the arrow →, ←, ⇒ or ⇐ (keep in step with
+// JoinMathSymbols). A row without one joins nothing.
+bool JoinPart(uint32_t cp) {
+    return cp == 0x338 || cp == '/' || cp == 0x2192 || cp == 0x2190 || cp == 0x21D2 || cp == 0x21D0;
+}
+
 void AppendToken(std::string& out, std::string_view token) {
     if (token.empty()) return;
     // A command name ending in a letter runs into a following letter: a space between (only a
@@ -1472,7 +1479,23 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // Sorted by proxy: the same comparisons on the same order give std::sort's same permutation,
     // without moving the items' strings at each step.
     sortKeys_.clear();
-    for (size_t i = 0; i < items.size(); ++i) sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
+    // What the searches below for \cong, extensible arrows, dots and joined symbols need the row
+    // to hold, counted on the way: a ∼ and an =; a bar and an arrowhead (→ after bars, ← before
+    // them); three dots; a JoinPart. Nothing below gives an item another atom, so a search the
+    // row cannot serve finds nothing.
+    bool tilde = false, equals = false, arrowhead = false, join = false;
+    size_t barCount = 0, dotCount = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+        sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
+        if (items[i].atom < 0) continue;
+        const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
+        tilde = tilde || cp == 0x223C;
+        equals = equals || cp == '=';
+        arrowhead = arrowhead || cp == 0x2192 || cp == 0x2190;
+        barCount += cp == '-' || cp == 0x2212;
+        dotCount += !DotsOf(cp).empty();
+        join = join || JoinPart(cp);
+    }
     std::sort(sortKeys_.begin(), sortKeys_.end(), [](const SortKey& a, const SortKey& b) {
         return a.u0 != b.u0 ? a.u0 < b.u0 : a.v > b.v;
     });
@@ -1487,7 +1510,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     const float em = EmOf(items);
     // \cong: TeX stacks a ∼ over an = (centred on it, about as wide, raised up to 0.6 em), one
     // relation.
-    for (size_t i = 0; i < items.size(); ++i) {
+    for (size_t i = 0; tilde && equals && i < items.size(); ++i) {
         if (items[i].atom < 0 || atoms_[static_cast<uint32_t>(items[i].atom)].cp != 0x223C) continue;
         const float width = items[i].u1 - items[i].u0, centre = (items[i].u0 + items[i].u1) / 2;
         for (size_t k = 0; k < items.size(); ++k) {
@@ -1668,7 +1691,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // \xrightarrow draws \relbar's overlapping up to its \rightarrow), with a smaller label
     // centred over it and or under it: \xrightarrow[below]{above}, \xleftarrow. Two bars or more
     // without a label are a long arrow.
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; arrowhead && barCount != 0 && i < n; ++i) {
         if (role[i] != 0 || items[i].atom < 0 || !words[i].empty()) continue;
         const auto cp = [&](size_t k) { return atoms_[static_cast<uint32_t>(items[k].atom)].cp; };
         const auto isBar = [&](size_t k) { return cp(k) == '-' || cp(k) == 0x2212; };
@@ -1811,7 +1834,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         i = end - 1;
     }
     // Three dots in a row, close together on one baseline: \ldots or \cdots.
-    for (size_t i = 0; i + 2 < n; ++i) {
+    for (size_t i = 0; dotCount >= 3 && i + 2 < n; ++i) {
         if (role[i] != 0 || wordPart[i] || items[i].atom < 0) continue;
         const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
         const std::string_view dots = DotsOf(cp);
@@ -1838,7 +1861,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // width at the start of an arrow, drawn before or after it) makes \mapsto, and with the bar of
     // a long arrow \longmapsto.
     const auto cpOf = [&](size_t k) { return atoms_[static_cast<uint32_t>(items[k].atom)].cp; };
-    for (size_t i = 0; i + 1 < n; ++i) {
+    for (size_t i = 0; join && i + 1 < n; ++i) {
         if (role[i] != 0 || wordPart[i] || items[i].atom < 0 || !words[i].empty()) continue;
         size_t k = i + 1;
         while (k < n && role[k] == 3) ++k;
@@ -2658,10 +2681,12 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
         // Letters of the word, and those on its baseline: a letter alone there ("x", "d" of "dᵢ")
         // is a variable when italic.
         uint32_t letters = 0, baseLetters = 0;
+        bool scripted = false;  // a raised or lowered glyph in the word
         for (uint32_t i = b; i < e; ++i) {
             const uint32_t letter = IsLetterCp(FirstCp(glyphs[i].text)) ? 1 : 0;
             letters += letter;
             baseLetters += glyphs[i].script ? 0 : letter;
+            scripted = scripted || glyphs[i].script;
         }
         // The word's glyphs of the Greek script, counted when a glyph first asks (UINT32_MAX before).
         uint32_t greek = UINT32_MAX;
@@ -2688,7 +2713,7 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
         // word's start or after a bracket or another script, is a variable with its scripts (math
         // set in Times Italic: "S_n", "I^-_n", "X^{work}_n", "u^L_nX^{Work}_n"), not the end of an
         // italic word with a mark; the scripts go with it.
-        for (uint32_t i = b; i + 1 < e; ++i) {
+        for (uint32_t i = b; scripted && i + 1 < e; ++i) {
             const InlineGlyph& g = glyphs[i];
             if (g.script || g.note || !glyphs[i + 1].script || glyphs[i + 1].note || !g.glyph || cls[i] == kClassStrong ||
                 !(g.glyph->flags & kGlyphItalic) || g.font != static_cast<uint8_t>(MathFont::None) || !IsAsciiLetter(FirstCp(g.text)))
