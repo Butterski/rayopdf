@@ -176,6 +176,16 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   olmOCR table tests 632 → 636 of 1020; the HTML pandoc's CommonMark reader renders is unchanged
   on odl, synthetic, olmOCR tables and READoc-dev arXiv; under its GFM reader only three
   documents differ, each a backslash the old escape left inside a `$$` span or an autolink).
+- Emphasis and strike-through delimiters flank as CommonMark reads them (0.31 §6.2): every run
+  the writer opens is left-flanking and every run it closes right-flanking, a dollar in LaTeX
+  mode and a character it cannot class taken both ways. A punctuation mark or a space at a
+  style's edge beside text outside the style is written outside it (`**3**:309`,
+  `t-**exactness**`, `**R**-*module*`), a script in tags or a code span at the edge leaves the
+  style (`**x**<sup>2</sup>y`), and any other run that would not flank is written without its
+  style; a delimiter is never escaped while its style is written (decided 2026-11-17: the `*`
+  and `~~` a CommonMark reader showed as text, against `--plain`, over default output 0 on
+  odl, synthetic, olmOCR, READoc-dev and dev2 and OmniParseBench-dev, from 4, 4, 702, 384,
+  1,550 and 670).
 - Footnotes are `[^n]`. A note's definition follows the block that references it; notes printed
   on the last page (a one-page document's, endnotes) stay at the end. GFM renders either the same
   (decided 2026-11-11: READoc-dev arXiv `seg_kt` with `--math=latex` 0.9713 → 0.9839, `text_eds`

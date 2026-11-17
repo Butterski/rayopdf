@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
-// plain text without inline markup, every table as HTML or as a pipe table, page furniture kept,
-// ASCII quotes, small-capitals headings as printed, the exact recovery they turn off, chunks for
-// retrieval (WriteChunks) and the layout inspector (WriteInspect). Exit codes 2000-2049.
+// plain text without inline markup, emphasis delimiters a CommonMark reader takes as such, every
+// table as HTML or as a pipe table, page furniture kept, ASCII quotes, small-capitals headings as
+// printed, the exact recovery they turn off, chunks for retrieval (WriteChunks) and the layout
+// inspector (WriteInspect). Exit codes 2000-2049.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -13,9 +14,11 @@
 #include "pdf/document.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -140,6 +143,143 @@ void TestPlain() {
                       Contains(plain, "Plain words with strong and slanted text on the website of the 1st edition.1"),
                   2000);
     RAYOPDF_CHECK(Contains(plain, "\n\n1 Smith, Collected Essays, 2020.\n"), 2001);
+}
+
+// The `*` and `~` of one line of inline Markdown that a CommonMark reader leaves as text: delimiter
+// runs by the flanking rules (0.31 §6.2), paired by its process-emphasis procedure (the rule of
+// three included), strike-through as GFM pairs it (runs of two). A backslash escape is text. Byte
+// classes: ASCII as CommonMark's, U+00A0 whitespace, any other byte a letter.
+int StrayDelimiters(std::string_view s) {
+    struct Run {
+        char c;
+        bool open, close;
+        int length, left;
+    };
+    std::vector<Run> runs;
+    // 0 whitespace, 1 punctuation, 2 other.
+    const auto kind = [&](size_t at, bool before) {
+        if (before ? at == 0 : at >= s.size()) return 0;
+        if (before && at >= 2 && s.substr(at - 2, 2) == "\xC2\xA0") return 0;
+        if (!before && s.substr(at, 2) == "\xC2\xA0") return 0;
+        const unsigned char c = static_cast<unsigned char>(s[before ? at - 1 : at]);
+        if (c == ' ' || c == '\n') return 0;
+        if (c >= 0x80 || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) return 2;
+        return 1;
+    };
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == '\\' && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) < 0x80 && kind(i + 1, false) == 1) {
+            i += 2;
+            continue;
+        }
+        if (s[i] != '*' && s[i] != '~') {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < s.size() && s[j] == s[i]) ++j;
+        const int b = kind(i, true), a = kind(j, false);
+        const int length = static_cast<int>(j - i);
+        runs.push_back(Run{s[i], a != 0 && (a != 1 || b != 2), b != 0 && (b != 1 || a != 2), length, length});
+        i = j;
+    }
+    std::vector<size_t> stack;
+    for (size_t r = 0; r < runs.size(); ++r) stack.push_back(r);
+    for (size_t pos = 0; pos < stack.size();) {
+        Run& closer = runs[stack[pos]];
+        if (!closer.close || closer.left == 0) {
+            ++pos;
+            continue;
+        }
+        size_t found = SIZE_MAX;
+        for (size_t q = pos; q-- > 0;) {
+            const Run& opener = runs[stack[q]];
+            if (opener.c != closer.c || !opener.open || opener.left == 0) continue;
+            if (closer.c == '~') {
+                if (opener.length != closer.length || opener.length > 2) continue;
+            } else if ((opener.close || closer.open) && (opener.length + closer.length) % 3 == 0 &&
+                       !(opener.length % 3 == 0 && closer.length % 3 == 0)) {
+                continue;
+            }
+            found = q;
+            break;
+        }
+        if (found == SIZE_MAX) {
+            if (closer.open)
+                ++pos;
+            else
+                stack.erase(stack.begin() + static_cast<std::ptrdiff_t>(pos));
+            continue;
+        }
+        Run& opener = runs[stack[found]];
+        const int use = closer.c == '~' ? opener.length : opener.left >= 2 && closer.left >= 2 ? 2 : 1;
+        opener.left -= use;
+        closer.left -= use;
+        stack.erase(stack.begin() + static_cast<std::ptrdiff_t>(found) + 1, stack.begin() + static_cast<std::ptrdiff_t>(pos));
+        pos = found + 1;
+        if (opener.left == 0) stack.erase(stack.begin() + static_cast<std::ptrdiff_t>(--pos));
+        if (closer.left == 0) stack.erase(stack.begin() + static_cast<std::ptrdiff_t>(pos));
+    }
+    int left = 0;
+    for (const Run& run : runs) left += run.left;
+    return left;
+}
+
+// Styled runs whose delimiters would not flank as the source styles them: a bold volume ending in
+// a colon before the page numbers, a bold run opening with a hyphen inside a word, a bold letter
+// before an italic run opening with a hyphen, a bold letter and its bold superscript before an
+// upright letter, an italic word with a no-break space; italic variables with subscripts between
+// upright brackets and commas; and a table cell with the bold volume.
+std::vector<PageData> FlankingPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    PageData& page = pages[0];
+    struct Piece {
+        const char* text;
+        uint16_t flags;
+        float rise;
+    };
+    const auto line = [&](float x, float y, std::initializer_list<Piece> pieces) {
+        for (const Piece& p : pieces) x = AddText(page, p.text, x, y + p.rise, p.rise != 0 ? 6.0f : 10.0f, p.flags);
+    };
+    line(72, 740, {{"Structural basis of fusion. Mol. Cell ", 0, 0}, {"3:", kGlyphBold, 0}, {"309-319.", 0, 0}});
+    line(72, 700, {{"We prove a perverse t", 0, 0}, {"-exactness", kGlyphBold, 0}, {" result for Hecke operators.", 0, 0}});
+    line(72, 660, {{"Let M be an ", 0, 0}, {"R", kGlyphBold, 0}, {"-module", kGlyphItalic, 0}, {" of finite length.", 0, 0}});
+    line(72, 620, {{"The area is ", 0, 0}, {"x", kGlyphBold, 0}, {"2", kGlyphBold, 4}, {"y in square units.", 0, 0}});
+    line(72, 580, {{"The proof is ", 0, 0}, {"done\xC2\xA0", kGlyphItalic, 0}});
+    line(72, 540, {{"Each block has a box (", 0, 0}, {"x", kGlyphItalic, 0}, {"0", 0, -2}, {",", 0, 0}, {"y", kGlyphItalic, 0},
+                   {"0", 0, -2}, {",", 0, 0}, {"x", kGlyphItalic, 0}, {"1", 0, -2}, {",", 0, 0}, {"y", kGlyphItalic, 0},
+                   {"1", 0, -2}, {") on the page.", 0, 0}});
+    const float xs[] = {72, 200, 320};
+    const float ys[] = {500, 480, 460};
+    for (float y : ys) HLine(page, xs[0], xs[2], y);
+    for (float x : xs) VLine(page, x, ys[2], ys[0]);
+    line(xs[0] + 6, ys[0] - 14, {{"Journal", 0, 0}});
+    line(xs[1] + 6, ys[0] - 14, {{"Pages", 0, 0}});
+    line(xs[0] + 6, ys[1] - 14, {{"Mol. Cell", 0, 0}});
+    line(xs[1] + 6, ys[1] - 14, {{"3:", kGlyphBold, 0}, {"309", 0, 0}});
+    AddText(page, "Closing text after the table.", 72, 420, 10);
+    return pages;
+}
+
+// Every delimiter the writer opens is left-flanking and every one it closes right-flanking: a
+// punctuation mark or space at a style's edge beside text outside it stays out of the style, a
+// script in tags too; a CommonMark reader shows no delimiter as text.
+void TestFlanking() {
+    const std::string md = Run(FlankingPage, OutputSettings());
+    Show("flanking", md);
+    RAYOPDF_CHECK(Contains(md, "Mol. Cell **3**:309-319.") && Contains(md, "perverse t-**exactness** result") &&
+                      Contains(md, "an **R**-*module* of") && Contains(md, "is **x**<sup>2</sup>y in") &&
+                      Contains(md, "is *done*"),
+                  2035);
+    int stray = 0;
+    for (size_t at = 0; at < md.size();) {
+        const size_t end = std::min(md.find('\n', at), md.size());
+        stray += StrayDelimiters(std::string_view(md).substr(at, end - at));
+        at = end + 1;
+    }
+    RAYOPDF_CHECK(stray == 0, 2036);
+    RAYOPDF_CHECK(Contains(md, "| Mol. Cell | **3**:309 |"), 2037);
+    // Italic letters one by one between brackets and scripts are math, no emphasis.
+    RAYOPDF_CHECK(Contains(md, "a box (x₀,y₀,x₁,y₁) on"), 2038);
 }
 
 // A ruled table of three rows and two columns, no spans.
@@ -674,6 +814,7 @@ void TestInspect() {
 
 int main() {
     TestPlain();
+    TestFlanking();
     TestHtmlTables();
     TestPipeTables();
     TestPipeLatexTables();

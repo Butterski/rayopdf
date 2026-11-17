@@ -3,6 +3,7 @@
 
 #include "common/batch.h"
 #include "common/minmax.h"
+#include "common/per_thread.h"
 #include "common/utf8.h"
 #include "layout/lines.h"
 #include "layout/tables.h"
@@ -52,6 +53,20 @@ struct Word {
     uint32_t linkTrim = 0;          // glyphs ending the word that follow its link
 };
 
+// A bold, italic or strike-through delimiter SetStyle wrote: where in out_, the glyph it opens at
+// or closes after, its style, whether it opens.
+struct Delimiter {
+    size_t at;
+    uint32_t glyph;
+    uint8_t style;
+    bool open;
+};
+
+// The delimiters of the block being written, kept by the thread (no allocation per document).
+struct DelimiterScratch {
+    std::vector<Delimiter> list;
+};
+
 // A run of `*` or `_` AppendEscaped wrote escaped: from out_[at], `length` characters (2 x length
 // bytes).
 struct EscapedRun {
@@ -70,7 +85,7 @@ RAYOPDF_HOT_INLINE uint32_t FirstOf(std::string_view t) {
 
 // A letter or digit: ASCII ones and every code point from U+00C0 up outside the symbol,
 // punctuation, private-use and fullwidth-punctuation blocks ("…" and "—" are punctuation).
-bool IsLetterOrDigit(uint32_t cp) {
+RAYOPDF_HOT_INLINE bool IsLetterOrDigit(uint32_t cp) {
     if (cp < 0x80) return IsAsciiAlnum(static_cast<char>(cp));
     return cp >= 0xC0 && cp != 0xD7 && cp != 0xF7 && !(cp >= 0x2000 && cp <= 0x2BFF) && !(cp >= 0x3000 && cp <= 0x303F) &&
            !(cp >= 0xE000 && cp <= 0xF8FF) && !(cp >= 0xFE00 && cp <= 0xFE0F) && !(cp >= 0xFF00 && cp <= 0xFF20) &&
@@ -160,6 +175,9 @@ public:
 
     // The block's text as one Markdown line; `styles` writes emphasis, code spans and links.
     void Inline(const Block& block, bool styles);
+    // Inline's words after StyleWords (and FindFormulas): runs of one style and script, links,
+    // formulas, note references and images appended to out_, every style closed at the end.
+    void WriteWords(const Block& block);
     // A heading's text glyph by glyph, without styles, as one Markdown line: a heading in small
     // capitals (Block::smallCaps) in the source's case, its small capitals written as lower-case
     // letters (as printed with SmallCaps::Keep); a label run in with its paragraph (Block::number),
@@ -189,8 +207,21 @@ private:
                        const Line& next, uint32_t from);
     void StyleWords(bool styles);
     // Opens and closes delimiters so that exactly the styles `target` are open, nested properly;
-    // `at` is the glyph they apply from (styles that run longer open first, outside).
+    // `at` is the glyph they apply from, the one before it the last glyph a closing style had
+    // (styles that run longer open first, outside).
     void SetStyle(uint8_t target, uint32_t at);
+    // CommonMark reads a run of `*` or `~` as emphasis or strike-through only when it flanks the
+    // text the right way (0.31 §6.2): an opening run left-flanking, a closing one right-flanking.
+    // Checks the runs SetStyle wrote in out_ from `from` (the block's inline text); where one does
+    // not flank, takes the style off the glyphs at that edge of its run (TakeStyle). True when
+    // styles changed and the block is written again; from `attempt` kFlankAttempts on, every
+    // emphasis and strike-through of a block that still fails goes.
+    bool RepairFlanking(size_t from, int attempt);
+    // Takes style `bit` off the edge of its run that a delimiter opening at glyph `glyph` (`open`)
+    // or closing after it leaves unflanked: a punctuation mark or space alone ("**3:**309" becomes
+    // "**3**:309"), with the spaces inside the run beside it; a script in tags or a code span whole
+    // (their markup is punctuation); else the whole run. False when no glyph had the style.
+    bool TakeStyle(uint32_t glyph, uint8_t bit, bool open);
     void AppendEscaped(std::string_view text, bool blockStart);
     // Unescapes the runs AppendEscaped recorded in out_ from `from` (the block's inline text) that
     // CommonMark reads as no emphasis delimiter as they are: one that cannot open, and can close
@@ -267,6 +298,8 @@ private:
     uint8_t set_ = 0;                // the styles some glyph of the block is set in (CollectWords)
     uint8_t stack_[kStyleCount] = {};  // open styles, outermost first
     int depth_ = 0;
+    // The delimiters SetStyle wrote since the block's inline text began.
+    std::vector<Delimiter>& delimiters_ = PerThread<DelimiterScratch>().list;
     std::string plain_;
     std::string other_;
     std::vector<EscapedRun> runs_;   // the runs AppendEscaped wrote since the block's inline text began
@@ -750,7 +783,8 @@ void Writer::StyleWords(bool styles) {
     }
     // Math set in an italic text font is no emphasis: an italic word of one letter (but the
     // pronoun "I"), of up to three letters with a bracket ("T(n)") or a digit ("4ac", "πr²"), with
-    // an operator ("x+y", "z=x−iy") or with a raised or lowered letter ("P<sub>x</sub>"); a word
+    // an operator ("x+y", "z=x−iy") or with a raised or lowered letter ("P<sub>x</sub>"), or whose
+    // italic letters stand one by one between brackets and scripts ("(x₀,y₀,x₁,y₁)"); a word
     // mixing italic and upright letters with a bracket, an operator or a script ("O(nlogn)"), or
     // whose italic runs are a letter or two ("n-th", "cosθ"); an italic word of up to three
     // letters beside an operator or beside math ("ax + by"). Unless it belongs to a longer italic
@@ -789,7 +823,8 @@ void Writer::StyleWords(bool styles) {
         if (italic == 0) return kUpright;
         if (italic < letters) return brackets + ops > 0 || scripts > 0 || longest <= 2 ? kMath : kUpright;
         const bool small = letters <= 3;
-        const bool math = (letters == 1 && !pronoun) || ops > 0 || (small && (brackets + scripts + digits > 0));
+        const bool math = (letters == 1 && !pronoun) || ops > 0 || (small && (brackets + scripts + digits > 0)) ||
+                          (longest == 1 && brackets + scripts > 0);
         return math ? kMath : small ? uint8_t(kPhrase | kShort) : kPhrase;
     };
     if (set & kStyleItalic) {
@@ -900,6 +935,7 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
     }
     while (depth_ > keep) {
         const uint8_t bit = stack_[--depth_];
+        if (bit != kStyleCode) delimiters_.push_back(Delimiter{out_.size(), at > 0 ? at - 1 : 0, bit, false});
         out_.append(kDelimiters[bit == kStyleBold ? 0 : bit == kStyleItalic ? 1 : bit == kStyleCode ? 2 : 3]);
     }
     uint8_t missing = static_cast<uint8_t>(target & ~kept);
@@ -927,6 +963,7 @@ void Writer::SetStyle(uint8_t target, uint32_t at) {
                 if (best == 2 || end > bestEnd) best = s, bestEnd = end;
             }
         }
+        if (best != 2) delimiters_.push_back(Delimiter{out_.size(), at, static_cast<uint8_t>(1u << best), true});
         out_.append(kDelimiters[best]);
         stack_[depth_++] = static_cast<uint8_t>(1u << best);
         missing = static_cast<uint8_t>(missing & ~(1u << best));
@@ -1080,6 +1117,154 @@ void Writer::DropNeedlessEscapes(size_t from) {
     for (; r < n; ++r) out_[w++] = out_[r];
     out_.resize(w);
     runs_.clear();
+}
+
+// CommonMark's class of a character beside a delimiter run (0.31 §2.1) as bits: Unicode
+// whitespace (Zs, tab, line ends), Unicode punctuation (the P and S categories) or any other.
+// Both of the latter where this table does not tell them apart (letterlike symbols, enclosed
+// alphanumerics, bytes that are no UTF-8).
+constexpr uint8_t kFlankSpace = 1, kFlankPunct = 2, kFlankOther = 4;
+
+uint8_t FlankBits(uint32_t cp) {
+    if (cp < 0x80) {
+        if (cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\f') return kFlankSpace;
+        return cp < 0x20 || cp == 0x7F || IsAsciiAlnum(static_cast<char>(cp)) ? kFlankOther : kFlankPunct;
+    }
+    if (cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x202F || cp == 0x205F || cp == 0x3000)
+        return kFlankSpace;
+    if (cp < 0xC0)
+        return cp < 0xA1 || cp == 0xAA || cp == 0xAD || cp == 0xB2 || cp == 0xB3 || cp == 0xB5 || cp == 0xB9 || cp == 0xBA ||
+                       (cp >= 0xBC && cp <= 0xBE)
+                   ? kFlankOther
+                   : kFlankPunct;
+    if (cp < 0x2000) {
+        // Multiplication and division signs, the spacing modifiers that are symbols (˜ ˆ ˙), and
+        // the punctuation of Greek, Armenian, Hebrew, Arabic, Devanagari and Thai.
+        const bool punct = cp == 0xD7 || cp == 0xF7 || (cp >= 0x2C2 && cp <= 0x2C5) || (cp >= 0x2D2 && cp <= 0x2DF) ||
+                           (cp >= 0x2E5 && cp <= 0x2EB) || cp == 0x2ED || (cp >= 0x2EF && cp <= 0x2FF) || cp == 0x375 ||
+                           cp == 0x37E || cp == 0x384 || cp == 0x385 || cp == 0x387 || cp == 0x3F6 ||
+                           (cp >= 0x55A && cp <= 0x55F) || cp == 0x589 || cp == 0x58A || cp == 0x5BE || cp == 0x5C0 ||
+                           cp == 0x5C3 || cp == 0x5C6 || cp == 0x5F3 || cp == 0x5F4 || cp == 0x60C || cp == 0x60D ||
+                           cp == 0x61B || cp == 0x61E || cp == 0x61F || (cp >= 0x66A && cp <= 0x66D) || cp == 0x6D4 ||
+                           cp == 0x964 || cp == 0x965 || cp == 0x970 || cp == 0xE3F || cp == 0xE4F || cp == 0xE5A ||
+                           cp == 0xE5B;
+        return punct ? kFlankPunct : kFlankOther;
+    }
+    if (cp <= 0x2BFF) {
+        // Format characters and the line and paragraph separators are no punctuation; nor are the
+        // superscript and subscript digits and letters, or the number forms.
+        if (cp <= 0x200F || (cp >= 0x2028 && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F)) return kFlankOther;
+        if (cp <= 0x205E) return kFlankPunct;
+        if (cp <= 0x209F) return (cp >= 0x207A && cp <= 0x207E) || (cp >= 0x208A && cp <= 0x208E) ? kFlankPunct : kFlankOther;
+        if (cp <= 0x20CF) return kFlankPunct;
+        if (cp <= 0x20FF) return kFlankOther;
+        if (cp <= 0x214F || (cp >= 0x2460 && cp <= 0x24FF) || (cp >= 0x2776 && cp <= 0x2793)) return kFlankPunct | kFlankOther;
+        if (cp <= 0x218F) return kFlankOther;
+        return kFlankPunct;
+    }
+    if ((cp >= 0x2E00 && cp <= 0x2FFF) || (cp >= 0xFF1A && cp <= 0xFF20) || (cp >= 0xFF01 && cp <= 0xFF0F) ||
+        (cp >= 0xFF3B && cp <= 0xFF40) || (cp >= 0xFF5B && cp <= 0xFF65) || (cp >= 0xFFE0 && cp <= 0xFFEE) || cp == 0xFFFC ||
+        cp == 0xFFFD || (cp >= 0x1F000 && cp <= 0x1F0FF) || (cp >= 0x1F200 && cp <= 0x1FAFF))
+        return kFlankPunct;
+    if (cp >= 0x3001 && cp <= 0x303F)
+        return (cp >= 0x3005 && cp <= 0x3007) || (cp >= 0x3021 && cp <= 0x302F) || (cp >= 0x3031 && cp <= 0x3035) ||
+                       (cp >= 0x3038 && cp <= 0x303C)
+                   ? kFlankOther
+                   : kFlankPunct;
+    if (cp >= 0x1F100 && cp <= 0x1F1FF) return kFlankPunct | kFlankOther;
+    return kFlankOther;
+}
+
+// Whether a delimiter run between characters of the classes `before` and `after` (FlankBits) is
+// left-flanking whichever class each is; right-flanking is the same with the two swapped.
+bool LeftFlanking(uint8_t before, uint8_t after) {
+    return !(after & kFlankSpace) && (!(after & kFlankPunct) || !(before & kFlankOther));
+}
+
+// RepairFlanking's rewrites of one block before every emphasis of a block still unflanked goes.
+constexpr int kFlankAttempts = 4;
+
+bool Writer::RepairFlanking(size_t from, int attempt) {
+    if (delimiters_.empty()) return false;
+    const size_t size = out_.size(), count = delimiters_.size();
+    // The class of the character at out_[at]; in LaTeX mode a dollar is either class: a reader of
+    // formulas takes `$…$` as one piece. The text is as AppendEscaped wrote it: an escaped
+    // character is punctuation as it is unescaped, and stays escaped beside a delimiter.
+    const auto bits = [&](size_t at) -> uint8_t {
+        uint32_t cp = 0;
+        size_t length = 0;
+        if (!Utf8::Decode(out_, at, cp, length)) return kFlankPunct | kFlankOther;
+        if (cp == '$' && math_ == MathMode::Latex) return kFlankPunct | kFlankOther;
+        return FlankBits(cp);
+    };
+    const auto length = [&](size_t k) { return delimiters_[k].style == kStyleItalic ? size_t(1) : size_t(2); };
+    bool failed = false, changed = false;
+    for (size_t i = 0; i < count;) {
+        // A run: the delimiters of one character written one after another.
+        const bool tilde = delimiters_[i].style == kStyleStrike;
+        const size_t start = delimiters_[i].at;
+        size_t j = i + 1, end = start + length(i);
+        while (j < count && delimiters_[j].at == end && (delimiters_[j].style == kStyleStrike) == tilde) end += length(j++);
+        size_t back = start;
+        while (back > from && (static_cast<unsigned char>(out_[back - 1]) & 0xC0) == 0x80) --back;
+        const uint8_t before = start > from ? bits(back - 1) : kFlankSpace;
+        const uint8_t after = end < size ? bits(end) : kFlankSpace;
+        const bool left = LeftFlanking(before, after), right = LeftFlanking(after, before);
+        // GFM's strike-through pairs runs of two tildes: none joins a tilde of the text.
+        const bool tildes = tilde && (end - start != 2 || (start > from && out_[start - 1] == '~') || (end < size && out_[end] == '~'));
+        for (; i < j; ++i) {
+            const Delimiter& d = delimiters_[i];
+            if (!tildes && (d.open ? left : right)) continue;
+            failed = true;
+            if (attempt < kFlankAttempts) changed = TakeStyle(d.glyph, d.style, d.open) || changed;
+        }
+    }
+    if (!failed) return false;
+    if (!changed)
+        for (uint8_t& s : styles_) s = static_cast<uint8_t>(s & kStyleCode);
+    return true;
+}
+
+bool Writer::TakeStyle(uint32_t glyph, uint8_t bit, bool open) {
+    const uint32_t n = static_cast<uint32_t>(refs_.size());
+    if (glyph >= n) return false;
+    uint32_t j = glyph;
+    // A delimiter kept open over glyphs without the style (a footnote reference) leaves the
+    // nearest glyph of the run unflanked: the run goes.
+    bool whole = false;
+    if (!(styles_[j] & bit)) {
+        if (open) {
+            while (j < n && !(styles_[j] & bit)) ++j;
+        } else {
+            while (j > 0 && !(styles_[j] & bit)) --j;
+        }
+        if (j >= n || !(styles_[j] & bit)) return false;
+        whole = true;
+    }
+    const auto space = [&](uint32_t k) { return (styles_[k] & bit) && (FlankBits(FirstOf(Text(refs_[k]))) & kFlankSpace); };
+    uint32_t a = j, b = j + 1;  // the glyphs [a, b) lose the style
+    if (!whole && (refs_[j].script != kScriptNone || (styles_[j] & kStyleCode))) {
+        const auto same = [&](uint32_t k) {
+            return wordOf_[k] == wordOf_[j] && refs_[k].script == refs_[j].script && ((styles_[k] ^ styles_[j]) & kStyleCode) == 0;
+        };
+        while (a > 0 && same(a - 1)) --a;
+        while (b < n && same(b)) ++b;
+    } else if (!whole && !IsLetterOrDigit(FirstOf(Text(refs_[j])))) {
+        if (open) {
+            while (b < n && space(b)) ++b;
+        } else {
+            while (a > 0 && space(a - 1)) --a;
+        }
+    } else {
+        while (a > 0 && (styles_[a - 1] & bit)) --a;
+        while (b < n && (styles_[b] & bit)) ++b;
+    }
+    bool changed = false;
+    for (uint32_t k = a; k < b; ++k) {
+        changed = changed || (styles_[k] & bit) != 0;
+        styles_[k] = static_cast<uint8_t>(styles_[k] & ~bit);
+    }
+    return changed;
 }
 
 template <bool kLatex>
@@ -1312,24 +1497,40 @@ void Writer::Inline(const Block& block, bool styles) {
     runs_.clear();  // InlinePlain's, out_ cut back
     CollectWords(block);
     StyleWords(styles);
-    depth_ = 0;
-    for (int s = 0; s < kStyleCount; ++s) runFrom_[s] = runTo_[s] = 0;
     // LaTeX mode: formulas found among the glyphs are written as $…$ in their place; a table
     // cell's number stays text.
-    const bool latex = math_ == MathMode::Latex;
-    // Unraised "(a)" references may be among the glyphs (a local: out_'s writes would reload it).
-    const bool letterRefs = letterRefs_;
-    if (latex) {
+    if (math_ == MathMode::Latex) {
         FindFormulas();
         if (block.kind == BlockKind::Table) KeepNumbersText(inline_, mathRun_);
     }
+    // A block whose delimiters do not all flank is written again with fewer styles.
+    for (int attempt = 0;; ++attempt) {
+        WriteWords(block);
+        if (!RepairFlanking(from, attempt)) break;
+        out_.resize(from);
+        runs_.clear();
+    }
+    // No trailing spaces.
+    while (!out_.empty() && out_.back() == ' ') out_.pop_back();
+    DropNeedlessEscapes(from);
+    JoinLeaderDots(from);
+}
+
+void Writer::WriteWords(const Block& block) {
+    depth_ = 0;
+    for (int s = 0; s < kStyleCount; ++s) runFrom_[s] = runTo_[s] = 0;
+    delimiters_.clear();
+    const bool latex = math_ == MathMode::Latex;
+    // Unraised "(a)" references may be among the glyphs (a local: out_'s writes would reload it).
+    const bool letterRefs = letterRefs_;
     uint32_t skipTo = 0;  // the glyphs before it went into a formula
     int32_t openLink = -1;
     // Heading and table cell text is inline: "## 1. Installation" opens no list.
     bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
     std::string_view openUri;
-    const auto closeLink = [&]() {
-        SetStyle(0, 0);
+    // Styles close at glyph `at`, the link after them.
+    const auto closeLink = [&](uint32_t at) {
+        SetStyle(0, at);
         if (openLink < 0) return;
         out_.append("](");
         const bool angle = openUri.find_first_of(" ()<>") != std::string_view::npos;
@@ -1357,7 +1558,7 @@ void Writer::Inline(const Block& block, bool styles) {
         if (!resumed) {
             const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words_[i - 1], w)) : w.link >= 0;
             if (linkChanges) {
-                closeLink();
+                closeLink(w.first);
             } else if (w.spaceBefore) {
                 // Styles that do not go on past the space close before it, so that delimiters stay
                 // flanking; all of them before a formula.
@@ -1378,7 +1579,7 @@ void Writer::Inline(const Block& block, bool styles) {
         const uint32_t end = w.first + w.count;
         const uint32_t trimAt = openLink >= 0 && w.linkTrim > 0 ? end - w.linkTrim : end;
         while (k < end) {
-            if (k == trimAt && openLink >= 0) closeLink();
+            if (k == trimAt && openLink >= 0) closeLink(k);
             uint32_t stop = k < trimAt ? trimAt : end;
             if (latex) {
                 if (const uint32_t to = mathRun_[k]) {
@@ -1496,11 +1697,7 @@ void Writer::Inline(const Block& block, bool styles) {
             k = runEnd;
         }
     }
-    closeLink();
-    // No trailing spaces.
-    while (!out_.empty() && out_.back() == ' ') out_.pop_back();
-    DropNeedlessEscapes(from);
-    JoinLeaderDots(from);
+    closeLink(static_cast<uint32_t>(refs_.size()));
 }
 
 void Writer::JoinLeaderDots(size_t from) {
