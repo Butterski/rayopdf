@@ -910,6 +910,23 @@ void TestLargeFoot() {
     RAYOPDF_CHECK(Find(build(25), "ANNUAL REPORT") != std::string::npos, 1877);
 }
 
+// A running foot in the body's size, the lowest row of a page whose text ends high, its pieces spread
+// across the text: set kWideGap (2.5) body sizes and more under the text it goes; 2.4 body sizes
+// under it (1874), it stays.
+void TestBodySizeFoot() {
+    // 20 body lines from 700 down, 12 points apart: the last line's box bottom at 470. The foot's
+    // box top at 408: 6.2 body sizes under it.
+    std::vector<PageData> pages{NewPage()};
+    for (int i = 0; i < 20; ++i)
+        AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72, 700 - 12.0f * i,
+                10);
+    AddText(pages[0], "105", 72, 400, 10);
+    AddText(pages[0], "Example Corp./2019 Form 10-K", 297 - 5.0f * 28, 400, 10);
+    const std::string md = Run(pages);
+    RAYOPDF_CHECK(Find(md, "Form 10-K") == std::string::npos && Find(md, "Body line 19 of") != std::string::npos,
+                  1878);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -954,6 +971,7 @@ int main() {
     TestLooseLeadingHead();
     TestFootUnderShortText();
     TestLargeFoot();
+    TestBodySizeFoot();
     std::printf("test_layout_order: ok\n");
     return 0;
 }

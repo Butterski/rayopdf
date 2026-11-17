@@ -1093,16 +1093,17 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             bool number = false, folio = false, note = false, metadata = false, entry = false, caption = false;
             bool deepNumber = false;  // the lowest row, above kNumberBand, holds a number alone
             bool patent = false;      // a patent's running head (IsPatentHead) in the head band
+            bool lowFolio = false;    // the lowest row above kNumberBand (lowestFoot) has a folio
             // A spread row reaches both edges of the text: a row with a piece in each column of a
             // two-column page does not.
             const bool spread = count >= 2 && rowLeft <= textLeft + 2 * body && rowRight >= textRight - 2 * body;
             // The page's lowest row as one short line is read wherever it lies: a page number set
             // right under the last line of a page whose text ends high (deepNumber below). So is the
-            // lowest row as pieces spread across the text in smaller print than the body: a running
+            // lowest row as pieces spread across the text, up to kWideGapMaxSize body sizes: a running
             // foot set there (lowFoot below).
             const bool lowest = side == 1 && row == 0 && count == 1 && chars <= 4;
-            const bool lowestFoot = side == 1 && row == 0 && !numberBand && spread && largest <= 0.9f * body && !bold &&
-                                    !anyMono && !superscript && chars <= kRunningTitleChars;
+            const bool lowestFoot = side == 1 && row == 0 && !numberBand && spread && largest <= kWideGapMaxSize * body &&
+                                    !bold && !anyMono && !superscript && chars <= kRunningTitleChars;
             // The row's text, left to right.
             const auto readRow = [&] {
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
@@ -1143,6 +1144,10 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             } else if (lowestFoot) {
                 readRow();
                 caption = IsCaption(text);
+                if (largest > 0.9f * body) {
+                    RunningKey(text, key);
+                    lowFolio = HasFolio(key, text);
+                }
             }
             // A body-size row above a heading is the document's first paragraph, set high on a page
             // with narrow margins: a header must be smaller than the body to be told from it.
@@ -1204,10 +1209,16 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // line, centred on the text, set apart from it, in no larger print than a page number.
             const bool lowNumber = deepNumber && centred && !superscript && largest <= 1.3f * body && gap >= minGap &&
                                    figureGap >= minGap;
-            // Likewise a running foot of pieces spread across the text in smaller print, the page's
-            // lowest row (lowestFoot), set apart from the text and no caption: "105   JPMorgan Chase &
-            // Co./2019 Form 10-K" under a filing's page that ends high.
-            const bool lowFoot = lowestFoot && !caption && gap >= minGap && figureGap >= minGap;
+            // Likewise a running foot of pieces spread across the text, the page's lowest row
+            // (lowestFoot), no caption, set apart from the text: by minGap in smaller print ("105
+            // JPMorgan Chase & Co./2019 Form 10-K" under a filing's page that ends high), by kWideGap
+            // body sizes when it holds a folio, in a size up to kWideGapMaxSize body sizes (the same
+            // foot in the body's size). A table's last row reaching both edges, or a footnote's
+            // spread pieces, lie closer to the text; a figure's labels under it have no folio.
+            const bool lowFoot =
+                lowestFoot && !caption &&
+                (largest <= 0.9f * body ? gap >= minGap && figureGap >= minGap
+                                        : lowFolio && gap >= kWideGap * body && figureGap >= kWideGap * body);
             // A short row the producer marked as an artifact, within kNumberBand and at most twice
             // the body size (not a display heading), whatever its gap. A head or a foot is a few
             // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
