@@ -558,16 +558,21 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     info.flags = line.flags;
     info.chars = line.chars;
     info.markerU0 = info.textU0 = line.u0;
-    uint32_t mono = 0, boldHere = 0, italicHere = 0;
+    uint32_t mono = 0;
+    // The line's bold and italic glyphs, counted at once: bold in the low half, italic in the high.
+    static_assert(kGlyphBold == 1 && kGlyphItalic == 2, "kFaces is indexed by the two face bits");
+    static constexpr uint64_t kFaces[4] = {0, 1, uint64_t(1) << 32, 1 + (uint64_t(1) << 32)};
+    uint64_t faces = 0;
+    const uint32_t* const ids = page.lineGlyphs.data() + line.first;
+    const Glyph* const glyphs = page.glyphs.data();
     bool letter = false;
     bool numbering = line.chars <= 8;
     // A raised glyph after those the line starts with: a footnote reference FindNotes looks for.
     bool lead = true, raised = false, leadRaised = false;
     uint32_t k = 0;
     for (; k < line.count && !(letter && !numbering); ++k) {
-        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
-        boldHere += (g.flags & kGlyphBold) != 0;
-        italicHere += (g.flags & kGlyphItalic) != 0;
+        const Glyph& g = glyphs[ids[k]];
+        faces += kFaces[g.flags & (kGlyphBold | kGlyphItalic)];
         if (!IsSuperscript(g, line))
             lead = false;
         else if (!lead)
@@ -584,10 +589,9 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     }
     // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
     for (; k < line.count; ++k) {
-        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        const Glyph& g = glyphs[ids[k]];
         const uint16_t f = g.flags;
-        boldHere += (f & kGlyphBold) != 0;
-        italicHere += (f & kGlyphItalic) != 0;
+        faces += kFaces[f & (kGlyphBold | kGlyphItalic)];
         if (!IsSuperscript(g, line))
             lead = false;
         else if (!lead)
@@ -597,8 +601,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
             if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
         }
     }
-    bold += boldHere;
-    italic += italicHere;
+    bold += static_cast<uint32_t>(faces);
+    italic += faces >> 32;
     info.raised = raised;
     if (leadRaised) marks.raisedStarts = true;
     info.hasLetter = letter;
@@ -616,18 +620,33 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
     info.endsTerminal = IsTerminal(last);
     info.lastCp = last;
 
-    // The first word: a marker?
+    // The first word: a marker? Its text is read in place when its glyphs' texts follow each other
+    // in the page text (ForGlyphTextRuns: the same bytes), else copied into `scratch`.
     uint32_t wordEnd = 1;
-    while (wordEnd < line.count &&
-           !(page.glyphs[page.lineGlyphs[line.first + wordEnd]].flags & kGlyphSpaceBefore))
-        ++wordEnd;
-    scratch.clear();
-    AppendGlyphTexts(page, line, 0, wordEnd, scratch);
-    if (wordEnd == line.count && scratch.size() >= 3 && scratch.size() <= 8 && scratch.front() == '(' &&
-        scratch.back() == ')' && line.dir == 0 && !(line.flags & kLineRtl)) {
+    const size_t textSize = page.text.size();
+    std::string_view word = page.GlyphText(firstGlyph);
+    size_t wordTextEnd = size_t(firstGlyph.text) + word.size();
+    bool inPlace = true;
+    for (; wordEnd < line.count; ++wordEnd) {
+        const Glyph& n = glyphs[ids[wordEnd]];
+        if (n.flags & kGlyphSpaceBefore) break;
+        if (inPlace && (n.text != wordTextEnd || textSize - wordTextEnd < n.textLength))
+            inPlace = false;
+        else
+            wordTextEnd += n.textLength;
+    }
+    if (inPlace) {
+        word = std::string_view(word.data(), wordTextEnd - firstGlyph.text);
+    } else {
+        scratch.clear();
+        AppendGlyphTexts(page, line, 0, wordEnd, scratch);
+        word = scratch;
+    }
+    if (wordEnd == line.count && word.size() >= 3 && word.size() <= 8 && word.front() == '(' && word.back() == ')' &&
+        line.dir == 0 && !(line.flags & kLineRtl)) {
         bool plain = true;
-        for (size_t c = 1; c + 1 < scratch.size(); ++c) {
-            const char ch = scratch[c];
+        for (size_t c = 1; c + 1 < word.size(); ++c) {
+            const char ch = word[c];
             if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '.' || ch == '-'))
                 plain = false;
         }
@@ -637,42 +656,47 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
         // "2.1", "2.1." or "4.1.2." with text after it: numbers of one to three digits joined by dots.
         size_t at = 0;
         uint8_t depth = 0;
-        while (at < scratch.size() && depth < 8) {
+        while (at < word.size() && depth < 8) {
             size_t digits = 0;
-            while (at < scratch.size() && scratch[at] >= '0' && scratch[at] <= '9') ++at, ++digits;
+            while (at < word.size() && word[at] >= '0' && word[at] <= '9') ++at, ++digits;
             if (digits == 0 || digits > 3) break;
             ++depth;
-            if (at < scratch.size() && scratch[at] == '.') ++at;
+            if (at < word.size() && word[at] == '.') ++at;
         }
-        if (at == scratch.size() && depth >= 2) info.sectionDepth = depth;
+        if (at == word.size() && depth >= 2) info.sectionDepth = depth;
     }
     uint32_t value = 0;
-    Marker marker = ParseMarker(scratch, value);
+    Marker marker = ParseMarker(word, value);
     uint32_t skip = wordEnd;
     if (marker == Marker::None && wordEnd > 1) {
-        // A bullet set tight against its text.
-        const Marker single = ParseMarker(page.GlyphText(firstGlyph), value);
-        if (single == Marker::Bullet || single == Marker::TaskOpen || single == Marker::TaskDone) {
-            const std::string_view t = page.GlyphText(firstGlyph);
-            if (t != "-" && t != "*" && t != "\xE2\x80\x93" && t != "\xE2\x80\x94") marker = single, skip = 1;
+        // A bullet set tight against its text. ParseMarker finds a bullet or a task box only in a
+        // text of three bytes at most starting with one of these (value stays 0 without the call:
+        // only an enumerator sets it, and an enumerator leaves the line without a marker here).
+        const std::string_view t = page.GlyphText(firstGlyph);
+        const unsigned char head = t.empty() ? 0 : static_cast<unsigned char>(t[0]);
+        if (t.size() <= 3 && (head == '-' || head == '*' || head == 0xC2 || head == 0xE2 || head == 0xEF)) {
+            const Marker single = ParseMarker(t, value);
+            if ((single == Marker::Bullet || single == Marker::TaskOpen || single == Marker::TaskDone) && t != "-" &&
+                t != "*" && t != "\xE2\x80\x93" && t != "\xE2\x80\x94")
+                marker = single, skip = 1;
         }
     }
     // A reference entry's number in brackets ("[12]"): an unordered item that keeps it as text.
     // BuildBlocks keeps it only beside the entry before or after it.
     bool bracketed = false;
-    if (marker == Marker::None && scratch.size() >= 3 && scratch.size() <= 5 && scratch.front() == '[' &&
-        scratch.back() == ']' && scratch[1] != '0') {
+    if (marker == Marker::None && word.size() >= 3 && word.size() <= 5 && word.front() == '[' && word.back() == ']' &&
+        word[1] != '0') {
         bracketed = true;
-        for (size_t c = 1; c + 1 < scratch.size(); ++c) bracketed = bracketed && scratch[c] >= '0' && scratch[c] <= '9';
+        for (size_t c = 1; c + 1 < word.size(); ++c) bracketed = bracketed && word[c] >= '0' && word[c] <= '9';
         if (bracketed) {
             marker = Marker::Bullet;
-            for (size_t c = 1; c + 1 < scratch.size(); ++c) value = value * 10 + static_cast<uint32_t>(scratch[c] - '0');
+            for (size_t c = 1; c + 1 < word.size(); ++c) value = value * 10 + static_cast<uint32_t>(word[c] - '0');
         }
     }
     // A marker needs text after it on this line, unless the marker stands alone.
     if (marker != Marker::None && (skip < line.count || line.count == skip)) {
         // "-" and "*" and dashes are markers only when followed by text.
-        if ((marker == Marker::Bullet) && skip == line.count && (scratch == "-" || scratch == "*")) marker = Marker::None;
+        if ((marker == Marker::Bullet) && skip == line.count && (word == "-" || word == "*")) marker = Marker::None;
     }
     if (marker != Marker::None) {
         info.marker = marker;
@@ -681,8 +705,8 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
         // Markdown writes "1." and "1)"; any other enumerator, a letter or roman numeral ("a.",
         // "(iv)") or a number in parentheses ("(2)"), the item keeps as its text, unordered.
         info.verbatimMarker = bracketed || marker == Marker::Letter || marker == Marker::Roman ||
-                              (marker == Marker::Number && scratch[0] == '(');
-        info.closeParen = marker == Marker::Number && !info.verbatimMarker && scratch.back() == ')';
+                              (marker == Marker::Number && word[0] == '(');
+        info.closeParen = marker == Marker::Number && !info.verbatimMarker && word.back() == ')';
         info.bracketed = bracketed;
         info.markerAlone = skip == line.count;
         if ((marker == Marker::Letter || marker == Marker::Roman) && skip == 3 && !marks.letterNotes)
