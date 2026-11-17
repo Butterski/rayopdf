@@ -1390,7 +1390,7 @@ void TestPairsHeaderAndContents() {
 }
 
 // A lattice with a title row inside its frame: the title and the column labels under it are the
-// header (in a pipe table the title stands in each column it spans).
+// header, two rows of it: HTML, the title spanning the columns.
 void TestLatticeTitleRow() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
@@ -3066,6 +3066,75 @@ void TestWrappedLevelLabels() {
                   2316);
 }
 
+// A ruled table whose rows stand apart (padding) and whose cells wrap at the line pitch: a wrapped
+// line filling the first and last cells but not the date between them, with no number, is the
+// wrapped text of its row ("(approx. 90% level)" under "Complete final design"), not a row.
+void TestWrappedCellsInRowBands() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 450, 714);
+    AddText(page, "Milestone", 76, 702);
+    AddText(page, "Date", 200, 702);
+    AddText(page, "Deliverable", 300, 702);
+    HLine(page, 72, 450, 696);
+    float y = 684;
+    AddText(page, "Initiate pre-design", 76, y);
+    AddText(page, "Sept 2001", 200, y);
+    AddText(page, "Notice to proceed", 300, y);
+    y -= 16;
+    AddText(page, "Complete pre-design", 76, y);
+    AddText(page, "March 2002", 200, y);
+    AddText(page, "Design report, submitted", 300, y);
+    y -= 11;
+    AddText(page, "to the agency", 300, y);
+    y -= 16;
+    AddText(page, "Complete final design", 76, y);
+    AddText(page, "March 2003", 200, y);
+    AddText(page, "Plans and specs submitted", 300, y);
+    y -= 11;
+    AddText(page, "(approx. 90% level)", 76, y);
+    AddText(page, "for review", 300, y);
+    y -= 16;
+    AddText(page, "Notice to build", 76, y);
+    AddText(page, "October 2003", 200, y);
+    AddText(page, "Notice to proceed", 300, y);
+    HLine(page, 72, 450, y - 6);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("wrapped cells in row bands", md);
+    RAYOPDF_CHECK(report.tables == 1 &&
+                      Contains(md, "| Complete final design (approx. 90% level) | March 2003 | Plans and specs submitted for review |") &&
+                      Contains(md, "| Complete pre-design | March 2002 | Design report, submitted to the agency |"),
+                  2317);
+}
+
+// A header line a blank line above a borderless body, its labels one word each and set closer than
+// a column gap ("Likely Unlikely Unknown" over three columns of counts): each word heads the column
+// nearest it, and the line is the header row.
+void TestOneWordHeaderLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddText(page, "Situation", 76, 700);
+    AddText(page, "Likely", 222, 700);
+    AddText(page, "Unlikely", 260, 700);
+    AddText(page, "Unknown", 309, 700);
+    const char* const labels[] = {"Listening to speech", "Sitting in traffic", "Waiting for a bus", "Driving at night"};
+    const char* const counts[][3] = {{"118", "27", "12"}, {"60", "82", "15"}, {"66", "60", "26"}, {"90", "47", "15"}};
+    float y = 676;
+    for (int r = 0; r < 4; ++r, y -= 12) {
+        AddText(page, labels[r], 76, y);
+        AddText(page, counts[r][0], 230, y);
+        AddText(page, counts[r][1], 275, y);
+        AddText(page, counts[r][2], 320, y);
+    }
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("one-word header labels", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Situation | Likely | Unlikely | Unknown |\n| --- |") &&
+                      Contains(md, "| Listening to speech | 118 | 27 | 12 |"),
+                  2319);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3169,6 +3238,8 @@ int main(int argc, char** argv) {
     TestCmidruleInGap();
     TestSectionLabelBetweenParts();
     TestWrappedLevelLabels();
+    TestWrappedCellsInRowBands();
+    TestOneWordHeaderLabels();
     std::puts("test_layout_tables: ok");
     return 0;
 }

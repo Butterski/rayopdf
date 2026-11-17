@@ -1549,6 +1549,24 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             out[c] = Fmax(out[c], w.x1);
         }
     };
+    // Whether a cell of line r holds a number (Numeric() of the cell's text, from its words' digits
+    // and letters).
+    const auto numericCell = [&](size_t r) {
+        int last = -1;
+        uint32_t size = 0, digits = 0, letters = 0;
+        for (uint32_t k = rows[r].first; k <= rows[r].first + rows[r].count; ++k) {
+            const int c = k < rows[r].first + rows[r].count ? columns[k - base] : -2;
+            if (c != last && size > 0) {
+                if (NumericCounts(digits, letters)) return true;
+                size = digits = letters = 0;
+            }
+            if (c == -2) break;
+            const WordChars& t = Chars(words_[rowWords[k]]);
+            size += t.size, digits += t.digits, letters += t.letters;
+            last = c;
+        }
+        return false;
+    };
     // Lines [s, e) as one row of cells set to the middle (HTML's default vertical-align): every
     // filled column one cell (its lines at most 1.6 em apart), one cell of several lines and one
     // of a single line at least, and the middles of all of them (their first and last baselines')
@@ -1676,8 +1694,12 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 // A line filling only the first cell is that cell's wrapped text.
                 for (size_t q = band + 1; q < bandEnd; ++q) {
                     const size_t p = lineBefore(q);
-                    if (!centred[q - rowBegin] && (mask[q - rowBegin] & 1) && (mask[q - rowBegin] & ~uint64_t(1)) &&
-                        (mask[p - rowBegin] & 1) && !offset(q) && (q + 1 >= b || !offset(q + 1)) && rows[p].bottom >= rows[q].top)
+                    const uint64_t qm = mask[q - rowBegin], pm = mask[p - rowBegin];
+                    // A line filling fewer of the cells the line above fills, none with a number:
+                    // the wrapped text of those cells.
+                    const bool subset = (qm & pm) == qm && qm != pm && !numericCell(q);
+                    if (!centred[q - rowBegin] && (qm & 1) && (qm & ~uint64_t(1)) && (pm & 1) && !subset && !offset(q) &&
+                        (q + 1 >= b || !offset(q + 1)) && rows[p].bottom >= rows[q].top)
                         starts.push_back(q);
                 }
             };
@@ -4344,10 +4366,13 @@ void Detector::Borderless(float gapFactor) {
                 trial.size() == gaps.size()) {
                 first = begin - 1;
             } else if (near && (HeaderOverColumns(rows, rowWords, begin, e, label, h, minGap, gaps) ||
-                                HeaderAtColumns(rows, rowWords, begin, e, label, h, gaps))) {
+                                HeaderAtColumns(rows, rowWords, begin, e, label, h, gaps) ||
+                                (h.count == gaps.size() + 1 && HeaderOverColumns(rows, rowWords, begin, e, label, h, 0.0f, gaps)))) {
                 // Labels centred over narrow columns of figures, wider than them: each label (a run of
                 // words a word space apart) heads the column nearest its centre, and the columns part
-                // between labels. Or labels starting where the columns start, a word space apart.
+                // between labels. Or labels starting where the columns start, a word space apart. Or
+                // one word a column, each nearest its own column's centre, set closer than a column
+                // gap ("Likely Unlikely Unknown" over three columns of counts).
                 first = begin - 1;
                 xa = Fmin(xa, h.x0 - 1), xb = Fmax(xb, h.x1 + 1);
             }
