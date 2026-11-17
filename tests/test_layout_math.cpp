@@ -222,6 +222,13 @@ void TestOperators() {
         f.Add("x", u + 2, 0);
         Expect(f.Latex(), "\\lim_{n\\rightarrow\\infty}\\sin x", 1563);
     }
+    {
+        // An operator name without a KaTeX command: \operatorname.
+        Formula f;
+        float u = f.Add("Tr", 0, 0, 10, kText);
+        f.Add("g", u + 2, 0);
+        Expect(f.Latex(), "\\operatorname{Tr}g", 2360);
+    }
 }
 
 void TestMatrices() {
@@ -446,6 +453,41 @@ void TestInline() {
     RAYOPDF_CHECK(run[4] == 7 && run[5] == 0, 2228);
     run = Runs("type u \xE2\x88\x88 R hold", ".....mm....", store);
     RAYOPDF_CHECK(run[4] == 0 && run[5] == 7, 2229);
+    // An operator name between math glyphs joins the formula: "|Tr g|<2" (| and g of the math
+    // fonts), "diam T ≤ h" (T italic of the text font).
+    run = Runs("|Tr g|<2", "m..mm..", store);
+    RAYOPDF_CHECK(run[0] == 7, 2353);
+    run = Runs("so diam T \xE2\x89\xA4 h", "......imm", store);
+    RAYOPDF_CHECK(run[0] == 0 && run[2] == 9, 2354);
+    // Math set in a text font's italics or bold: up to three such letters in a word with math
+    // ("κ(BS)", a bold vector "σ(u)"), but not a suffix after a hyphen ("i-th").
+    run = Runs("\xCE\xBA(BS)", "..ii.", store);
+    RAYOPDF_CHECK(run[0] == 5, 2355);
+    run = Runs("\xCF\x83(u)", "..b.", store);
+    RAYOPDF_CHECK(run[0] == 4, 2356);
+    run = Runs("the i-th one", "...m.ii...", store);
+    RAYOPDF_CHECK(run[3] == 4, 2357);
+    // A name of up to eight letters before an argument's bracket after math: "π(conv(w))".
+    run = Runs("\xCF\x80(conv(w))", "m......m..", store);
+    RAYOPDF_CHECK(run[0] == 10, 2358);
+    // # between math: "X#Y".
+    run = Runs("X#Y", "m.m", store);
+    RAYOPDF_CHECK(run[0] == 3, 2359);
+    // An italic letter of a text font with its scripts is math (Times Italic math): "Sₙ = Iₙ".
+    run = Runs("Sn = In", "is.is", store);
+    RAYOPDF_CHECK(run[0] == 5, 2361);
+    // The operand before a relation may be a letter with its argument ("T(u) ≡ y"); the one after
+    // an operator ending a run may be a letter of any face before punctuation ("x ⩽ b."), but not
+    // the article a ("x = a set").
+    run = Runs("so T(u) \xE2\x89\xA1 y", "..i.i.mm", store);
+    RAYOPDF_CHECK(run[2] == 8, 2363);
+    run = Runs("x \xE2\xA9\xBD b. Then", "mm......", store);
+    RAYOPDF_CHECK(run[0] == 3, 2364);
+    run = Runs("x = a set", "m.....", store);
+    RAYOPDF_CHECK(run[0] == 2, 2365);
+    // A name after a hyphen is a compound word's, not an operator's: "Val-Clash(↑)".
+    run = Runs("Val-Clash(\xE2\x86\x91)", "", store);
+    RAYOPDF_CHECK(run[4] == 0 && run[9] == 12, 2366);
 }
 
 // A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the
@@ -524,6 +566,15 @@ void TestPages() {
     RAYOPDF_CHECK(unicode.find("\\frac") == std::string::npos && unicode.find("$$") == std::string::npos, 1595);
     // A script of a math font in Unicode forms.
     RAYOPDF_CHECK(unicode.find("Its square y\xC2\xB2 is no tag.") != std::string::npos, 1598);
+    // A sized bracket of the extension font hangs from its origin, its width telling its size
+    // (cmex10's \bigg[ is 0.53 em wide and 2.4 em high): its baseline goes a quarter em under the
+    // middle of that ink.
+    PageData big;
+    big.fontMath = {kText, kItalic, kExtension};
+    AddText(big, "[", 72, 700, 10, 2);
+    big.glyphs[0].u1 = 72 + 5.3f;
+    PrepareMathGlyphs(big);
+    RAYOPDF_CHECK(big.glyphs[0].v > 685 && big.glyphs[0].v < 687, 2362);
 }
 
 // \binom, \overset / \underset and \overbrace / \underbrace, each with a case that keeps the

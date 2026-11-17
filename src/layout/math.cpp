@@ -305,6 +305,17 @@ constexpr std::string_view kFunctions[] = {
     "sinh",   "sup",    "tan",    "tanh", "liminf", "limsup",
 };
 
+// Operator names without a KaTeX command, which papers declare (\DeclareMathOperator) or write
+// as \operatorname: written \operatorname{…}. Only names prose rarely uses as words.
+constexpr std::string_view kOperatorNames[] = {"tr",    "Tr",   "diag", "diam", "supp", "sgn", "span", "Hom",
+                                               "Aut",   "Var",  "Cov",  "codim", "grad", "curl", "Spec", "Ker"};
+
+bool IsOperatorName(std::string_view word) {
+    for (std::string_view name : kOperatorNames)
+        if (word == name) return true;
+    return false;
+}
+
 // A word of up to 8 bytes as one integer (its first byte lowest), to compare with a name at once.
 constexpr uint64_t Pack(std::string_view word) {
     uint64_t key = 0;
@@ -554,8 +565,12 @@ bool HangingInk(MathFont font, uint32_t cp, uint8_t family, float size, float wi
     } else if (PieceFamily(cp) != 0 && cp != 0x221A) {
         h = 0.9f;
     } else if (extension) {
-        // Sized delimiters: cmex10's parentheses are 0.46, 0.6, 0.74 and 0.79 em wide.
-        h = w >= 0.77f ? 3.0f : w >= 0.7f ? 2.4f : w >= 0.55f ? 1.8f : 1.2f;
+        // Sized delimiters by their width (cmex10's \big, \Big, \bigg, \Bigg): parentheses (and
+        // what reads about as wide) are 0.46, 0.6, 0.74 and 0.79 em wide, brackets 0.42, 0.47, 0.53
+        // and 0.58.
+        const bool bracket = cp == '[' || cp == ']';
+        h = bracket ? (w >= 0.555f ? 3.0f : w >= 0.5f ? 2.4f : w >= 0.445f ? 1.8f : 1.2f)
+                    : (w >= 0.77f ? 3.0f : w >= 0.7f ? 2.4f : w >= 0.55f ? 1.8f : 1.2f);
     }
     top = v + 0.04f * size;
     bottom = top - h * size;
@@ -2131,6 +2146,10 @@ void AppendUprightWord(const std::string& word, bool spaceAfter, std::string& ou
         out.append("\\operatorname*{");
         out.append(word);
         out.push_back('}');
+    } else if (IsOperatorName(word)) {
+        out.append("\\operatorname{");
+        out.append(word);
+        out.push_back('}');
     } else if (word.size() <= 3 && !IsConnective(word)) {
         out.append("\\mathrm{");
         out.append(word);
@@ -2507,11 +2526,12 @@ RAYOPDF_HOT_INLINE uint32_t FirstCp(std::string_view t) {
     return Utf8::Decode(t, 0, cp, length) ? cp : 0;
 }
 
-// The ASCII characters IsNeutral takes: digits, the accents ^ and ~, operators and punctuation.
+// The ASCII characters IsNeutral takes: digits, the accents ^ and ~, operators and punctuation,
+// and # (a count: #S, a connected sum: X_1 # X_2).
 struct NeutralAscii {
     bool is[128] = {};
     constexpr NeutralAscii() {
-        constexpr char kChars[] = "0123456789^~=+-<>()[]{}/*|!'.,:;_";
+        constexpr char kChars[] = "0123456789^~=+-<>()[]{}/*|!'.,:;_#";
         for (size_t i = 0; i + 1 < sizeof(kChars); ++i) is[static_cast<unsigned char>(kChars[i])] = true;
     }
 };
@@ -2583,11 +2603,13 @@ uint8_t ClassOfOther(uint8_t font, uint16_t flags, std::string_view text, bool a
     return kClassText;
 }
 
-// The first bytes of the function words: the names' and those of Re, Im, mod, argmax, argmin.
+// The first bytes of the function words: the names', the operator names' and those of Re, Im,
+// mod, argmax, argmin.
 struct FunctionLeads {
     bool is[256] = {};
     constexpr FunctionLeads() {
         for (size_t i = 0; i < kFunctionCount; ++i) is[static_cast<unsigned char>(kFunctions[i][0])] = true;
+        for (std::string_view name : kOperatorNames) is[static_cast<unsigned char>(name[0])] = true;
         is[static_cast<unsigned char>('R')] = is[static_cast<unsigned char>('I')] = true;
         is[static_cast<unsigned char>('m')] = is[static_cast<unsigned char>('a')] = true;
     }
@@ -2597,7 +2619,7 @@ constexpr FunctionLeads kFunctionLeads;
 bool IsFunctionWord(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every one has 2 to 6 letters
     if (!kFunctionLeads.is[static_cast<unsigned char>(word[0])]) return false;
-    if (IsFunctionName(word)) return true;
+    if (IsFunctionName(word) || IsOperatorName(word)) return true;
     const uint64_t key = Pack(word);
     switch (word.size()) {
     case 2: return key == Pack("Re") || key == Pack("Im");
@@ -2658,9 +2680,27 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             any = any || cls[i] == kClassStrong;
             strongWord = strongWord || cls[i] == kClassStrong;
         }
+        // A letter of a text font's italics with a raised or lowered glyph right after it, at the
+        // word's start or after a bracket or another script, is a variable with its scripts (math
+        // set in Times Italic: "S_n", "I^-_n", "X^{work}_n", "u^L_nX^{Work}_n"), not the end of an
+        // italic word with a mark; the scripts go with it.
+        for (uint32_t i = b; i + 1 < e; ++i) {
+            const InlineGlyph& g = glyphs[i];
+            if (g.script || g.note || !glyphs[i + 1].script || glyphs[i + 1].note || !g.glyph || cls[i] == kClassStrong ||
+                !(g.glyph->flags & kGlyphItalic) || g.font != static_cast<uint8_t>(MathFont::None) || !IsAsciiLetter(FirstCp(g.text)))
+                continue;
+            if (i > b && !glyphs[i - 1].script && IsLetterCp(FirstCp(glyphs[i - 1].text))) continue;
+            cls[i] = kClassStrong;
+            any = strongWord = true;
+            for (uint32_t k = i + 1; k < e && glyphs[k].script; ++k)
+                if (cls[k] == kClassText && !glyphs[k].note) cls[k] = kClassNeutral;
+        }
         // Letters of a text font in a word with math: a function name ("max_j", "log x"), up to
-        // four letters right before a script or a math glyph ("GoE_m", "h_1"), or an italic letter
-        // alone between other glyphs (the v of "α_{i+1}(v)", the t of "Δx/Δt") are math too.
+        // four letters right before a script or a math glyph ("GoE_m", "h_1"), up to eight before
+        // the bracket of an argument at the word's start or after math ("GELU(x)", "π(conv(w))",
+        // "Bdiag{A_1"), or up to three italic or bold letters (the v of "α_{i+1}(v)", the t of
+        // "Δx/Δt", math set in Times Italic: "κ(BS_{n−1})", a bold vector: "σ(u)") are math too,
+        // unless a hyphen joins them to the math ("i-th").
         if (!strongWord) continue;
         for (uint32_t s = b; s < e;) {
             if (cls[s] != kClassText || !IsLetterCp(FirstCp(glyphs[s].text))) {
@@ -2669,14 +2709,21 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             }
             uint32_t t = s;
             std::string word;
-            while (t < e && cls[t] == kClassText && IsLetterCp(FirstCp(glyphs[t].text)) && word.size() < 16)
+            uint16_t face = kGlyphItalic | kGlyphBold;
+            bool ascii = true;
+            while (t < e && cls[t] == kClassText && IsLetterCp(FirstCp(glyphs[t].text)) && word.size() < 16) {
+                face &= glyphs[t].glyph != nullptr ? glyphs[t].glyph->flags : 0;
+                ascii = ascii && IsAsciiLetter(FirstCp(glyphs[t].text));
                 AppendText(word, glyphs[t].text), ++t;
-            // ... or before the bracket of an argument at the word's start ("GELU(x)").
-            const bool before = t < e && t - s <= 4 &&
-                                (glyphs[t].script || cls[t] == kClassStrong || (s == b && FirstCp(glyphs[t].text) == '('));
-            const bool italic = t == s + 1 && glyphs[s].glyph != nullptr && (glyphs[s].glyph->flags & kGlyphItalic) &&
-                                IsAsciiLetter(FirstCp(glyphs[s].text));
-            if (before || italic || IsFunctionWord(word))
+            }
+            const uint32_t next = t < e ? FirstCp(glyphs[t].text) : 0;
+            const uint32_t prev = s > b ? FirstCp(glyphs[s - 1].text) : 0;
+            // A name after a hyphen is a compound word's ("Val-Clash(↑)"), not an operator.
+            const bool opens = s == b || cls[s - 1] == kClassStrong || prev == '(' || prev == '[' || prev == '{' || prev == '|';
+            const bool before = t < e && ((t - s <= 4 && (glyphs[t].script || cls[t] == kClassStrong)) ||
+                                          (t - s <= 8 && (next == '(' || next == '{') && opens));
+            const bool styled = t - s <= 3 && ascii && (face & (kGlyphItalic | kGlyphBold)) != 0 && prev != '-' && prev != 0x2013;
+            if (before || styled || IsFunctionWord(word))
                 for (uint32_t i = s; i < t; ++i) cls[i] = kClassNeutral;
             s = t;
         }
@@ -2722,7 +2769,8 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     };
     // A run that opens with an operator or a relation at the start of word `w` ("u ∈ ℝᵐ", "x = 2")
     // takes the operand before it: a word of one bold or italic letter on its baseline (with its
-    // scripts and primes), outside any run. Returns the run's first glyph.
+    // scripts and primes), or such a letter with its argument in brackets, single letters, digits
+    // and commas ("T(u) ≡", "f(x,1) ="), outside any run. Returns the run's first glyph.
     const auto operandBefore = [&](size_t w) -> uint32_t {
         const uint32_t s = wordStart[w];
         const uint32_t cp = FirstCp(glyphs[s].text);
@@ -2730,16 +2778,26 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
         const uint32_t pb = wordStart[w - 1];
         if (pb < closedEnd) return s;
         uint32_t letter = UINT32_MAX;
+        int argument = 0;  // 1 inside the argument's brackets, 2 after them
+        bool afterLetter = false;
         for (uint32_t i = pb; i < s; ++i) {
             const InlineGlyph& g = glyphs[i];
             if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible)) || cls[i] == kClassStrong) return s;
             if (g.script) continue;
             const uint32_t c = FirstCp(g.text);
             if (c == 0x2032 || c == '\'' || c == 0x2019) continue;
-            if (letter != UINT32_MAX || !IsAsciiLetter(c)) return s;
-            letter = i;
+            if (IsAsciiLetter(c)) {
+                if (letter == UINT32_MAX) letter = i;
+                else if (argument != 1 || afterLetter) return s;  // a word, not a letter and its argument
+                afterLetter = true;
+                continue;
+            }
+            afterLetter = false;
+            if (c == '(' && letter != UINT32_MAX && argument == 0) argument = 1;
+            else if (c == ')' && argument == 1) argument = 2;
+            else if (argument != 1 || !(c == ',' || (c >= '0' && c <= '9'))) return s;
         }
-        if (letter == UINT32_MAX) return s;
+        if (letter == UINT32_MAX || argument == 1) return s;
         const uint16_t flags = glyphs[letter].glyph->flags;
         const uint32_t c = FirstCp(glyphs[letter].text);
         if (flags & kGlyphBold) return pb;
@@ -2768,21 +2826,27 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             }
             if (!neutral && !function) {
                 // A run that ends in an operator or a relation right before this word ("T ≃ N",
-                // "u : X → R") takes it when it is the operand, one bold letter on its baseline (an
-                // italic one alone is neutral already), as operandBefore takes one before.
+                // "u : X → R", "x ⋠ b.") takes it when it is the operand, one letter on its baseline
+                // (bold, or another face but not a, A or I; an italic one alone is neutral already)
+                // before sentence punctuation, as operandBefore takes one before.
                 const uint32_t end = start != UINT32_MAX && last == b && b > start ? FirstCp(glyphs[b - 1].text) : 0;
                 if (end == '=' || end == '<' || end == '>' || end == '+' || end == 0x2212 || end == '/' ||
                     (end >= 0x80 && IsInfixSymbol(end))) {
                     uint32_t letter = UINT32_MAX;
-                    bool operand = true;
+                    bool operand = true, punctuation = false;
                     for (uint32_t i = b; i < e && operand; ++i) {
                         const InlineGlyph& g = glyphs[i];
+                        const uint32_t c = FirstCp(g.text);
                         if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) operand = false;
-                        else if (g.script || FirstCp(g.text) == 0x2032 || FirstCp(g.text) == '\'') continue;
-                        else if (letter != UINT32_MAX || !IsAsciiLetter(FirstCp(g.text))) operand = false;
+                        else if (letter != UINT32_MAX && (c == '.' || c == ',' || c == ';' || c == ':')) punctuation = true;
+                        else if (punctuation) operand = false;
+                        else if (g.script || c == 0x2032 || c == '\'') continue;
+                        else if (letter != UINT32_MAX || !IsAsciiLetter(c)) operand = false;
                         else letter = i;
                     }
-                    if (operand && letter != UINT32_MAX && (glyphs[letter].glyph->flags & kGlyphBold)) {
+                    const uint32_t c = letter != UINT32_MAX ? FirstCp(glyphs[letter].text) : 0;
+                    if (operand && letter != UINT32_MAX &&
+                        ((glyphs[letter].glyph->flags & kGlyphBold) || (c != 'a' && c != 'A' && c != 'I'))) {
                         last = e;
                         continue;
                     }
