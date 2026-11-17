@@ -1034,6 +1034,8 @@ void Writer::Inline(const Block& block, bool styles) {
     // LaTeX mode: formulas found among the glyphs are written as $…$ in their place; a table
     // cell's number stays text.
     const bool latex = math_ == MathMode::Latex;
+    // Unraised "(a)" references may be among the glyphs (a local: out_'s writes would reload it).
+    const bool letterRefs = letterRefs_;
     if (latex) {
         FindFormulas();
         if (block.kind == BlockKind::Table) KeepNumbersText(inline_, mathRun_);
@@ -1121,7 +1123,7 @@ void Writer::Inline(const Block& block, bool styles) {
             if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs_[k - 1].script != kScriptSup)) {
                 refEnd = k + 1;
                 while (refEnd < end && refs_[refEnd].script == kScriptSup) ++refEnd;
-            } else if (letterRefs_ && script == kScriptNone && k + 3 <= end && Text(refs_[k]) == "(") {
+            } else if (letterRefs && script == kScriptNone && k + 3 <= end && Text(refs_[k]) == "(") {
                 refEnd = k + 3;
             }
             if (refEnd != 0) {
@@ -1162,7 +1164,7 @@ void Writer::Inline(const Block& block, bool styles) {
                    !(refs_[runEnd].flags & kGlyphImage))
                 ++runEnd;
             // An unraised "(a)" reference inside the run ends it.
-            if (letterRefs_ && script == kScriptNone)
+            if (letterRefs && script == kScriptNone)
                 for (uint32_t j = k + 1; j < runEnd; ++j)
                     if (j + 3 <= end && Text(refs_[j]) == "(" && NoteNumber(refs_[j], 3)) {
                         runEnd = j;

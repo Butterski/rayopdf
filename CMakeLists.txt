@@ -196,8 +196,12 @@ endif()
 
 # lines.cpp without GCC's basic-block (SLP) vectorizer: it packs BuildLines' per-glyph boxes into
 # vector registers and spends shuffles on every glyph (odl: 5.4 M fewer instructions without it).
+# markdown_writer.cpp with a larger inlining budget for the unit than GCC's default 40 %: at the
+# default, 120 calls went out of line for want of it, among them Writer::Inline's space before
+# each word (`-fopt-info-inline-missed` lists none at 60).
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set_source_files_properties(src/layout/lines.cpp PROPERTIES COMPILE_OPTIONS "-fno-tree-slp-vectorize")
+    set_source_files_properties(src/layout/markdown_writer.cpp PROPERTIES COMPILE_OPTIONS "--param=inline-unit-growth=60")
 endif()
 
 if(TARGET rayopdf_api AND NOT EMSCRIPTEN)
