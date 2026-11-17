@@ -700,6 +700,7 @@ struct DepthScratch {
     std::vector<Item> items;       // Expr's
     std::vector<RowBand> rows;     // Layout's
     std::vector<uint8_t> marks;    // Row's
+    std::vector<uint32_t> scripted;
     std::vector<std::string> texts;
     std::vector<Item> sup, sub;
     std::string supText, subText;
@@ -1572,16 +1573,19 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     if (items.empty()) return true;
     if (!Spend(items.size() * items.size() + 8)) return false;
     // Sorted by proxy: the same comparisons on the same order give std::sort's same permutation,
-    // without moving the items' strings at each step.
-    sortKeys_.clear();
+    // without moving the items' strings at each step. Items each before the next by the order
+    // (no two equal, nothing NaN between them) are the only permutation std::sort can give: they
+    // stay as they are, unsorted.
+    const auto before = [](float u0a, float va, float u0b, float vb) { return u0a != u0b ? u0a < u0b : va > vb; };
     // What the searches below for \cong, extensible arrows, dots, joined symbols and backslashes need
     // the row to hold, counted on the way: a ∼ and an =; a bar and an arrowhead (→ after bars, ←
     // before them); three dots; a JoinPart; a backslash. Nothing below gives an item another atom, so
     // a search the row cannot serve finds nothing.
     bool tilde = false, equals = false, arrowhead = false, join = false, slash = false;
+    bool ordered = true;
     size_t barCount = 0, dotCount = 0;
     for (size_t i = 0; i < items.size(); ++i) {
-        sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
+        if (i > 0) ordered = ordered && before(items[i - 1].u0, items[i - 1].v, items[i].u0, items[i].v);
         if (items[i].atom < 0) continue;
         const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
         tilde = tilde || cp == 0x223C;
@@ -1592,16 +1596,19 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         join = join || JoinPart(cp);
         slash = slash || cp == '\\' || cp == 0x2216;
     }
-    std::sort(sortKeys_.begin(), sortKeys_.end(), [](const SortKey& a, const SortKey& b) {
-        return a.u0 != b.u0 ? a.u0 < b.u0 : a.v > b.v;
-    });
-    // Items already in order (the permutation is the identity) stay where they are.
-    bool moved = false;
-    for (size_t i = 0; i < sortKeys_.size() && !moved; ++i) moved = sortKeys_[i].index != i;
-    if (moved) {
-        sortItems_.clear();
-        for (const SortKey& k : sortKeys_) sortItems_.push_back(std::move(items[k.index]));
-        items.swap(sortItems_);
+    if (!ordered) {
+        sortKeys_.clear();
+        for (size_t i = 0; i < items.size(); ++i) sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
+        std::sort(sortKeys_.begin(), sortKeys_.end(),
+                  [&](const SortKey& a, const SortKey& b) { return before(a.u0, a.v, b.u0, b.v); });
+        // Items already in order (the permutation is the identity) stay where they are.
+        bool moved = false;
+        for (size_t i = 0; i < sortKeys_.size() && !moved; ++i) moved = sortKeys_[i].index != i;
+        if (moved) {
+            sortItems_.clear();
+            for (const SortKey& k : sortKeys_) sortItems_.push_back(std::move(items[k.index]));
+            items.swap(sortItems_);
+        }
     }
     const float em = EmOf(items);
     // \cong: TeX stacks a ∼ over an = (centred on it, about as wide, raised up to 0.6 em), one
@@ -1842,8 +1849,13 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     }
     // Large operators and function names with limits centred above and below them; a relation or
     // an arrow with a smaller run (0.8 of its size at most) centred over or under it (\overset,
-    // \underset).
-    for (size_t i = 0; i < n; ++i) {
+    // \underset). Limits are scripts (role 1 or 2), and none becomes one here: the searches visit
+    // the row's scripts as they were before, in order, passing over those taken since.
+    std::vector<uint32_t>& scripted = own.scripted;
+    scripted.clear();
+    for (size_t k = 0; k < n; ++k)
+        if (role[k] == 1 || role[k] == 2) scripted.push_back(static_cast<uint32_t>(k));
+    for (size_t i = 0; !scripted.empty() && i < n; ++i) {
         const Item& op = items[i];
         const bool word = op.atom >= 0 && atoms_[static_cast<uint32_t>(op.atom)].upright;
         const bool relation = op.kind == Kind::Relation && op.atom >= 0;
@@ -1852,7 +1864,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         for (int side = 0; side < 2; ++side) {
             std::vector<Item>& part = side == 0 ? below : above;
             std::vector<size_t> picked;
-            for (size_t k = 0; k < n; ++k) {
+            for (const uint32_t k : scripted) {
                 if (k == i || role[k] == 0 || role[k] == 3) continue;
                 const Item& it = items[k];
                 const float cx = (it.u0 + it.u1) / 2;
@@ -1865,7 +1877,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             // Grown along the limit's baseline to the glyphs beside it.
             for (size_t grow = 0; grow < picked.size() && grow < n; ++grow) {
                 const Item& seed = items[picked[grow]];
-                for (size_t k = 0; k < n; ++k) {
+                for (const uint32_t k : scripted) {
                     if (k == i || role[k] == 0 || role[k] == 3) continue;
                     if (relation && (role[k] != (side == 0 ? 2 : 1) || items[k].size > 0.8f * op.size)) continue;
                     if (std::find(picked.begin(), picked.end(), k) != picked.end()) continue;
