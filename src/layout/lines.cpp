@@ -1413,7 +1413,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
     std::vector<Fragment>& frags = place.frags;
     frags.clear();
     // The fragment being extended stays in `f` until the next one starts, out of memory that the
-    // glyphs' fields might alias.
+    // glyphs' fields might alias. Every glyph after its first joins it until one starts the next:
+    // its end is set as it closes.
     Fragment f;
     bool open = false;
     // In locals: the vector's own fields are reloaded after each store the loop makes.
@@ -1432,7 +1433,6 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
             // before it or than the fragment, within 0.6 em of the baseline as all are.
             if (g.dir == f.dir && gap >= -0.6f * em && gap <= maxGap && dv <= 0.6f * em &&
                 (dv <= 0.25f * em || space || g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size)) {
-                f.end = k + 1;
                 f.lastU1 = M::Max(f.lastU1, g.u1);
                 if (!space) {
                     f.lastSize = g.size;
@@ -1453,11 +1453,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 }
                 continue;
             }
+            f.end = k;
             frags.emplace_back() = f;  // f's address never escapes: it stays in registers
         }
         f = Fragment();
         f.begin = k;
-        f.end = k + 1;
         f.dir = g.dir;
         f.u0 = g.u0, f.u1 = g.u1, f.vb = g.vb, f.vt = g.vt;
         f.baseline = g.v;
@@ -1472,7 +1472,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         }
         open = true;
     }
-    if (open) frags.emplace_back() = f;
+    if (open) {
+        f.end = visCount;
+        frags.emplace_back() = f;
+    }
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
     std::vector<uint32_t>& fo = place.fo;
