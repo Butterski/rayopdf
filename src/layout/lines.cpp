@@ -1716,6 +1716,15 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         // line's is MostSize of the first 32.
         SizeCount sizes[kLineSizes];
         uint32_t sizeCount = 0, sizeBest = 0, sizeAt = 0;  // sizeAt: the bucket of the glyph before
+        // The glyphs of bucket sizeAt not yet counted: a run of one bucket is counted at its end.
+        // Within the run only its own count grows, so it leads at its end exactly when it would
+        // have taken the lead at one of its glyphs.
+        uint32_t run = 0;
+        const auto countRun = [&] {
+            if (run == 0 || sizeAt >= kLineSizes) return;
+            sizes[sizeAt].count += run;
+            if (sizes[sizeAt].count > sizes[sizeBest].count && sizeAt < kProtoSizes) sizeBest = sizeAt;
+        };
         float pu0 = 0, pu1 = 0, vb = 0, vt = 0;
         uint16_t allFlags = kLineFlagGlyphs;
         // The line's first wide gap when no segment ends before it: the glyph after it (0: none)
@@ -1787,16 +1796,17 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 allFlags &= g.flags;
                 // A size equal to the glyph before's has its bucket: buckets are only added, and
                 // the earlier ones did not match it then either.
-                uint32_t d = sizeAt;
                 if (first || !(g.size == previousSize)) {
-                    d = 0;
+                    uint32_t d = 0;
                     while (d < sizeCount && !(std::fabs(sizes[d].size - g.size) < 0.25f)) ++d;
-                    sizeAt = d;
+                    if (d != sizeAt) {
+                        countRun();
+                        run = 0;
+                        sizeAt = d;
+                    }
+                    if (d == sizeCount && d < kLineSizes) sizes[sizeCount++] = SizeCount{g.size, 0};
                 }
-                if (d < kLineSizes) {
-                    if (d == sizeCount) sizes[sizeCount++] = SizeCount{g.size, 0};
-                    if (++sizes[d].count > sizes[sizeBest].count && d < kProtoSizes) sizeBest = d;
-                }
+                ++run;
             }
             pendingSpace = false;
             first = false;
@@ -1804,6 +1814,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
             protoAt[protoCount++] = i;
         }
         if (!first) segments[segmentCount++] = seg;
+        if (kMeasured) countRun();
         // The first wide gap after a note's raised mark is a tab, no gutter.
         if (markAt != 0 && markAt - p.first <= 3 && markGap <= 2.5f * glyphs[protoAt[markAt]].size &&
             RaisedNoteMark(page, protoAt + p.first, markAt - p.first, glyphs[protoAt[markAt]]))
