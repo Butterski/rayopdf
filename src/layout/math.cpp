@@ -167,33 +167,53 @@ uint32_t LatinLookalike(uint32_t cp) {
     }
 }
 
-// Commands chosen over KaTeX's first name, and characters KaTeX names nothing for.
-struct Override {
-    uint32_t cp;
-    std::string_view latex;
-};
-constexpr Override kOverrides[] = {
-    {0x00B7, "\\cdot"},  {0x2016, "\\|"},    {0x2022, "\\bullet"}, {0x2024, "."},      {0x2026, "\\ldots"},
-    {0x2032, "'"},       {0x2033, "''"},     {0x2034, "'''"},      {0x2212, "-"},      {0x2215, "/"},
-    {0x2223, "|"},       {0x2225, "\\|"},    {0x22C5, "\\cdot"},   {0x22EF, "\\cdots"}, {0x22F1, "\\ddots"},
-    {0x2236, ":"},       {0x2044, "/"},      {0x00A0, "~"},        {0x2018, "`"},      {0x2019, "'"},
-    {0x201C, "``"},      {0x201D, "''"},     {0x2013, "-"},        {0x2014, "-"},      {0x2010, "-"},
-    {0x2011, "-"},       {0x02C6, "\\hat{}"}, {0x02DC, "\\tilde{}"}, {0x2329, "\\langle"}, {0x232A, "\\rangle"},
-    {0x3008, "\\langle"}, {0x3009, "\\rangle"}, {0x2307, "\\wr"}, {0x2205, "\\emptyset"}, {0x00F8, "\\emptyset"},
-};
-constexpr bool OverridesFromA0() {
-    for (const Override& o : kOverrides)
-        if (o.cp < 0xA0) return false;
-    return true;
+// Commands chosen over KaTeX's first name, and characters KaTeX names nothing for; empty for the
+// rest.
+std::string_view OverrideOf(uint32_t cp) {
+    switch (cp) {
+    case 0x00B7: return "\\cdot";
+    case 0x2016: return "\\|";
+    case 0x2022: return "\\bullet";
+    case 0x2024: return ".";
+    case 0x2026: return "\\ldots";
+    case 0x2032: return "'";
+    case 0x2033: return "''";
+    case 0x2034: return "'''";
+    case 0x2212: return "-";
+    case 0x2215: return "/";
+    case 0x2223: return "|";
+    case 0x2225: return "\\|";
+    case 0x22C5: return "\\cdot";
+    case 0x22EF: return "\\cdots";
+    case 0x22F1: return "\\ddots";
+    case 0x2236: return ":";
+    case 0x2044: return "/";
+    case 0x00A0: return "~";
+    case 0x2018: return "`";
+    case 0x2019: return "'";
+    case 0x201C: return "``";
+    case 0x201D: return "''";
+    case 0x2013: return "-";
+    case 0x2014: return "-";
+    case 0x2010: return "-";
+    case 0x2011: return "-";
+    case 0x02C6: return "\\hat{}";
+    case 0x02DC: return "\\tilde{}";
+    case 0x2329: return "\\langle";
+    case 0x232A: return "\\rangle";
+    case 0x3008: return "\\langle";
+    case 0x3009: return "\\rangle";
+    case 0x2307: return "\\wr";
+    case 0x2205: return "\\emptyset";
+    case 0x00F8: return "\\emptyset";
+    default: return {};
+    }
 }
-static_assert(OverridesFromA0(), "CommandOf scans the overrides from U+00A0 only");
 
-// KaTeX's command for `cp`, or empty. Every override is U+00A0 or above: ASCII goes straight to
-// the sorted table.
+// KaTeX's command for `cp`, or empty.
 std::string_view CommandOf(uint32_t cp) {
-    if (cp >= 0xA0)
-        for (const Override& o : kOverrides)
-            if (o.cp == cp) return o.latex;
+    const std::string_view chosen = OverrideOf(cp);
+    if (!chosen.empty()) return chosen;
     size_t lo = 0, hi = MathTables::kCommandCount;
     while (lo < hi) {
         const size_t mid = (lo + hi) / 2;
@@ -778,6 +798,12 @@ private:
 };
 
 bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
+    // The thread's atom from an earlier formula, made a new one.
+    a.bottom = a.top = 0, a.cp = 0;
+    a.latex.clear(), a.word.clear();
+    a.kind = Kind::Ord;
+    a.delimSize = a.family = 0;
+    a.upright = a.letter = false;
     a.u0 = g.u0, a.u1 = g.u1, a.v = g.v, a.size = g.size, a.font = g.font;
     a.lineStart = (g.flags & kMathLineStart) != 0;
     if (!Finite4(g.u0, g.u1, g.v, g.size) || g.size <= 0 || g.u1 < g.u0)
@@ -862,7 +888,9 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
     {
         float bottom = 0, top = 0;
         uint8_t delimSize = 0;
-        if (HangingInk(font, cp, family, em, g.u1 - g.u0, g.v, bottom, top, delimSize)) {
+        // HangingInk's first test, made here so that other glyphs skip the call.
+        if ((font == MathFont::Extension || (font == MathFont::Symbol && cp == 0x221A)) &&
+            HangingInk(font, cp, family, em, g.u1 - g.u0, g.v, bottom, top, delimSize)) {
             if (g.top > g.bottom) bottom = g.bottom, top = g.top;
             a.bottom = bottom, a.top = top, a.delimSize = delimSize;
         }
@@ -881,8 +909,9 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
         a.latex = "\\surd";
         return true;
     }
-    const std::string_view accent = AccentOf(cp);
-    if (!accent.empty() && cp != '^' && cp != '~') {
+    // Every accent past ^ and ~ is U+00A8 or above.
+    const std::string_view accent = cp >= 0xA8 ? AccentOf(cp) : std::string_view();
+    if (!accent.empty()) {
         a.kind = Kind::Accent;
         a.latex.assign(accent);
         return true;
@@ -983,7 +1012,7 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
 }
 
 bool Builder::Resolve() {
-    atoms_.clear();
+    // Kept from formula to formula: ResolveAtom makes each atom anew.
     atoms_.resize(in_.glyphs.size());
     for (size_t i = 0; i < in_.glyphs.size(); ++i) {
         if (!ResolveAtom(in_.glyphs[i], atoms_[i])) return Fail(MathStatus::Unreadable);
@@ -2436,7 +2465,10 @@ void AddMathGlyph(const PageData& page, const Glyph& g, MathInput& in) {
     const std::string_view text = page.GlyphText(g);
     m.text = static_cast<uint32_t>(in.text.size());
     m.length = static_cast<uint16_t>(text.size() < 64 ? text.size() : 64);
-    in.text.append(text.substr(0, m.length));
+    if (m.length == 1)
+        in.text.push_back(text[0]);
+    else
+        in.text.append(text.data(), m.length);
     in.glyphs.push_back(m);
 }
 
@@ -2445,20 +2477,22 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
     // extension font) lifts above the line's band: the band reaches the ink of such glyphs.
     for (const MathGlyph& g : in.glyphs)
         if (g.top > g.bottom && g.top + 0.15f * g.size > vt) vt = g.top + 0.15f * g.size;
+    // The bars up to one past kMaxFormulaRules (the limit tested as each is added).
+    if (in.rules.size() > kMaxFormulaRules) return;
     for (const Ruling& r : page.rulings) {
-        if (in.rules.size() > kMaxFormulaRules) return;
         // Pure tests, the vertical band first: it leaves out most of a page's rulings.
         if (r.y0 < vb || r.y1 > vt) continue;
         if (r.x1 - r.x0 <= r.y1 - r.y0) continue;  // horizontal bars only
         if (r.x0 < u0 - 1 || r.x1 > u1 + 1) continue;
         in.rules.push_back(MathRule{r.x0, r.x1, r.y0, r.y1});
+        if (in.rules.size() > kMaxFormulaRules) return;
     }
     for (const ImageBox& i : page.images) {
-        if (in.rules.size() > kMaxFormulaRules) return;
         const float h = i.y1 - i.y0;
         if (!(h >= 0 && h <= 2.0f && i.x1 - i.x0 >= 3 * h && (i.height == 1 || h <= 1.0f))) continue;
         if (i.x0 < u0 - 1 || i.x1 > u1 + 1 || i.y0 < vb || i.y1 > vt) continue;
         in.rules.push_back(MathRule{i.x0, i.x1, i.y0, i.y1});
+        if (in.rules.size() > kMaxFormulaRules) return;
     }
 }
 
