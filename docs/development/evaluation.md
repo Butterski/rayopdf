@@ -574,9 +574,10 @@ a version's report as `docs/benchmarks/v<version>-<date>.md` and add it to the
 
 Benchmarks' ground truths contradict each other on some conventions: odl's Markdown has no
 running headers removed, no emphasis or links and its tables as HTML, olmOCR's `headers_footers`
-tests want page furniture absent and its tests read plain text, `arxiv_math` and READoc arXiv
-write formulas as LaTeX, and READoc's evaluator reads GFM pipe tables only (an HTML table counts
-as no table).
+tests want page furniture absent and its tests read plain text as printed (a section title in
+small capitals in capitals, IEEE's `V. CONCLUSION`, where READoc's LaTeX sources write
+`Conclusion`), `arxiv_math` and READoc arXiv write formulas as LaTeX, and READoc's evaluator
+reads GFM pipe tables only (an HTML table counts as no table).
 RayoPDF's default output stays faithful to the page (roadmap D6); each benchmark is measured with
 one fixed, published set of options, its declared profile, in `eval/profiles.json`
 (`"declared": {suite: options}`):
@@ -585,8 +586,8 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |---|---|
 |odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii`|
 |synthetic|none (the default)|
-|olmocr|`--plain` (from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in)|
-|olmocr-math|`--math=latex --plain`|
+|olmocr|`--plain --small-caps=keep` (`--plain` from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in; `--small-caps=keep` from 2026-11-17: they compare small-capitals titles as printed)|
+|olmocr-math|`--math=latex --plain --small-caps=keep`|
 |readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe`|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
 |omni-dev, omni-val|`--format=json --images=none --math=latex` (the adapter builds the HTML and the layout blocks from the blocks; the math tests compare LaTeX)|
