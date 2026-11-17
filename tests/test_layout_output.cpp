@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
 // plain text without inline markup, every table as HTML or as a pipe table, page furniture kept,
-// the exact recovery they turn off, chunks for retrieval (WriteChunks) and the layout inspector
-// (WriteInspect). Exit codes 2000-2049.
+// ASCII quotes, small-capitals headings as printed, the exact recovery they turn off, chunks for
+// retrieval (WriteChunks) and the layout inspector (WriteInspect). Exit codes 2000-2049.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -373,6 +373,35 @@ void TestAsciiQuotes() {
                   2021);
 }
 
+// A title set in small capitals made by scaling (a lower-case letter of the source as its capital
+// in 16 points, the rest in 20) over a paragraph, and the same words in capitals of one size in
+// the paragraph.
+std::vector<PageData> SmallCapsPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    float x = 72;
+    for (const char c : std::string_view("Results of the Survey")) {
+        const bool lower = c >= 'a' && c <= 'z';
+        const char upper = lower ? static_cast<char>(c - 0x20) : c;
+        x = AddText(pages[0], std::string_view(&upper, 1), x, 700, lower ? 16 : 20);
+    }
+    AddText(pages[0], "The SURVEY asked every reader of the journal what they read and why they read it.", 72, 670, 10);
+    AddText(pages[0], "Most of them answered within a week, and nearly all of them answered every question.", 72, 658, 10);
+    return pages;
+}
+
+// --small-caps=keep: a heading in small capitals as printed; by default in the source's case.
+// Capitals elsewhere are written as printed either way.
+void TestSmallCapsKept() {
+    const std::string lower = Run(SmallCapsPage, OutputSettings());
+    OutputSettings settings;
+    settings.smallCaps = SmallCaps::Keep;
+    const std::string kept = Run(SmallCapsPage, settings);
+    Show("small capitals lower", lower);
+    Show("small capitals kept", kept);
+    RAYOPDF_CHECK(Contains(lower, "# Results of the Survey\n") && Contains(lower, "The SURVEY asked"), 2025);
+    RAYOPDF_CHECK(Contains(kept, "# RESULTS OF THE SURVEY\n") && Contains(kept, "The SURVEY asked"), 2026);
+}
+
 // A RayoMD PDF with its source: the output options need the pages, so the payload is not used.
 void TestExactFormat() {
     Test::ProfilePdf spec;
@@ -388,13 +417,14 @@ void TestExactFormat() {
     Convert(*document, options, markdown, report);
     RAYOPDF_CHECK(report.exact == ExactUse::Used, 2008);
     bool format = true;
-    for (int variant = 0; variant < 5; ++variant) {
+    for (int variant = 0; variant < 6; ++variant) {
         ConvertOptions changed = options;
         if (variant == 0) changed.plain = true;
         if (variant == 1) changed.tables = TableFormat::Html;
         if (variant == 2) changed.furniture = Furniture::Keep;
         if (variant == 3) changed.quotes = Quotes::Ascii;
         if (variant == 4) changed.tables = TableFormat::Pipe;
+        if (variant == 5) changed.smallCaps = SmallCaps::Keep;
         Convert(*document, changed, markdown, report);
         format = format && report.exact == ExactUse::Format && Contains(markdown, "Revenue grew");
     }
@@ -602,6 +632,7 @@ int main() {
     TestKeptFurnitureOrder();
     TestKeptFootUnderNotes();
     TestAsciiQuotes();
+    TestSmallCapsKept();
     TestExactFormat();
     TestChunks();
     TestInspect();

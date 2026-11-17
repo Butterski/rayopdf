@@ -203,6 +203,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.pageMarkers = output->pageMarkers;
         settings.plain = output->plain;
         settings.tables = output->tables;
+        settings.smallCaps = output->smallCaps;
         settings.chunkChars = output->chunkChars;
     }
     if (output && output->format == OutputFormat::Json) {

@@ -7,6 +7,7 @@
 //                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
 //                                   [--tables=auto|html|pipe] [--quotes=keep|ascii]
+//                                   [--small-caps=lower|keep]
 //   rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
 //                                        [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
@@ -143,6 +144,8 @@ void PrintUsage(std::FILE* out) {
         "                     every table as a pipe table, spans flattened\n"
         "  --quotes=MODE      keep (default): quotation marks as printed; ascii: typographic ones\n"
         "                     (curly, low) as ' and \"\n"
+        "  --small-caps=MODE  lower (default): a heading set in small capitals in the source's\n"
+        "                     case (\"V. Conclusion\"); keep: as printed, in capitals\n"
         "  --ocr=MODE         auto (default): OCR pages and images whose text the file lacks, when\n"
         "                     the rayopdf-ocr add-on is installed; off: never; force: every page\n"
         "                     image and large image, replacing an existing invisible text layer\n"

@@ -339,8 +339,8 @@ def check_page_workers(c: Checker, work: Path) -> None:
 def check_output_features(c: Checker, work: Path, hello: str) -> None:
     """--format=json (one object, schema 1, every block's Markdown in the Markdown output in order;
     --batch writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page),
-    --front-matter (YAML first, with the page count) and --furniture, --plain, --tables and --quotes
-    (taken by --convert and in serve requests; a bad value is a usage error)."""
+    --front-matter (YAML first, with the page count) and --furniture, --plain, --tables, --quotes and
+    --small-caps (taken by --convert and in serve requests; a bad value is a usage error)."""
     pages = str(work / "pages.pdf")
     markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
     r = c.run("--convert", pages, str(work / "pages.json"), "--format=json")
@@ -371,13 +371,13 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
     r = c.run("--convert", pages, "-", "--format=json", "--page-markers", "--front-matter")
     c.check("json ignores markers and front matter", r.returncode == 0 and r.stdout == (work / "pages.json").read_bytes())
     for flag in ("--furniture=keep", "--furniture=drop", "--plain", "--tables=html", "--tables=auto", "--tables=pipe",
-                 "--quotes=ascii", "--quotes=keep"):
+                 "--quotes=ascii", "--quotes=keep", "--small-caps=keep", "--small-caps=lower"):
         r = c.run("--convert", pages, "-", flag)
         c.check(f"output option {flag}", r.returncode == 0 and b"page" in r.stdout.lower(), repr(r.stderr[:200]))
-    for flag in ("--furniture=hide", "--tables=gfm", "--plain=yes", "--quotes=straight"):
+    for flag in ("--furniture=hide", "--tables=gfm", "--plain=yes", "--quotes=straight", "--small-caps=upper"):
         c.check(f"bad output option {flag}", c.run("--convert", pages, "-", flag).returncode == 2)
     requests = (json.dumps({"id": 1, "input": hello, "args": ["--plain", "--tables=html", "--furniture=keep",
-                                                               "--quotes=ascii"]}) +
+                                                               "--quotes=ascii", "--small-caps=keep"]}) +
                 "\n" + json.dumps({"id": 2, "input": hello, "args": ["--tables=gfm"]}) + "\n").encode()
     lines = records(c.run("--serve", "--json", stdin=requests).stdout)
     c.check("serve takes the output options", len(lines) == 3 and "Hello World" in lines[1].get("markdown", "") and

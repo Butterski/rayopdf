@@ -357,9 +357,9 @@ its Markdown), a line through the blocks in output order, table cells and images
 rayopdf --convert paper.pdf paper.html --format=inspect --images=none
 ```
 
-### Plain text, HTML tables, page furniture and quotes
+### Plain text, HTML tables, page furniture, quotes and small capitals
 
-Five options change conventions on which readers and benchmarks disagree; the defaults keep the
+Six options change conventions on which readers and benchmarks disagree; the defaults keep the
 output faithful to the page.
 
 - `--plain` writes the text without inline markup: no emphasis, code spans, strikethrough or links
@@ -380,6 +380,9 @@ output faithful to the page.
 - `--quotes=ascii` writes the typographic quotation marks of the pages' text (‘ ’ ‚ ‛ “ ” „ ‟)
   as the ASCII `'` and `"`; dashes and other punctuation stay as printed (ASCII has no dash apart
   from the hyphen). By default (`--quotes=keep`) quotation marks are written as printed.
+- `--small-caps=keep` writes a heading set in small capitals as printed, every letter a capital
+  (`## V. CONCLUSION`). By default (`--small-caps=lower`) such a heading is written in the
+  source's case, its small capitals as lower-case letters (`## V. Conclusion`).
 
 ```sh
 rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep
@@ -398,9 +401,10 @@ link targets beyond that allowance. The profile carries no images: the source's 
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
 with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html`, `--tables=pipe`, `--furniture=keep` or `--quotes=ascii`, which need the pages'
-layout), or why the payload was rejected and the pages converted instead: `unsupported`,
-`corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts the pages.
+`--tables=html`, `--tables=pipe`, `--furniture=keep`, `--quotes=ascii` or `--small-caps=keep`,
+which need the pages' layout), or why the payload was rejected and the pages converted instead:
+`unsupported`, `corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts
+the pages.
 
 ### OCR add-on
 

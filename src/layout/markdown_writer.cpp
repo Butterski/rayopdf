@@ -132,10 +132,10 @@ uint32_t ScriptForm(uint32_t cp, bool sup) {
 class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math,
-           bool plain)
+           bool plain, bool smallCapsLower)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
           boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math),
-          plainOutput_(plain) {
+          plainOutput_(plain), smallCapsLower_(smallCapsLower) {
         for (const NoteRef& r : noteRefs_) letterRefs_ = letterRefs_ || r.count == 3;
     }
 
@@ -143,9 +143,9 @@ public:
     void Inline(const Block& block, bool styles);
     // A heading's text glyph by glyph, without styles, as one Markdown line: a heading in small
     // capitals (Block::smallCaps) in the source's case, its small capitals written as lower-case
-    // letters; a label run in with its paragraph (Block::number), its glyphs alone. False
-    // (nothing written) when a glyph of a small-capitals heading may be math in LaTeX mode:
-    // Inline writes it then.
+    // letters (as printed with SmallCaps::Keep); a label run in with its paragraph (Block::number),
+    // its glyphs alone. False (nothing written) when a glyph of a small-capitals heading may be
+    // math in LaTeX mode: Inline writes it then.
     bool PlainHeading(const Block& block);
     // A fenced code block; `prefix` starts every line (block quotes).
     void Code(const Block& block, const std::string& prefix);
@@ -228,6 +228,8 @@ private:
     MathMode math_ = MathMode::Unicode;
     // WriteSettings::plain: scripts without <sup>/<sub> tags, footnote references as their number.
     bool plainOutput_ = false;
+    // WriteSettings::smallCaps Lower: a small-capitals heading's small capitals as lower-case letters.
+    bool smallCapsLower_ = true;
     // Some reference spans three glyphs: unraised "(a)" references (semantics.h) may be among them.
     bool letterRefs_ = false;
     std::vector<GlyphRef> refs_;
@@ -977,7 +979,7 @@ bool Writer::PlainHeading(const Block& block) {
             }
             const size_t at = other_.size();
             other_.append(text.data(), text.size());
-            if (g.size >= block.smallCaps) continue;
+            if (g.size >= block.smallCaps || !smallCapsLower_) continue;
             // ASCII and Latin-1 capitals to their lower-case letters (U+00C0-00DE but U+00D7).
             for (size_t i = at; i < other_.size(); ++i) {
                 const unsigned char c = static_cast<unsigned char>(other_[i]);
@@ -1533,7 +1535,7 @@ void Writer::Code(const Block& block, const std::string& prefix) {
 
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bool repaired, std::string& out,
                    WriteCounts& counts, MathMode math, const WriteSettings& settings, std::vector<WrittenBlock>* written) {
-    Writer writer(pages, list, out, counts, math, settings.plain);
+    Writer writer(pages, list, out, counts, math, settings.plain, settings.smallCaps == SmallCaps::Lower);
     const bool styles = !settings.plain;
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
     int contentColumn[9] = {};

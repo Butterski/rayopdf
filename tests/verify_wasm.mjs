@@ -82,7 +82,8 @@ try {
     typeof result.report.glyphs === "number" && result.images.size === 0, "Markdown");
   result = await rayopdf.convert(pdf, { format: "json" });
   check(result.text.startsWith('{"rayopdf":') && result.data.schema === 1, "format json");
-  result = await rayopdf.convert(pdf, { format: "chunks", chunkChars: 256, plain: true, quotes: "ascii", pages: [1, null] });
+  result = await rayopdf.convert(pdf, { format: "chunks", chunkChars: 256, plain: true, quotes: "ascii",
+    smallCaps: "keep", pages: [1, null] });
   check(Array.isArray(result.data) && result.data.length === 1 &&
     result.data[0].markdown.includes("Hello from WebAssembly") && result.data[0].pages[1] === 1, "format chunks");
   result = await rayopdf.convert(onePagePdf("A page with a picture", true), { images: true });

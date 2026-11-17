@@ -45,6 +45,11 @@ enum class TableFormat : uint8_t { Auto, Html, Pipe };
 // from the hyphen.
 enum class Quotes : uint8_t { Keep, Ascii };
 
+// A heading set in small capitals (capitals in two sizes) in the source's case, its small
+// capitals written as lower-case letters (the default: "V. Conclusion"), or as printed, every
+// letter a capital ("V. CONCLUSION").
+enum class SmallCaps : uint8_t { Lower, Keep };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -73,6 +78,7 @@ struct ConvertOptions {
     bool plain = false;
     TableFormat tables = TableFormat::Auto;
     Quotes quotes = Quotes::Keep;
+    SmallCaps smallCaps = SmallCaps::Lower;
     // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
     uint32_t chunkChars = kDefaultChunkChars;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are

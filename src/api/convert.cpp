@@ -45,6 +45,7 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
                  : options.tables == Tables::Pipe ? Layout::TableFormat::Pipe
                                                   : Layout::TableFormat::Auto;
     out.quotes = options.quotes == Quotes::Ascii ? Layout::Quotes::Ascii : Layout::Quotes::Keep;
+    out.smallCaps = options.smallCaps == SmallCaps::Keep ? Layout::SmallCaps::Keep : Layout::SmallCaps::Lower;
     out.pageWorkers = options.workers;
     return out;
 }

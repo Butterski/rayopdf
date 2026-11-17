@@ -37,7 +37,7 @@ struct DocumentRead {
 };
 
 // What the writer writes when it is not plain Markdown (ConvertOptions::format, pageMarkers,
-// furniture, plain, tables, quotes, chunkChars).
+// furniture, plain, tables, quotes, smallCaps, chunkChars).
 struct OutputSettings {
     OutputFormat format = OutputFormat::Markdown;
     bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
@@ -45,6 +45,7 @@ struct OutputSettings {
     bool plain = false;                          // no inline markup (WriteSettings::plain)
     TableFormat tables = TableFormat::Auto;      // every table as HTML or as GFM (WriteSettings::tables)
     Quotes quotes = Quotes::Keep;                // Ascii: the pages' typographic quotation marks as ' and "
+    SmallCaps smallCaps = SmallCaps::Lower;      // Keep: small-capital headings as printed (WriteSettings::smallCaps)
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
     const FeatureSink* features = nullptr;       // developer mode: edge-row and table-gap features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it

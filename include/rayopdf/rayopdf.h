@@ -30,6 +30,9 @@ enum class Furniture : uint8_t { Drop, Keep };
 enum class Tables : uint8_t { Auto, Html, Pipe };
 // Quotation marks as printed, or the typographic ones (U+2018-U+201F) as ' and ".
 enum class Quotes : uint8_t { Keep, Ascii };
+// Headings set in small capitals in the source's case (small capitals as lower-case letters), or
+// as printed (every letter a capital).
+enum class SmallCaps : uint8_t { Lower, Keep };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -57,6 +60,7 @@ struct Options {
     bool plain = false;                      // no inline markup (emphasis, code spans, links, <sup>, [^n])
     Tables tables = Tables::Auto;            // Html: every table as HTML; Pipe: every table as GFM
     Quotes quotes = Quotes::Keep;            // Ascii: typographic quotation marks as ' and "
+    SmallCaps smallCaps = SmallCaps::Lower;  // Keep: small-capitals headings as printed, in capitals
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic

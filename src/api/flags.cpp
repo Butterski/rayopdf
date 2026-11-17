@@ -156,6 +156,16 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             error = "--quotes takes keep or ascii: " + std::string(mode);
             return FlagStatus::Invalid;
         }
+    } else if (StartsWith(arg, "--small-caps=")) {
+        const std::string_view mode = arg.substr(13);
+        if (mode == "lower") {
+            options.convert.smallCaps = Layout::SmallCaps::Lower;
+        } else if (mode == "keep") {
+            options.convert.smallCaps = Layout::SmallCaps::Keep;
+        } else {
+            error = "--small-caps takes lower or keep: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
     } else {
         return FlagStatus::Unknown;
     }

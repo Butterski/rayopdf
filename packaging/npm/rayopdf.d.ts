@@ -12,6 +12,8 @@ export interface ConvertOptions {
   tables?: "auto" | "html" | "pipe";
   /** Quotation marks as printed (default), or the typographic ones (curly, low) as ' and ". */
   quotes?: "keep" | "ascii";
+  /** Headings set in small capitals in the source's case (default), or as printed, in capitals. */
+  smallCaps?: "lower" | "keep";
   /** OCR needs the native add-on, which WebAssembly cannot start: "auto" and "force" find none. */
   ocr?: "off" | "auto" | "force";
   /** User or owner password of an encrypted PDF. */
