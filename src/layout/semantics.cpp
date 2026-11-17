@@ -189,6 +189,31 @@ bool FirstWordIs(std::string_view t, std::string_view lower) {
     return true;
 }
 
+// A division's label alone: a word naming a division of a book or a course ("Chapter", "Part",
+// "Appendix", "Unit", "Lecture", any case) and its number, Arabic (one to three digits), Roman
+// (up to seven numerals) or one letter, with at most a full stop or a colon after it ("CHAPTER
+// 1.", "Part IV", "Appendix B:"). Nothing else is on its line.
+bool DivisionLabel(std::string_view t) {
+    static const std::string_view kWords[] = {"chapter", "part", "appendix", "annex", "unit", "lesson", "lecture",
+                                              "module", "book"};
+    size_t n = 0;
+    while (n < t.size() && ((t[n] >= 'a' && t[n] <= 'z') || (t[n] >= 'A' && t[n] <= 'Z'))) ++n;
+    bool named = false;
+    for (const std::string_view w : kWords) named = named || FirstWordIs(t, w);
+    if (!named || n + 1 >= t.size() || t[n] != ' ') return false;
+    std::string_view number = t.substr(n + 1);
+    if (!number.empty() && (number.back() == '.' || number.back() == ':')) number.remove_suffix(1);
+    if (number.empty() || number.size() > 7) return false;
+    bool digits = true, roman = true;
+    for (const char c : number) {
+        digits = digits && c >= '0' && c <= '9';
+        const char lower = static_cast<char>(c | 0x20);
+        roman = roman && (lower == 'i' || lower == 'v' || lower == 'x' || lower == 'l' || lower == 'c');
+    }
+    const bool letter = number.size() == 1 && ((number[0] >= 'a' && number[0] <= 'z') || (number[0] >= 'A' && number[0] <= 'Z'));
+    return (digits && number.size() <= 3) || roman || letter;
+}
+
 // The first byte of LineText(page, line) without building it (0 for none): a space put before a
 // later glyph, or the first byte of the first glyph text.
 unsigned char FirstTextByte(const PageData& page, const Line& line) {
@@ -2176,6 +2201,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         int styleKey = -1;  // heading style above body size: size key * 2 + bold
         bool boldHeading = false;
         bool runIn = false;  // a bold heading its paragraph runs on from, on the same baseline
+        bool divisionLabel = false;  // a division's label made a heading over its title
         bool bold = false;
         float size = 0;     // the size of most of its characters
         uint32_t chars = 0;
@@ -2853,6 +2879,29 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         k.styleKey = static_cast<int>(std::lround(k.size * 2)) * 2 + (k.bold ? 1 : 0);
     }
 
+    // A division's label set alone above its title ("CHAPTER 1." over "CALIFORNIA", "Part II"
+    // over "Methods"): a DivisionLabel line of its own right over a heading on its page, the two
+    // within 2.5 times the label's size, is a heading of its own in any size and face, at its
+    // title's level (set with the levels below). It names the division its title heads, so it is
+    // no kicker either.
+    for (size_t r = 0; r + 1 < raws.size(); ++r) {
+        Classified& k = kinds[r];
+        const Classified& n = kinds[r + 1];
+        if (k.kind != BlockKind::Paragraph || raws[r].count != 1 || n.kind != BlockKind::Heading) continue;
+        const Info& a = infos[raws[r].first];
+        const Info& b = infos[raws[r + 1].first];
+        if (b.page != a.page || a.dir != 0 || b.dir != 0 || a.chars > 16 ||
+            (a.flags & (kLineFurniture | kLineAnchor | kLineTable | kLineFormula)) || !(a.baseline > b.baseline) ||
+            a.vb - b.vt > 2.5f * a.size)
+            continue;
+        const PageData& page = pages[a.page];
+        LineText(page, page.lines[a.line], line);
+        if (!DivisionLabel(line)) continue;
+        k.kind = BlockKind::Heading;
+        k.styleKey = -1;
+        k.divisionLabel = true;
+    }
+
     // An italic subtitle under a heading ("1. Shipping as a vector" over "List of ports in
     // Appendix 3" in italics) completes it: a heading right under another on its page, within 1.5
     // times the upper one's size, its lines all italic where the upper one's are not, set no larger
@@ -2888,7 +2937,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                                    n.baseline < above.baseline && above.vb - n.vt <= 0.3f * small &&
                                    std::fabs((above.u0 + above.u1) - (n.u0 + n.u1)) <= small && large <= 1.45f * small &&
                                    small >= 1.25f * body && !above.numbering && !n.numbering;
-                join = join || stack;
+                join = (join || stack) && !hk.divisionLabel && !sk.divisionLabel;
                 if (join) {
                     LineText(pages[n.page], pages[n.page].lines[n.line], line);
                     join = SectionDepth(line) == 0;
@@ -3091,7 +3140,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         float lastSize = 0;
         for (size_t r = 0; r < raws.size(); ++r) {
             const Classified& k = kinds[r];
-            if (k.kind != BlockKind::Heading || (k.runIn && k.level == 0)) continue;
+            if (k.kind != BlockKind::Heading || (k.runIn && k.level == 0) || k.divisionLabel) continue;
             if (k.level > 0) {
                 levelOf[r] = k.level;
                 matchedLevel[anyStyle(k)] = k.level;
@@ -3204,6 +3253,15 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                     if (levelOf[r] > 0) levelOf[r] = r >= first && r < end ? 1 : levelOf[r] + 1;
             }
         }
+    }
+    // A division's label sits at its title's level; one whose title no longer heads (a later
+    // pass made it text) is text too.
+    for (size_t r = 0; r < raws.size(); ++r) {
+        if (!kinds[r].divisionLabel || kinds[r].kind != BlockKind::Heading) continue;
+        if (r + 1 < raws.size() && kinds[r + 1].kind == BlockKind::Heading && levelOf[r + 1] > 0)
+            levelOf[r] = levelOf[r + 1];
+        else
+            kinds[r].kind = BlockKind::Paragraph;
     }
     // Never skip a level: the levels in use renumbered 1..n. Then the top level is made absolute:
     // it is a title (H1) when it is the document's title above its outline, when set clearly

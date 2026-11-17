@@ -3,8 +3,9 @@
 // above an outline that names the sections only, small capitals, numbering in the outline match,
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
 // cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
-// chapter's number and a display title's stacked lines; the centred headings of a page's own OCR
-// layer; numbered section titles in italics on their own line and centred over their text.
+// chapter's number, a division's label and a display title's stacked lines; the centred headings
+// of a page's own OCR layer; numbered section titles in italics on their own line and centred
+// over their text.
 // Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849 and
 // 2500-2549.
 #include "check.h"
@@ -515,6 +516,31 @@ void TestChapterNumberAndStack() {
     RAYOPDF_CHECK(!HeadingWith(md, "SEAGRASS IN SOUTH FLORIDA").empty(), 1842);
 }
 
+// A division's label in the body's size and face right over its title ("CHAPTER 1." over a bold
+// "CALIFORNIA") is a heading at the title's level; a sentence naming a chapter and a label over
+// body text are not.
+void TestDivisionLabel() {
+    const auto page = [](std::string_view label, bool titled) {
+        std::vector<PageData> doc{NewPage(1)};
+        AddText(doc[0], label, 72, 700, 10);
+        if (titled)
+            AddText(doc[0], "CALIFORNIA", 72, 680, 11, kGlyphBold);
+        else
+            AddBody(doc[0], 686, 1);
+        AddText(doc[0], "JAMES SMITH", 72, 650, 8);
+        AddBody(doc[0], 620, 6);
+        return Run(doc);
+    };
+    std::string md = page("CHAPTER 1.", true);
+    Show("division label", md);
+    const std::string_view label = HeadingWith(md, "CHAPTER 1."), title = HeadingWith(md, "CALIFORNIA");
+    RAYOPDF_CHECK(!label.empty() && !title.empty() && label.find(' ') == title.find(' '), 1848);
+    md = page("Chapter 1 tells", true);
+    RAYOPDF_CHECK(Contains(md, "Chapter 1 tells") && HeadingWith(md, "Chapter 1 tells").empty(), 2510);
+    md = page("Part IV:", false);
+    RAYOPDF_CHECK(Contains(md, "Part IV:") && HeadingWith(md, "Part IV:").empty(), 2511);
+}
+
 // A page's own OCR layer (invisible text: no faces) heads a section with a block set centred in
 // its column, set off from the paragraph right under it; a table's label as OCR spells it
 // ("TABLE12"), the title under it and a "-continued" line head nothing.
@@ -661,6 +687,7 @@ int main() {
     TestCardContent();
     TestCoverTitle();
     TestChapterNumberAndStack();
+    TestDivisionLabel();
     TestOcrLayerHeadings();
     TestNumberedTitles();
     std::puts("test_layout_headings: all checks passed");
