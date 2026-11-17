@@ -1356,6 +1356,55 @@ Tried and rejected, or not attempted (2026-11-17, `instr.sh`-like counts of the 
   inclusive, `BuildLatex` 8.37 %, `Builder::Expr` 5.98 %, `Builder::Layout` 4.83 %. `math.cpp` is
   the one other unit at GCC's inlining budget: 130 calls left out of line for want of it.
 
+## Sixteenth round: blocks and the LaTeX rebuild's unit (2026-11-17)
+
+Master `4dffacb`, profiled with callgrind (Release with `-g`, linked with gold; `--batch
+--workers=1`, images off; `arxiv_math` with `--math=latex`) over odl, `multi_column`, safe40 and
+`arxiv_math`, confirmed the fifteenth round's open costs. Self costs, the code inlined into each
+function counted with it, in millions and in percent of the group:
+
+|Function|odl|`multi_column`|safe40|`arxiv_math`|
+|---|---|---|---|---|
+|`LineInfo`|9.51 (1.20 %)|29.32 (1.69 %)|14.65 (0.96 %)|43.24 (0.78 %)|
+|`BuildBlocks` (with its lambdas)|6.69 (0.84 %)|22.78 (1.31 %)|11.31 (0.74 %)|26.23 (0.48 %)|
+|`SplitHeaderLevels` (inclusive)|0.53 (0.07 %)|0.74 (0.04 %)|2.19 (0.14 %)|-|
+|`TextGrid` (inclusive)|1.29 (0.16 %)|3.03 (0.17 %)|-|-|
+
+`LineInfo` spent most of its instructions in the glyph loop past a line's first letter (about 19
+a glyph on `multi_column`: the bold and italic counts, the raised-glyph test, the monospace test)
+and in its first word's text (`AppendGlyphTexts`, 188 instructions a line, and two `ParseMarker`
+calls). `math.cpp` left 130 calls out of line for want of GCC's unit budget
+(`-fopt-info-inline-missed`, "inline-unit-growth limit"), none at 60 %. Every step is
+byte-identical (`bench.py identical` against the step before over the synthetic corpus, odl,
+olmOCR-Bench and READoc dev and dev2, 2,737 documents, with `--images=none` alone and with
+`--math=latex`, `--format=json`, `--plain`, `--tables=html`, `--tables=pipe` and
+`--small-caps=keep` beside it: 19,159 comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(semantics): LineInfo counts faces at once and reads the first word in place`|The bold and italic glyphs counted by one table add a glyph (the two face bits index counters packed in one 64-bit word); the first word read in place in the page text when its glyph texts follow each other there (`ForGlyphTextRuns`' test), copied only otherwise; `ParseMarker` of the first glyph alone called only for a text of three bytes or fewer starting with a byte a bullet or task box starts with|syn6 -0.321 %, `multi_column` -0.314 %, odl -0.233 %, `tables` -0.139 %, SafeDocs -0.135 %, `arxiv_math` -0.118 %, heavy10 -0.065 %|
+|`perf(semantics): BuildBlocks reads a line's text for formula pieces and float captions only where it can decide`|A block that may be a piece of a display formula has its text read (`LineText`, `NoTitle`, `MathSymbol`) only beside another candidate (alone it joins nothing); a paragraph's float-caption test reads its text only when the line's first byte (`FirstTextByte`) starts one of `IsCaption`'s labels|syn6 -0.110 %, odl -0.081 %, `multi_column` -0.071 %, `arxiv_math` -0.070 %, SafeDocs -0.068 %, `tables` -0.049 %, heavy10 -0.021 %|
+|`perf(math): math.cpp with a larger inlining budget and -O3's limit for functions not declared inline`|GCC's `--param inline-unit-growth=60` and `--param max-inline-insns-auto=30` (-O3's value; -O2's is 15) for that file (CMake, GCC only)|`arxiv_math` -0.261 %, the rest within 0.003 %|
+
+Against `4dffacb`: odl -0.313 % (785.44 M), heavy10 -0.086 %, syn6 -0.427 %, SafeDocs -0.202 %,
+`multi_column` -0.384 %, `tables` -0.185 %, `arxiv_math` -0.449 %. No times were taken.
+
+Tried and rejected, or not attempted (2026-11-17, `instr.sh` against the step before):
+
+- `math.cpp` with the unit budget alone (`inline-unit-growth=60`): `arxiv_math` -0.116 %, under the
+  group's 0.2 % bar. With `max-inline-insns-auto` beside it: 20 -0.194 %, 30 -0.264 %, 40
+  -0.359 %, 60 -0.489 %, 100 -0.365 % (the binary 10 to 21 KB larger). Kept at -O3's 30, a value
+  GCC itself uses, rather than a value fitted to this one group (100 gains less than 60).
+- Not attempted, under the bar by their callgrind cost: `SplitHeaderLevels` (460 lattices on
+  safe40 at 4,800 instructions a lattice; its own lines 1.0 M, `Chars` of the header words
+  0.33 M, the rest its vectors' allocations and `HeadedRun`; what a rewrite could leave out, the
+  vectors kept in the thread's scratch, is about 0.3 M, 0.02 %); `TextGrid` (28 grids on odl at
+  38,000 instructions a grid, spread over some forty loops of which none holds 0.13 M; the
+  formula-grid tests' `Chars` calls are cache hits, 0.16 M); the rest of `BuildBlocks` (on
+  `multi_column` the card titles' column look 2.4 M, the OCR layer's centred-heading test 1.3 M and
+  its caption test 0.9 M, `Continues` 2.3 M and `NoTitle` 1.8 M, each spread over its tests);
+  `MoveAddresses` (0.70 M on odl: its title blocks' texts are read whole before the capitals test).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1373,10 +1422,9 @@ Tried and rejected, or not attempted (2026-11-17, `instr.sh`-like counts of the 
   (self costs in percent of `arxiv_math`): `MarkDisplayFormulas` 2.76 %, `FindInlineFormulas`
   2.52 %, `Builder::Row` 2.42 %, `PrepareMathGlyphs` 2.15 %,
   `ResolveAtom` 0.97 %; inclusive, `BuildLatex` 8.50 %, `Builder::Expr` 6.35 %, `Builder::Layout`
-  5.32 %. `math.cpp` is at GCC's inlining budget for its unit (fifteenth round: 130 calls out of
-  line for want of it), as `markdown_writer.cpp` was.
-- **Blocks:** `semantics.cpp`'s `LineInfo` (1.18 % of odl, 1.67 % of `multi_column` self) and
-  `BuildBlocks` (0.84 %, 1.32 %), measured in the fifteenth round.
+  5.32 %. `math.cpp` has had its unit budget raised (sixteenth round).
+- **Blocks:** after the sixteenth round, `BuildBlocks`' tests spread over many loops (card titles,
+  the OCR layer's headings, `Continues`, `NoTitle`); none holds 0.15 % of a group.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
