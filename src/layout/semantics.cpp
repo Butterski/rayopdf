@@ -589,19 +589,28 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
                            cp == 'V' || cp == 'X' || (k == 0 && cp >= 'A' && cp <= 'Z')))
             numbering = false;
     }
-    // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs.
-    for (; k < line.count; ++k) {
+    // Once a letter is seen and the line is no numbering, only monospace glyphs need theirs. The
+    // line's leading raised glyphs are followed in a loop of their own; past them any raised
+    // glyph sets `raised`.
+    for (; k < line.count && lead; ++k) {
         const Glyph& g = glyphs[ids[k]];
         const uint16_t f = g.flags;
         faces += kFaces[f & (kGlyphBold | kGlyphItalic)];
-        if (!IsSuperscript(g, line))
-            lead = false;
-        else if (!lead)
-            raised = true;
+        lead = IsSuperscript(g, line);
         if (f & kGlyphMonospace) {
             const uint32_t cp = FirstCodePoint(page.GlyphText(g));
             if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
         }
+    }
+    for (; k < line.count; ++k) {
+        const Glyph& g = glyphs[ids[k]];
+        const uint16_t f = g.flags;
+        faces += kFaces[f & (kGlyphBold | kGlyphItalic)];
+        if (RAYOPDF_UNLIKELY(f & kGlyphMonospace)) {
+            const uint32_t cp = FirstCodePoint(page.GlyphText(g));
+            if (!(cp >= 0x1D400 && cp <= 0x1D7FF)) mono++;
+        }
+        if (RAYOPDF_UNLIKELY(IsSuperscript(g, line))) raised = true;
     }
     bold += static_cast<uint32_t>(faces);
     italic += faces >> 32;
