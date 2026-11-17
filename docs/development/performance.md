@@ -1295,6 +1295,67 @@ Tried and rejected, or not attempted (2026-11-17):
   rest of the growth since `a1163bc` lies outside `math.cpp` (`PlaceGlyphs`' `\cong` branch of the
   lone-script join, 3.2 M).
 
+## Fifteenth round: the footnote and furniture landings won back (2026-11-17)
+
+From the twelfth round's head `a1163bc` to master `0dbbb73` (the thirteenth and fourteenth
+rounds, the footnote rules of `76ed0ef`, the furniture rules of `ee6a711` and the edge-row model
+v3) user instructions grew (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with
+`--math=latex`; two runs of one binary differ by 0.002 % at most): odl +0.373 %, heavy10
+\+0.142 %, syn6 +0.333 %, SafeDocs +0.322 %, `multi_column` +0.464 %, `tables` +0.624 %,
+`arxiv_math` +0.473 %. Callgrind of both (Release with `-g`, linked with gold) over odl,
+`multi_column`, syn6 and SafeDocs; the growth per function, inclusive, with the function's share of
+its group at `0dbbb73`:
+
+|Function|odl|`multi_column`|syn6|SafeDocs|Why it grew|
+|---|---|---|---|---|---|
+|`PlaceGlyphs`|+0.73 M (8.39 %)|+2.25 M (10.77 %)|+0.12 M (12.24 %)|+1.28 M (5.97 %)|`RaisedNoteMark` called from the glyph loop: two more instructions a glyph for the loop's registers|
+|`WriteMarkdown`|+0.76 M (7.34 %)|+1.28 M (8.02 %)|+0.14 M (9.90 %)|+0.87 M (5.02 %)|`markdown_writer.cpp` at GCC's inlining budget for the unit: `Writer::Inline`'s space before each word became a call of `push_back` (+0.72 M on odl); the "(a)" reference tests per glyph (+0.27 M)|
+|`DetectTables`|+0.72 M (7.41 %)|+1.06 M (8.77 %)|+0.10 M (4.92 %)|+2.20 M (7.96 %)|`SplitHeaderLevels` +0.53 M (0.07 %), +0.74 M, +0.10 M, +2.19 M (0.14 %); `TextGrid` +0.14 M on odl|
+|`RemoveEdgeRows`|+0.50 M (1.07 %)|+1.35 M (1.14 %)|+0.05 M (0.68 %)|+0.80 M (0.56 %)|`IsMetadata` out of line, `IsCaption` on each row read and on the model's candidates, the page's lowest row read, `IsRuleLine`|
+|`BuildBlocks` (`semantics.cpp`)|+0.15 M (3.86 %)|+2.10 M (4.87 %)|+0.02 M|-0.14 M|the footnote rules (`FindNotes`, `PlaceNotes`, table-cell references) and the OCR layer's headings|
+|`LineInfo` (`semantics.cpp`)|+0.14 M (1.45 %)|+0.44 M (2.11 %)|+0.04 M|+0.14 M|the notes' marks (`Marks::letterNotes`)|
+
+`semantics.cpp` and `math.cpp` changed on other branches during this round and stay as they are.
+The steps were measured on master `fabe200` (`0dbbb73` with `--small-caps=keep`). Every step is
+byte-identical (`bench.py identical` against the step before over the synthetic corpus, odl,
+olmOCR-Bench and READoc dev and dev2, 2,737 documents, with `--images=none` alone and with
+`--math=latex`, `--format=json`, `--plain`, `--tables=html` and `--tables=pipe` beside it: 16,422
+comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(lines): a note's mark before a tab is tested once a line is read, not in the glyph loop`|The glyph loop keeps the line's first wide gap (its glyph and width, when no segment ends before it); `RaisedNoteMark` runs after the line's last glyph with the same operands|syn6 -0.132 %, `multi_column` -0.095 %, odl -0.081 %, `tables` -0.062 %, SafeDocs -0.050 %, `arxiv_math` -0.042 %, heavy10 -0.023 %|
+|`perf(writer): markdown_writer.cpp with a larger inlining budget; Inline reads the letter-reference flag once`|GCC's `--param inline-unit-growth=60` for that file (CMake, GCC only): at the default 40 % `-fopt-info-inline-missed` listed 120 calls left out of line for want of budget, none at 60; `letterRefs_` copied to a local (`out_`'s writes made the loop load it again for every glyph)|`arxiv_math` -0.182 %, syn6 -0.128 %, `multi_column` -0.101 %, odl -0.092 %, SafeDocs -0.065 %, `tables` -0.057 %, heavy10 -0.044 %|
+|`perf(layout): the edge rows' caption and metadata tests skip texts by their first bytes`|`IsCaption` returns at once for a text whose first byte starts no label; `IsMetadata` tries its words only where a byte and the next are a word's first two (a 256-entry table of second bytes), not at every byte whose letter starts one|`multi_column` -0.056 %, odl -0.052 %, syn6 -0.040 %, `tables` -0.038 %, SafeDocs -0.020 %, `arxiv_math` -0.018 %, heavy10 -0.012 %|
+
+Against `fabe200`: odl -0.225 % (787.79 M), heavy10 -0.079 %, syn6 -0.299 %, SafeDocs -0.136 %,
+`multi_column` -0.251 %, `tables` -0.157 %, `arxiv_math` -0.242 %; against `a1163bc` odl +0.148 %,
+heavy10 +0.064 %, syn6 +0.033 %, SafeDocs +0.188 %, `multi_column` +0.212 %, `tables` +0.468 %,
+`arxiv_math` +0.230 %. No times were taken.
+
+Tried and rejected, or not attempted (2026-11-17, `instr.sh`-like counts of the Release build with
+`-g`):
+
+- The word's space written through an always-inlined helper marked `flatten`: odl +0.000 %,
+  `multi_column` -0.001 %. GCC inlines the helper into `Inline` before flattening it, so
+  `push_back` stays a call; the unit's budget is what decides.
+- `letterRefs_` read once without the larger budget: odl +0.025 %, `multi_column` +0.031 %
+  (other calls of the unit went out of line instead). With the budget it is part of the second step
+  (odl -0.032 % of its -0.092 %).
+- Not attempted, under the bar by their callgrind cost: `SplitHeaderLevels` (0.53 M on odl over
+  214 lattices, 2,500 instructions a call; its vectors' allocations 0.12 M, `Chars` of each header
+  word 0.02 M; 0.14 % of SafeDocs, spread over its loops); `TextGrid` (+0.14 M on odl); the rest of
+  `RemoveEdgeRows`' row texts (`AppendLineText` 1.24 M, `RunningKey` 1.02 M and `IsPageNumberKey`
+  0.57 M on odl: read for every row in `kNumberBand`, and kept for the edge-row model's rows).
+- Left for a later round (callgrind at `0dbbb73`): `semantics.cpp`, self costs, `LineInfo` 1.18 %
+  of odl, 1.67 % of `multi_column`, 0.77 % of `arxiv_math`; `BuildBlocks` 0.84 %, 1.32 %, 0.47 %
+  (inclusive 3.86 %, 4.87 %, 2.23 %); `PlaceNotes` 0.14 % of odl; `Continues` 0.15 % and `NoTitle`
+  0.11 % of `multi_column`. `math.cpp` on `arxiv_math`: self, `MarkDisplayFormulas` 2.76 %,
+  `FindInlineFormulas` 2.68 %, `Builder::Row` 2.66 %, `PrepareMathGlyphs` 2.23 %, `ResolveAtom`
+  0.97 %, `Builder::Expr` 0.55 %, `Item`'s `emplace_back` 0.53 %, `AddMathRules` 0.45 %;
+  inclusive, `BuildLatex` 8.37 %, `Builder::Expr` 5.98 %, `Builder::Layout` 4.83 %. `math.cpp` is
+  the one other unit at GCC's inlining budget: 130 calls left out of line for want of it.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1312,7 +1373,10 @@ Tried and rejected, or not attempted (2026-11-17):
   (self costs in percent of `arxiv_math`): `MarkDisplayFormulas` 2.76 %, `FindInlineFormulas`
   2.52 %, `Builder::Row` 2.42 %, `PrepareMathGlyphs` 2.15 %,
   `ResolveAtom` 0.97 %; inclusive, `BuildLatex` 8.50 %, `Builder::Expr` 6.35 %, `Builder::Layout`
-  5.32 %.
+  5.32 %. `math.cpp` is at GCC's inlining budget for its unit (fifteenth round: 130 calls out of
+  line for want of it), as `markdown_writer.cpp` was.
+- **Blocks:** `semantics.cpp`'s `LineInfo` (1.18 % of odl, 1.67 % of `multi_column` self) and
+  `BuildBlocks` (0.84 %, 1.32 %), measured in the fifteenth round.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
