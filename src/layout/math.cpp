@@ -310,12 +310,6 @@ constexpr std::string_view kFunctions[] = {
 constexpr std::string_view kOperatorNames[] = {"tr",    "Tr",   "diag", "diam", "supp", "sgn", "span", "Hom",
                                                "Aut",   "Var",  "Cov",  "codim", "grad", "curl", "Spec", "Ker"};
 
-bool IsOperatorName(std::string_view word) {
-    for (std::string_view name : kOperatorNames)
-        if (word == name) return true;
-    return false;
-}
-
 // A word of up to 8 bytes as one integer (its first byte lowest), to compare with a name at once.
 constexpr uint64_t Pack(std::string_view word) {
     uint64_t key = 0;
@@ -324,30 +318,40 @@ constexpr uint64_t Pack(std::string_view word) {
 }
 
 constexpr size_t kFunctionCount = sizeof(kFunctions) / sizeof(kFunctions[0]);
-// The names' keys with the length in the top byte (every name is shorter than 8), each in its slot
-// of 64 by a multiplicative hash under which no two collide (checked at compile time); an empty
-// slot holds 0, which no key is.
+constexpr size_t kOperatorNameCount = sizeof(kOperatorNames) / sizeof(kOperatorNames[0]);
+// A name's key: its bytes with the length in the top byte (every name is shorter than 8).
+constexpr uint64_t NameKey(std::string_view word) { return Pack(word) | uint64_t(word.size()) << 56; }
+// The names' keys, each in its slot of 64 by a multiplicative hash under which no two of one list
+// collide (checked at compile time); an empty slot holds 0, which no key is.
 constexpr uint64_t kFunctionHash = 0x0e780da6a9f0c4b1;
 constexpr size_t FunctionSlot(uint64_t key) { return static_cast<size_t>((key * kFunctionHash) >> 58); }
-struct FunctionKeys {
+struct NameKeys {
     uint64_t key[64] = {};
     bool unique = true;
-    constexpr FunctionKeys() {
-        for (size_t i = 0; i < kFunctionCount; ++i) {
-            const uint64_t k = Pack(kFunctions[i]) | uint64_t(kFunctions[i].size()) << 56;
+    constexpr NameKeys(const std::string_view* names, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            const uint64_t k = NameKey(names[i]);
             uint64_t& slot = key[FunctionSlot(k)];
             unique = unique && slot == 0;
             slot = k;
         }
     }
 };
-constexpr FunctionKeys kFunctionKeys;
+constexpr NameKeys kFunctionKeys(kFunctions, kFunctionCount);
 static_assert(kFunctionKeys.unique, "two function names share a slot: choose another kFunctionHash");
+constexpr NameKeys kOperatorKeys(kOperatorNames, kOperatorNameCount);
+static_assert(kOperatorKeys.unique, "two operator names share a slot: choose another kFunctionHash");
 
 bool IsFunctionName(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every name has 2 to 6 letters
-    const uint64_t key = Pack(word) | uint64_t(word.size()) << 56;
+    const uint64_t key = NameKey(word);
     return kFunctionKeys.key[FunctionSlot(key)] == key;
+}
+
+bool IsOperatorName(std::string_view word) {
+    if (word.size() < 2 || word.size() > 5) return false;  // every name has 2 to 5 letters
+    const uint64_t key = NameKey(word);
+    return kOperatorKeys.key[FunctionSlot(key)] == key;
 }
 
 // Short English words set upright in formulas ("for", "if", "and"): \text, not \mathrm.
@@ -2623,14 +2627,10 @@ constexpr FunctionLeads kFunctionLeads;
 bool IsFunctionWord(std::string_view word) {
     if (word.size() < 2 || word.size() > 6) return false;  // every one has 2 to 6 letters
     if (!kFunctionLeads.is[static_cast<unsigned char>(word[0])]) return false;
-    if (IsFunctionName(word) || IsOperatorName(word)) return true;
-    const uint64_t key = Pack(word);
-    switch (word.size()) {
-    case 2: return key == Pack("Re") || key == Pack("Im");
-    case 3: return key == Pack("mod");
-    case 6: return key == Pack("argmax") || key == Pack("argmin");
-    default: return false;
-    }
+    const uint64_t key = NameKey(word);  // the whole word: at most 6 bytes
+    if (kFunctionKeys.key[FunctionSlot(key)] == key || kOperatorKeys.key[FunctionSlot(key)] == key) return true;
+    return key == NameKey("Re") || key == NameKey("Im") || key == NameKey("mod") || key == NameKey("argmax") ||
+           key == NameKey("argmin");
 }
 
 } // namespace
