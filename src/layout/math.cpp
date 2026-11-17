@@ -736,7 +736,8 @@ private:
     bool ResolveAtom(const MathGlyph& g, Atom& a);
     bool Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_t>& rules, int depth, std::string& out);
     bool Layout(std::vector<Item>& items, int depth, std::string& out);
-    bool Row(std::vector<Item>& items, int depth, std::string& out);
+    // `em`: EmOf(items).
+    bool Row(std::vector<Item>& items, int depth, std::string& out, float em);
     bool Matrix(std::vector<Item>& items, const Item& open, const Item* close, int depth, std::string& out);
     void ItemOf(uint32_t atom, Item& item) const;
     void Connected(const std::vector<uint32_t>& atoms, std::vector<uint32_t>& part, std::vector<uint32_t>& partRules,
@@ -1461,19 +1462,19 @@ bool Builder::Layout(std::vector<Item>& items, int depth, std::string& out) {
                 else left.push_back(std::move(it));
             }
             std::string text;
-            if (!Row(left, depth + 1, text)) return false;
+            if (!Row(left, depth + 1, text, EmOf(left))) return false;
             out.append(text);
             if (align) {
                 out.push_back('&');
                 text.clear();
-                if (!Row(right, depth + 1, text)) return false;
+                if (!Row(right, depth + 1, text, EmOf(right))) return false;
                 out.append(text);
             }
         }
         out.append("\\end{aligned}");
         return true;
     }
-    return Row(items, depth, out);
+    return Row(items, depth, out, em);
 }
 
 bool Builder::Matrix(std::vector<Item>& body, const Item& open, const Item* close, int depth, std::string& out) {
@@ -1568,7 +1569,7 @@ std::string_view SizePrefix(float height) {
     return "\\big";
 }
 
-bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
+bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float em) {
     if (depth > kMaxFormulaDepth) return Fail(MathStatus::TooLarge);
     if (items.empty()) return true;
     if (!Spend(items.size() * items.size() + 8)) return false;
@@ -1580,14 +1581,20 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     // What the searches below for \cong, extensible arrows, dots, joined symbols and backslashes need
     // the row to hold, counted on the way: a ∼ and an =; a bar and an arrowhead (→ after bars, ←
     // before them); three dots; a JoinPart; a backslash. Nothing below gives an item another atom, so
-    // a search the row cannot serve finds nothing.
+    // a search the row cannot serve finds nothing. So do the passes over accents, horizontal braces
+    // and upright letters: no item becomes one.
     bool tilde = false, equals = false, arrowhead = false, join = false, slash = false;
+    bool hasAccent = false, hasBrace = false, hasUpright = false;
     bool ordered = true;
     size_t barCount = 0, dotCount = 0;
     for (size_t i = 0; i < items.size(); ++i) {
         if (i > 0) ordered = ordered && before(items[i - 1].u0, items[i - 1].v, items[i].u0, items[i].v);
+        hasAccent = hasAccent || items[i].kind == Kind::Accent;
         if (items[i].atom < 0) continue;
-        const uint32_t cp = atoms_[static_cast<uint32_t>(items[i].atom)].cp;
+        hasBrace = hasBrace || items[i].kind == Kind::Brace;
+        const Atom& a = atoms_[static_cast<uint32_t>(items[i].atom)];
+        const uint32_t cp = a.cp;
+        hasUpright = hasUpright || a.upright;
         tilde = tilde || cp == 0x223C;
         equals = equals || cp == '=';
         arrowhead = arrowhead || cp == 0x2192 || cp == 0x2190;
@@ -1610,7 +1617,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
             items.swap(sortItems_);
         }
     }
-    const float em = EmOf(items);
+    // `em`: EmOf(items), which the order leaves as it is.
     // \cong: TeX stacks a ∼ over an = (centred on it, about as wide, raised up to 0.6 em), one
     // relation.
     for (size_t i = 0; tilde && equals && i < items.size(); ++i) {
@@ -1692,7 +1699,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         if ((role[i - 1] == 1 || role[i - 1] == 2) && items[i].u0 - items[i - 1].u1 < 0.3f * em) role[i] = role[i - 1];
     }
     // Accents over a base glyph (or, for wide ones, over several).
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; hasAccent && i < n; ++i) {
         Item& acc = items[i];
         if (acc.kind != Kind::Accent || role[i] == 3) continue;
         const float cx = (acc.u0 + acc.u1) / 2;
@@ -1741,7 +1748,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
     uint8_t* const wordPart = role + n;
     // Horizontal braces (⏞ U+23DE, ⏟ U+23DF) spanning 80 % of the run they stand over (under), with
     // a smaller label beyond them: \overbrace{run}^{label}, \underbrace{run}_{label}.
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; hasBrace && i < n; ++i) {
         const Item& brace = items[i];
         if (role[i] == 3 || brace.kind != Kind::Brace || brace.atom < 0) continue;
         const uint32_t cp = atoms_[static_cast<uint32_t>(brace.atom)].cp;
@@ -1915,7 +1922,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out) {
         if (word && below.empty() && above.empty()) continue;
     }
     // Upright letter runs: function names and text.
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; hasUpright && i < n; ++i) {
         if (role[i] != 0 || items[i].atom < 0 || !atoms_[static_cast<uint32_t>(items[i].atom)].upright) continue;
         // The run of upright letters from `start` (its letters 0.12 em apart at most): its word, its
         // end and its last letter.
