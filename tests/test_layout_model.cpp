@@ -184,19 +184,35 @@ void TestSentenceGuard() {
 void TestJoinedHead() {
     std::vector<PageData> pages{NewPage()};
     // The head flush with the text's right edge (540), 1.43 ems over double-spaced lines of 12 points.
-    AddText(pages[0], "Communication Between Teachers 39", 342, 729.2f, 12);
+    AddText(pages[0], "Teacher Communication 39", 396, 729.2f, 12);
     AddText(pages[0], "special education teachers. Two teachers were selected for interviews from the", 72, 700, 12);
     for (int i = 1; i < 22; ++i) {
         const std::string n = (i < 10 ? "0" : "") + std::to_string(i);
         AddText(pages[0], "line " + n + " of the double spaced thesis text which runs on and on along the", 72,
                 700 - 26.3f * i, 12);
     }
-    const Converted dropped = Convert(pages, "Communication Between Teachers 39");
-    const Converted kept = Convert(pages, "Communication Between Teachers 39", Furniture::Keep);
-    RAYOPDF_CHECK(dropped.score >= kEdgeRowRawTau && kept.md.find("Communication Between Teachers 39 special") != std::string::npos &&
+    const Converted dropped = Convert(pages, "Teacher Communication 39");
+    const Converted kept = Convert(pages, "Teacher Communication 39", Furniture::Keep);
+    RAYOPDF_CHECK(dropped.score >= kEdgeRowRawTau && kept.md.find("Teacher Communication 39 special") != std::string::npos &&
                       dropped.md.find("Communication") == std::string::npos &&
                       dropped.md.compare(0, 27, "special education teachers.") == 0,
                   2259);
+}
+
+// A running head the edge-row model takes for furniture, set at 1.5 body sizes, is left out: the
+// model takes rows up to kEdgeRowSizeLimit (1.6) body sizes. At 1.7 body sizes, where titles and
+// headings take over, it stays whatever its score.
+void TestLargeHead() {
+    const auto build = [](float size) {
+        std::vector<PageData> pages{NewPage()};
+        AddText(pages[0], "Annual Report 2014 23", 540 - 0.5f * size * 21, 760, size);
+        AddBody(pages[0], 51, 760 - 0.2f * size - 36 - 8, 12);
+        return Convert(pages, "Annual Report 2014 23");
+    };
+    const Converted large = build(15);
+    const Converted larger = build(17);
+    RAYOPDF_CHECK(large.score >= kEdgeRowRawTau && large.md.find("Annual Report") == std::string::npos, 2260);
+    RAYOPDF_CHECK(larger.score >= kEdgeRowRawTau && larger.md.find("Annual Report 2014 23") != std::string::npos, 2261);
 }
 
 } // namespace
@@ -212,5 +228,6 @@ int main() {
     TestCaptionGuard();
     TestSentenceGuard();
     TestJoinedHead();
+    TestLargeHead();
     return 0;
 }

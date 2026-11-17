@@ -37,7 +37,10 @@ PARAMS = {"objective": "binary", "num_leaves": 15, "max_depth": 5, "learning_rat
           "bagging_fraction": 1.0, "bagging_freq": 0, "feature_fraction": 1.0, "deterministic": True,
           "force_row_wise": True, "num_threads": 1, "seed": 0, "verbose": -1}
 ROUNDS, PATIENCE = 60, 10
-SIZE_LIMIT = 1.35  # the model may remove only rows at most this many body sizes
+# The model may remove only rows at most this many body sizes. Larger rows are often titles and
+# headings: over doclaynet-dev's rows the rules keep, the model's precision at τ_p is 0.98 from
+# 1.35 to 1.6 body sizes, 0.89 from 1.6 to 2 and 0.69 from 2 to 3.
+SIZE_LIMIT = 1.6
 ENDS_SENTENCE = 16  # nor rows that end a sentence (this feature 1)
 PRECISION = 0.90  # τ_p's least precision over the rows the model may take (9 of 10 furniture)
 

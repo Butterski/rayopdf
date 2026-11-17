@@ -306,6 +306,7 @@ gate on 2026-11-16 and replaces it after 0.4.0.
 |Edge rows (furniture the rules keep)|20,000 DocLayNet train pages: 46,947 rows, 21,425 furniture|doclaynet-dev: furniture F1 of rows 0.855 (rules) → 0.878 (rules and model)|0.3.0: failed, doclaynet-val heading_f1 −0.0003; 0.4.0 with local removals: passed, doclaynet-dev and doclaynet-val furniture_f1 +0.0020 and +0.0024|+0.24 %|1,740 nodes, about 46.6 KB|identical|0.4.0|
 |Table gaps (borderless columns)|2,400 generated tables (400 fixtures, 6 producers): 3,884 candidate gaps|1,109 gaps, all boundaries|not run|–|–|identical|no|
 |Edge rows v2 (after 0.4.0)|the same 20,000 pages: 46,817 rows, 21,425 furniture; 23 features|doclaynet-dev: 0.863 (rules) → 0.880 (rules and model at τ_p)|passed: doclaynet-dev and doclaynet-val furniture_f1 +0.0033 and +0.0097, olmOCR `headers_footers` +0.0027|−0.07 % against master (with 0.4.0's model)|1,740 nodes, 900 leaves, about 35.7 KB|identical|after 0.4.0|
+|Edge rows v3 (rows up to 1.6 body sizes)|the same 20,000 pages: 47,484 rows, 21,602 furniture; 23 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|see below|+0.003 % against the rules it ships with|1,740 nodes, 900 leaves|identical|pending the gate|
 
 **Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
 rules examine in a page's outer tenth (`src/layout/features.h`); it would remove a row the rules
@@ -378,6 +379,24 @@ passed (2026-11-16, master `8d38727` → `c197bc1`): doclaynet-dev furniture_f1 
 doclaynet-val furniture_f1 0.477742 → 0.487467 (+0.0097) and heading_f1 +0.00005, olmOCR
 `headers_footers` +0.0027; the largest fall doclaynet-val table_f1 −0.00005, within the epsilon.
 odl instructions −0.07 % against master.
+
+**Edge rows v3 (rows up to 1.6 body sizes).** v2's size limit, 1.35 body sizes, left out every
+row a little larger than the body that the rules keep, among them most running heads of annual
+reports and OCR'd patents. Over doclaynet-dev's rows the rules keep, the model at τ_p has a
+precision of 0.98 on rows of 1.35 to 1.6 body sizes (89 rows), 0.89 from 1.6 to 2 (54 rows), 0.69
+from 2 to 3 and 0.50 above (titles and headings): `eval/train/edge_rows.py`'s SIZE_LIMIT is 1.6,
+the largest band edge below which the precision stays at the 0.90 τ_p is chosen for. Retraining
+the unchanged script on master `76ed0ef`'s own features did not give v2's trees back (47,038 rows
+against 46,817: the rules moved since v2 was trained), so v3 is trained on the features of the
+rules it ships with (captions kept, page numbers under short text and patents' heads left out):
+47,484 rows, the same LightGBM settings, two trainings byte-identical; τ_p over the rows of at most
+1.6 body sizes is 0.795 (precision 0.902, recall 0.524). Test 2259's head is now "Teacher
+Communication 39" (v3 scores the old one 1.20, under τ_p's 1.36); tests 2260-2261: a running head
+at 1.5 body sizes is left out, at 1.7 it stays. Against the rules alone (the commit before it), in
+the declared profiles: doclaynet-dev furniture_f1 0.61622 → 0.61754 (+0.0013), heading_f1
+0.75788 → 0.75796; doclaynet-val furniture_f1 0.50529 → 0.50772 (+0.0024), heading_f1 0.70940 →
+0.70950; omni-dev and omni-val equal; odl and synthetic byte-identical. odl instructions +0.003 %
+against the rules alone.
 
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
