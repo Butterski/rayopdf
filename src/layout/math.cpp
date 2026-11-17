@@ -3149,21 +3149,37 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
     f.usable = true;
     f.u0 = line.u0, f.u1 = line.u1, f.size = line.size;
     f.bottom = INFINITY, f.top = -INFINITY;
-    std::string all;
+    // The equation number test reads the text of a line of 3 to 10 glyphs ("(12)", "(2.3a)"): its
+    // bytes streamed as they come, the first '(' and the second a digit, those between letters,
+    // digits or periods, the last ')'. `prev` is the byte before the one read (-1 before the first).
+    uint32_t bytes = 0;
+    int prev = -1;
+    bool number = true;
     for (uint32_t k = 0; k < line.count; ++k) {
         const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
         if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) continue;
         const std::string_view t = page.GlyphText(g);
         const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
         f.glyphs++;
-        if (f.glyphs <= 10) AppendText(all, t);  // the equation number test reads it up to 10 glyphs
+        if (f.glyphs <= 10 && number)
+            for (const char ch : t) {
+                const unsigned char c = static_cast<unsigned char>(ch);
+                if (bytes == 0) number = c == '(';
+                else if (bytes == 1) number = c >= '0' && c <= '9';
+                else number = (prev >= '0' && prev <= '9') || (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || prev == '.';
+                prev = c, ++bytes;
+                if (!number) break;
+            }
         f.bottom = Fmin(f.bottom, g.v - 0.25f * g.size);
         f.top = Fmax(f.top, g.v + 0.72f * g.size);
         if (ClassOf(font, g.flags, t, false) == kClassStrong || (!t.empty() && t[0] == '=')) f.math++;
     }
     // Words of text: MarkDisplayFormulas reads them only of a line with math or of 3 glyphs or
-    // fewer (else 0 stays).
+    // fewer (else 0 stays). Of a line of more glyphs it reads only whether it is a candidate (no
+    // word, one with 5 math glyphs or more, two with 8 or more): the count stops at `enough`, the
+    // fewest words that make it none.
     if (f.math > 0 || f.glyphs <= 3) {
+        const uint32_t enough = f.glyphs <= 3 ? UINT32_MAX : f.math >= 8 ? 3 : f.math >= 5 ? 2 : 1;
         uint32_t wordLetters = 0;
         bool textWord = true;
         // The word's first 8 bytes and its length (counted on to 16 and past by the last glyph, as
@@ -3175,7 +3191,7 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
             wordLetters = 0, textWord = true;
             wordSize = 0;
         };
-        for (uint32_t k = 0; k < line.count; ++k) {
+        for (uint32_t k = 0; k < line.count && f.words < enough; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
             if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) continue;
             if (k > 0 && (g.flags & kGlyphSpaceBefore)) endWord();
@@ -3200,13 +3216,7 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
         f.usable = false;
         return;
     }
-    // An equation number: "(12)", "(2.3a)".
-    if (f.glyphs >= 3 && f.glyphs <= 10 && all.front() == '(' && all.back() == ')') {
-        bool plain = true;
-        for (size_t i = 1; i + 1 < all.size() && plain; ++i)
-            plain = (all[i] >= '0' && all[i] <= '9') || (all[i] >= 'a' && all[i] <= 'z') || (all[i] >= 'A' && all[i] <= 'Z') || all[i] == '.';
-        f.number = plain && all[1] >= '0' && all[1] <= '9';
-    }
+    f.number = f.glyphs >= 3 && f.glyphs <= 10 && number && bytes >= 2 && prev == ')';
 }
 
 } // namespace
