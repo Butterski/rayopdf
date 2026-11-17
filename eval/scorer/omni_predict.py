@@ -17,12 +17,16 @@ read (omni_parse_bench.views):
   the origin at the top left, and its label of views.LABELS (heading, table, list, code, footnote,
   figure for an image, text for the rest), with its text.
 
-Text comes from each block's Markdown without its markup (md_text): emphasis delimiters, links
-(their text kept), images' syntax, <sup>/<sub> tags, heading marks, list markers, code fences and
-backslash escapes. Formulas of --math=latex stay as they are, their underscores, asterisks and
-backslashes being LaTeX: $$…$$, and $…$ by pandoc's rule (the opening dollar followed by a
-non-space, the closing one preceded by a non-space and followed by no digit; a dollar after a
-backslash is text). A missing or unreadable output gives an empty page, which fails its tests.
+Text comes from each block's Markdown without its markup (md_text): links (their text kept),
+images' syntax, <sup>/<sub> tags, heading marks, list markers, backslash escapes, code spans'
+backticks and strike-through tildes, and the asterisks and underscores CommonMark reads as
+emphasis (its delimiter runs, flanking rules and process-emphasis matching): an asterisk or an
+underscore that opens or closes no emphasis is text ("98.7*", "11.1**", "XP_003762497"), as
+every CommonMark reader shows it. A code block's text is its lines without the fences. Formulas
+of --math=latex stay as they are, their underscores, asterisks and backslashes being LaTeX:
+$$…$$, and $…$ by pandoc's rule (the opening dollar followed by a non-space, the closing one
+preceded by a non-space and followed by no digit; a dollar after a backslash is text). A missing
+or unreadable output gives an empty page, which fails its tests.
 Runs in rayopdf-eval-omni:1 (standard library only).
 """
 
@@ -31,18 +35,88 @@ import html
 import json
 import os
 import re
+import unicodedata
 
 LABEL = {"heading": "heading", "table": "table", "list_item": "list", "code": "code", "footnote": "footnote",
          "image": "figure", "paragraph": "text"}
 LINK = re.compile(r"!?\[([^\]]*)\]\((?:<[^>]*>|[^)\s]*)\)")
 TAGS = re.compile(r"</?(?:sup|sub)>")
-EMPHASIS = re.compile(r"(\*\*|__|\*|_|~~|`)")
+CODE = re.compile(r"(`+)(.+?)(?<!`)\1(?!`)")
+STRIKE = re.compile(r"~~(.+?)~~")
+DELIMITERS = re.compile(r"\*+|_+")
 ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 HEADING = re.compile(r"^#{1,6} ")
 MARKER = re.compile(r"^(?:[-*+]|\d{1,9}[.)])(?: \[[ xX]\])? ")
 NUMBER = re.compile(r"(\d{1,9})[.)] ")
 NOTE = re.compile(r"^\[\^(\d+)\]: ")
 MATH = re.compile(r"(?<!\\)\$\$.+?(?<!\\)\$\$|(?<![\\$])\$(?![\s$])[^$\n]*?(?<![\s\\])\$(?!\d)")
+
+
+def punctuation(ch):
+    return unicodedata.category(ch)[0] in "PS"
+
+
+def strip_emphasis(text):
+    """`text` with the delimiters CommonMark reads as emphasis taken out, the others kept."""
+    runs = []  # [start, end, char, can_open, can_close]
+    for m in DELIMITERS.finditer(text):
+        start, end = m.start(), m.end()
+        before = text[start - 1] if start > 0 else " "
+        after = text[end] if end < len(text) else " "
+        left_flanking = not after.isspace() and (not punctuation(after) or before.isspace() or punctuation(before))
+        right_flanking = not before.isspace() and (not punctuation(before) or after.isspace() or punctuation(after))
+        if m.group(0)[0] == "*":
+            can_open, can_close = left_flanking, right_flanking
+        else:
+            can_open = left_flanking and (not right_flanking or punctuation(before))
+            can_close = right_flanking and (not left_flanking or punctuation(after))
+        runs.append((start, end, m.group(0)[0], can_open, can_close))
+    if not runs:
+        return text
+    length = [end - start for start, end, _, _, _ in runs]
+    left = list(length)  # each run's delimiters not used by an emphasis
+    stack = list(range(len(runs)))
+    pos = 0
+    while pos < len(stack):
+        closer = stack[pos]
+        if not runs[closer][4] or left[closer] == 0:
+            pos += 1
+            continue
+        found = -1
+        for q in range(pos - 1, -1, -1):
+            opener = stack[q]
+            if runs[opener][2] != runs[closer][2] or not runs[opener][3] or left[opener] == 0:
+                continue
+            both = runs[opener][4] or runs[closer][3]
+            total = length[opener] + length[closer]
+            if both and total % 3 == 0 and not (length[opener] % 3 == 0 and length[closer] % 3 == 0):
+                continue
+            found = q
+            break
+        if found < 0:
+            if runs[closer][3]:
+                pos += 1
+            else:
+                del stack[pos]
+            continue
+        opener = stack[found]
+        use = 2 if left[opener] >= 2 and left[closer] >= 2 else 1
+        left[opener] -= use
+        left[closer] -= use
+        del stack[found + 1:pos]
+        pos = found + 1
+        if left[opener] == 0:
+            del stack[found]
+            pos = found
+        if left[closer] == 0:
+            del stack[pos]
+    out, at = [], 0
+    for (start, end, ch, _, _), kept in zip(runs, left):
+        out.append(text[at:start])
+        out.append(ch * kept)
+        at = end
+    out.append(text[at:])
+    return "".join(out)
 
 
 def md_text(markdown):
@@ -59,12 +133,19 @@ def md_text(markdown):
     held = []
     hold = lambda kept: held.append(kept) or f"\ue000{len(held) - 1}\ue001"
     text = MATH.sub(lambda m: hold(m.group(0)), text)
+    text = CODE.sub(lambda m: hold(m.group(2)), text)
     text = LINK.sub(r"\1", text)
     text = TAGS.sub("", text)
     text = ESCAPE.sub(lambda m: hold(m.group(1)), text)
-    text = EMPHASIS.sub("", text)
+    text = STRIKE.sub(r"\1", text)
+    text = strip_emphasis(text)
     text = re.sub("\ue000(\\d+)\ue001", lambda m: held[int(m.group(1))], text)
     return text.strip()
+
+
+def code_text(markdown):
+    """A code block's text: its lines without the fences."""
+    return "\n".join(line for line in markdown.split("\n") if not line.startswith("```")).strip()
 
 
 def table_html(block):
@@ -116,7 +197,7 @@ def page_html(blocks):
         elif kind in ("paragraph", "footnote"):
             out.append(f"<p>{html.escape(md_text(block['markdown']))}</p>")
         elif kind == "code":
-            out.append(f"<pre>{html.escape(md_text(block['markdown']))}</pre>")
+            out.append(f"<pre>{html.escape(code_text(block['markdown']))}</pre>")
         elif kind == "table":
             out.append(table_html(block))
     if open_list:
@@ -137,7 +218,8 @@ def page_blocks(document):
         x1 = max(b[2] for b in boxes); y1 = max(b[3] for b in boxes)
         clamp = lambda v: min(1.0, max(0.0, v))
         bbox = [clamp(x0 / width), clamp(1 - y1 / height), clamp(x1 / width), clamp(1 - y0 / height)]
-        out.append({"label": label, "bbox": bbox, "text": md_text(block.get("markdown", ""))})
+        text = code_text if block["type"] == "code" else md_text
+        out.append({"label": label, "bbox": bbox, "text": text(block.get("markdown", ""))})
     return out
 
 
