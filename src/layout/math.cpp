@@ -2875,36 +2875,57 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
     for (size_t w = 0; w < words; ++w) {
         const uint32_t b = wordStart[w], e = wordStart[w + 1];
         // Letters of the word, and those on its baseline: a letter alone there ("x", "d" of "dᵢ")
-        // is a variable when italic.
-        uint32_t letters = 0, baseLetters = 0;
+        // is a variable when italic. Counted when a glyph first asks (UINT32_MAX before): `alone`
+        // changes only the class of an italic glyph ClassOf takes for text without it (to neutral),
+        // and the Greek test reads them.
+        uint32_t letters = UINT32_MAX, baseLetters = 0;
+        const auto countLetters = [&]() {
+            if (letters != UINT32_MAX) return;
+            letters = 0;
+            for (uint32_t k = b; k < e; ++k) {
+                const uint32_t letter = IsLetterCp(FirstCp(glyphs[k].text)) ? 1 : 0;
+                letters += letter;
+                baseLetters += glyphs[k].script ? 0 : letter;
+            }
+        };
         bool scripted = false;  // a raised or lowered glyph in the word
-        for (uint32_t i = b; i < e; ++i) {
-            const uint32_t letter = IsLetterCp(FirstCp(glyphs[i].text)) ? 1 : 0;
-            letters += letter;
-            baseLetters += glyphs[i].script ? 0 : letter;
-            scripted = scripted || glyphs[i].script;
-        }
         // The word's glyphs of the Greek script, counted when a glyph first asks (UINT32_MAX before).
         uint32_t greek = UINT32_MAX;
         bool strongWord = false;  // a strong glyph in the word: its class is final once set
+        // The class of each glyph is worked out in `c` and stored once (a byte store may alias
+        // anything the loop reads); `before` is the glyph before's (text for one passed over).
+        uint8_t before = kClassText;
         for (uint32_t i = b; i < e; ++i) {
             const InlineGlyph& g = glyphs[i];
-            if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) continue;
-            cls[i] = ClassOf(g.font, g.glyph->flags, g.text, letters == 1 || baseLetters == 1);
+            scripted = scripted || g.script;
+            if (g.note || !g.glyph || (g.glyph->flags & (kGlyphImage | kGlyphInvisible))) {
+                before = kClassText;
+                continue;
+            }
+            const uint16_t flags = g.glyph->flags;
+            uint8_t c = ClassOf(g.font, flags, g.text, false);
+            if (c == kClassText && (flags & kGlyphItalic)) {
+                countLetters();
+                if (letters == 1 || baseLetters == 1) c = ClassOf(g.font, flags, g.text, true);
+            }
             // Greek in a word of Greek letters (Greek prose, accented or polytonic too) is text.
-            if (cls[i] == kClassStrong && g.font == static_cast<uint8_t>(MathFont::None) && IsGreek(FirstCp(g.text)) &&
-                letters > 1) {
-                if (greek == UINT32_MAX) {
-                    greek = 0;
-                    for (uint32_t k = b; k < e; ++k) greek += IsGreekScript(FirstCp(glyphs[k].text)) ? 1 : 0;
+            if (c == kClassStrong && g.font == static_cast<uint8_t>(MathFont::None) && IsGreek(FirstCp(g.text))) {
+                countLetters();
+                if (letters > 1) {
+                    if (greek == UINT32_MAX) {
+                        greek = 0;
+                        for (uint32_t k = b; k < e; ++k) greek += IsGreekScript(FirstCp(glyphs[k].text)) ? 1 : 0;
+                    }
+                    if (greek == letters) c = kClassText;
                 }
-                if (greek == letters) cls[i] = kClassText;
             }
             // Raised or lowered glyphs next to math are its scripts.
-            if (cls[i] == kClassText && g.script && i > b && cls[i - 1] != kClassText) cls[i] = kClassNeutral;
-            any = any || cls[i] == kClassStrong;
-            strongWord = strongWord || cls[i] == kClassStrong;
+            if (c == kClassText && g.script && i > b && before != kClassText) c = kClassNeutral;
+            cls[i] = c;
+            before = c;
+            strongWord = strongWord || c == kClassStrong;
         }
+        any = any || strongWord;
         // A letter of a text font's italics with a raised or lowered glyph right after it, at the
         // word's start or after a bracket or another script, is a variable with its scripts (math
         // set in Times Italic: "S_n", "I^-_n", "X^{work}_n", "u^L_nX^{Work}_n"), not the end of an
