@@ -1110,6 +1110,20 @@ void TestTitleNotes() {
     Show("excerpt notes", bare);
     RAYOPDF_CHECK(Contains(bare, "source.[^1]") && Contains(bare, "\n\n[^1]: Doe, On Footnotes, 2021.\n"), 444);
     RAYOPDF_CHECK(Contains(titled, "source.[^1]") && Contains(titled, "\n\n[^1]: Doe, On Footnotes, 2021.\n"), 445);
+    // A page that opens at a numbered section ("2.2 Structure of the tender") is inside its
+    // document: the note its short paragraph references stays a footnote.
+    std::vector<PageData> inside{NewPage(1)};
+    AddText(inside[0], "2.2 Structure of the tender", 72, 740, 12, kGlyphBold);
+    float at = AddText(inside[0], "Every tender gives its information in the e-Submission system.", 72, 716, 10);
+    AddText(inside[0], "1", at, 720, 6);
+    AddText(inside[0], "2.3 Submission of the tender", 72, 690, 12, kGlyphBold);
+    for (int i = 0; i < 20; ++i)
+        AddText(inside[0], "Body text of the section that runs on long enough to fill a whole line", 72, 666 - 14.0f * i, 10);
+    at = AddText(inside[0], "1", 72, 94, 5);
+    AddText(inside[0], "See the e-Submission guide.", at, 90, 8);
+    const std::string section = Run(inside);
+    Show("section opening notes", section);
+    RAYOPDF_CHECK(Contains(section, "system.[^1]") && Contains(section, "\n\n[^1]: See the e-Submission guide.\n"), 1940);
 }
 
 // A note printed at the foot of a page before the last is written after the paragraph that

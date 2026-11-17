@@ -34,6 +34,9 @@ constexpr float kSmallTitleSize = 1.25f;
 // A heading line over a title of at least this times its size, the page's topmost text, is a
 // kicker (BuildBlocks).
 constexpr float kKickerSize = 1.3f;
+// A numbered section title set bold below the body size (REVTeX's at 0.9) is one from this
+// times the body size up (BuildBlocks).
+constexpr float kSmallHeadingSize = 0.8f;
 
 struct Info {
     uint32_t page = 0, line = 0;
@@ -914,7 +917,23 @@ struct RawBlock {
     // glyphs of its line; the paragraph's block, on the same line, starts `labelSkip` glyphs in.
     uint32_t take = 0, labelSkip = 0;
     bool lead = false;  // the first line is a list marker alone, the second its text on its baseline
+    bool italicTitle = false;  // an italic title line its paragraph would have run on from (ItalicTitle)
 };
+
+// A short line in italics over the upright text it titles ("Directors' appointment and selection"
+// over its paragraph): `line` upright in direction, all italic and not bold, not opening in lower
+// case or with a list's marker, of four characters or more, ending without a sentence's or a
+// clause's end, neither a row's cell nor a contents entry, short of the `next` line's right edge
+// by more than 15 % of their width; `next` not italic and not going on in lower case.
+bool ItalicTitle(const Info& line, const Info& next) {
+    if (!(line.flags & kLineAllItalic) || (line.flags & kLineAllBold) || (next.flags & kLineAllItalic)) return false;
+    if (line.dir != 0 || line.rowPeer || line.pageRef || !line.hasLetter || line.startsLower || next.startsLower ||
+        line.listStart() || line.endsTerminal || line.chars < 4)
+        return false;
+    if (line.lastCp == ',' || line.lastCp == '-') return false;
+    const float left = Fmin(line.u0, next.u0), right = Fmax(line.u1, next.u1);
+    return line.u1 < right - 0.15f * (right - left);
+}
 
 // A line that starts with the label "Abstract" run in with the abstract's text: the word and a
 // mark ("Abstract—We show", "ABSTRACT. In 1954", "Abstract: …"), or the word in bold before text
@@ -1605,9 +1624,10 @@ constexpr uint64_t kMaxTitleGlyphs = uint64_t(1) << 16;  // glyphs of the title 
 // are written as paragraphs under the title block, before the abstract (or the first heading),
 // each with its mark first, and their marks stay raised text. The title block is the document's
 // first blocks up to that point, all on its first page. The other notes are numbered anew in
-// their order. The block must open with the title (a heading) and hold short paragraphs only: a
-// page that starts with body text (an excerpt) has no title block. `blocks` and `lines` hold the
-// body only; `notes` index `noteLines`.
+// their order. The block must open with the title (a heading, not a numbered section's: a page
+// that opens at "2.2 Structure of the tender" is inside a document) and hold short paragraphs
+// only: a page that starts with body text (an excerpt) has no title block. `blocks` and `lines`
+// hold the body only; `notes` index `noteLines`.
 void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, std::vector<BlockLine>& lines,
                 std::vector<Block>& notes, const std::vector<BlockLine>& noteLines, std::vector<NoteRef>& refs) {
     if (notes.empty() || refs.empty() || blocks.size() < 2 || blocks[0].count == 0 ||
@@ -1615,6 +1635,11 @@ void TitleNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, 
         return;
     const uint32_t page = lines[blocks[0].first].page;
     std::string line;
+    {
+        const BlockLine& bl = lines[blocks[0].first];
+        LineText(pages[bl.page], pages[bl.page].lines[bl.line], line, bl.skip);
+        if (NumberingPrefix(line) > 0) return;
+    }
     size_t abstract = 0;
     for (size_t i = 1; i < blocks.size() && i <= kTitleBlocks; ++i) {
         const Block& b = blocks[i];
@@ -2027,15 +2052,31 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 b.bold = (in.flags & kLineAllBold) != 0;
                 continue;
             } else if (b.first + b.count == i && Continues(b, first, last, in, monoDocument, firstPitch)) {
-                if (b.count == 1 || (b.lead && b.count == 2)) {
-                    b.pitch = last.baseline - in.baseline;
-                    b.bodyU0 = in.u0;
-                } else {
-                    b.bodyU0 = Fmin(b.bodyU0, in.u0);
+                // An italic title line its paragraph of two lines or more would run on from ends
+                // its block there (a lone italic word over one line, "Required" over "Type:
+                // string", is the paragraph's own text).
+                if (b.count == 1 && b.note == 0 && !out.italicBody && last.size >= 0.915f * body && ItalicTitle(last, in) &&
+                    i + 1 < infos.size() && infos[i + 1].note == 0) {
+                    RawBlock para;
+                    para.first = i;
+                    para.count = 1;
+                    para.bodyU0 = in.u0;
+                    para.right = in.u1;
+                    para.mono = in.mono >= kMonoShare && !monoDocument;
+                    para.bold = (in.flags & kLineAllBold) != 0;
+                    b.italicTitle = Continues(para, in, in, infos[i + 1], monoDocument, firstPitch);
                 }
-                b.right = Fmax(b.right, in.u1);
-                b.count++;
-                continue;
+                if (!b.italicTitle) {
+                    if (b.count == 1 || (b.lead && b.count == 2)) {
+                        b.pitch = last.baseline - in.baseline;
+                        b.bodyU0 = in.u0;
+                    } else {
+                        b.bodyU0 = Fmin(b.bodyU0, in.u0);
+                    }
+                    b.right = Fmax(b.right, in.u1);
+                    b.count++;
+                    continue;
+                }
             }
         }
         RawBlock b;
@@ -2606,6 +2647,28 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             }
             continue;
         }
+        // A numbered section title set bold a size below the text (REVTeX's "I. INTRODUCTION" and
+        // "A. Model Hamiltonian" at nine tenths of the body, a tender's "1.2 SCOPE"): one or two
+        // bold lines from kSmallHeadingSize times the body size up, opening with a section number
+        // (NumberingPrefix), without a sentence's or a clause's end, over text on its page that is
+        // neither bold, nor set as large as a heading, nor going on in lower case. A table's bold
+        // header row in that size names no section ("2019 2018", "31 December").
+        if (shortBlock && b.bold && !boldDocument && b.count <= 2 && chars <= 100 && size >= body * kSmallHeadingSize &&
+            unpunctuated && (!first.listStart() || enumerated) && r + 1 < raws.size()) {
+            const RawBlock& n = raws[r + 1];
+            const Info& below = infos[n.first];
+            if (below.page == first.page && below.dir == first.dir && !n.bold && !n.mono && n.note == 0 &&
+                !below.startsLower && below.size < kHeadingSize * body &&
+                !(below.flags & (kLineTable | kLineFormula | kLineAnchor | kLineFurniture | kLineInvisible))) {
+                const PageData& page = pages[first.page];
+                LineText(page, page.lines[first.line], line);
+                if (NumberingPrefix(line) > 0 && !caption()) {
+                    k.kind = BlockKind::Heading;
+                    k.boldHeading = true;
+                    continue;
+                }
+            }
+        }
         // Its italic kin, numbered: one line of body size in italics opening with a section number
         // of two levels or more ("2.1. Spatial discretization"), without a sentence's end, over
         // upright text on its page, in lower case after its capitals: a line in italic capitals is
@@ -2618,6 +2681,13 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         if (shortBlock && b.count == 1 && first.sectionDepth >= 2 && (first.flags & kLineAllItalic) && !out.italicBody &&
             size >= body * 0.915f && titleEnd && r + 1 < raws.size() && infos[raws[r + 1].first].page == first.page &&
             !(infos[raws[r + 1].first].flags & kLineAllItalic) && !caption() && lowerCase()) {
+            k.kind = BlockKind::Heading;
+            k.boldHeading = true;
+            continue;
+        }
+        // An italic title line its paragraph would have run on from (RawBlock::italicTitle) heads
+        // it, about the body's size, in a document whose text is not set in italics.
+        if (b.italicTitle && shortBlock && b.count == 1 && !out.italicBody && size >= body * 0.915f && !caption()) {
             k.kind = BlockKind::Heading;
             k.boldHeading = true;
             continue;

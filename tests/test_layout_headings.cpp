@@ -4,8 +4,8 @@
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
 // cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
 // chapter's number, a division's label and a display title's stacked lines; the centred headings
-// of a page's own OCR layer; numbered section titles in italics on their own line and centred
-// over their text.
+// of a page's own OCR layer; numbered section titles in italics on their own line, centred over
+// their text and set bold below the body's size; a short italic line over its upright paragraph.
 // Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849 and
 // 2500-2549.
 #include "check.h"
@@ -670,6 +670,75 @@ void TestNumberedTitles() {
     RAYOPDF_CHECK(Contains(md, "A program product") && HeadingWith(md, "A program product").empty(), 2509);
 }
 
+// A numbered section title set bold below the body's size (REVTeX's "I. INTRODUCTION" and "A.
+// Model Hamiltonian" in 9 points over 10-point text) heads its section; a table's bold header row
+// in that size ("2019 2018"), an unnumbered bold line and a numbered one over bold text do not.
+void TestSmallBoldTitles() {
+    std::vector<PageData> paper{NewPage(1)};
+    AddBody(paper[0], 740, 4);
+    AddText(paper[0], "I. INTRODUCTION", 210, 680, 9, kGlyphBold);
+    AddBody(paper[0], 660, 4);
+    AddText(paper[0], "A. Model Hamiltonian", 200, 600, 9, kGlyphBold);
+    AddBody(paper[0], 580, 4);
+    std::string md = Run(paper);
+    Show("small bold numbered titles", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "I. INTRODUCTION").empty() && !HeadingWith(md, "A. Model Hamiltonian").empty(), 2512);
+    const auto over = [](std::string_view line, bool boldBelow) {
+        std::vector<PageData> page{NewPage(1)};
+        AddBody(page[0], 740, 4);
+        AddText(page[0], line, 72, 680, 9, kGlyphBold);
+        for (int i = 0; i < 3; ++i)
+            AddText(page[0], "Body text of the section that runs long enough to be a paragraph line.", 72, 666 - 12.0f * i,
+                    10, boldBelow ? kGlyphBold : 0);
+        AddBody(page[0], 600, 4);
+        const std::string out = Run(page);
+        Show("small bold line", out);
+        return out;
+    };
+    md = over("2019 2018", false);
+    RAYOPDF_CHECK(Contains(md, "2019") && HeadingWith(md, "2019").empty(), 2513);
+    md = over("Total revenue by segment", false);
+    RAYOPDF_CHECK(Contains(md, "Total revenue") && HeadingWith(md, "Total revenue").empty(), 2514);
+    md = over("B. Results of the model", true);
+    RAYOPDF_CHECK(Contains(md, "Results of the model") && HeadingWith(md, "Results of the model").empty(), 2515);
+}
+
+// A short italic line its upright paragraph runs on from at the paragraph's pitch titles it
+// ("Directors' appointment" over its text); an italic line ending a sentence, one whose paragraph
+// goes on in lower case, a long italic line and a lone italic word over a single line of text
+// are the paragraph's own text.
+void TestItalicTitleLine() {
+    const auto page = [](std::string_view line, std::string_view next) {
+        std::vector<PageData> doc{NewPage(1)};
+        AddBody(doc[0], 740, 4);
+        AddText(doc[0], line, 72, 680, 10, kGlyphItalic);
+        AddText(doc[0], next, 72, 668, 10);
+        AddBody(doc[0], 656, 3);
+        const std::string out = Run(doc);
+        Show("italic line over a paragraph", out);
+        return out;
+    };
+    const std::string body = "Body text of the section that runs long enough to be a paragraph line.";
+    std::string md = page("Directors' appointment", body);
+    const std::string_view title = HeadingWith(md, "Directors' appointment");
+    RAYOPDF_CHECK(!title.empty() && title.find("Body") == std::string_view::npos, 2516);
+    md = page("The board met twice.", body);
+    RAYOPDF_CHECK(Contains(md, "The board met") && HeadingWith(md, "The board met").empty(), 2517);
+    md = page("Directors' appointment", "body text of the section that runs long enough to be a paragraph line.");
+    RAYOPDF_CHECK(Contains(md, "Directors") && HeadingWith(md, "Directors").empty(), 2518);
+    md = page("Directors are appointed by the members at the general meeting of the", body);
+    RAYOPDF_CHECK(Contains(md, "Directors are") && HeadingWith(md, "Directors are").empty(), 2519);
+    // A lone italic word over one line of text, the next paragraph set apart below it.
+    std::vector<PageData> lone{NewPage(1)};
+    AddBody(lone[0], 740, 4);
+    AddText(lone[0], "Required", 72, 680, 10, kGlyphItalic);
+    AddText(lone[0], "Type: string or function", 72, 668, 10);
+    AddBody(lone[0], 630, 3);
+    md = Run(lone);
+    Show("italic word over one line", md);
+    RAYOPDF_CHECK(Contains(md, "Required") && HeadingWith(md, "Required").empty(), 2520);
+}
+
 } // namespace
 
 int main() {
@@ -690,6 +759,8 @@ int main() {
     TestDivisionLabel();
     TestOcrLayerHeadings();
     TestNumberedTitles();
+    TestSmallBoldTitles();
+    TestItalicTitleLine();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }
