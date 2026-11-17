@@ -426,13 +426,14 @@ size_t NumberingPrefix(std::string_view t) {
 
 // The outline matching key: lowercase ASCII letters and digits plus every non-ASCII byte but
 // those of hyphens (U+00AD, U+2010, U+2011: a bookmark and its line may differ in them; a dash
-// may be a list's bullet); `stripNumbering` leaves the section numbering out (NumberingPrefix).
-void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
+// may be a list's bullet), written over `key` from byte `at` on. The key of texts joined by
+// spaces is their keys joined: a space adds nothing, and no hyphen's bytes span a space.
+void WriteMatchKey(std::string_view text, std::string& key, size_t at) {
     // A key is never longer than its text: written in place, then cut to its length.
-    key.resize(text.size());
+    key.resize(at + text.size());
     char* const out = &key[0];
-    size_t n = 0;
-    for (size_t i = stripNumbering ? NumberingPrefix(text) : 0; i < text.size(); ++i) {
+    size_t n = at;
+    for (size_t i = 0; i < text.size(); ++i) {
         const char c = text[i];
         const unsigned char u = static_cast<unsigned char>(c);
         if (c >= 'A' && c <= 'Z') {
@@ -449,6 +450,28 @@ void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
         }
     }
     key.resize(n);
+}
+
+// The outline matching key of `text` (WriteMatchKey); `stripNumbering` leaves the section
+// numbering out (NumberingPrefix).
+void MatchKey(std::string_view text, std::string& key, bool stripNumbering) {
+    WriteMatchKey(stripNumbering ? text.substr(NumberingPrefix(text)) : text, key, 0);
+}
+
+// Key bytes a section numbering can hold (NumberingPrefix): "appendix" and eight parts of up to
+// eight letters or digits.
+constexpr size_t kMaxNumberingKey = 72;
+
+// The bytes of MatchKey(t, key, false) that MatchKey(t, key, true) leaves out: the numbering's
+// letters and digits. The numbering is ASCII, so the stripped key is the rest of the whole one.
+size_t NumberingKeyBytes(std::string_view t) {
+    const size_t p = NumberingPrefix(t);
+    size_t n = 0;
+    for (size_t i = 0; i < p; ++i) {
+        const char c = t[i];
+        n += (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    }
+    return n;
 }
 
 // A table's or figure's label as an OCR layer spells it, by its match key (MatchKey): "table",
@@ -2165,15 +2188,20 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         break;  // a document has one abstract
     }
 
-    // Outline titles (D5: outline > style > numbering).
+    // Outline titles (D5: outline > style > numbering). A text whose key outgrows the longest
+    // title key by more than a numbering can hold (`keyLimit`) matches none, stripped or not.
     std::unordered_map<std::string, std::vector<uint32_t>> titles;
     std::vector<uint8_t> titleUsed(outline.size(), 0);
+    size_t maxTitleKey = 0;
     for (uint32_t t = 0; t < outline.size(); ++t) {
         MatchKey(outline[t].title, scratch, false);
+        maxTitleKey = std::max(maxTitleKey, scratch.size());
         if (!scratch.empty()) titles[scratch].push_back(t);
-        MatchKey(outline[t].title, scratch, true);
+        scratch.erase(0, NumberingKeyBytes(outline[t].title));
         if (!scratch.empty()) titles[scratch].push_back(t);
     }
+    const size_t keyLimit = maxTitleKey + kMaxNumberingKey;
+    std::string key;
     // A heading set like the text under it (IEEE's italic "B. Problem statement" in the body's
     // size and pitch) was grouped with that paragraph: where the first line of a block of body
     // text alone is an outline title and the block as a whole is none, the line makes a block of
@@ -2186,6 +2214,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         uint32_t firstLine = UINT32_MAX;
         const auto titled = [&](uint32_t from, uint32_t count) {
             joined.clear();
+            key.clear();
             for (uint32_t i = from; i < from + count; ++i) {
                 if (i == firstLine) {
                     scratch = firstText;
@@ -2196,12 +2225,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 }
                 if (!joined.empty()) joined.push_back(' ');
                 joined += scratch;
+                WriteMatchKey(scratch, key, key.size());
+                if (key.size() > keyLimit) return false;
             }
-            for (int strip = 0; strip < 2; ++strip) {
-                MatchKey(joined, scratch, strip == 1);
-                if (titles.find(scratch) != titles.end()) return true;
-            }
-            return false;
+            if (key.size() <= maxTitleKey && titles.find(key) != titles.end()) return true;
+            key.erase(0, NumberingKeyBytes(joined));
+            return key.size() <= maxTitleKey && titles.find(key) != titles.end();
         };
         const auto block = [&](uint32_t from, uint32_t count, const RawBlock& whole) {
             RawBlock b = whole;
@@ -2483,15 +2512,20 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         };
         if (!titles.empty() && b.count <= 4 && chars <= 300 && letter && !contentsEntry()) {
             text.clear();
-            for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+            key.clear();
+            bool fits = true;
+            for (uint32_t i = b.first; i < b.first + b.count && fits; ++i) {
                 const PageData& page = pages[infos[i].page];
                 LineText(page, page.lines[infos[i].line], line);
                 if (!text.empty()) text.push_back(' ');
                 text += line;
+                WriteMatchKey(line, key, key.size());
+                fits = key.size() <= keyLimit;
             }
-            for (int strip = EndsInLeader(text) ? 2 : 0; strip < 2 && k.level == 0; ++strip) {
-                MatchKey(text, scratch, strip == 1);
-                auto it = titles.find(scratch);
+            for (int strip = !fits || EndsInLeader(text) ? 2 : 0; strip < 2 && k.level == 0; ++strip) {
+                if (strip == 1) key.erase(0, NumberingKeyBytes(text));
+                if (key.size() > maxTitleKey) continue;
+                auto it = titles.find(key);
                 if (it == titles.end()) continue;
                 for (uint32_t t : it->second) {
                     if (titleUsed[t]) continue;
