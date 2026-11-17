@@ -1797,18 +1797,63 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             }
             return false;
         };
-        for (size_t r = rowBegin; r < headerEnd && !levels; ++r) {
+        // Whether line r holds a label over several columns: across a column boundary, or centred
+        // over a gap.
+        const auto levelLine = [&](size_t r) {
             float x0 = 0, x1 = -INFINITY;  // the label so far
-            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !levels; ++k) {
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
                 const TWord& w = words_[rowWords[k]];
                 if (!(w.x0 - x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) {
-                    if (x1 > -INFINITY) levels = centred(r, x0, x1);
+                    if (x1 > -INFINITY && centred(r, x0, x1)) return true;
                     x0 = w.x0;
                 }
                 x1 = w.x1;
-                for (const Gap& gap : gaps) levels = levels || (x0 < gap.a && x1 > gap.b);
+                for (const Gap& gap : gaps)
+                    if (x0 < gap.a && x1 > gap.b) return true;
             }
-            if (!levels && x1 > -INFINITY) levels = centred(r, x0, x1);
+            return x1 > -INFINITY && centred(r, x0, x1);
+        };
+        // The header's lines down to its lowest label over several columns (or its lowest partial
+        // rule), and which of them hold such labels.
+        size_t leaf = rowBegin;
+        uint64_t levelLines = 0;  // bit r - rowBegin: line r holds a label over several columns
+        for (size_t r = rowBegin; r < headerEnd; ++r)
+            if (levelLine(r)) {
+                levels = true, leaf = r + 1;
+                if (r - rowBegin < 64) levelLines |= uint64_t(1) << (r - rowBegin);
+            }
+        for (const auto& [line, rule] : spans) leaf = std::max(leaf, line + 1);
+        // Two lines of labels over several columns, each label of the lower line under one of the
+        // upper line: the labels' text wrapped ("Homocysteine" over "(µM)" over two columns), one
+        // header row.
+        for (size_t r = rowBegin + 1; levels && r < leaf && r - rowBegin < 64; ++r) {
+            if (!(levelLines >> (r - 1 - rowBegin) & 1) || !(levelLines >> (r - rowBegin) & 1) || cut[r - rowBegin]) continue;
+            constexpr size_t kMaxLabels = 64;
+            Gap upper[kMaxLabels];
+            size_t count = 0;
+            const auto labelsOf = [&](size_t q, const auto& each) {
+                for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count;) {
+                    const float a = words_[rowWords[k]].x0;
+                    float b = words_[rowWords[k]].x1;
+                    for (++k; k < rows[q].first + rows[q].count; ++k) {
+                        const TWord& w = words_[rowWords[k]];
+                        if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) break;
+                        b = Fmax(b, w.x1);
+                    }
+                    if (!each(Gap{a, b})) return false;
+                }
+                return true;
+            };
+            labelsOf(r - 1, [&](const Gap& l) { return count < kMaxLabels && (upper[count++] = l, true); });
+            const float slack = 0.5f * rows[r].size;
+            const bool under = labelsOf(r, [&](const Gap& l) {
+                for (size_t i = 0; i < count; ++i)
+                    if (l.a >= upper[i].a - slack && l.b <= upper[i].b + slack) return true;
+                return false;
+            });
+            if (!under) continue;
+            const auto at = std::lower_bound(starts.begin(), starts.end(), r);
+            if (at != starts.end() && *at == r) starts.erase(at);
         }
         // Header lines set as far apart as the body's rows (the median pitch of the body rows' first
         // lines) are rows of their own: a line of units under the labels, as TeX sets two rows. The

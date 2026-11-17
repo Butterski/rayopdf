@@ -3030,6 +3030,42 @@ void TestSectionLabelBetweenParts() {
     RAYOPDF_CHECK(Count(md, "| --- | --- | --- | --- | --- |\n") == 1 && Contains(md, "| Maternal race |  |  |  |  |\n| White | 231 (60.3%) |"), 2312);
 }
 
+// Labels over two columns each wrapped onto a second line ("Triglycerides" over "(mg/dL)", both
+// over "Base" and "Diff") beside a stub label wrapped too ("Study" over "year": the second line no
+// wrapped text of the first alone): one label's text, one header row over the row of sub-labels.
+void TestWrappedLevelLabels() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 360, 714);
+    AddText(page, "Study", 76, 700);
+    AddText(page, "year", 76, 689);
+    AddText(page, "Triglycerides", 152.5f, 700);
+    AddText(page, "Homocysteine", 255, 700);
+    AddText(page, "(mg/dL)", 167.5f, 689);
+    AddText(page, "(uM)", 275, 689);
+    AddText(page, "Base", 150, 676);
+    AddText(page, "Diff", 200, 676);
+    AddText(page, "Base", 260, 676);
+    AddText(page, "Diff", 310, 676);
+    HLine(page, 72, 360, 670);
+    const char* const names[] = {"Kim", "Lee", "Park", "Cho"};
+    float y = 658;
+    for (int r = 0; r < 4; ++r, y -= 14) {
+        AddText(page, names[r], 76, y);
+        AddText(page, std::to_string(10 + r) + ".4", 150, y);
+        AddText(page, "-" + std::to_string(1 + r) + ".5", 200, y);
+        AddText(page, std::to_string(20 + r) + ".1", 260, y);
+        AddText(page, "+" + std::to_string(2 + r) + ".8", 310, y);
+    }
+    HLine(page, 72, 360, y + 8);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("wrapped level labels", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Study year") && Contains(md, "Triglycerides (mg/dL)") && Contains(md, "Homocysteine (uM)") &&
+                      !Contains(md, "(uM) Base"),
+                  2316);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3132,6 +3168,7 @@ int main(int argc, char** argv) {
     TestRuledTallHeaderBand();
     TestCmidruleInGap();
     TestSectionLabelBetweenParts();
+    TestWrappedLevelLabels();
     std::puts("test_layout_tables: ok");
     return 0;
 }
