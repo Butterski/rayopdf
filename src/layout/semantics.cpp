@@ -62,6 +62,7 @@ struct Info {
     bool markerAlone = false;  // the marker is the whole line: its text is the next line on its baseline
     bool bracketed = false;    // a reference entry's number in brackets ("[12]")
     bool numbering = false;  // only a section or item number ("1.5.", "IV", "(3)")
+    uint8_t sectionDepth = 0;  // a section number of two levels or more opens the line ("2.1.", "4.1.2"): its depth
     bool hollowBox = false;  // its marker is "□": an open task box beside done boxes (⊠, ☒)
     float stripX0 = 0, stripX1 = 0;  // a band of shading behind the line alone (stripX1 > stripX0)
     bool topBand = false;    // the page's topmost line, alone in its top 6 %
@@ -442,6 +443,28 @@ bool EndsInLeader(std::string_view t) {
     return dots >= 4;
 }
 
+// The text opens with a section number of one level and a title after it: an Arabic number of
+// one or two digits or a roman one in capitals, a period and a space ("5. Conclusion", "IV.
+// SURVEY"). Not "(2)", "i." or "a.": a list's or a note's markers.
+bool OpensWithSectionNumber(std::string_view t) {
+    size_t n = 0;
+    if (!t.empty() && t[0] >= '0' && t[0] <= '9') {
+        while (n < t.size() && n < 3 && t[n] >= '0' && t[n] <= '9') ++n;
+        if (n > 2) return false;
+    } else {
+        while (n < t.size() && n < 7 && (t[n] == 'I' || t[n] == 'V' || t[n] == 'X')) ++n;
+        if (n == 0 || n > 6) return false;
+    }
+    return n + 2 < t.size() && t[n] == '.' && t[n + 1] == ' ' && t[n + 2] != ' ';
+}
+
+// The text holds an ASCII lower-case letter.
+bool HasLowerAscii(std::string_view t) {
+    for (const char c : t)
+        if (c >= 'a' && c <= 'z') return true;
+    return false;
+}
+
 // The name of a standard unnumbered section of a paper, with or without a number before it
 // ("Abstract", "REFERENCES", "7. Acknowledgments"). `key` is scratch.
 bool StandardSection(std::string_view t, std::string& key) {
@@ -609,6 +632,19 @@ void LineInfo(const PageData& page, uint32_t pi, uint32_t li, Marks& marks, Info
                 plain = false;
         }
         info.label = plain;
+    }
+    if (wordEnd < line.count) {
+        // "2.1", "2.1." or "4.1.2." with text after it: numbers of one to three digits joined by dots.
+        size_t at = 0;
+        uint8_t depth = 0;
+        while (at < scratch.size() && depth < 8) {
+            size_t digits = 0;
+            while (at < scratch.size() && scratch[at] >= '0' && scratch[at] <= '9') ++at, ++digits;
+            if (digits == 0 || digits > 3) break;
+            ++depth;
+            if (at < scratch.size() && scratch[at] == '.') ++at;
+        }
+        if (at == scratch.size() && depth >= 2) info.sectionDepth = depth;
     }
     uint32_t value = 0;
     Marker marker = ParseMarker(scratch, value);
@@ -931,6 +967,11 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     if ((next.flags ^ last.flags) & kLineTable) return false;
     if ((next.flags | last.flags) & (kLineAnchor | kLineFormula)) return false;
     if (next.quoteBars != last.quoteBars) return false;
+    // A section title of two levels or more set in italics on a line of its own ("2.1. Spatial
+    // discretization", elsarticle's subsections) ends where its section's text goes on upright.
+    if (b.count == 1 && last.sectionDepth >= 2 && (last.flags & kLineAllItalic) && !(next.flags & kLineAllItalic) &&
+        !last.endsTerminal)
+        return false;
     const float em = Fmax(last.size, next.size);
     // A size change starts a block, except in an OCR layer whose sizes are fitted word boxes.
     const bool ocr = (last.flags & next.flags & kLineInvisible) != 0;
@@ -2481,6 +2522,22 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             }
             continue;
         }
+        // Its italic kin, numbered: one line of body size in italics opening with a section number
+        // of two levels or more ("2.1. Spatial discretization"), without a sentence's end, over
+        // upright text on its page, in lower case after its capitals: a line in italic capitals is
+        // a running head's ("70.5. EXAMINING THE DUMP FUNCTIONS CHAPTER 70. PERLGUTS").
+        const auto lowerCase = [&]() {
+            const PageData& page = pages[first.page];
+            LineText(page, page.lines[first.line], line);
+            return HasLowerAscii(line);
+        };
+        if (shortBlock && b.count == 1 && first.sectionDepth >= 2 && (first.flags & kLineAllItalic) && !out.italicBody &&
+            size >= body * 0.915f && titleEnd && r + 1 < raws.size() && infos[raws[r + 1].first].page == first.page &&
+            !(infos[raws[r + 1].first].flags & kLineAllItalic) && !caption() && lowerCase()) {
+            k.kind = BlockKind::Heading;
+            k.boldHeading = true;
+            continue;
+        }
         // A paper's standard unnumbered section named alone on its line ("Abstract", "References",
         // "7. ACKNOWLEDGMENTS") heads it in any style and size: no sentence is set so.
         if (shortBlock && b.count == 1 && chars <= 32 && first.dir == 0) {
@@ -2490,6 +2547,31 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 k.kind = BlockKind::Heading;
                 k.boldHeading = true;
                 continue;
+            }
+        }
+        // A numbered section title set centred over the paragraph under it, about the body's size
+        // (IEEE's "II. SYSTEM MODEL" in small capitals, amsart's "5. Conclusion"): one line opening
+        // with a section number ("5. ", "IV. ": OpensWithSectionNumber) and a title without a
+        // sentence's end or leader dots, its middle within an em of the middle of the paragraph of
+        // two lines or more below it on its page, half an em clear of both its edges; that
+        // paragraph does not go on in lower case (a sentence's first line set apart: a patent's
+        // claim, an indented item). A list's items stand at its left edge. The other column's text
+        // beside it (a row peer) does not make it a table's cell.
+        if (b.count == 1 && chars <= 160 && letter && !first.pageRef && first.dir != 1 && first.dir != 2 && !lowerLead &&
+            !b.bold && !first.markerAlone && unpunctuated && size >= 0.75f * body && size <= 1.1f * body &&
+            r + 1 < raws.size()) {
+            const RawBlock& n = raws[r + 1];
+            const Info& below = infos[n.first];
+            if (below.page == first.page && below.dir == first.dir && n.count >= 2 && !below.listStart() &&
+                !below.startsLower && std::fabs((first.u0 + first.u1) - (n.bodyU0 + n.right)) <= 2 * body &&
+                first.u0 >= n.bodyU0 + 0.5f * body && first.u1 <= n.right - 0.5f * body && !amongContents()) {
+                const PageData& page = pages[first.page];
+                LineText(page, page.lines[first.line], line);
+                if (OpensWithSectionNumber(line) && !EndsInLeader(line) && !caption()) {
+                    k.kind = BlockKind::Heading;
+                    k.boldHeading = true;
+                    continue;
+                }
             }
         }
         if (first.listStart()) k.kind = BlockKind::ListItem;

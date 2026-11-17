@@ -4,7 +4,9 @@
 // the standard unnumbered sections; the kicker over a slide's title, the titles of a slide's
 // cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
 // chapter's number and a display title's stacked lines; the centred headings of a page's own OCR
-// layer. Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849.
+// layer; numbered section titles in italics on their own line and centred over their text.
+// Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849 and
+// 2500-2549.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -566,6 +568,82 @@ void TestOcrLayerHeadings() {
     }
 }
 
+void TestNumberedTitles() {
+    // elsarticle's subsection: an italic line opening with a number of two levels, its section's
+    // text going on upright at the paragraph's pitch.
+    std::vector<PageData> italic{NewPage(1)};
+    AddBody(italic[0], 740, 3);
+    AddText(italic[0], "2.1. Spatial and temporal discretization", 72, 700, 10, kGlyphItalic);
+    AddText(italic[0], "For the sake of brevity we set the lattice spacing and the time step here.", 86, 688, 10);
+    AddBody(italic[0], 676, 2);
+    std::string md = Run(italic);
+    Show("italic numbered title", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "2.1. Spatial and temporal discretization").empty() &&
+                      HeadingWith(md, "2.1. Spatial").find("brevity") == std::string_view::npos,
+                  2500);
+    // In a paragraph set in italics throughout, the numbered line is its text.
+    std::vector<PageData> quote{NewPage(1)};
+    AddBody(quote[0], 740, 3);
+    AddText(quote[0], "2.1. Spatial and temporal discretization", 72, 700, 10, kGlyphItalic);
+    AddText(quote[0], "for the sake of brevity we set the lattice spacing and the time step here.", 72, 688, 10, kGlyphItalic);
+    AddBody(quote[0], 676, 2);
+    md = Run(quote);
+    Show("italic numbered line in italic text", md);
+    RAYOPDF_CHECK(Contains(md, "2.1. Spatial") && HeadingWith(md, "2.1. Spatial").empty(), 2501);
+    // Centred over the paragraph under it in the body's size: amsart's "5. Conclusion", IEEE's
+    // "IV. SURVEY" in small capitals. The body lines run from 72 to 427 (glyphs of 5 points).
+    const auto centred = [](std::string_view text) { return 249.5f - 2.5f * static_cast<float>(text.size()); };
+    std::vector<PageData> centre{NewPage(1)};
+    AddBody(centre[0], 740, 3);
+    AddText(centre[0], "5. Conclusion", centred("5. Conclusion"), 700, 10);
+    AddBody(centre[0], 680, 3);
+    AddSmallCaps(centre[0], "IV. Survey of Practitioners", centred("IV. Survey of Practitioners"), 630, 10, 8);
+    AddBody(centre[0], 610, 3);
+    md = Run(centre);
+    Show("centred numbered titles", md);
+    RAYOPDF_CHECK(!HeadingWith(md, "5. Conclusion").empty(), 2502);
+    RAYOPDF_CHECK(!HeadingWith(md, "IV. Survey of Practitioners").empty(), 2503);
+    // A numbered item at the paragraph's left edge is a list's.
+    std::vector<PageData> list{NewPage(1)};
+    AddBody(list[0], 740, 3);
+    AddText(list[0], "5. Conclusion", 72, 700, 10);
+    AddBody(list[0], 680, 3);
+    md = Run(list);
+    Show("numbered item at the left edge", md);
+    RAYOPDF_CHECK(Contains(md, "5. Conclusion") && HeadingWith(md, "5. Conclusion").empty(), 2504);
+    // An italic line in capitals opening with "70.5." and naming its chapter is a manual's
+    // running head, not a title.
+    std::vector<PageData> head{NewPage(1)};
+    AddBody(head[0], 740, 3);
+    AddText(head[0], "70.5. EXAMINING THE DUMP FUNCTIONS CHAPTER 70. PERLGUTS", 72, 700, 10, kGlyphItalic);
+    AddBody(head[0], 680, 3);
+    md = Run(head);
+    Show("italic numbered line in capitals", md);
+    RAYOPDF_CHECK(Contains(md, "EXAMINING THE DUMP FUNCTIONS") && HeadingWith(md, "EXAMINING").empty(), 2505);
+    // Centred over a paragraph but no section's title: a contents entry with leader dots, a note's
+    // number in parentheses, a lower-case roman item, and a sentence's first line whose paragraph
+    // goes on in lower case.
+    const auto centredOver = [&](std::string_view text, std::string_view under, int lines) {
+        std::vector<PageData> page{NewPage(1)};
+        AddBody(page[0], 740, 3);
+        AddText(page[0], text, centred(text), 700, 10);
+        for (int i = 0; i < lines; ++i) AddText(page[0], under, 72, 680 - 12.0f * i, 10);
+        const std::string out = Run(page);
+        Show("centred numbered line", out);
+        return out;
+    };
+    const std::string body = "Body text of the section that runs long enough to be a paragraph line.";
+    md = centredOver("2. Financial evaluation .......... 12", body, 3);
+    RAYOPDF_CHECK(Contains(md, "Financial evaluation") && HeadingWith(md, "Financial").empty(), 2506);
+    md = centredOver("(2) Gross amount of goodwill", body, 3);
+    RAYOPDF_CHECK(Contains(md, "Gross amount") && HeadingWith(md, "Gross amount").empty(), 2507);
+    md = centredOver("ii. Benefits Financing", body, 3);
+    RAYOPDF_CHECK(Contains(md, "Benefits Financing") && HeadingWith(md, "Benefits Financing").empty(), 2508);
+    md = centredOver("27. A program product as in claim 26, wherein the",
+                     "executable code of the product runs on a processor of the device so it", 3);
+    RAYOPDF_CHECK(Contains(md, "A program product") && HeadingWith(md, "A program product").empty(), 2509);
+}
+
 } // namespace
 
 int main() {
@@ -584,6 +662,7 @@ int main() {
     TestCoverTitle();
     TestChapterNumberAndStack();
     TestOcrLayerHeadings();
+    TestNumberedTitles();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

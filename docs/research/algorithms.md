@@ -380,7 +380,7 @@ Also use the actual **space glyphs in the stream**:
   - weight (§6.6);
   - a block that is short and not ending in a period;
   - space above > space below;
-  - numbering patterns (`1.`, `1.2.3`, `A.`, `Chapter`).
+  - numbering patterns (`1.`, `1.2.3`, `A.`, `Chapter`); a numbered line of body size is a title when it is set apart from its text by style or place: centred over the paragraph under it (IEEE's small-capital `II. SYSTEM MODEL`, amsart's `5. Conclusion`; not a contents entry with leader dots, a note's `(2)`, an item's `ii.`, or a sentence's first line whose paragraph goes on in lower case), or in italics on a line of its own over upright text, in lower case after its capitals (elsarticle's `2.1. Methods`; a line in italic capitals is a running head's).
 - **Outline** (§12.3.3): bookmark titles plus their destinations (page, /XYZ top). Match title text against blocks near the destination y. This gives level by tree depth and is the most reliable untagged signal when present. pymupdf4llm `TocHeaders` takes this route ([pymupdf4llm]).
 - Assign levels by clustering distinct heading styles (size, weight, font) ranked by size. Cap at 6. Never skip levels in output (renumber), as RayoMD's own tagger requires ([rayomd/src/core/tagged.h](https://github.com/Butterski/rayomd/blob/ef106cac5d8a7081cda6c02cec0f38d88048cf97/src/core/tagged.h) `BeginHeading`).
 
