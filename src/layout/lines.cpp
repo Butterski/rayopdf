@@ -1426,13 +1426,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         if (open) {
             const float em = M::Max(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
-            const float dv = g.v - f.baseline;
-            const bool sameBase = std::fabs(dv) <= 0.25f * em;
-            const bool script = !sameBase && std::fabs(dv) <= 0.6f * em &&
-                                (g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size);
+            const float dv = std::fabs(g.v - f.baseline);
             const float maxGap = (f.marker ? kMarkerGap : kFragmentGap) * em;
-            if (g.dir == f.dir && (sameBase || script || space) && gap >= -0.6f * em && gap <= maxGap &&
-                std::fabs(dv) <= 0.6f * em) {
+            // On its baseline (within 0.25 em), a space, or a script: smaller than the glyph
+            // before it or than the fragment, within 0.6 em of the baseline as all are.
+            if (g.dir == f.dir && gap >= -0.6f * em && gap <= maxGap && dv <= 0.6f * em &&
+                (dv <= 0.25f * em || space || g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size)) {
                 f.end = k + 1;
                 f.lastU1 = M::Max(f.lastU1, g.u1);
                 if (!space) {
