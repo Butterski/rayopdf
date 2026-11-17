@@ -1704,7 +1704,6 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         bool pendingSpace = false;
         float right = 0;
         float previousSize = 0;
-        bool first = true;
         SpaceFont spaceFonts[kSpaceFonts];
         int32_t spaceFontCount = -1;  // SpaceFonts of the line, found at its first gap that needs them
         Segment seg{0, 0, 0};  // the ink segment being extended, appended when the next starts
@@ -1733,72 +1732,87 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         // and its width, tried for a note's mark before a tab once the line is read.
         uint32_t markAt = 0;
         float markGap = 0;
-        for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
+        // Leading spaces carry nothing; the first glyph opens the line's segment, extent and
+        // size bucket, and each glyph after it is measured against the ones before.
+        const uint32_t* at = lineBegin;
+        while (at != lineEnd && (glyphs[*at].flags & kGlyphSpace)) ++at;
+        const bool any = at != lineEnd;
+        if (any) {
+            const uint32_t i = *at;
+            Glyph& g = glyphs[i];
+            g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
+            seg = Segment{g.u0, g.u1, protoCount};
+            right = g.u1;
+            pu0 = g.u0, pu1 = g.u1;
+            vb = g.vb, vt = g.vt;
+            if (kMeasured) {
+                allFlags &= g.flags;
+                sizes[sizeCount++] = SizeCount{g.size, 0};
+                run = 1;
+            }
+            previousSize = g.size;
+            protoAt[protoCount++] = i;
+            ++at;
+        }
+        for (; at != lineEnd; ++at) {
             const uint32_t i = *at;
             Glyph& g = glyphs[i];
             if (g.flags & kGlyphSpace) {
-                if (!first) pendingSpace = true;
+                pendingSpace = true;
                 continue;
             }
             g.flags = static_cast<uint16_t>(g.flags & ~kGlyphSpaceBefore);
-            if (!first) {
-                const float em = M::Max(M::Min(previousSize, g.size), 0.5f * M::Max(previousSize, g.size));
-                const float gap = g.u0 - right;
-                // A gap of kWordGap at least may break words: most gaps inside words are narrower.
-                bool wordBreak = pendingSpace;
-                if (!wordBreak && gap > kWordGap * em) {
-                    wordBreak = gap > wordGap * em;
-                    if (!wordBreak && spaces) {
-                        // The gaps beside it: before the glyph before (when no word break is there)
-                        // and after this one (when no space follows).
-                        const Glyph& before = glyphs[protoAt[protoCount - 1]];
-                        const float previous = protoCount - 1 > p.first && !(before.flags & kGlyphSpaceBefore)
-                                                   ? before.u0 - beforePrevious
-                                                   : -1;
-                        const float next =
-                            at + 1 != lineEnd && !(glyphs[at[1]].flags & kGlyphSpace) ? glyphs[at[1]].u0 - g.u1 : -1;
-                        wordBreak = DroppedSpace(page, before, g, gap, em, previous, next, lineBegin, lineEnd, spaceFonts,
-                                                 spaceFontCount);
-                    }
+            const float em = M::Max(M::Min(previousSize, g.size), 0.5f * M::Max(previousSize, g.size));
+            const float gap = g.u0 - right;
+            // A gap of kWordGap at least may break words: most gaps inside words are narrower.
+            bool wordBreak = pendingSpace;
+            if (!wordBreak && gap > kWordGap * em) {
+                wordBreak = gap > wordGap * em;
+                if (!wordBreak && spaces) {
+                    // The gaps beside it: before the glyph before (when no word break is there)
+                    // and after this one (when no space follows).
+                    const Glyph& before = glyphs[protoAt[protoCount - 1]];
+                    const float previous = protoCount - 1 > p.first && !(before.flags & kGlyphSpaceBefore)
+                                               ? before.u0 - beforePrevious
+                                               : -1;
+                    const float next =
+                        at + 1 != lineEnd && !(glyphs[at[1]].flags & kGlyphSpace) ? glyphs[at[1]].u0 - g.u1 : -1;
+                    wordBreak = DroppedSpace(page, before, g, gap, em, previous, next, lineBegin, lineEnd, spaceFonts,
+                                             spaceFontCount);
                 }
-                // A combining mark (two bytes at least) takes no space before it.
-                if (wordBreak && !(g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g))))
-                    g.flags |= kGlyphSpaceBefore;
-                // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
-                // measured in the size of the glyphs beside it: a drop cap must not widen the
-                // threshold for the whole line.
-                if (gap > kGutterCandidate * em) {
-                    if (segmentCount == p.segFirst) markAt = protoCount, markGap = gap;
-                    segments[segmentCount++] = seg;
-                    seg = Segment{g.u0, g.u1, protoCount};
-                    prevTight = false;
-                } else if (prevTight && g.u0 - beforePrevious > kGutterCandidate * em &&
-                           OpeningMark(page, glyphs[protoAt[protoCount - 1]])) {
-                    // The previous glyph, a mark set tight after the text before it, hangs into
-                    // the gap: the gap's middle is found from the text after it.
-                    seg.u1 = beforePrevious;
-                    segments[segmentCount++] = seg;
-                    seg = Segment{g.u0, g.u1, protoCount - 1};
-                    prevTight = false;
-                } else {
-                    seg.u1 = M::Max(seg.u1, g.u1);
-                    prevTight = !pendingSpace;
-                }
-                beforePrevious = right;
-                right = M::Max(right, g.u1);
-                pu0 = M::Min(pu0, g.u0), pu1 = M::Max(pu1, g.u1);
-                if (kMeasured) vb = M::Min(vb, g.vb), vt = M::Max(vt, g.vt);
-            } else {
-                seg = Segment{g.u0, g.u1, protoCount};
-                right = g.u1;
-                pu0 = g.u0, pu1 = g.u1;
-                vb = g.vb, vt = g.vt;
             }
+            // A combining mark (two bytes at least) takes no space before it.
+            if (wordBreak && !(g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g))))
+                g.flags |= kGlyphSpaceBefore;
+            // Ink segments: runs of glyphs without a wide gap, for gutter detection. The gap is
+            // measured in the size of the glyphs beside it: a drop cap must not widen the
+            // threshold for the whole line.
+            if (gap > kGutterCandidate * em) {
+                if (segmentCount == p.segFirst) markAt = protoCount, markGap = gap;
+                segments[segmentCount++] = seg;
+                seg = Segment{g.u0, g.u1, protoCount};
+                prevTight = false;
+            } else if (prevTight && g.u0 - beforePrevious > kGutterCandidate * em &&
+                       OpeningMark(page, glyphs[protoAt[protoCount - 1]])) {
+                // The previous glyph, a mark set tight after the text before it, hangs into
+                // the gap: the gap's middle is found from the text after it.
+                seg.u1 = beforePrevious;
+                segments[segmentCount++] = seg;
+                seg = Segment{g.u0, g.u1, protoCount - 1};
+                prevTight = false;
+            } else {
+                seg.u1 = M::Max(seg.u1, g.u1);
+                prevTight = !pendingSpace;
+            }
+            beforePrevious = right;
+            right = M::Max(right, g.u1);
+            pu0 = M::Min(pu0, g.u0), pu1 = M::Max(pu1, g.u1);
+            if (kMeasured) vb = M::Min(vb, g.vb), vt = M::Max(vt, g.vt);
             if (kMeasured) {
                 allFlags &= g.flags;
                 // A size equal to the glyph before's has its bucket: buckets are only added, and
                 // the earlier ones did not match it then either.
-                if (first || !(g.size == previousSize)) {
+                if (!(g.size == previousSize)) {
                     uint32_t d = 0;
                     while (d < sizeCount && !(std::fabs(sizes[d].size - g.size) < 0.25f)) ++d;
                     if (d != sizeAt) {
@@ -1811,11 +1825,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 ++run;
             }
             pendingSpace = false;
-            first = false;
             previousSize = g.size;
             protoAt[protoCount++] = i;
         }
-        if (!first) segments[segmentCount++] = seg;
+        if (any) segments[segmentCount++] = seg;
         if (kMeasured) countRun();
         // The first wide gap after a note's raised mark is a tab, no gutter.
         if (markAt != 0 && markAt - p.first <= 3 && markGap <= 2.5f * glyphs[protoAt[markAt]].size &&
