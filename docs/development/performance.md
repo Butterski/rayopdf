@@ -1251,6 +1251,50 @@ Tried and rejected (2026-11-16, `instr.sh` against the step):
   cost in `PlaceGlyphs` (0.05 % of `tables`, code layout); `BuildBlocks`' OCR heading tests (about
   0.05 % of `multi_column`, work of their own).
 
+## Fourteenth round: the LaTeX rebuild's cost won back (2026-11-17)
+
+The `arxiv_math` group (`instr.sh`, `--batch --workers=1`, images off, `--math=latex`) grew from
+the twelfth round's head `a1163bc` (5,444.5 M user instructions) to master `76ed0ef` (5,528.8 M,
++1.55 %), and the branch `b20/mathfails4` (`ec1902e`: operator names, text-italic variables,
+call operands) took it to 5,576.4 M (+0.86 %); the other groups did not move with it. Callgrind
+of the three (Release with `-g`, linked with gold) over `arxiv_math`; self costs, in millions,
+with the share of the group at `ec1902e` (5,632.8 M under callgrind):
+
+|Function|`a1163bc`|`76ed0ef`|`ec1902e`|Share|Why it grew|
+|---|---|---|---|---|---|
+|`PrepareMathGlyphs`' `hanging` lambda|-|54.9|54.9|0.97 %|called out of line for each of the 1.18 M glyphs; its first tests (direction, flags, font class) reject most|
+|`PrepareMathGlyphs`|117.8|121.7|121.7|2.16 %|the variation-selector test reads every glyph's math font|
+|`IsOperatorName` with its `memcmp`|-|-|25.6|0.45 %|16 `string_view` comparisons for each of 104,000 words (`IsFunctionWord` in `FindInlineFormulas` and `MarkDisplayFormulas`)|
+|`FindInlineFormulas`|132.0|132.6|148.6|2.64 %|the text-italic variable rule walks every word's glyphs, with or without scripts|
+|`Builder::Row` (both depths)|131.2|145.2|146.6|2.60 %|the `\cong` and extensible-arrow searches walk every row|
+|`IsRelation`|-|2.2|2.2|0.04 %|out of line since `a1163bc`|
+
+Every step byte-identical (`bench.py identical` against the step before over the synthetic corpus,
+odl, olmOCR-Bench (`arxiv_math` included) and READoc dev and dev2, 2,737 documents, with
+`--images=none --math=latex`, `--images=none` and `--format=json --images=none --math=latex`:
+8,211 comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(math): PrepareMathGlyphs calls its hanging-ink test only for extension and symbol font glyphs`|The glyph's math font class, read once per glyph, decides before the call; the variation-selector test reads it too|`arxiv_math` -0.959 %, the rest within 0.002 %|
+|`perf(math): operator names found by the function names' hash, one key per function word`|`IsOperatorName` looks its word up in a 64-slot table under `kFunctionHash` (no collision, checked at compile time) as `IsFunctionName` does; `IsFunctionWord` packs the word once and compares keys|`arxiv_math` -0.533 %, the rest within 0.002 %|
+|`perf(math): FindInlineFormulas' italic-variable rule and Row's searches run only where their trigger glyphs are`|The italic rule only in words holding a raised or lowered glyph (-0.175 %); `Row` counts, while it lists its sort keys, what each search needs: a ∼ and an = (`\cong`), a bar and an arrowhead (extensible arrows), three dots, a slash or one of →, ←, ⇒, ⇐ (every pair `JoinMathSymbols` and `\mapsto` join holds one) (-0.244 %)|`arxiv_math` -0.418 %, the rest within 0.002 %|
+
+Against `ec1902e`: `arxiv_math` -1.899 % (5,470.5 M), the other groups within 0.004 %; against
+`76ed0ef` -1.054 %, against `a1163bc` +0.477 %. Callgrind at the round's head (5,526.6 M): the
+`hanging` lambda 0.08 %, `IsOperatorName` gone into `IsFunctionWord`, `FindInlineFormulas` 2.52 %,
+`Builder::Row` 2.42 % (both depths), `PrepareMathGlyphs` 2.15 %. No times were taken.
+
+Tried and rejected, or not attempted (2026-11-17):
+
+- `Row`'s searches gated on a looser test (a ∼; a bar or ←; any dot; any symbol `MayJoin` takes):
+  `arxiv_math` -0.056 %; most rows hold a minus or an equals sign. Kept in the tighter form above.
+- Not attempted, under the bar by their callgrind cost: `CommandOf`'s linear scan of its 35
+  overrides (7.4 M inclusive, 34,000 calls; a binary search would save about 2.7 M, 0.05 %);
+  `IsRelation` inline again (2.2 M); `Row`'s `writeScripts` lambda out of line (1.6 M self); the
+  rest of the growth since `a1163bc` lies outside `math.cpp` (`PlaceGlyphs`' `\cong` branch of the
+  lone-script join, 3.2 M).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1264,13 +1308,11 @@ Tried and rejected (2026-11-16, `instr.sh` against the step):
   round).
 - **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
-  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice. At the thirteenth round
-  (`59c95c1`, self costs in percent of `arxiv_math`): `PrepareMathGlyphs` 3.24 % (its `hanging`
-  lambda called out of line for every glyph of the page, 0.98 %, where the glyph's direction,
-  flags and font class tested before the call would leave the call to the extension and symbol
-  fonts' glyphs), `Builder::Row` 3.00 % (+0.28 % in the round: extensible arrows, variation
-  selectors, `\cong`), `MarkDisplayFormulas` 2.74 %, `FindInlineFormulas` 2.54 %, `ResolveAtom`
-  0.95 %; inclusive, `BuildLatex` 8.45 %, `Builder::Expr` 6.09 %, `Builder::Layout` 4.96 %.
+  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice. After the fourteenth round
+  (self costs in percent of `arxiv_math`): `MarkDisplayFormulas` 2.76 %, `FindInlineFormulas`
+  2.52 %, `Builder::Row` 2.42 %, `PrepareMathGlyphs` 2.15 %,
+  `ResolveAtom` 0.97 %; inclusive, `BuildLatex` 8.50 %, `Builder::Expr` 6.35 %, `Builder::Layout`
+  5.32 %.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
   tagged documents); the image round overlapped with the layout: images are encoded on the page
   threads (`9aecd77`), but in a round of their own between the image decisions and the layout, so
