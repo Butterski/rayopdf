@@ -859,6 +859,10 @@ constexpr float kWideGapSizeTolerance = 0.05f;
 constexpr uint32_t kWideGapMaxChars = 80;
 // The share of a page one picture covers on a scanned page (RemoveEdgeRows).
 constexpr float kScanPicture = 0.9f;
+// A foot row's largest size as furniture (RemoveEdgeRows' largeFoot), in body sizes.
+constexpr float kLargeFootSize = 2.2f;
+// The least gap, in body sizes, of a spread row over loosely leaded text (RemoveEdgeRows' loose).
+constexpr float kLooseGap = 1.5f;
 
 // The edge rows RemoveEdgeRows examines in the outer kWideGapBand, kept until the page's rules are
 // done: a row the rules keep may still be furniture by the edge-row model (layout/model.h), and a
@@ -1089,11 +1093,18 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             bool number = false, folio = false, note = false, metadata = false, entry = false, caption = false;
             bool deepNumber = false;  // the lowest row, above kNumberBand, holds a number alone
             bool patent = false;      // a patent's running head (IsPatentHead) in the head band
+            // A spread row reaches both edges of the text: a row with a piece in each column of a
+            // two-column page does not.
+            const bool spread = count >= 2 && rowLeft <= textLeft + 2 * body && rowRight >= textRight - 2 * body;
             // The page's lowest row as one short line is read wherever it lies: a page number set
-            // right under the last line of a page whose text ends high (deepNumber below).
+            // right under the last line of a page whose text ends high (deepNumber below). So is the
+            // lowest row as pieces spread across the text in smaller print than the body: a running
+            // foot set there (lowFoot below).
             const bool lowest = side == 1 && row == 0 && count == 1 && chars <= 4;
-            if (numberBand || lowest) {
-                // The row's text, left to right.
+            const bool lowestFoot = side == 1 && row == 0 && !numberBand && spread && largest <= 0.9f * body && !bold &&
+                                    !anyMono && !superscript && chars <= kRunningTitleChars;
+            // The row's text, left to right.
+            const auto readRow = [&] {
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
                            lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
                 std::sort(rowLines.begin(), rowLines.end(),
@@ -1103,6 +1114,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                     if (!text.empty()) text.push_back(' ');
                     AppendLineText(page, page.lines[li], text);
                 }
+            };
+            if (numberBand || lowest) {
+                readRow();
                 RunningKey(text, key);
                 number = numberBand && count == 1 && IsPageNumberKey(key);
                 deepNumber = !numberBand && key == "#";
@@ -1126,6 +1140,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 // columns of a description page, or over a drawing sheet whose few labels set the
                 // body size.
                 patent = band && side == 0 && chars <= kEdgeMaxChars && IsPatentHead(text);
+            } else if (lowestFoot) {
+                readRow();
+                caption = IsCaption(text);
             }
             // A body-size row above a heading is the document's first paragraph, set high on a page
             // with narrow margins: a header must be smaller than the body to be told from it.
@@ -1141,18 +1158,23 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
                 if (side == 0 && image.y1 <= inner + 1) figureGap = Fmin(figureGap, inner - image.y1);
                 if (side == 1 && image.y0 >= inner - 1) figureGap = Fmin(figureGap, image.y0 - inner);
             }
-            // A spread row reaches both edges of the text: a row with a piece in each column of a
-            // two-column page does not.
-            const bool spread = count >= 2 && rowLeft <= textLeft + 2 * body && rowRight >= textRight - 2 * body;
             // A single row set off the left edge of flush-left text (right-aligned or centered)
             // and not bold: a running title, which body text and its first lines never are.
             const bool offset = flushLeft && count == 1 && !bold && rowLeft > textLeft + 4 * body &&
                                 chars <= kRunningTitleChars;
             const bool evidence = (band || folio) && (spread || (!note && (folio || offset || (largest <= 0.9f * body && !mono))));
+            // A foot may be set larger than the body ("POWER FINANCIAL CORPORATION 2014 ANNUAL REPORT
+            // 15" at twice its size, a lone page number in a display face), where a heading hardly
+            // stands: a foot row in the running band, not bold, up to kLargeFootSize body sizes,
+            // holding a page number, or a folio or pieces spread across the text and opening with
+            // no number or note mark (note: a form's last row, "9805   Date of Issue ...", over a
+            // body of fine print).
+            const bool largeFoot = side == 1 && band && !bold && largest <= kLargeFootSize * body;
             const bool qualifies = gap >= minGap && !superscript && chars <= kEdgeMaxChars &&
-                                   ((number && largest <= 1.3f * body) ||
+                                   ((number && (largest <= 1.3f * body || largeFoot)) ||
                                     (margin && largest <= 1.02f * body && !beforeHeading) ||
-                                    (evidence && figureGap >= minGap && largest <= 1.35f * body));
+                                    (evidence && figureGap >= minGap && largest <= 1.35f * body) ||
+                                    (largeFoot && !note && (spread || folio) && figureGap >= minGap));
             // Publication metadata (a URL, a DOI, a copyright or licence line, a download stamp,
             // an ISSN), a row spread across the text, or small print in the head band: furniture
             // even above a figure or a heading. Small print at the foot is a footnote or a caption.
@@ -1182,6 +1204,10 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             // line, centred on the text, set apart from it, in no larger print than a page number.
             const bool lowNumber = deepNumber && centred && !superscript && largest <= 1.3f * body && gap >= minGap &&
                                    figureGap >= minGap;
+            // Likewise a running foot of pieces spread across the text in smaller print, the page's
+            // lowest row (lowestFoot), set apart from the text and no caption: "105   JPMorgan Chase &
+            // Co./2019 Form 10-K" under a filing's page that ends high.
+            const bool lowFoot = lowestFoot && !caption && gap >= minGap && figureGap >= minGap;
             // A short row the producer marked as an artifact, within kNumberBand and at most twice
             // the body size (not a display heading), whatever its gap. A head or a foot is a few
             // words; a longer marked row (a funding disclaimer, an author list) waits for evidence.
@@ -1218,10 +1244,14 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const bool sparseAllowed = (strong && metadata && !entry) ||
                                        (number && std::count(key.begin(), key.end(), '#') <= 2) ||
                                        (folio && spread && !entry);
+            // A row spread across the text over loosely leaded text (a manual's lines 1.6 ems apart,
+            // where 1.5 times the spacing exceeds a head's gap) is set apart by more than the
+            // spacing plus a quarter em (closeGap) and by kLooseGap body sizes at least.
+            const bool loose = strong && spread && gap >= Fmax(kLooseGap * body, closeGap);
             const bool apart = marked || ((!sparse || sparseAllowed) &&
                                           (!weakPending || strong) &&
                                           ((qualifies && (row < 2 || strong)) || (strong && gap >= minGap) || closeMetadata ||
-                                           lowNumber || ((closeFolio || closeNumber || wide) && row < 2)));
+                                           loose || lowNumber || lowFoot || ((closeFolio || closeNumber || wide) && row < 2)));
             // A short row in the running band overlapping the row inside it waits with that row:
             // pieces of one head on offset baselines. Its block must still end in a strong row.
             const bool overlapping = gap < 0 && band && !note && !superscript && chars <= kRunningTitleChars;

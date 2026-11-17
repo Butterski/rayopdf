@@ -846,6 +846,70 @@ void TestWrappedStamp() {
                   1869);
 }
 
+// A running head of two pieces spread across loosely leaded text (1.6 ems between its lines, so
+// that 1.5 times that spacing exceeds the head's gap of 2.1 ems) goes; 1.7 ems over the text, closer
+// than its spacing plus a quarter em, it stays.
+void TestLooseLeadingHead() {
+    // 25 body lines from 700 down, 26 points apart: a 16-point gap between them; the first line's
+    // top at 708. The text runs from 72 to 297.
+    const auto build = [](float gap) {
+        std::vector<PageData> pages{NewPage()};
+        const float y = 708 + gap + 2;  // the head's box bottom `gap` points over the first line
+        AddText(pages[0], "CHAPTER 5. TESTING", 72, y, 10);
+        AddText(pages[0], "5.1. DESCRIPTION", 217, y, 10);
+        for (int i = 0; i < 25; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    700 - 26.0f * i, 10);
+        return Run(pages);
+    };
+    const std::string md = build(21);
+    RAYOPDF_CHECK(Find(md, "CHAPTER 5") == std::string::npos && Find(md, "DESCRIPTION") == std::string::npos &&
+                      Find(md, "Body line 0 of") != std::string::npos,
+                  1871);
+    RAYOPDF_CHECK(Find(build(17), "CHAPTER 5") != std::string::npos, 1872);
+}
+
+// A page whose text ends high, its running foot set right under its last line (filings converted
+// from HTML): the foot, the page's lowest row, pieces spread across the text in smaller print and set
+// apart from it, goes. In the body's size, or reading as a caption, it stays.
+void TestFootUnderShortText() {
+    // 20 body lines from 700 down, 12 points apart: the last at 472, its box bottom at 470; the text
+    // runs from 72 to 297. The foot at 440 has its top at 446.4.
+    const auto build = [](const char* left, const char* right, float size) {
+        std::vector<PageData> pages{NewPage()};
+        for (int i = 0; i < 20; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    700 - 12.0f * i, 10);
+        AddText(pages[0], left, 72, 440, size);
+        AddText(pages[0], right, 297 - 0.5f * size * float(std::string_view(right).size()), 440, size);
+        return Run(pages);
+    };
+    const std::string md = build("105", "Example Corp./2019 Form 10-K", 8);
+    RAYOPDF_CHECK(Find(md, "Form 10-K") == std::string::npos && Find(md, "105") == std::string::npos &&
+                      Find(md, "Body line 19 of") != std::string::npos,
+                  1873);
+    RAYOPDF_CHECK(Find(build("105", "Example Corp./2019 Form 10-K", 10), "Form 10-K") != std::string::npos, 1874);
+    RAYOPDF_CHECK(Find(build("Figure 3.", "Results of the second test.", 8), "Results of the second") != std::string::npos,
+                  1875);
+}
+
+// A running foot set at twice the body size, a folio at its end, in the foot band and set apart from
+// the text, goes; at 2.5 times the body size it stays.
+void TestLargeFoot() {
+    const auto build = [](float size) {
+        std::vector<PageData> pages{NewPage()};
+        for (int i = 0; i < 25; ++i)
+            AddText(pages[0], "Body line " + std::to_string(i) + " of the running text goes on here.", 72,
+                    700 - 12.0f * i, 10);
+        AddText(pages[0], "EXAMPLE CORPORATION 2014 ANNUAL REPORT 15", 72, 40, size);
+        return Run(pages);
+    };
+    const std::string md = build(20);
+    RAYOPDF_CHECK(Find(md, "ANNUAL REPORT") == std::string::npos && Find(md, "Body line 24 of") != std::string::npos,
+                  1876);
+    RAYOPDF_CHECK(Find(build(25), "ANNUAL REPORT") != std::string::npos, 1877);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -887,6 +951,9 @@ int main() {
     TestEdgeOnlyContent();
     TestTypedRuleUnderHead();
     TestWrappedStamp();
+    TestLooseLeadingHead();
+    TestFootUnderShortText();
+    TestLargeFoot();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
