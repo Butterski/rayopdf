@@ -2375,9 +2375,10 @@ void PrepareMathGlyphs(PageData& page) {
     float stackV = 0;
     for (size_t gi = 0; gi < page.glyphs.size(); ++gi) {
         Glyph& g = page.glyphs[gi];
+        const uint8_t mathFont = g.font < page.fontMath.size() ? static_cast<uint8_t>(page.fontMath[g.font] & kMathFontClass) : 0;
         // ToUnicode maps of TeX's extension fonts (pdfTeX's for cmex10, newtx's txexs) tell a symbol's
         // sizes apart by a variation selector (∑ as U+2211 U+FE01): the symbol alone.
-        if (g.textLength > 3 && g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0) {
+        if (g.textLength > 3 && mathFont != 0) {
             const std::string_view t = page.GlyphText(g);
             const unsigned char last = static_cast<unsigned char>(t.back());
             if (t[t.size() - 3] == '\xEF' && t[t.size() - 2] == '\xB8' && last >= 0x80 && last <= 0x8F) g.textLength -= 3;
@@ -2386,6 +2387,9 @@ void PrepareMathGlyphs(PageData& page) {
             const std::string_view t = page.GlyphText(g);
             if (!(t.size() == 1 && static_cast<unsigned char>(t[0]) < 0x80)) maybeAccents.push_back(static_cast<uint32_t>(gi));
         }
+        // Only glyphs of extension and symbol fonts hang from their origin (the lambda's first
+        // tests, made here so that other glyphs skip the call).
+        if (mathFont != static_cast<uint8_t>(MathFont::Extension) && mathFont != static_cast<uint8_t>(MathFont::Symbol)) continue;
         uint32_t cp = 0;
         float bottom = 0, top = 0;
         if (!hanging(g, gi, cp, bottom, top)) continue;
