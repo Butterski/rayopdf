@@ -1405,6 +1405,73 @@ Tried and rejected, or not attempted (2026-11-17, `instr.sh` against the step be
   its caption test 0.9 M, `Continues` 2.3 M and `NoTitle` 1.8 M, each spread over its tests);
   `MoveAddresses` (0.70 M on odl: its title blocks' texts are read whole before the capitals test).
 
+## Seventeenth round: the LaTeX path after the fraction landing (2026-11-17)
+
+Master `b7f7045` (stacked fractions, radicals over fractions, readings by font and spacing) had
+raised `arxiv_math` by 0.38 %. Profiled with callgrind (Release with `-g`, linked with gold;
+`--batch --workers=1`, images off, `--math=latex`) over `arxiv_math` (5,509.6 M instructions
+under callgrind), and over `multi_column` for the default path's share of `math.cpp`. The code
+`b7f7045` added is under half of its cost: the fraction parts' walls and connected stacks
+(`Connected` 0.96 M self, the fraction lines of `Expr` 4.93 M), the radical's rule search (2.0 M)
+and the spacing readings (under 0.1 M) are about 0.16 % of the group together. Self costs, the
+code inlined into each function counted with it, in millions and in percent of the group:
+
+|Function|`arxiv_math`|
+|---|---|
+|`Builder::Row`|153.08 (2.78 %)|
+|`MarkDisplayFormulas` (with `FactsOf`)|152.87 (2.77 %)|
+|`FindInlineFormulas`|147.62 (2.68 %)|
+|`PrepareMathGlyphs`|123.39 (2.24 %)|
+|`Builder::ResolveAtom`|62.32 (1.13 %)|
+|`Builder::Expr`|37.24 (0.68 %)|
+|`AddMathRules`|27.15 (0.49 %)|
+|`std::vector<Item>::emplace_back`|26.92 (0.49 %)|
+|`AddMathGlyph`|17.83 (0.32 %)|
+|`FindRows`|17.33 (0.31 %)|
+|`EmOf`|14.87 (0.27 %)|
+
+Inclusive: `BuildLatex` 466.88 M (8.47 %), `Builder::Expr` 341.76 M (6.20 %), `Builder::Layout`
+277.90 M (5.04 %), `Builder::Row` 222.12 M (4.03 %). On `multi_column` (default output)
+`math.cpp` holds 1.12 M (`MathFontOf`, 0.06 %): the default path pays for next to none of it.
+`FactsOf` built a string of each line's first ten glyph texts and counted the words of every line
+with math to the end; `Row` sorted rows already in order, and searched every item for each
+operator's limits; `Resolve` destroyed and built its atoms for each formula. Every step is
+byte-identical (`bench.py identical` against the step before over the synthetic corpus, odl,
+olmOCR-Bench with `arxiv_math`, READoc dev and dev2 and OmniParseBench's pages, 4,886 documents,
+with `--images=none` alone and with `--math=latex`, `--math=latex --plain`, `--math=latex
+--tables=pipe`, `--format=json` and `--math=latex --format=json` beside it: 29,316 comparisons a
+step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(math): MarkDisplayFormulas counts a long line's words only while they decide, and reads the equation number as it goes`|A line of more than 3 glyphs stops counting its words once they make it no candidate (one word with fewer than 5 math glyphs, two with fewer than 8, three); the equation-number test reads the bytes of the first ten glyphs as they come instead of appending them to a string|`arxiv_math` -0.759 %, the rest within 0.004 %|
+|`perf(math): Row leaves items already in order unsorted and looks for limits among the row's scripts only`|Items each before the next (u0, then v downwards, no two equal) are the one order `std::sort` can give: kept without sorting; the limits' search visits the row's scripts (roles 1 and 2, the only ones it takes) in order, and none without scripts|`arxiv_math` -0.467 %, the rest within 0.003 %|
+|`perf(math): Row passes over accents, braces and upright letters only in rows that hold them, and takes em from Layout`|The first pass over a row notes whether any item is an accent, a horizontal brace or an upright letter (no later step makes one); Layout hands Row the `EmOf` it computed of the same items|`arxiv_math` -0.260 %, the rest within 0.003 %|
+|`perf(math): a formula's atoms made anew in place, with HangingInk's and AccentOf's tests first, and its glyphs and bars added more cheaply`|`Resolve` keeps the thread's atoms and `ResolveAtom` resets their fields; `HangingInk` called only for an extension font's glyph or a symbol font's radical, `AccentOf` only from U+00A8; `CommandOf`'s 35 overrides a switch instead of a scan; a one-byte glyph text appended as a byte; the bar limit tested as each bar is added|`arxiv_math` -0.452 %, the rest within 0.003 %|
+|`perf(math): FindInlineFormulas counts a word's letters only when a glyph asks, and works out each class before storing it`|A word's letters decide only whether an italic glyph `ClassOf` takes for text stands alone, and the Greek test: counted at the first such glyph instead of for every word; each class worked out in a local and stored once (a byte store may alias what the loop reads)|`arxiv_math` -0.637 %, the rest within 0.007 %|
+
+Against `b7f7045`: `arxiv_math` -2.548 % (5,315.47 M), odl +0.001 % (785.50 M), heavy10 0.000 %,
+syn6 +0.012 %, SafeDocs -0.001 %, `multi_column` 0.000 %, `tables` -0.003 %. No times were
+taken.
+
+Tried and rejected (2026-11-17, `instr.sh`'s `arxiv_math` against the step before; the bar is
+0.2 % of the group):
+
+- `FindInlineFormulas` with its word starts, classes and per-word flags in the thread's scratch,
+  the second pass reading a word's strong and text flags from the first: -0.063 %.
+- `PrepareMathGlyphs`' accent search. Of 1,256 unsorted walks of the glyph list on the group, 210
+  serve a page's first accent (497,000 glyphs visited) and 1,046 its 2nd to 16th (2.43 M). The
+  accents found in the main pass (no list of every non-ASCII glyph) with the list walked by blocks
+  of 16 bounded in x only: -0.037 % (in x only, without the main pass's part: +0.013 %: every line
+  of the page has glyphs at the accent's x). Blocks bounded in x, baseline and size as well
+  (float subtraction keeps the order, so a block passed over holds no glyph the test takes): 8
+  glyphs -0.098 %, 16 -0.129 %, 32 -0.142 %. The first accent of a page looked up by walking the
+  glyphs, the list made for the second: +0.008 %.
+- `FactsOf`'s counts and band in locals, stored once into the line's facts: +0.088 % (both loops),
+  +0.096 % (the first only).
+- One-byte tokens appended as a byte in `AppendToken`, and a one-byte atom's LaTeX copied as a
+  byte in `ItemOf`: -0.075 %.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1418,11 +1485,13 @@ Tried and rejected, or not attempted (2026-11-17, `instr.sh` against the step be
   round).
 - **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
-  items' LaTeX); `MarkDisplayFormulas` reads each line's glyphs twice. After the fourteenth round
-  (self costs in percent of `arxiv_math`): `MarkDisplayFormulas` 2.76 %, `FindInlineFormulas`
-  2.52 %, `Builder::Row` 2.42 %, `PrepareMathGlyphs` 2.15 %,
-  `ResolveAtom` 0.97 %; inclusive, `BuildLatex` 8.50 %, `Builder::Expr` 6.35 %, `Builder::Layout`
-  5.32 %. `math.cpp` has had its unit budget raised (sixteenth round).
+  items' LaTeX). After the seventeenth round (self costs in percent of `arxiv_math`):
+  `Builder::Row` 2.45 % (spread over its passes: no line above 4 M), `PrepareMathGlyphs` 2.30 %
+  (the main pass about 33 M, the accents' list about 17 M and its unsorted walks 20.7 M: see that
+  round's Tried and rejected), `MarkDisplayFormulas` 2.13 %, `FindInlineFormulas` 2.11 %,
+  `ResolveAtom` 1.12 %, `std::vector<Item>` growth 0.50 % with `ItemOf`'s copies of the atoms'
+  LaTeX 9.8 M; inclusive, `BuildLatex` 7.71 %, `Builder::Expr` 5.66 %, `Builder::Layout` 4.47 %.
+  `math.cpp` has had its unit budget raised (sixteenth round).
 - **Blocks:** after the sixteenth round, `BuildBlocks`' tests spread over many loops (card titles,
   the OCR layer's headings, `Continues`, `NoTitle`); none holds 0.15 % of a group.
 - **Pages:** the structure tree and outline read while the pages are interpreted (about 3 % on
