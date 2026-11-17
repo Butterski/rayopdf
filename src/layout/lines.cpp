@@ -1714,6 +1714,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
         uint32_t sizeCount = 0, sizeBest = 0, sizeAt = 0;  // sizeAt: the bucket of the glyph before
         float pu0 = 0, pu1 = 0, vb = 0, vt = 0;
         uint16_t allFlags = kLineFlagGlyphs;
+        // The line's first wide gap when no segment ends before it: the glyph after it (0: none)
+        // and its width, tried for a note's mark before a tab once the line is read.
+        uint32_t markAt = 0;
+        float markGap = 0;
         for (const uint32_t* at = lineBegin; at != lineEnd; ++at) {
             const uint32_t i = *at;
             Glyph& g = glyphs[i];
@@ -1749,10 +1753,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 // measured in the size of the glyphs beside it: a drop cap must not widen the
                 // threshold for the whole line.
                 if (gap > kGutterCandidate * em) {
-                    // The first wide gap after a note's raised mark is a tab, no gutter.
-                    if (segmentCount == p.segFirst && protoCount - p.first <= 3 && gap <= 2.5f * g.size &&
-                        RaisedNoteMark(page, protoAt + p.first, protoCount - p.first, g))
-                        p.markTab = true;
+                    if (segmentCount == p.segFirst) markAt = protoCount, markGap = gap;
                     segments[segmentCount++] = seg;
                     seg = Segment{g.u0, g.u1, protoCount};
                     prevTight = false;
@@ -1799,6 +1800,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
             protoAt[protoCount++] = i;
         }
         if (!first) segments[segmentCount++] = seg;
+        // The first wide gap after a note's raised mark is a tab, no gutter.
+        if (markAt != 0 && markAt - p.first <= 3 && markGap <= 2.5f * glyphs[protoAt[markAt]].size &&
+            RaisedNoteMark(page, protoAt + p.first, markAt - p.first, glyphs[protoAt[markAt]]))
+            p.markTab = true;
         p.u0 = pu0, p.u1 = pu1;
         p.count = protoCount - p.first;
         p.segCount = segmentCount - p.segFirst;
