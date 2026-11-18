@@ -1591,6 +1591,72 @@ Tried and rejected (2026-11-17, `instr.sh` against the step before; the bar is 0
 - Not attempted: the compound lexicon's glyph lookup per hyphen (`InnerHyphen`, in
   `markdown_writer.cpp`, outside this round's files).
 
+## Twentieth round: the flanking landing won back, the writer's byte stores (2026-11-18)
+
+`4eb7534` (emphasis delimiters flank as CommonMark reads them) raised user instructions against
+`b687e48` (`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with `--math=latex`): odl
+by 0.104 %, heavy10 by 0.056 %, syn6 by 0.129 %, SafeDocs by 0.092 %, `multi_column` by
+0.157 %, `tables` by 0.101 %, `arxiv_math` by 0.288 %. Callgrind of both (Release with `-g`,
+linked with gold) over odl, `multi_column` and `arxiv_math`: odl +0.86 M (the words loop moved
+out of `Inline` into `WriteWords` +0.38 M net, `SetStyle`'s delimiter records +0.30 M,
+`RepairFlanking` +0.20 M, `FlankBits` +0.04 M); `multi_column` +2.81 M (`WriteWords` +1.62 M,
+`SetStyle` +0.78 M, `RepairFlanking` +0.36 M); `arxiv_math` +16.1 M, of which the formulas of
+the 136 blocks written again rebuilt (`BuildLatex` +7.3 M, with `AddMathGlyph` and
+`AddMathRules` about 8 M), the words loop +4.3 M, `SetStyle` +2.4 M and `RepairFlanking`
+0.94 M more. The costliest code of `markdown_writer.cpp` and `math.cpp` at `452028b`, self, in
+percent of the group: odl `StyleWords` 1.79 %, `Inline` (with `InlinePlain`) 1.73 %,
+`CollectWords` 1.48 %, `WriteWords` 1.41 %, `SetStyle` 0.28 %; `multi_column` `Inline` 2.27 %,
+`StyleWords` 1.92 %, `CollectWords` 1.51 %, `WriteWords` 1.49 %; `arxiv_math` `Builder::Row`
+2.50 %, `PrepareMathGlyphs` 2.31 %, `MarkDisplayFormulas` 2.14 %, `FindInlineFormulas` 2.12 %,
+`WriteWords` 1.69 %, `StyleWords` 1.52 %, `Inline` 1.48 %, `CollectWords` 1.38 %, `ResolveAtom`
+1.15 %. Most `SetStyle` calls
+change nothing (no style open and none wanted), yet each paid a call and the stack walk. The
+writer's per-glyph loops store bytes (`out_`'s characters, `styles_`, `inline_`'s flags, a
+`GlyphRef`'s script and line-start bytes), which may alias any object in C++: after each store the
+compiler read the vectors' data pointers, the page's arrays and the body-face flags from memory
+again. Every step is byte-identical (`bench.py identical` against the step before over the
+synthetic corpus, odl, olmOCR-Bench, READoc dev and dev2 and OmniParseBench's PDF pages, 4,886
+documents, with `--images=none` alone and with `--math=latex`, `--format=json`, `--plain`,
+`--tables=html`, `--tables=pipe`, `--tables=pipe-latex`, `--quotes=ascii` and `--small-caps=keep`
+beside it: 43,974 comparisons a step, 0 differ):
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(writer): a style change that changes nothing returns before the call`|`SetStyle` is an inline test (no style open and none wanted, or the one open style wanted) in front of the out-of-line `ChangeStyle`|odl -0.320 %, heavy10 -0.155 %, syn6 -0.412 %, SafeDocs -0.207 %, `multi_column` -0.338 %, `tables` -0.198 %, `arxiv_math` -0.318 %|
+|`perf(writer): CollectWords reads a line's glyphs and script bounds from locals`|The line's glyph index and glyph arrays, the page text, the glyph count and the superscript and subscript bounds (the same float expressions as `IsSuperscript` and `IsSubscript`) read once a line; the monospace body flag once a block|odl -0.094 %, heavy10 -0.047 %, syn6 -0.110 %, SafeDocs -0.057 %, `multi_column` -0.099 %, `tables` -0.061 %, `arxiv_math` -0.091 %|
+|`perf(writer): FindFormulas reads a page's arrays once, and passes over tagged formulas only on pages that have them`|The glyph and math-font arrays read again only when the page changes; the tagged-formula pass, a lookup a glyph, skipped when no page of the block has tagged formulas|`arxiv_math` -0.429 %, the rest within 0.002 %|
+|`perf(writer): WriteWords reads the block's arrays from locals`|`refs_`, `styles_`, `mathRun_` and `words_`, which nothing changes while a block is written|odl -0.058 %, heavy10 -0.029 %, syn6 -0.062 %, SafeDocs -0.036 %, `multi_column` -0.061 %, `tables` -0.039 %, `arxiv_math` -0.053 %|
+|`perf(writer): StyleWords reads the block's arrays and body faces from locals`|The same for its passes over the glyphs and words, with `before_` once it is sized|odl -0.088 %, heavy10 -0.044 %, syn6 -0.179 %, SafeDocs -0.063 %, `multi_column` -0.083 %, `tables` -0.037 %, `arxiv_math` -0.108 %|
+|`perf(writer): InlinePlain reads a line's glyphs and script bounds from locals`|As in `CollectWords`, for the loop that writes a block without styles|odl -0.078 %, heavy10 -0.010 %, syn6 -0.165 %, SafeDocs -0.036 %, `multi_column` -0.107 %, `tables` -0.046 %, `arxiv_math` -0.013 %|
+
+Against `452028b`: odl -0.638 % (772.48 M), heavy10 -0.284 %, syn6 -0.922 %, SafeDocs -0.397 %,
+`multi_column` -0.684 %, `tables` -0.379 %, `arxiv_math` -1.016 %; against `b687e48` (before the
+flanking landing) odl -0.535 %, heavy10 -0.228 %, syn6 -0.794 %, SafeDocs -0.305 %,
+`multi_column` -0.527 %, `tables` -0.279 %, `arxiv_math` -0.731 %. No times were taken.
+
+Tried and rejected (2026-11-18, `instr.sh` against the step before; the bar is 0.05 % of odl or
+0.1 % of a group, 0.2 % of `arxiv_math`):
+
+- A block written again by `RepairFlanking` taking its formulas from its first writing (each
+  formula's place in `out_` recorded, the text copied once a block is written again) instead of
+  rebuilding them: `arxiv_math` -0.123 %, the rest within 0.012 %. With the bookkeeping in
+  `Inline`'s loop, `WriteFormula` inlined: odl +0.113 %, syn6 +0.202 %, `arxiv_math` -0.120 %;
+  `WriteFormula` out of line: odl +0.076 %, `arxiv_math` -0.170 %. After the first step the whole
+  check and its rewrites cost odl 0.037 %, `multi_column` 0.069 % and `arxiv_math` 0.083 %
+  (measured with the check off), under every bar.
+- `CollectWords`' script bounds alone, without the arrays in locals: odl -0.044 %,
+  `multi_column` -0.047 %, `arxiv_math` -0.040 %.
+- `InlinePlain` outside LaTeX mode testing a glyph's faces as it writes it, without the pass over
+  the block before (the text written cut off again when one bails): odl +0.039 %, syn6 +0.306 %,
+  `tables` -0.049 %.
+- `WriteWords`' run ending at a formula's first glyph in its own loop, without the scan for the
+  next formula in LaTeX mode: `arxiv_math` -0.102 %, odl -0.031 %; the run's end found while its
+  text is written: odl +0.037 %, `multi_column` +0.049 %, `arxiv_math` -0.042 %.
+- Not attempted: the compound lexicon's glyph lookup per hyphen (`InnerHyphen`, 0.78 M on
+  `multi_column`, under its bar). A search that walks on from the last hyphen's glyph gives
+  `lower_bound`'s glyph only when glyph text offsets never go down, which ActualText spans,
+  replaced OCR texts and rebuilt accented letters do not ensure.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1599,9 +1665,9 @@ Tried and rejected (2026-11-17, `instr.sh` against the step before; the bar is 0
 - **The OCR route's `MeasurePage`** (1.4 % of odl after round 11): counts per font slot are
   untried.
 - **Order and the writer:** Breuel's topological order (about 20 M on `multi_column`); the writer's
-  `StyleWords` (33 M on `multi_column`). Round 10's rewrites of both gained nothing (tenth round,
-  Tried and rejected), nor did skipping the link test of words outside the page's links (twelfth
-  round).
+  `StyleWords` (31 M on `multi_column` after the twentieth round). Round 10's rewrites of both
+  gained nothing (tenth round, Tried and rejected), nor did skipping the link test of words outside
+  the page's links (twelfth round).
 - **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
   items' LaTeX). After the seventeenth round (self costs in percent of `arxiv_math`):
