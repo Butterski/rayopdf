@@ -29,6 +29,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace RayoPdf;
@@ -3135,6 +3136,124 @@ void TestOneWordHeaderLabels() {
                   2319);
 }
 
+// Booktabs rules over a header of four lines: group labels with a \cmidrule under each, then the
+// columns' labels, their group sizes "(n=30)" a line under them, and a line of statistics set a
+// row's distance lower. Most header lines hold a number, yet the rules narrower than the table
+// mark them a header: four lines above the header rule head the columns. The label and its size,
+// set closer than the body's rows, are one cell; the statistics line is a row of its own.
+void TestNumberedHeaderUnderCmidrules() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    HLine(page, 72, 540, 712);
+    AddText(page, "Group 1", 210, 702);
+    AddText(page, "Group 2", 410, 702);
+    HLine(page, 148, 307, 697);
+    HLine(page, 348, 507, 697);
+    AddText(page, "Factor", 76, 688);
+    const char* const labels[] = {"1 dose", "2 doses", "3 doses", "4 doses"};
+    const char* const sizes[] = {"(n=30)", "(n=31)", "(n=32)", "(n=33)"};
+    const float xs[] = {150, 250, 350, 450};
+    for (int c = 0; c < 4; ++c) {
+        AddText(page, labels[c], xs[c], 688);
+        AddText(page, sizes[c], xs[c], 679);
+        AddText(page, "OR (95% CI)", xs[c], 666);
+    }
+    HLine(page, 72, 540, 660);
+    const char* const names[] = {"Physical", "Emotional", "Neglect", "Domestic"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 648 - 14.0f * float(r);
+        AddText(page, names[r], 76, y);
+        for (int c = 0; c < 4; ++c) AddText(page, std::to_string(r + 1) + "." + std::to_string(10 + 17 * c) + " (0.98)", xs[c], y);
+    }
+    HLine(page, 72, 540, 600);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("numbered header under cmidrules", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Factor | Group 1 | Group 1 | Group 2 | Group 2 |\n| --- |"), 2330);
+    RAYOPDF_CHECK(Contains(md, "(n=33) |\n|  | OR (95% CI) | OR (95% CI) | OR (95% CI) | OR (95% CI) |\n| Physical |"), 2331);
+    RAYOPDF_CHECK(Contains(md, "|  | 1 dose (n=30) | 2 doses (n=31) |"), 2332);
+}
+
+// Booktabs rules around an airy table: three rows of figures set at one pitch two lines apart,
+// under a header band of group labels over \cmidrules and the columns' labels, taller than twelve
+// ems. The rows are the table's body, the band its header.
+void TestAiryRuledRows() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 760, 3);
+    HLine(page, 72, 420, 712);
+    AddText(page, "Model 1", 185, 690);
+    AddText(page, "Model 2", 325, 690);
+    HLine(page, 140, 270, 670);
+    HLine(page, 280, 410, 670);
+    const char* const labels[] = {"Mean", "Total", "Mean", "Total"};
+    const float xs[] = {150, 210, 290, 350};
+    for (int c = 0; c < 4; ++c) AddText(page, labels[c], xs[c], 600);
+    HLine(page, 72, 420, 580);
+    const char* const names[] = {"Attendances", "Admissions", "Both events"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 550 - 30.0f * float(r);
+        AddText(page, names[r], 76, y);
+        for (int c = 0; c < 4; ++c) AddText(page, std::to_string(7992 - 1311 * r + 17 * c), xs[c], y);
+    }
+    HLine(page, 72, 420, 470);
+    AddProse(page, 72, 400, 440, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("airy ruled rows", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Attendances | 7992 | 8009 | 8026 | 8043 |\n| Admissions |"), 2335);
+    RAYOPDF_CHECK(Contains(md, "|  | Model 1 | Model 1 | Model 2 | Model 2 |\n| --- |"), 2336);
+}
+
+// Booktabs top, header and bottom rules around rows of sentences in two columns (programme
+// components and how they were adapted), set sideways on the page: a landscape table of text, a
+// table although its columns hold prose. Upright, the same columns stay running text.
+void TestRuledSentenceTable() {
+    const auto build = [](bool turned) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        // Upright (x, y), or the turned frame's (u, v) = (x, y - 812): on the page, x = -v.
+        const auto text = [&](std::string_view t, float x, float y) {
+            if (turned) AddTurnedText(page, t, x, y - 812);
+            else AddText(page, t, x, y);
+        };
+        const auto rule = [&](float y) {
+            if (turned) page.rulings.push_back(Ruling{812 - y - 0.25f, 72, 812 - y + 0.25f, 520, kRulingStroke});
+            else HLine(page, 72, 520, y);
+        };
+        rule(712);
+        text("Component", 76, 700);
+        text("Original programme", 160, 700);
+        text("Adaptation in the new setting", 345, 700);
+        rule(694);
+        const char* const names[] = {"Diet", "Activity", "Rewards"};
+        const char* const left[3][3] = {{"Elimination of red foods each", "week until eating two servings", "of them per day"},
+                                        {"Lifestyle goal of thirty minutes", "each day of moderate activity", "or more as reported"},
+                                        {"Identifying chances for praise", "and changing the rewards to", "ones not based on food"}};
+        const char* const right[3][3] = {{"Elimination of red foods each", "week until eating two of them", "on most days"},
+                                         {"Increased baseline steps by a", "thousand steps and required the", "goal on five days"},
+                                         {"Praise from the parents and", "rewards chosen together with", "the child every week"}};
+        float y = 682;
+        for (int r = 0; r < 3; ++r) {
+            text(names[r], 76, y);
+            for (int l = 0; l < 3; ++l, y -= 11) {
+                text(left[r][l], 160, y);
+                text(right[r][l], 345, y);
+            }
+            y -= 6;
+        }
+        rule(y + 4);
+        ConvertReport report;
+        const std::string md = Run(pages, &report);
+        Show(turned ? "ruled sentence table, turned" : "ruled sentence table, upright", md);
+        return std::make_pair(report.tables, md);
+    };
+    const auto [turnedTables, turned] = build(true);
+    RAYOPDF_CHECK(turnedTables == 1, 2337);
+    RAYOPDF_CHECK(Contains(turned, "| Diet | Elimination of red foods each week until eating two servings of them per day |"), 2338);
+    RAYOPDF_CHECK(build(false).first == 0, 2339);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3240,6 +3359,9 @@ int main(int argc, char** argv) {
     TestWrappedLevelLabels();
     TestWrappedCellsInRowBands();
     TestOneWordHeaderLabels();
+    TestNumberedHeaderUnderCmidrules();
+    TestAiryRuledRows();
+    TestRuledSentenceTable();
     std::puts("test_layout_tables: ok");
     return 0;
 }

@@ -1877,6 +1877,26 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             const auto at = std::lower_bound(starts.begin(), starts.end(), r);
             if (at != starts.end() && *at == r) starts.erase(at);
         }
+        // The median pitch of the body rows' first lines (NAN without two body rows).
+        const auto bodyPitch = [&]() {
+            std::vector<float> pitches;
+            for (size_t s = 1; s < starts.size() && pitches.size() < 256; ++s)
+                if (starts[s - 1] >= headerEnd) pitches.push_back(rows[starts[s - 1]].base - rows[starts[s]].base);
+            if (pitches.empty()) return NAN;
+            std::nth_element(pitches.begin(), pitches.begin() + static_cast<std::ptrdiff_t>(pitches.size() / 2), pitches.end());
+            return pitches[pitches.size() / 2];
+        };
+        // Under the lowest label over several columns, a header row of one line set closer above
+        // the next row's line than the body's rows (as below, for a header without levels) is one
+        // row with it: a label wrapped over two lines ("Suicidality" over "(n = 138)") is one cell.
+        if (levels && leaf + 1 < headerEnd) {
+            const float pitch = bodyPitch();
+            for (size_t r = leaf + 1; r < headerEnd && !std::isnan(pitch); ++r) {
+                if (cut[r - rowBegin] || !(rows[r - 1].base - rows[r].base < 0.9f * pitch)) continue;
+                const auto at = std::lower_bound(starts.begin(), starts.end(), r);
+                if (at != starts.begin() && at != starts.end() && *at == r && *(at - 1) == r - 1) starts.erase(at);
+            }
+        }
         // Header lines set as far apart as the body's rows (the median pitch of the body rows' first
         // lines) are rows of their own: a line of units under the labels, as TeX sets two rows. The
         // lines of one wrapped cell sit closer than rows with padding between them. Cells set to
@@ -1901,12 +1921,8 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 wrapped = wrapped || ((first >> c & 1) && head >= 'a' && head <= 'z');
             }
             bottom = bottom && wrapped;
-            std::vector<float> pitches;
-            for (size_t s = 1; s < starts.size() && pitches.size() < 256 && !bottom; ++s)
-                if (starts[s - 1] >= headerEnd) pitches.push_back(rows[starts[s - 1]].base - rows[starts[s]].base);
-            if (!pitches.empty()) {
-                std::nth_element(pitches.begin(), pitches.begin() + static_cast<std::ptrdiff_t>(pitches.size() / 2), pitches.end());
-                const float pitch = pitches[pitches.size() / 2];
+            const float pitch = bottom ? NAN : bodyPitch();
+            if (!std::isnan(pitch)) {
                 bool apart = true;
                 for (size_t r = rowBegin + 1; r < headerEnd && apart; ++r) apart = rows[r - 1].base - rows[r].base >= 0.9f * pitch;
                 if (apart) {
@@ -3693,13 +3709,27 @@ void Detector::RuleStacks() {
                     // band is no table body. A row with words of that size among smaller ones (a
                     // label of subscripts, in small capitals) is of that size too; when the first
                     // row's prose is smaller than its largest words, the band may be of their size.
+                    // Three rows or more of figures set wider apart at one pitch (within 15 %, four
+                    // sizes at most) are evenly set too: an airy table's body.
                     const auto evenAt = [&](float size) {
-                        for (size_t q = 1; q < rows.size(); ++q)
-                            if (!((SizeFits(rows[q], size) || (SizeFits(rows[q - 1], size) && SubLine(rows[q - 1], rows[q])) ||
-                                   WordOfSize(rows[q], rowWords, size)) &&
-                                  rows[q - 1].bottom - rows[q].top < 1.6f * size))
+                        bool close = true, figures = rows.size() >= 3;
+                        float least = INFINITY, most = 0;
+                        for (size_t q = 1; q < rows.size(); ++q) {
+                            if (!(SizeFits(rows[q], size) || (SizeFits(rows[q - 1], size) && SubLine(rows[q - 1], rows[q])) ||
+                                  WordOfSize(rows[q], rowWords, size)))
                                 return false;
-                        return true;
+                            close = close && rows[q - 1].bottom - rows[q].top < 1.6f * size;
+                            const float pitch = rows[q - 1].base - rows[q].base;
+                            least = Fmin(least, pitch), most = Fmax(most, pitch);
+                        }
+                        if (close) return true;
+                        for (size_t q = 0; q < rows.size() && figures; ++q) {
+                            bool any = false;
+                            for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count && !any; ++k)
+                                any = Numeric(Chars(words_[rowWords[k]]));
+                            figures = any;
+                        }
+                        return figures && most <= 1.15f * least && most <= 4 * size;
                     };
                     em = TextSize(rows[0]);
                     bool even = evenAt(em);
@@ -3735,10 +3765,10 @@ void Detector::RuleStacks() {
             // No rule of the stack close above the run's first rule: that rule may be the one under
             // the header, with no top rule; the header lines above it are looked for below.
             const bool headless = !single && (i == 0 || s.ys[i - 1] > top + 6 * em);
-            // A rule of the stack less than 12 ems above the run's first rule: the table's top rule,
+            // A rule of the stack less than 16 ems above the run's first rule: the table's top rule,
             // the band between them its header (lines set apart, a rule under a label over columns:
             // a band that did not pass as tabular itself). Its lines are looked for below.
-            const float capTop = !single && i > 0 && s.ys[i - 1] <= top + 12 * em ? s.ys[i - 1] : NAN;
+            const float capTop = !single && i > 0 && s.ys[i - 1] <= top + 16 * em ? s.ys[i - 1] : NAN;
             {
                 const float below = j + 1 < s.ys.size() ? s.ys[j + 1] : -INFINITY;
                 ylo = open ? Fmax(below, bottom - 80 * em) : bottom;
@@ -3895,16 +3925,21 @@ void Detector::RuleStacks() {
                 }
                 return false;
             };
-            // A single rule closes nothing: its table needs three rows at least.
+            // A single rule closes nothing: its table needs three rows at least. Rows set sideways
+            // (a turned frame) under a header rule and closed by a bottom rule (three rules or more)
+            // are a table even when their cells hold sentences (a landscape table of text): running
+            // text is not set sideways in columns, so no test of running text applies to them.
             if (end - begin >= (single ? 3u : 2u) && columns(ink, begin, end, gaps) &&
                 multiCell() && !code() && !fractionBar() &&
-                !Texty(rows, rowWords, begin, end, gaps, em, !open) && !ListLike(rows, rowWords, begin, end, gaps) &&
+                ((dir_ != 0 && j - i >= 2) || !Texty(rows, rowWords, begin, end, gaps, em, !open)) && !ListLike(rows, rowWords, begin, end, gaps) &&
                 !(open && WordSpaced(rows, rowWords, begin, end, gaps)) &&
                 !FigureText(rows, rowWords, begin, end, em)) {
                 // Header: the rows above the second rule of the run; above a single rule, the rows
                 // above it when they are few and rows follow below it. More than three lines above
                 // the second rule, most of them holding a number, are rows of a section, not a
-                // header (a tall header of wrapped labels stays one).
+                // header (a tall header of wrapped labels stays one), unless a drawn rule narrower
+                // than the table parts two of them (a \cmidrule under a label over columns; the
+                // numbers are the groups' sizes, "(n = 299)").
                 const auto numbers = [&](size_t q) {
                     for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count; ++k)
                         if (Numeric(Chars(words_[rowWords[k]]))) return true;
@@ -3914,7 +3949,14 @@ void Detector::RuleStacks() {
                 if (!single) {
                     size_t numbered = 0;
                     for (size_t r = begin; r < end && rows[r].base > s.ys[i + 1]; ++r) header++, numbered += numbers(r);
-                    if (header > 3 && 2 * numbered > header) header = 0;
+                    if (header > 3 && 2 * numbered > header) {
+                        const float hi = rows[begin].base, lo = rows[begin + header - 1].base;
+                        bool spanned = false;
+                        for (auto e = std::lower_bound(h_.begin(), h_.end(), lo, [](const Edge& q, float y) { return q.pos < y; });
+                             e != h_.end() && e->pos < hi && !spanned; ++e)
+                            spanned = !e->area && e->a >= xa - 1 && e->b <= xb + 1 && e->b - e->a <= 0.9f * (xb - xa) && e->b - e->a >= em;
+                        if (!spanned) header = 0;
+                    }
                 } else if (rows[end - 1].base < top) {
                     for (size_t r = begin; r < end && rows[r].base > top; ++r) header++;
                     if (header > 3) header = 0;
