@@ -575,18 +575,28 @@ void Writer::CollectWords(const Block& block) {
     uint16_t faces = 0;
     bool code = false;
     bool joinNext = false;  // the previous line ended in a hyphen that joins its word to this line
+    // A local: the refs' byte stores would make the compiler read the member again at each glyph.
+    const bool monoIsBody = monoIsBody_;
     for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
         const BlockLine& ref = lines_[bl];
         const PageData& page = pages_[ref.page];
         const Line& line = page.lines[ref.line];
         const uint32_t lineFirst = n;
         bool carriedSpace = false;  // a soft hyphen left out had the word break before it
-        for (uint32_t k = ref.skip; k < line.count; ++k) {
-            const uint32_t gi = page.lineGlyphs[line.first + k];
-            const Glyph& g = page.glyphs[gi];
-            const std::string_view text = page.GlyphText(g);
+        // IsSuperscript's and IsSubscript's bounds and the line's glyphs, worked out once a line
+        // (locals the refs' byte stores leave in registers).
+        const float small = 0.85f * line.size, raised = 0.2f * line.size, lowered = -0.1f * line.size;
+        const float baseline = line.baseline;
+        const uint32_t* const lineGlyphs = page.lineGlyphs.data() + line.first;
+        const Glyph* const glyphs = page.glyphs.data();
+        const std::string_view pageText = page.text;
+        const uint32_t count = line.count, pageIndex = ref.page;
+        for (uint32_t k = ref.skip; k < count; ++k) {
+            const uint32_t gi = lineGlyphs[k];
+            const Glyph& g = glyphs[gi];
+            const std::string_view text = pageText.substr(g.text, g.textLength);  // PageData::GlyphText
             // Soft hyphens are invisible except at a line break; a word break before one stays.
-            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) {
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < count) {
                 carriedSpace = carriedSpace || (g.flags & kGlyphSpaceBefore) != 0;
                 continue;
             }
@@ -606,17 +616,17 @@ void Writer::CollectWords(const Block& block) {
                 words_.push_back(w);
             }
             uint8_t script = kScriptNone;
-            if (IsSuperscript(g, line))
-                script = kScriptSup;
-            else if (IsSubscript(g, line))
-                script = kScriptSub;
-            refs[n] = GlyphRef{text.data(), ref.page, gi, static_cast<uint16_t>(text.size()), f, script,
+            if (g.size < small && !(f & kGlyphInvisible)) {
+                const float rise = g.v - baseline;
+                script = rise > raised ? kScriptSup : rise < lowered ? kScriptSub : kScriptNone;
+            }
+            refs[n] = GlyphRef{text.data(), pageIndex, gi, static_cast<uint16_t>(text.size()), f, script,
                                static_cast<uint8_t>(n == lineFirst)};
             wordOf[n] = word;
             ++n;
             if (!(f & kGlyphImage)) {
                 faces |= f;
-                if ((f & kGlyphMonospace) && !monoIsBody_ && !code) {
+                if ((f & kGlyphMonospace) && !monoIsBody && !code) {
                     const uint32_t cp = FirstOf(text);
                     code = !(cp >= 0x1D400 && cp <= 0x1D7FF);
                 }
