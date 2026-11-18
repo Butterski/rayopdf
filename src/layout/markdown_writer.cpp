@@ -1788,13 +1788,29 @@ uint32_t Writer::ScriptForms(const Word& w, uint32_t k, uint32_t stop) {
 void Writer::FindFormulas() {
     const uint32_t n = static_cast<uint32_t>(refs_.size());
     inline_.resize(n);
+    // The arrays in locals, the page's read again only when the page changes: the bool stores
+    // into inline_ would make the compiler read every member again at each glyph.
+    const GlyphRef* const refs = refs_.data();
+    InlineGlyph* const out = inline_.data();
+    uint32_t pageIndex = UINT32_MAX;
+    const Glyph* glyphs = nullptr;
+    const uint8_t* fontMath = nullptr;
+    size_t fonts = 0;
+    bool tagged = false;  // a page of the block has tagged formulas (PageData::glyphFormula)
     for (uint32_t k = 0; k < n; ++k) {
-        const GlyphRef& r = refs_[k];
-        const PageData& page = pages_[r.page];
-        const Glyph& g = page.glyphs[r.glyph];
-        InlineGlyph& ig = inline_[k];
+        const GlyphRef& r = refs[k];
+        if (r.page != pageIndex) {
+            const PageData& page = pages_[r.page];
+            pageIndex = r.page;
+            glyphs = page.glyphs.data();
+            fontMath = page.fontMath.data();
+            fonts = page.fontMath.size();
+            tagged = tagged || !page.glyphFormula.empty();
+        }
+        const Glyph& g = glyphs[r.glyph];
+        InlineGlyph& ig = out[k];
         ig.glyph = &g;
-        ig.font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
+        ig.font = g.font < fonts ? (fontMath[g.font] & kMathFontClass) : 0;
         ig.wordStart = false;
         ig.lineStart = r.lineStart != 0;
         ig.script = r.script != kScriptNone;
@@ -1825,7 +1841,7 @@ void Writer::FindFormulas() {
     FindInlineFormulas(inline_, mathRun_);
     // Tagged formulas with LaTeX: each run of a formula's glyphs is one formula, in place of the
     // runs found among them.
-    for (uint32_t k = 0; k < n;) {
+    for (uint32_t k = 0; tagged && k < n;) {
         const uint32_t f = pages_[refs_[k].page].FormulaOf(refs_[k].glyph);
         if (f == 0) {
             ++k;
