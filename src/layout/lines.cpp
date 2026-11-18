@@ -1064,6 +1064,7 @@ struct Group {
     uint8_t dir = 0;
     bool merged = false;   // absorbed into another group
     bool scripts = false;  // received a superscript or subscript fragment: sort glyphs by position
+    bool accents = false;  // received a fragment of accents alone: SeatAccents seats them
 };
 
 // Proto lines: glyphs in order with their word breaks set, before gutter splitting.
@@ -1089,6 +1090,7 @@ struct Segment {
 constexpr size_t kKeptGlyphs = size_t(1) << 18;
 struct PlaceScratch {
     std::vector<uint32_t> vis, fo, members, cluster, extraOf, lineVis, byBase;
+    std::vector<uint32_t> stray;  // positions in `vis` of the spacing accents ComposeAccents left
     std::vector<Fragment> frags;
     std::vector<Group> groups;
     std::vector<Proto> protos;
@@ -1298,23 +1300,35 @@ constexpr float kAccentReach = 0.08f;     // the accent's centre within the lett
 constexpr float kAccentRaise = 0.5f;      // the most an accent above sits above the letter's baseline
 constexpr float kAccentDrop = 0.05f;      // ... and below it; an accent below, both ways
 constexpr float kAccentSizeRatio = 1.3f;  // sizes differ by at most this ratio
+// An accent set apart from its glyph (SeatAccents) may sit higher: TeX raises a formula's accent
+// over a capital by the capital's height above the x-height.
+constexpr float kSeatRaise = 0.7f;
 
-// Whether spacing accent `a` (row `accent` of kAccentMarks) sits on letter `b` of its font;
-// `distance` is how far its centre is from the letter's.
-bool AccentOver(const PageData& page, const Glyph& a, const Glyph& b, int accent, float& distance) {
-    if (b.font != a.font || b.dir != a.dir || (b.flags & kGlyphSpace) || ((a.flags ^ b.flags) & kGlyphInvisible))
-        return false;
+// Whether spacing accent `a` (row `accent` of kAccentMarks) is set over (or under) glyph `b` by
+// their geometry alone, whatever their fonts and b's character, an accent above at most `raise`
+// above b's baseline; `distance` is how far its centre is from b's.
+bool AccentSits(const Glyph& a, const Glyph& b, int accent, float raise, float& distance) {
+    if (b.dir != a.dir || (b.flags & kGlyphSpace) || ((a.flags ^ b.flags) & kGlyphInvisible)) return false;
     if (!(a.size <= kAccentSizeRatio * b.size && b.size <= kAccentSizeRatio * a.size)) return false;
     const float cx = (a.u0 + a.u1) / 2, reach = kAccentReach * b.size;
     if (!(cx >= b.u0 - reach && cx <= b.u1 + reach)) return false;
     const float dv = a.v - b.v;
     const bool above = accent < kAccentFirstBelow;
-    if (!(dv >= -kAccentDrop * b.size && dv <= (above ? kAccentRaise : kAccentDrop) * b.size)) return false;
+    if (!(dv >= -kAccentDrop * b.size && dv <= (above ? raise : kAccentDrop) * b.size)) return false;
+    distance = std::fabs(cx - (b.u0 + b.u1) / 2);
+    return true;
+}
+
+// Whether spacing accent `a` (row `accent` of kAccentMarks) sits on letter `b` of its font;
+// `distance` is how far its centre is from the letter's.
+bool AccentOver(const PageData& page, const Glyph& a, const Glyph& b, int accent, float& distance) {
+    float d = 0;
+    if (b.font != a.font || !AccentSits(a, b, accent, kAccentRaise, d)) return false;
     uint32_t cp = 0;
     size_t length = 0;
     const std::string_view t = page.GlyphText(b);
     if (!Utf8::Decode(t, 0, cp, length) || length != t.size() || !AccentBase(cp)) return false;
-    distance = std::fabs(cx - (b.u0 + b.u1) / 2);
+    distance = d;
     return true;
 }
 
@@ -1329,33 +1343,66 @@ bool LetterBeside(const PageData& page, const Glyph& b, const Glyph& n) {
     return Utf8::Decode(t, 0, cp, length) && (AccentBase(cp) || SpacingAccent(t) >= 0);
 }
 
+// A glyph whose text may be a spacing accent: one byte `, or two from C2 or CB.
+bool AccentCandidate(const PageData& page, const Glyph& g) {
+    const uint32_t length = g.textLength;
+    if (length - 1u > 1u || (g.flags & kGlyphSpace) || size_t(g.text) + length > page.text.size()) return false;
+    const unsigned char lead = static_cast<unsigned char>(page.text[g.text]);
+    return length == 1 ? lead == '`' : lead == 0xC2 || lead == 0xCB;
+}
+
+// The row of kAccentMarks of glyph `g` when it is a spacing accent, else -1.
+int GlyphAccent(const PageData& page, const Glyph& g) {
+    return AccentCandidate(page, g) ? SpacingAccent(page.GlyphText(g)) : -1;
+}
+
+// Composes spacing accent `a` (row `accent` of kAccentMarks) with letter `b` it sits on: the
+// letter's text becomes the NFC precomposed character, else the letter and the combining mark (a
+// dotless ı or ȷ under an accent above becomes i or j); the letter's box grows to the accent's
+// height (not its width), and the accent is dropped.
+void ComposeAccent(PageData& page, Glyph& a, Glyph& b, int accent) {
+    uint32_t cp = 0;
+    size_t length = 0;
+    Utf8::Decode(page.GlyphText(b), 0, cp, length);
+    const bool dotless = cp == 0x131 || cp == 0x237;
+    if (dotless && accent < kAccentFirstBelow) cp = cp == 0x131 ? 'i' : 'j';
+    const size_t letter = cp < 0x80 ? (cp >= 'a' ? 26 + cp - 'a' : cp - 'A') : 52;
+    const uint32_t composed = letter < 52 ? kAccentComposed[accent][letter] : 0;
+    const size_t at = page.text.size();
+    if (composed != 0) {
+        Utf8::Append(page.text, composed);
+    } else {
+        Utf8::Append(page.text, cp);
+        if (!(dotless && accent == kAccentDotAbove)) Utf8::Append(page.text, kAccentMarks[accent]);
+    }
+    b.text = static_cast<uint32_t>(at);
+    b.textLength = static_cast<uint16_t>(page.text.size() - at);
+    // The letter keeps its advance: an accent wider than it (an acute over a dotless ı) must not
+    // narrow the word gap after it ("Jiří Sgall").
+    b.vb = Fmin(b.vb, a.vb), b.vt = Fmax(b.vt, a.vt);
+    a.flags |= kGlyphDropped;
+}
+
 // Composes each spacing accent of `vis` (content order) with the letter next to it in that order
-// that it is drawn over (or under) in the same font: the letter's text becomes the NFC precomposed
-// character, else the letter and the combining mark (a dotless ı or ȷ under an accent above becomes
-// i or j); the letter's box grows to the accent's height (not its width), and the accent leaves
-// `vis`, dropped. Math's accents stay apart (layout/math.h): those of math fonts, and TeX's \hat or
-// \bar, drawn in a text font over a letter of a math or another font. With `mathScripts`
-// (--math=latex), whose formulas read an accent over a lone letter themselves, a bold letter takes
-// its accent only with another letter of its font beside it, in a word: \tilde{\mathbf{u}} sets
-// accent and letter in one bold font.
-void ComposeAccents(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
+// that it is drawn over (or under) in the same font (ComposeAccent), and the accent leaves `vis`.
+// Math's accents stay apart (layout/math.h): those of math fonts, and TeX's \hat or \bar, drawn in
+// a text font over a letter of a math or another font. With `mathScripts` (--math=latex), whose
+// formulas read an accent over a lone letter themselves, a bold letter takes its accent only with
+// another letter of its font beside it, in a word: \tilde{\mathbf{u}} sets accent and letter in one
+// bold font. `stray` receives the positions in `vis` of the spacing accents that stay, ascending.
+void ComposeAccents(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, std::vector<uint32_t>& stray) {
+    stray.clear();
     if (!MayHoldAccent(page.text)) return;
     GlyphVector& glyphs = page.glyphs;
-    // A glyph whose text may be a spacing accent: one byte `, or two from C2 or CB.
-    const auto candidate = [&](const Glyph& g) {
-        const uint32_t length = g.textLength;
-        if (length - 1u > 1u || (g.flags & kGlyphSpace) || size_t(g.text) + length > page.text.size()) return false;
-        const unsigned char lead = static_cast<unsigned char>(page.text[g.text]);
-        return length == 1 ? lead == '`' : lead == 0xC2 || lead == 0xCB;
-    };
     const size_t n = vis.size();
     size_t k = 0;
-    while (k < n && !candidate(glyphs[vis[k]])) ++k;
+    while (k < n && !AccentCandidate(page, glyphs[vis[k]])) ++k;
     size_t out = k;
     for (; k < n; ++k) {
         Glyph& a = glyphs[vis[k]];
-        const int accent = candidate(a) ? SpacingAccent(page.GlyphText(a)) : -1;
+        const int accent = GlyphAccent(page, a);
         if (accent < 0 || MathFontGlyph(page, a)) {
+            if (accent >= 0) stray.push_back(static_cast<uint32_t>(out));
             vis[out++] = vis[k];
             continue;
         }
@@ -1364,6 +1411,7 @@ void ComposeAccents(PageData& page, std::vector<uint32_t>& vis, bool mathScripts
         const bool b0 = out > 0 && AccentOver(page, a, glyphs[vis[out - 1]], accent, before);
         const bool b1 = k + 1 < vis.size() && AccentOver(page, a, glyphs[vis[k + 1]], accent, after);
         if ((!b0 && !b1) || page.text.size() >= (size_t(1) << 30)) {
+            stray.push_back(static_cast<uint32_t>(out));
             vis[out++] = vis[k];
             continue;
         }
@@ -1374,39 +1422,122 @@ void ComposeAccents(PageData& page, std::vector<uint32_t>& vis, bool mathScripts
             const size_t left = next ? out : out - 1, right = next ? k + 2 : k + 1;
             if (!((left > 0 && LetterBeside(page, b, glyphs[vis[left - 1]])) ||
                   (right < vis.size() && LetterBeside(page, b, glyphs[vis[right]])))) {
+                stray.push_back(static_cast<uint32_t>(out));
                 vis[out++] = vis[k];
                 continue;
             }
         }
-        uint32_t cp = 0;
-        size_t length = 0;
-        Utf8::Decode(page.GlyphText(b), 0, cp, length);
-        const bool dotless = cp == 0x131 || cp == 0x237;
-        if (dotless && accent < kAccentFirstBelow) cp = cp == 0x131 ? 'i' : 'j';
-        const size_t letter = cp < 0x80 ? (cp >= 'a' ? 26 + cp - 'a' : cp - 'A') : 52;
-        const uint32_t composed = letter < 52 ? kAccentComposed[accent][letter] : 0;
-        const size_t at = page.text.size();
-        if (composed != 0) {
-            Utf8::Append(page.text, composed);
-        } else {
-            Utf8::Append(page.text, cp);
-            if (!(dotless && accent == kAccentDotAbove)) Utf8::Append(page.text, kAccentMarks[accent]);
-        }
-        b.text = static_cast<uint32_t>(at);
-        b.textLength = static_cast<uint16_t>(page.text.size() - at);
-        // The letter keeps its advance: an accent wider than it (an acute over a dotless ı) must not
-        // narrow the word gap after it ("Jiří Sgall").
-        b.vb = Fmin(b.vb, a.vb), b.vt = Fmax(b.vt, a.vt);
-        a.flags |= kGlyphDropped;
+        ComposeAccent(page, a, b, accent);
     }
     vis.resize(out);
 }
 
-// Lines from the placed glyphs `vis` (content order), M the page's min and max.
+// Accents set apart from their letter (SeatAccents): the glyphs of the line searched on each side
+// of an accent for it, the accents examined per page, how far beyond the accent and its letter (in
+// the letter's size) a glyph between them is drawn elsewhere, and the most fragments of a group of
+// accents alone that joins the line of their letter (PlaceGlyphs).
+constexpr size_t kSeatWindow = 256;
+constexpr uint32_t kSeatBudget = 4096;
+constexpr float kSeatApart = 0.3f;
+constexpr uint32_t kAccentFragments = 4;
+
+// The glyph of `line` (count `n`) that spacing accent `a` (row `accent`) sits over (AccentSits), the
+// nearest of them, within kSeatWindow of position `p`; `n` for none.
+size_t AccentSeat(const PageData& page, const uint32_t* line, size_t n, size_t p, const Glyph& a, int accent) {
+    const size_t lo = p > kSeatWindow ? p - kSeatWindow : 0, hi = n - p > kSeatWindow ? p + kSeatWindow + 1 : n;
+    size_t q = n;
+    float best = 0;
+    for (size_t i = lo; i < hi; ++i) {
+        const Glyph& b = page.glyphs[line[i]];
+        float d = 0;
+        if (i == p || !AccentSits(a, b, accent, kSeatRaise, d) || GlyphAccent(page, b) >= 0) continue;
+        if (q == n || d < best) q = i, best = d;
+    }
+    return q;
+}
+
+// The spacing accents of a line (`begin`, `end`) that content order set apart from the glyph they
+// sit over, glyphs drawn elsewhere between them: TeX draws a formula's \hat over the first glyph of a
+// line before that line (at the end of the line above) and some producers draw an accent after its
+// line. Each goes just before its glyph, where TeX draws an accent, or is composed with it where
+// ComposeAccents would compose it beside it (a letter of its font). The reordered line is written to
+// `seq`, which `begin` points into when `inSeq`; returns whether `seq` holds the line. `budget`
+// bounds the accents examined on the page.
+bool SeatAccents(PageData& page, const uint32_t* begin, const uint32_t* end, bool inSeq, std::vector<uint32_t>& seq,
+                 bool mathScripts, uint32_t& budget) {
+    GlyphVector& glyphs = page.glyphs;
+    bool copied = inSeq;
+    size_t n = static_cast<size_t>(end - begin);
+    for (size_t p = 0; p < n && budget > 0;) {
+        const uint32_t* line = copied ? seq.data() : begin;
+        Glyph& a = glyphs[line[p]];
+        const int accent = GlyphAccent(page, a);
+        if (accent < 0) {
+            ++p;
+            continue;
+        }
+        // In place: beside a glyph it sits over, or in the room between the glyphs beside it.
+        const float cx = (a.u0 + a.u1) / 2;
+        const Glyph* const before = p > 0 ? &glyphs[line[p - 1]] : nullptr;
+        const Glyph* const after = p + 1 < n ? &glyphs[line[p + 1]] : nullptr;
+        float d = 0;
+        if ((before != nullptr && AccentSits(a, *before, accent, kSeatRaise, d) && GlyphAccent(page, *before) < 0) ||
+            (after != nullptr && AccentSits(a, *after, accent, kSeatRaise, d) && GlyphAccent(page, *after) < 0) ||
+            ((before == nullptr || before->u1 <= cx) && (after == nullptr || after->u0 >= cx))) {
+            ++p;
+            continue;
+        }
+        --budget;
+        const size_t q = AccentSeat(page, line, n, p, a, accent);
+        if (q == n || q + 1 == p || p + 1 == q) {
+            ++p;
+            continue;
+        }
+        const Glyph& base = glyphs[line[q]];
+        const float lo = Fmin(a.u0, base.u0) - kSeatApart * base.size, hi = Fmax(a.u1, base.u1) + kSeatApart * base.size;
+        bool apart = false;
+        for (size_t i = (p < q ? p : q) + 1, last = p < q ? q : p; i < last && !apart; ++i) {
+            const Glyph& g = glyphs[line[i]];
+            const float c = (g.u0 + g.u1) / 2;
+            apart = !(g.flags & kGlyphSpace) && !(c >= lo && c <= hi);
+        }
+        if (!apart) {
+            ++p;
+            continue;
+        }
+        if (!copied) seq.assign(begin, end), copied = true;
+        uint32_t* const s = seq.data();
+        Glyph& b = glyphs[s[q]];
+        float distance = 0;
+        bool compose = !MathFontGlyph(page, a) && AccentOver(page, a, b, accent, distance) &&
+                       page.text.size() < (size_t(1) << 30);
+        if (compose && mathScripts && (b.flags & kGlyphBold))
+            compose = (q > 0 && LetterBeside(page, b, glyphs[s[q - 1]])) || (q + 1 < n && LetterBeside(page, b, glyphs[s[q + 1]]));
+        if (compose) {
+            ComposeAccent(page, a, b, accent);
+            seq.erase(seq.begin() + static_cast<std::ptrdiff_t>(p));
+            --n;
+        } else if (p > q) {
+            std::rotate(s + q, s + p, s + p + 1);
+            ++p;
+        } else {
+            std::rotate(s + p, s + p + 1, s + q);
+        }
+    }
+    return copied;
+}
+
+// Lines from the placed glyphs `vis` (content order), M the page's min and max. `stray`: the
+// positions in `vis` of the spacing accents ComposeAccents left there, ascending.
 template <typename M>
-void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
+void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, const std::vector<uint32_t>& stray) {
     GlyphVector& glyphs = page.glyphs;
     PlaceScratch& place = PerThread<PlaceScratch>();
+    // Whether fragment `f` holds one of those accents.
+    const auto holdsAccent = [&](const Fragment& f) {
+        const auto at = std::lower_bound(stray.begin(), stray.end(), f.begin);
+        return at != stray.end() && *at < f.end;
+    };
 
     // Fragments in content order (algorithms §4.4 recommendation: one pass merging into the
     // current line while direction and baseline match).
@@ -1538,7 +1669,10 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
     // `mathScripts`, a lone fragment of math-font glyphs (the 2 of e^{x^2}, set above the line's
     // ink) joins a line holding a script glyph it is 0.87 of the size of or smaller, its baseline
     // from 0.6 em below to 0.9 em above the line's, and a lone ∼ joins the line of the = it is
-    // stacked over (TeX's \cong: centred on it, about as wide, up to 0.6 em above it).
+    // stacked over (TeX's \cong: centred on it, about as wide, up to 0.6 em above it). A lone
+    // fragment of spacing accents joins the line of the glyph its first accent sits over
+    // (AccentSits: TeX raises a formula's accent over a capital past the baseline tolerance), where
+    // SeatAccents sets it before that glyph.
     std::vector<std::vector<uint32_t>> extra;  // fragments added to groups, by group, rarely used
     std::vector<uint32_t>& extraOf = place.extraOf;
     extraOf.assign(groups.size(), kEmpty);
@@ -1582,64 +1716,112 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 if (over(frags[m])) return true;
         return false;
     };
+    // Whether a glyph of fragment `h` that is no accent is under accent `a` (row `accent`).
+    const auto holdsBase = [&](const Fragment& h, const Glyph& a, int accent) {
+        for (uint32_t k = h.begin; k < h.end; ++k) {
+            const Glyph& b = glyphs[vis[k]];
+            float d = 0;
+            if (AccentSits(a, b, accent, kSeatRaise, d) && GlyphAccent(page, b) < 0) return true;
+        }
+        return false;
+    };
     for (size_t s = 0; s < groups.size(); ++s) {
         Group& small = groups[s];
-        if (small.count != 1) continue;
-        const Fragment& f = frags[members[small.first]];
-        if (f.end - f.begin > 12) continue;
-        const float center = (small.vb + small.vt) / 2;
-        bool mathFragment = mathScripts;
-        for (uint32_t k = f.begin; k < f.end && mathFragment; ++k) {
-            const Glyph& g = glyphs[vis[k]];
-            mathFragment = (g.flags & kGlyphSpace) || (g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0);
-        }
         // Groups are sorted by baseline, descending, per direction: look at neighbours only.
         size_t best = kEmpty;
-        for (size_t d = 1; d <= 8; ++d) {
-            for (int side = 0; side < 2 && best == kEmpty; ++side) {
-                if (side == 0 && s < d) continue;
-                const size_t o = side == 0 ? s - d : s + d;
-                if (o >= groups.size()) continue;
-                const Group& line = groups[o];
-                if (line.merged || line.dir != small.dir) continue;
-                if (line.size < small.size / 0.87f) {
-                    if (!mathFragment || !stackedOver(f, line, o)) continue;
-                    best = o;
-                    break;
+        bool seat = false;
+        if (!stray.empty() && small.count <= kAccentFragments) {
+            // The group's first glyph that is no space, when all of them are accents.
+            const Glyph* first = nullptr;
+            int accent = -1;
+            bool accents = holdsAccent(frags[members[small.first]]);
+            for (uint32_t m = small.first; m < small.first + small.count && accents; ++m) {
+                const Fragment& h = frags[members[m]];
+                accents = h.end - h.begin <= 12;
+                for (uint32_t k = h.begin; k < h.end && accents; ++k) {
+                    const Glyph& g = glyphs[vis[k]];
+                    if (g.flags & kGlyphSpace) continue;
+                    const int row = GlyphAccent(page, g);
+                    accents = row >= 0;
+                    if (accents && first == nullptr) first = &g, accent = row;
                 }
-                if (small.u0 < line.u0 - 0.3f * line.size || small.u0 - line.u1 > 0.6f * line.size) continue;
-                if (center < line.vb || center > line.vt) {
-                    const float dv = small.baseline - line.baseline;
-                    if (!mathFragment || dv > 0.9f * line.size || dv < -0.6f * line.size) continue;
-                    float script = 0;
-                    for (uint32_t m = line.first; m < line.first + line.count; ++m)
-                        script = M::Max(script, scriptSize(frags[members[m]], line.size));
-                    if (extraOf[o] != kEmpty)
-                        for (uint32_t m : extra[extraOf[o]]) script = M::Max(script, scriptSize(frags[m], line.size));
-                    if (!(small.size <= 0.87f * script)) continue;
-                }
-                best = o;
             }
-            if (best != kEmpty) break;
+            for (size_t d = 1; d <= 8 && accents && first != nullptr && best == kEmpty; ++d) {
+                for (int side = 0; side < 2 && best == kEmpty; ++side) {
+                    if (side == 0 && s < d) continue;
+                    const size_t o = side == 0 ? s - d : s + d;
+                    if (o >= groups.size() || groups[o].merged || groups[o].dir != small.dir) continue;
+                    const Group& line = groups[o];
+                    bool holds = false;
+                    for (uint32_t m = line.first; m < line.first + line.count && !holds; ++m)
+                        holds = holdsBase(frags[members[m]], *first, accent);
+                    if (extraOf[o] != kEmpty)
+                        for (size_t m = 0; m < extra[extraOf[o]].size() && !holds; ++m)
+                            holds = holdsBase(frags[extra[extraOf[o]][m]], *first, accent);
+                    if (holds) best = o, seat = true;
+                }
+            }
         }
-        if (best == kEmpty) continue;
+        if (best == kEmpty) {
+            if (small.count != 1) continue;
+            const Fragment& f = frags[members[small.first]];
+            if (f.end - f.begin > 12) continue;
+            const float center = (small.vb + small.vt) / 2;
+            bool mathFragment = mathScripts;
+            for (uint32_t k = f.begin; k < f.end && mathFragment; ++k) {
+                const Glyph& g = glyphs[vis[k]];
+                mathFragment = (g.flags & kGlyphSpace) || (g.font < page.fontMath.size() && (page.fontMath[g.font] & kMathFontClass) != 0);
+            }
+            for (size_t d = 1; d <= 8; ++d) {
+                for (int side = 0; side < 2 && best == kEmpty; ++side) {
+                    if (side == 0 && s < d) continue;
+                    const size_t o = side == 0 ? s - d : s + d;
+                    if (o >= groups.size()) continue;
+                    const Group& line = groups[o];
+                    if (line.merged || line.dir != small.dir) continue;
+                    if (line.size < small.size / 0.87f) {
+                        if (!mathFragment || !stackedOver(f, line, o)) continue;
+                        best = o;
+                        break;
+                    }
+                    if (small.u0 < line.u0 - 0.3f * line.size || small.u0 - line.u1 > 0.6f * line.size) continue;
+                    if (center < line.vb || center > line.vt) {
+                        const float dv = small.baseline - line.baseline;
+                        if (!mathFragment || dv > 0.9f * line.size || dv < -0.6f * line.size) continue;
+                        float script = 0;
+                        for (uint32_t m = line.first; m < line.first + line.count; ++m)
+                            script = M::Max(script, scriptSize(frags[members[m]], line.size));
+                        if (extraOf[o] != kEmpty)
+                            for (uint32_t m : extra[extraOf[o]]) script = M::Max(script, scriptSize(frags[m], line.size));
+                        if (!(small.size <= 0.87f * script)) continue;
+                    }
+                    best = o;
+                }
+                if (best != kEmpty) break;
+            }
+            if (best == kEmpty) continue;
+        }
         Group& line = groups[best];
         small.merged = true;
-        line.scripts = true;
+        if (seat)
+            line.accents = true;
+        else
+            line.scripts = true;
         line.u0 = M::Min(line.u0, small.u0), line.u1 = M::Max(line.u1, small.u1);
         if (extraOf[best] == kEmpty) {
             extraOf[best] = static_cast<uint32_t>(extra.size());
             extra.emplace_back();
         }
-        extra[extraOf[best]].push_back(members[small.first]);
+        for (uint32_t m = small.first; m < small.first + small.count; ++m) extra[extraOf[best]].push_back(members[m]);
         // With `mathScripts`, fragments that joined this one before it joined a line go with it
         // (a merged group is written with no line of its own): the l of Z^{W^{l}}. The default
-        // output keeps its lines as they were.
-        if (mathScripts && extraOf[s] != kEmpty) {
+        // output keeps its lines as they were, but for the accents seated in it.
+        if ((mathScripts || small.accents) && extraOf[s] != kEmpty) {
             std::vector<uint32_t>& from = extra[extraOf[s]];
             std::vector<uint32_t>& to = extra[extraOf[best]];
             to.insert(to.end(), from.begin(), from.end());
             from.clear();
+            line.accents = line.accents || small.accents;
         }
     }
 
@@ -1662,29 +1844,33 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
     Segment* const segments = place.segments.get();
     uint32_t segmentCount = 0;
     std::vector<uint32_t>& lineVis = place.lineVis;
+    uint32_t seatBudget = kSeatBudget;
     for (size_t gi = 0; gi < groups.size(); ++gi) {
         const Group& grp = groups[gi];
         if (grp.merged) continue;
         // The group's glyphs: a lone fragment's are a run of `vis` already. Explicit spaces decide
         // the word breaks of lines that have them (algorithms §4.1).
         const uint32_t *lineBegin, *lineEnd;
-        bool spaces = false;
+        bool spaces = false, seatable = false;
         if (grp.count == 1 && extraOf[gi] == kEmpty) {
             const Fragment& f = frags[members[grp.first]];
             lineBegin = vis.data() + f.begin, lineEnd = vis.data() + f.end;
             spaces = f.spaces;
+            seatable = !stray.empty() && holdsAccent(f);
         } else {
             lineVis.clear();
             for (uint32_t m = 0; m < grp.count; ++m) {
                 const Fragment& f = frags[members[grp.first + m]];
                 lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
                 spaces = spaces || f.spaces;
+                seatable = seatable || (!stray.empty() && holdsAccent(f));
             }
             if (extraOf[gi] != kEmpty) {
                 for (uint32_t fi : extra[extraOf[gi]]) {
                     const Fragment& f = frags[fi];
                     lineVis.insert(lineVis.end(), vis.data() + f.begin, vis.data() + f.end);
                     spaces = spaces || f.spaces;
+                    seatable = seatable || (!stray.empty() && holdsAccent(f));
                 }
             }
             if (grp.scripts) {
@@ -1693,6 +1879,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts) {
                 });
             }
             lineBegin = lineVis.data(), lineEnd = lineVis.data() + lineVis.size();
+        }
+        if (seatable && seatBudget > 0) {
+            const bool inSeq = lineBegin == lineVis.data();
+            if (SeatAccents(page, lineBegin, lineEnd, inSeq, lineVis, mathScripts, seatBudget))
+                lineBegin = lineVis.data(), lineEnd = lineVis.data() + lineVis.size();
         }
         const float wordGap = spaces ? kWordGapWithSpaces : kWordGap;
         Proto p;
@@ -2009,11 +2200,11 @@ void BuildLines(PageData& page, bool mathScripts) {
     PlaceScratch& place = PerThread<PlaceScratch>();
     std::vector<uint32_t>& vis = place.vis;
     const bool finite = CollectAndFold(page, vis, keepInvisible);
-    ComposeAccents(page, vis, mathScripts);
+    ComposeAccents(page, vis, mathScripts, place.stray);
     if (finite)
-        PlaceGlyphs<FiniteMinMax>(page, vis, mathScripts);
+        PlaceGlyphs<FiniteMinMax>(page, vis, mathScripts, place.stray);
     else
-        PlaceGlyphs<CheckedMinMax>(page, vis, mathScripts);
+        PlaceGlyphs<CheckedMinMax>(page, vis, mathScripts, place.stray);
     if (glyphs.size() > kKeptGlyphs) place = PlaceScratch();
 
     DropLineNumbers(page);

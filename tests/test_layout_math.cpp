@@ -16,7 +16,7 @@
 // cases, a radical over a fraction, \Re, lim inf and arg max, readings by spacing ("..." and
 // \ldots, \setminus and \backslash, \tfrac), neighbours in a row (a fraction after a subscript,
 // \neq, a small radical, two operators' limits, Symbol's φ, MnSymbol's ○, a base outweighed by its
-// subscript). Exit codes 1550-1599, 2202-2249 and 2350-2384.
+// subscript). Exit codes 1550-1599, 2202-2249 and 2350-2385.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -1040,6 +1040,32 @@ void TestDisplayWithWord() {
     RAYOPDF_CHECK(display, 2240);
 }
 
+// A display formula of bold letters under TeX's accents of a text font, each drawn just before its
+// letter and over it: the accents neither end nor make words, so "ˆH" and "ˆB" are no text words
+// and the line is a display.
+void TestAccentedDisplay() {
+    PageData page;
+    page.number = 1;
+    page.width = 612;
+    page.height = 792;
+    page.fontMath = {kText, kItalic, kText};  // font 2: a bold text font (\mathbf)
+    AddText(page, "We assume for the rest of this section that", 72, 700, 10);
+    const auto accented = [&](std::string_view letter, float x) {
+        AddText(page, "\xCB\x86", x + 0.5f, 680, 10);  // ˆ over the letter
+        return AddText(page, letter, x, 680, 10, 2);
+    };
+    float x = accented("H", 150);
+    x = AddText(page, "=", x + 3, 680, 10);
+    x = AddText(page, "a", x + 3, 680, 10, 1);
+    x = AddText(page, "+", x + 3, 680, 10);
+    accented("B", x + 3);
+    AddText(page, "hold for every pair of the families we study here.", 72, 660, 10);
+    const std::string latex = Convert({page}, MathMode::Latex);
+    const bool display = latex.find("\n$$") != std::string::npos;
+    if (!display) std::fprintf(stderr, "latex page:\n%s\n", latex.c_str());
+    RAYOPDF_CHECK(display, 2385);
+}
+
 // TeX's math fonts without ToUnicode, through codes the WinAnsi guess reads wrong (the
 // interpreter keeps their codes in PageData::mathCodes): cmex10's \Bigg( at 0x20 (a space) and
 // \Bigg) at 0x21 ("!"), cmsy10's \mapstochar (0x37, "7", no width) at the start of its arrow
@@ -1460,6 +1486,7 @@ int main() {
     TestStackedFractions();
     TestSpacedSymbols();
     TestRowNeighbours();
+    TestAccentedDisplay();
     std::puts("test_layout_math: ok");
     return 0;
 }

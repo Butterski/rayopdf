@@ -2136,6 +2136,57 @@ void TestSpacingAccents() {
                   1932);
 }
 
+// The text of the line of `page` that holds `needle` (BuildLines run already), else empty.
+std::string LineHolding(const PageData& page, std::string_view needle) {
+    std::string text;
+    for (const Line& line : page.lines) {
+        text.clear();
+        LineText(page, line, text);
+        if (text.find(needle) != std::string::npos) return text;
+    }
+    return std::string();
+}
+
+// Spacing accents that content order sets apart from the glyph they sit over are seated before it,
+// or composed with a letter of their font.
+void TestStrayAccents() {
+    {
+        // TeX's \hat over a formula's first glyph at a line start: the accent drawn first, the F
+        // 0.72 em back to its left. Math's accent stays apart, just before its letter.
+        for (bool mathScripts : {false, true}) {
+            PageData page = NewPage(1);
+            page.fontMath = {static_cast<uint8_t>(MathFont::None), static_cast<uint8_t>(MathFont::Italic)};
+            AddGlyph(page, "\xCB\x86", 74.2f, 5, 700, 10, 0);  // ˆ
+            AddGlyph(page, "F", 72, 6.4f, 700, 10, 1);
+            AddText(page, " = 1 holds", 78.4f, 700, 10);
+            RAYOPDF_CHECK(FirstLineText(page, mathScripts) == "\xCB\x86" "F = 1 holds" && page.lines.size() == 1, 1945);
+        }
+    }
+    {
+        // An acute drawn after the line, over the a of its font: composed. An acute after the line
+        // over the space between two words has no letter and stays where it was drawn.
+        PageData page = NewPage(1);
+        const float x = AddText(page, "Herna", 72, 700, 10);
+        AddText(page, "ndez wrote", x, 700, 10);
+        AddGlyph(page, "\xC2\xB4", x - 4.0f, 3, 700, 10);    // ´ over the a
+        AddGlyph(page, "\xC2\xB4", x + 21.0f, 3, 700, 10);   // ´ over the space
+        RAYOPDF_CHECK(FirstLineText(page) == "Hern\xC3\xA1ndez wrote\xC2\xB4", 1946);
+    }
+    {
+        // A tilde raised over a capital past the baseline tolerance, drawn after the line above:
+        // a line of its own until it joins the line of the Ψ it sits over.
+        PageData page = NewPage(1);
+        AddText(page, "atom-", 72, 714, 10);
+        AddGlyph(page, "\xCB\x9C", 103, 5, 703.5f, 10);  // ˜
+        page.glyphs.back().vb = 709, page.glyphs.back().vt = 712;
+        const float x = AddText(page, "where ", 72, 700, 10);
+        AddGlyph(page, "\xCE\xA8", x, 7, 700, 10);  // Ψ
+        AddText(page, " is", x + 7, 700, 10);
+        BuildLines(page);
+        RAYOPDF_CHECK(page.lines.size() == 2 && LineHolding(page, "where") == "where \xCB\x9C\xCE\xA8 is", 1947);
+    }
+}
+
 // The same through whole conversions: Helvetica's acute (StandardEncoding \302) kerned over the
 // letter before it, over a dotless i after it, and the cedilla (\313) under a c.
 void TestPdfSpacingAccents() {
@@ -2198,6 +2249,7 @@ int main() {
     TestNumberedListing();
     TestSpacingAccents();
     TestPdfSpacingAccents();
+    TestStrayAccents();
     TestMathIsNoHeading();
     TestJustifiedLineStaysWhole();
     TestSmallTitle();

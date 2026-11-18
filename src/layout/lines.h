@@ -4,8 +4,10 @@
 // drawn apart over or under a letter of their font (TeX's OT1 \accent, some word processors)
 // composed with it into one glyph (§4.4: NFC, else the letter and its combining mark; math's
 // accents stay apart), fragments built in content order and merged per baseline and direction,
-// superscripts and subscripts kept in their line, and word breaks from space glyphs and from
-// font-size-relative gaps (MuPDF-style thresholds, §4.1).
+// superscripts and subscripts kept in their line, spacing accents that content order set apart
+// from the glyph they sit over (drawn after their line, or before the line their glyph starts:
+// TeX's \hat at a line start) seated just before it, or composed with it as beside it, and word
+// breaks from space glyphs and from font-size-relative gaps (MuPDF-style thresholds, §4.1).
 #pragma once
 
 #include "layout/page.h"

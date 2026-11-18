@@ -3286,7 +3286,10 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
     // Words of text: MarkDisplayFormulas reads them only of a line with math or of 3 glyphs or
     // fewer (else 0 stays). Of a line of more glyphs it reads only whether it is a candidate (no
     // word, one with 5 math glyphs or more, two with 8 or more): the count stops at `enough`, the
-    // fewest words that make it none.
+    // fewest words that make it none. A spacing accent (TeX's \hat, set before or after the glyph
+    // under it) neither ends a word nor counts in one: a word break before it holds for the glyph
+    // after it only when a space stood before it or that glyph starts a word gap (kWordGap) past
+    // the ink before the accent ("‖ˆS" reads as ‖S, "Given ˆS" as two words).
     if (f.math > 0 || f.glyphs <= 3) {
         const uint32_t enough = f.glyphs <= 3 ? UINT32_MAX : f.math >= 8 ? 3 : f.math >= 5 ? 2 : 1;
         uint32_t wordLetters = 0;
@@ -3300,12 +3303,25 @@ void FactsOf(const PageData& page, const Line& line, LineFacts& f) {
             wordLetters = 0, textWord = true;
             wordSize = 0;
         };
+        bool accentBreak = false, spaceSeen = false;  // since the ink before
+        float inkU1 = -INFINITY;                      // the right end of the ink before
         for (uint32_t k = 0; k < line.count && f.words < enough; ++k) {
             const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
-            if (g.flags & (kGlyphSpace | kGlyphInvisible | kGlyphDropped)) continue;
-            if (k > 0 && (g.flags & kGlyphSpaceBefore)) endWord();
+            if (g.flags & (kGlyphInvisible | kGlyphDropped)) continue;
+            if (g.flags & kGlyphSpace) {
+                spaceSeen = true;
+                continue;
+            }
             const std::string_view t = page.GlyphText(g);
             const uint32_t cp = FirstCp(t);
+            if (cp >= 0xA8 && !IsCombining(cp) && !AccentOf(cp).empty() && t.size() == 2) {
+                accentBreak = accentBreak || (k > 0 && (g.flags & kGlyphSpaceBefore));
+                continue;
+            }
+            if (k > 0 && ((g.flags & kGlyphSpaceBefore) || (accentBreak && (spaceSeen || g.u0 - inkU1 > kWordGap * g.size))))
+                endWord();
+            accentBreak = spaceSeen = false;
+            inkU1 = g.u1;
             const uint8_t font = g.font < page.fontMath.size() ? (page.fontMath[g.font] & kMathFontClass) : 0;
             if (IsLetterCp(cp)) {
                 wordLetters++;
