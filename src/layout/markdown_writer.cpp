@@ -1351,14 +1351,25 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         const Line& line = page.lines[ref.line];
         bool lineStart = true;      // no glyph of this line written yet
         bool carriedSpace = false;  // a soft hyphen left out had the word break before it
-        for (uint32_t k = ref.skip; k < line.count; ++k) {
-            const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
-            const std::string_view text = page.GlyphText(g);
-            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < line.count) {
+        // The line's glyphs and IsSuperscript's and IsSubscript's bounds in locals: out_'s byte
+        // writes would make the compiler read them again at each glyph.
+        const uint32_t* const lineGlyphs = page.lineGlyphs.data() + line.first;
+        const Glyph* const glyphs = page.glyphs.data();
+        const std::string_view pageText = page.text;
+        const uint32_t count = line.count;
+        const float small = 0.85f * line.size, raised = 0.2f * line.size, lowered = -0.1f * line.size;
+        const float baseline = line.baseline;
+        for (uint32_t k = ref.skip; k < count; ++k) {
+            const Glyph& g = glyphs[lineGlyphs[k]];
+            const std::string_view text = pageText.substr(g.text, g.textLength);  // PageData::GlyphText
+            if (text.size() == 2 && text[0] == '\xC2' && text[1] == '\xAD' && k + 1 < count) {
                 carriedSpace = carriedSpace || (g.flags & kGlyphSpaceBefore) != 0;
                 continue;
             }
-            if (IsSuperscript(g, line) || IsSubscript(g, line)) return abandon();
+            if (g.size < small && !(g.flags & kGlyphInvisible)) {
+                const float rise = g.v - baseline;
+                if (rise > raised || rise < lowered) return abandon();  // a superscript or subscript
+            }
             const bool spaced = (g.flags & kGlyphSpaceBefore) || carriedSpace;
             carriedSpace = false;
             const bool starts = lineStart;
