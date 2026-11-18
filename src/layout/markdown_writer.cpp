@@ -208,8 +208,13 @@ private:
     void StyleWords(bool styles);
     // Opens and closes delimiters so that exactly the styles `target` are open, nested properly;
     // `at` is the glyph they apply from, the one before it the last glyph a closing style had
-    // (styles that run longer open first, outside).
-    void SetStyle(uint8_t target, uint32_t at);
+    // (styles that run longer open first, outside). Most calls change nothing (no style open and
+    // none wanted, or the one open style wanted): those return here, the rest go to ChangeStyle.
+    RAYOPDF_HOT_INLINE void SetStyle(uint8_t target, uint32_t at) {
+        if (depth_ == 0 ? target == 0 : depth_ == 1 && stack_[0] == target) return;
+        ChangeStyle(target, at);
+    }
+    void ChangeStyle(uint8_t target, uint32_t at);
     // CommonMark reads a run of `*` or `~` as emphasis or strike-through only when it flanks the
     // text the right way (0.31 §6.2): an opening run left-flanking, a closing one right-flanking.
     // Checks the runs SetStyle wrote in out_ from `from` (the block's inline text); where one does
@@ -924,7 +929,7 @@ void Writer::StyleWords(bool styles) {
     }
 }
 
-void Writer::SetStyle(uint8_t target, uint32_t at) {
+void Writer::ChangeStyle(uint8_t target, uint32_t at) {
     int keep = 0;
     uint8_t kept = 0;
     while (keep < depth_ && (target & stack_[keep])) kept |= stack_[keep++];
