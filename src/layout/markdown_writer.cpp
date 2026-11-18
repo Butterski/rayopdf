@@ -784,17 +784,26 @@ void Writer::StyleWords(bool styles) {
     // set in none (most body text) has every glyph's styles 0 and needs none of the passes below.
     const uint8_t set = set_;
     if (set == 0) return;
+    // The arrays and the body faces in locals: the byte stores into styles_ (and kinds_) would make
+    // the compiler read every member again after each one. No pass below resizes refs_, styles_,
+    // words_ or wordOf_.
+    const GlyphRef* const refs = refs_.data();
+    uint8_t* const styleOf = styles_.data();
+    const Word* const words = words_.data();
+    const size_t wordCount = words_.size();
+    const uint32_t* const wordOf = wordOf_.data();
+    const bool monoIsBody = monoIsBody_, boldIsBody = boldIsBody_, italicIsBody = italicIsBody_;
     for (uint32_t k = 0; k < n; ++k) {
-        const uint16_t f = refs_[k].flags;
+        const uint16_t f = refs[k].flags;
         if (f & kGlyphImage) continue;
-        const uint32_t cp = FirstOf(Text(refs_[k]));
+        const uint32_t cp = FirstOf(Text(refs[k]));
         uint8_t s = IsLetterOrDigit(cp) ? kLetter : 0;
         // Mathematical alphanumerics (𝑥, 𝐸) are math whatever the font's pitch: no code.
-        if ((f & kGlyphMonospace) && !monoIsBody_ && !(cp >= 0x1D400 && cp <= 0x1D7FF)) s |= kStyleCode;
-        if ((f & kGlyphBold) && !boldIsBody_) s |= kStyleBold;
-        if ((f & kGlyphItalic) && !italicIsBody_) s |= kStyleItalic;
+        if ((f & kGlyphMonospace) && !monoIsBody && !(cp >= 0x1D400 && cp <= 0x1D7FF)) s |= kStyleCode;
+        if ((f & kGlyphBold) && !boldIsBody) s |= kStyleBold;
+        if ((f & kGlyphItalic) && !italicIsBody) s |= kStyleItalic;
         if (f & kGlyphStrike) s |= kStyleStrike;
-        styles_[k] = s;
+        styleOf[k] = s;
     }
     // Math set in an italic text font is no emphasis: an italic word of one letter (but the
     // pronoun "I"), of up to three letters with a bracket ("T(n)") or a digit ("4ac", "πr²"), with
@@ -806,24 +815,24 @@ void Writer::StyleWords(bool styles) {
     // phrase.
     constexpr uint8_t kUpright = 0, kPhrase = 1, kMath = 2, kOperator = 3, kShort = 0x10;
     const auto kindOf = [&](size_t i) -> uint8_t {
-        const Word& w = words_[i];
+        const Word& w = words[i];
         // A word of letters only, none italic, is upright: no glyph needs decoding.
         bool plain = true;
         for (uint32_t k = w.first; k < w.first + w.count && plain; ++k)
-            plain = (styles_[k] & (kLetter | kStyleItalic)) == kLetter;
+            plain = (styleOf[k] & (kLetter | kStyleItalic)) == kLetter;
         if (plain) return kUpright;
         uint32_t letters = 0, italic = 0, brackets = 0, ops = 0, scripts = 0, digits = 0, run = 0, longest = 0;
         bool pronoun = false;
         for (uint32_t k = w.first; k < w.first + w.count; ++k) {
-            const std::string_view t = Text(refs_[k]);
+            const std::string_view t = Text(refs[k]);
             const uint32_t cp = FirstOf(t);
-            const bool letter = (styles_[k] & kLetter) && !(cp >= '0' && cp <= '9');
-            run = letter && (styles_[k] & kStyleItalic) ? run + 1 : 0;
+            const bool letter = (styleOf[k] & kLetter) && !(cp >= '0' && cp <= '9');
+            run = letter && (styleOf[k] & kStyleItalic) ? run + 1 : 0;
             longest = std::max(longest, run);
-            if (refs_[k].script != kScriptNone) scripts++;
+            if (refs[k].script != kScriptNone) scripts++;
             if (letter) {
                 letters++;
-                if (styles_[k] & kStyleItalic) italic++;
+                if (styleOf[k] & kStyleItalic) italic++;
                 pronoun = t == "I";
             } else if (cp >= '0' && cp <= '9') {
                 digits++;
@@ -843,20 +852,20 @@ void Writer::StyleWords(bool styles) {
         return math ? kMath : small ? uint8_t(kPhrase | kShort) : kPhrase;
     };
     if (set & kStyleItalic) {
-        kinds_.resize(words_.size());
-        for (size_t i = 0; i < words_.size(); ++i) kinds_[i] = kindOf(i);
+        kinds_.resize(wordCount);
+        for (size_t i = 0; i < wordCount; ++i) kinds_[i] = kindOf(i);
         // Short italic words beside operators or math are math too, in both directions.
         const auto mathLike = [&](size_t j) { return kinds_[j] == kMath || kinds_[j] == kOperator; };
-        for (size_t i = 0; i < words_.size(); ++i)
+        for (size_t i = 0; i < wordCount; ++i)
             if (kinds_[i] == (kPhrase | kShort) && i > 0 && mathLike(i - 1)) kinds_[i] = kMath;
-        for (size_t i = words_.size(); i-- > 0;)
-            if (kinds_[i] == (kPhrase | kShort) && i + 1 < words_.size() && mathLike(i + 1)) kinds_[i] = kMath;
-        for (size_t i = 0; i < words_.size(); ++i) {
+        for (size_t i = wordCount; i-- > 0;)
+            if (kinds_[i] == (kPhrase | kShort) && i + 1 < wordCount && mathLike(i + 1)) kinds_[i] = kMath;
+        for (size_t i = 0; i < wordCount; ++i) {
             const bool phraseBefore = i > 0 && (kinds_[i - 1] & ~kShort) == kPhrase;
-            const bool phraseAfter = i + 1 < words_.size() && (kinds_[i + 1] & ~kShort) == kPhrase;
+            const bool phraseAfter = i + 1 < wordCount && (kinds_[i + 1] & ~kShort) == kPhrase;
             if (kinds_[i] == kMath && !phraseBefore && !phraseAfter)
-                for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k)
-                    styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleItalic);
+                for (uint32_t k = words[i].first; k < words[i].first + words[i].count; ++k)
+                    styleOf[k] = static_cast<uint8_t>(styleOf[k] & ~kStyleItalic);
         }
     }
     // A bold letter alone in math (a matrix "A𝑖", a vector "∇ ⋅ E = …") is no strong emphasis: one
@@ -864,76 +873,77 @@ void Writer::StyleWords(bool styles) {
     // or holds one.
     if (set & kStyleBold) {
         const auto mathWord = [&](size_t i) {
-            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) {
-                const uint32_t cp = FirstOf(Text(refs_[k]));
+            for (uint32_t k = words[i].first; k < words[i].first + words[i].count; ++k) {
+                const uint32_t cp = FirstOf(Text(refs[k]));
                 if ((cp >= 0x1D400 && cp <= 0x1D7FF) || (cp >= 0x2200 && cp <= 0x22FF) || cp == '=') return true;
             }
             return false;
         };
-        for (size_t i = 0; i < words_.size(); ++i) {
+        for (size_t i = 0; i < wordCount; ++i) {
             // Only a word with one bold letter is a candidate; its code points are read then.
             uint32_t bold = 0;
-            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count && bold <= 1; ++k)
-                if ((styles_[k] & (kLetter | kStyleBold)) == (kLetter | kStyleBold)) bold++;
+            for (uint32_t k = words[i].first; k < words[i].first + words[i].count && bold <= 1; ++k)
+                if ((styleOf[k] & (kLetter | kStyleBold)) == (kLetter | kStyleBold)) bold++;
             if (bold != 1) continue;
             uint32_t letters = 0;
-            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k) {
-                if (!(styles_[k] & kLetter)) continue;
-                const uint32_t cp = FirstOf(Text(refs_[k]));
+            for (uint32_t k = words[i].first; k < words[i].first + words[i].count; ++k) {
+                if (!(styleOf[k] & kLetter)) continue;
+                const uint32_t cp = FirstOf(Text(refs[k]));
                 if (cp < 0x1D400 || cp > 0x1D7FF) letters++;
             }
             if (bold != 1 || letters != 1) continue;
-            if (!mathWord(i) && !(i > 0 && mathWord(i - 1)) && !(i + 1 < words_.size() && mathWord(i + 1))) continue;
-            for (uint32_t k = words_[i].first; k < words_[i].first + words_[i].count; ++k)
-                styles_[k] = static_cast<uint8_t>(styles_[k] & ~kStyleBold);
+            if (!mathWord(i) && !(i > 0 && mathWord(i - 1)) && !(i + 1 < wordCount && mathWord(i + 1))) continue;
+            for (uint32_t k = words[i].first; k < words[i].first + words[i].count; ++k)
+                styleOf[k] = static_cast<uint8_t>(styleOf[k] & ~kStyleBold);
         }
     }
     // The nearest letters before each glyph: any letter, and letters outside code ("firm" ones).
     if (before_.size() < 2 * size_t(n)) before_.resize(2 * size_t(n));
+    int32_t* const before = before_.data();
     {
         int32_t any = -1, firm = -1;
         for (uint32_t k = 0; k < n; ++k) {
-            before_[k] = any, before_[n + k] = firm;
-            if (styles_[k] & kLetter) any = static_cast<int32_t>(k);
-            if ((styles_[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
+            before[k] = any, before[n + k] = firm;
+            if (styleOf[k] & kLetter) any = static_cast<int32_t>(k);
+            if ((styleOf[k] & (kLetter | kStyleCode)) == kLetter) firm = static_cast<int32_t>(k);
         }
     }
     // Backwards, with the nearest letters after each glyph: the styles each glyph is written in. A
     // glyph's styles are worked out from letters' code bits, which no glyph's result changes, and
     // from firm letters' styles, which keep theirs: the order the glyphs are taken in makes no
     // difference.
-    const auto at = [&](int32_t k) { return k >= 0 ? static_cast<uint8_t>(styles_[static_cast<uint32_t>(k)]) : uint8_t(0); };
+    const auto at = [&](int32_t k) { return k >= 0 ? static_cast<uint8_t>(styleOf[static_cast<uint32_t>(k)]) : uint8_t(0); };
     int32_t anyAfter = -1, firmAfter = -1;
     for (uint32_t k = n; k-- > 0;) {
-        const uint8_t s = styles_[k];
+        const uint8_t s = styleOf[k];
         uint8_t written = s;  // firm letters keep their own
         if ((s & (kLetter | kStyleCode)) != kLetter) {
             uint8_t result = 0;
             bool code = (s & kStyleCode) != 0;
             if (code && !(s & kLetter)) {
                 // A monospace mark is code beside code: in a code word or between code words.
-                const int32_t b = before_[k], a = anyAfter;
-                const bool word = (b >= 0 && wordOf_[uint32_t(b)] == wordOf_[k] && (at(b) & kStyleCode)) ||
-                                  (a >= 0 && wordOf_[uint32_t(a)] == wordOf_[k] && (at(a) & kStyleCode));
+                const int32_t b = before[k], a = anyAfter;
+                const bool word = (b >= 0 && wordOf[uint32_t(b)] == wordOf[k] && (at(b) & kStyleCode)) ||
+                                  (a >= 0 && wordOf[uint32_t(a)] == wordOf[k] && (at(a) & kStyleCode));
                 code = word || (at(b) & at(a) & kStyleCode) != 0;
             }
             if (code) result |= kStyleCode;
-            const int32_t fb = before_[n + k], fa = firmAfter;
+            const int32_t fb = before[n + k], fa = firmAfter;
             const uint8_t enclosed = at(fb) & at(fa) & (kStyleBold | kStyleItalic | kStyleStrike);
             if (code) {
                 result |= enclosed | (s & (kStyleBold | kStyleItalic | kStyleStrike));
             } else {
                 // Inside a word ("Alice’s") a mark between two letters of a style takes it whatever
                 // its own face; elsewhere it keeps a style it is set in next to letters that have it.
-                const bool sameB = fb >= 0 && wordOf_[uint32_t(fb)] == wordOf_[k];
-                const bool sameA = fa >= 0 && wordOf_[uint32_t(fa)] == wordOf_[k];
+                const bool sameB = fb >= 0 && wordOf[uint32_t(fb)] == wordOf[k];
+                const bool sameA = fa >= 0 && wordOf[uint32_t(fa)] == wordOf[k];
                 const uint8_t attached = static_cast<uint8_t>((sameB ? at(fb) : 0) | (sameA ? at(fa) : 0));
                 result |= ((sameB && sameA ? enclosed : 0) | (s & (enclosed | attached))) &
                           (kStyleBold | kStyleItalic | kStyleStrike);
             }
             written = result;
         }
-        styles_[k] = static_cast<uint8_t>(written & kStyles);
+        styleOf[k] = static_cast<uint8_t>(written & kStyles);
         if (s & kLetter) anyAfter = static_cast<int32_t>(k);
         if ((s & (kLetter | kStyleCode)) == kLetter) firmAfter = static_cast<int32_t>(k);
     }
