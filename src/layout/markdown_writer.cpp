@@ -1536,8 +1536,14 @@ void Writer::WriteWords(const Block& block) {
     for (int s = 0; s < kStyleCount; ++s) runFrom_[s] = runTo_[s] = 0;
     delimiters_.clear();
     const bool latex = math_ == MathMode::Latex;
-    // Unraised "(a)" references may be among the glyphs (a local: out_'s writes would reload it).
+    // Unraised "(a)" references may be among the glyphs; the arrays read (none changes here). In
+    // locals: out_'s byte writes would make the compiler read the members again after each one.
     const bool letterRefs = letterRefs_;
+    const GlyphRef* const refs = refs_.data();
+    const uint8_t* const styles = styles_.data();
+    const uint32_t* const mathRun = mathRun_.data();
+    const Word* const words = words_.data();
+    const size_t wordCount = words_.size();
     uint32_t skipTo = 0;  // the glyphs before it went into a formula
     int32_t openLink = -1;
     // Heading and table cell text is inline: "## 1. Installation" opens no list.
@@ -1565,19 +1571,19 @@ void Writer::WriteWords(const Block& block) {
         for (int d = 0; d < depth_; ++d) set |= stack_[d];
         return set;
     };
-    for (size_t i = 0; i < words_.size(); ++i) {
-        const Word& w = words_[i];
+    for (size_t i = 0; i < wordCount; ++i) {
+        const Word& w = words[i];
         if (latex && skipTo >= w.first + w.count) continue;
         // A formula that ended inside the word: the rest of the word follows it directly.
         const bool resumed = latex && skipTo > w.first;
         if (!resumed) {
-            const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words_[i - 1], w)) : w.link >= 0;
+            const bool linkChanges = openLink >= 0 ? (i == 0 || !SameLink(words[i - 1], w)) : w.link >= 0;
             if (linkChanges) {
                 closeLink(w.first);
             } else if (w.spaceBefore) {
                 // Styles that do not go on past the space close before it, so that delimiters stay
                 // flanking; all of them before a formula.
-                const uint8_t keep = latex && mathRun_[w.first] ? 0 : static_cast<uint8_t>(open() & styles_[w.first]);
+                const uint8_t keep = latex && mathRun[w.first] ? 0 : static_cast<uint8_t>(open() & styles[w.first]);
                 SetStyle(keep, w.first);
             }
             if (w.spaceBefore) out_.push_back(' ');
@@ -1597,7 +1603,7 @@ void Writer::WriteWords(const Block& block) {
             if (k == trimAt && openLink >= 0) closeLink(k);
             uint32_t stop = k < trimAt ? trimAt : end;
             if (latex) {
-                if (const uint32_t to = mathRun_[k]) {
+                if (const uint32_t to = mathRun[k]) {
                     SetStyle(0, k);
                     if (WriteFormula(k, to)) {
                         blockStart = false;
@@ -1610,23 +1616,23 @@ void Writer::WriteWords(const Block& block) {
                     }
                 }
                 for (uint32_t j = k + 1; j < stop; ++j)
-                    if (mathRun_[j]) {
+                    if (mathRun[j]) {
                         stop = j;
                         break;
                     }
             }
-            const uint8_t script = refs_[k].script;
+            const uint8_t script = refs[k].script;
             // A footnote reference [k, refEnd): a raised run, or an unraised "(a)" (semantics.h's
             // bold letter references).
             uint32_t refEnd = 0;
-            if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs_[k - 1].script != kScriptSup)) {
+            if (script == kScriptSup && !noteRefs_.empty() && (k == w.first || refs[k - 1].script != kScriptSup)) {
                 refEnd = k + 1;
-                while (refEnd < end && refs_[refEnd].script == kScriptSup) ++refEnd;
-            } else if (letterRefs && script == kScriptNone && k + 3 <= end && Text(refs_[k]) == "(") {
+                while (refEnd < end && refs[refEnd].script == kScriptSup) ++refEnd;
+            } else if (letterRefs && script == kScriptNone && k + 3 <= end && Text(refs[k]) == "(") {
                 refEnd = k + 3;
             }
             if (refEnd != 0) {
-                if (const uint32_t number = NoteNumber(refs_[k], refEnd - k)) {
+                if (const uint32_t number = NoteNumber(refs[k], refEnd - k)) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                     if (plainOutput_) {
                         out_.append(std::to_string(number));
@@ -1641,17 +1647,17 @@ void Writer::WriteWords(const Block& block) {
                 }
             }
             // An inline image glyph holds its Markdown link.
-            if (refs_[k].flags & kGlyphImage) {
+            if (refs[k].flags & kGlyphImage) {
                 SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
-                out_.append(Text(refs_[k]));
+                out_.append(Text(refs[k]));
                 blockStart = false;
                 ++k;
                 continue;
             }
             // Unicode mode: a formula's script in Unicode forms, in the style of its first glyph.
-            if (script != kScriptNone && !latex && !(styles_[k] & kStyleCode) && (k == w.first || refs_[k - 1].script != script)) {
+            if (script != kScriptNone && !latex && !(styles[k] & kStyleCode) && (k == w.first || refs[k - 1].script != script)) {
                 if (const uint32_t to = ScriptForms(w, k, stop)) {
-                    SetStyle(styles_[k], k);
+                    SetStyle(styles[k], k);
                     out_.append(forms_);
                     blockStart = false;
                     k = to;
@@ -1659,23 +1665,23 @@ void Writer::WriteWords(const Block& block) {
                 }
             }
             uint32_t runEnd = k + 1;
-            while (runEnd < stop && refs_[runEnd].script == script && styles_[runEnd] == styles_[k] &&
-                   !(refs_[runEnd].flags & kGlyphImage))
+            while (runEnd < stop && refs[runEnd].script == script && styles[runEnd] == styles[k] &&
+                   !(refs[runEnd].flags & kGlyphImage))
                 ++runEnd;
             // An unraised "(a)" reference inside the run ends it.
             if (letterRefs && script == kScriptNone)
                 for (uint32_t j = k + 1; j < runEnd; ++j)
-                    if (j + 3 <= end && Text(refs_[j]) == "(" && NoteNumber(refs_[j], 3)) {
+                    if (j + 3 <= end && Text(refs[j]) == "(" && NoteNumber(refs[j], 3)) {
                         runEnd = j;
                         break;
                     }
-            SetStyle(styles_[k], k);
+            SetStyle(styles[k], k);
             if (depth_ > 0) blockStart = false;
-            if (styles_[k] & kStyleCode) {
+            if (styles[k] & kStyleCode) {
                 // Code spans hold their text as is; a backtick inside cannot be written in a
                 // single-backtick span, so it becomes an apostrophe.
                 for (uint32_t j = k; j < runEnd; ++j)
-                    for (char c : Text(refs_[j])) out_.push_back(c == '`' ? '\'' : c);
+                    for (char c : Text(refs[j])) out_.push_back(c == '`' ? '\'' : c);
             } else {
                 // Plain text: a script's text without its tag, so a run at the block's start is
                 // escaped as one.
@@ -1689,7 +1695,7 @@ void Writer::WriteWords(const Block& block) {
                 const size_t mark = out_.size();
                 bool escapes = false;
                 for (uint32_t j = k; j < runEnd; ++j) {
-                    const std::string_view t = Text(refs_[j]);
+                    const std::string_view t = Text(refs[j]);
                     if (t.size() == 1) {
                         out_.push_back(t[0]);
                         escapes |= MayEscape(t[0]);
