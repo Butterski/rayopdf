@@ -14,7 +14,9 @@
 // arrows with labels, \longmapsto, italic and bold letters an inline formula takes, fonts whose
 // texts do not follow their codes (OAMathSymbols, newtx's txexs), fractions stacked as the rows of
 // cases, a radical over a fraction, \Re, lim inf and arg max, readings by spacing ("..." and
-// \ldots, \setminus and \backslash, \tfrac). Exit codes 1550-1599, 2202-2249 and 2350-2380.
+// \ldots, \setminus and \backslash, \tfrac), neighbours in a row (a fraction after a subscript,
+// \neq, a small radical, two operators' limits, Symbol's φ, MnSymbol's ○, a base outweighed by its
+// subscript). Exit codes 1550-1599, 2202-2249 and 2350-2384.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -1353,6 +1355,76 @@ void TestSpacedSymbols() {
         Expect(f.Latex(true), "x=\\tfrac{1}{2}", 2380);
     }
 }
+
+// Rows whose neighbours were misread: a text-style fraction after a subscript is the subscript's
+// sibling; \not's slash, which has no width, leaves no gap after \neq; a radical set small is a
+// script; the limits of one large operator stop short of the next's; Symbol's φ is \phi, MnSymbol's
+// ○ is \circ; a row's first glyph raised over a wider one of its size is the base, not a prescript.
+void TestRowNeighbours() {
+    {
+        Formula f;
+        float u = f.Add("c", 0, 0);
+        u = f.Add("i", u, -1.5f, 7);
+        f.Add("t", u + 1, 4.5f, 7);
+        f.Add("2", u + 1, -3.5f, 7, kText);
+        f.Rule(u + 0.5f, u + 5, 2.3f, 2.7f);
+        Expect(f.Latex(), "c_{i}\\frac{t}{2}", 2372);
+    }
+    {
+        Formula f;
+        float u = f.Add("i", 0, 0);
+        const float eq = u + 2;
+        u = f.Add("=", eq, 0, 10, kText, 0, 0.78f);
+        f.Add("\xCC\xB8", eq + 0.5f, 0, 10, kSymbol, 0, 0);  // \not: no width, drawn over the =
+        f.Add("j", u + 2.8f, 0);
+        Expect(f.Latex(), "i\\neq j", 2376);
+    }
+    {
+        // e^{\sqrt{x}}: cmsy7's √ hanging from its origin, raised with its radicand.
+        Formula f;
+        f.Add("e", 0, 0);
+        f.Add("\xE2\x88\x9A", 5.2f, 9.6f, 7, kSymbol, 0, 0.8f);
+        f.Rule(10.8f, 15, 9.6f, 9.9f);
+        f.Add("x", 11, 4, 7);
+        Expect(f.Latex(), "e^{\\sqrt{x}}", 2377);
+    }
+    {
+        Formula f;
+        f.Add("X", 0, 9, 10, kExtension, kMathGuessed, 1.4f);
+        float u = f.Add("n", 2.5f, -12, 7);
+        u = f.Add("=", u, -12, 7, kText);
+        f.Add("1", u, -12, 7, kText);
+        f.Add("N", 5.25f, 12, 7);
+        f.Add("X", 14.5f, 9, 10, kExtension, kMathGuessed, 1.4f);
+        u = f.Add("m", 16.25f, -12, 7);
+        u = f.Add("=", u, -12, 7, kText);
+        f.Add("1", u, -12, 7, kText);
+        f.Add("N", 19.75f, 12, 7);
+        f.Add("x", 30, 0);
+        Expect(f.Latex(), "\\sum_{n=1}^{N}\\sum_{m=1}^{N}x", 2378);
+    }
+    {
+        RAYOPDF_CHECK(MathFontByte("StandardSymL-Slant_167") == kMathFontNamed && MathFontByte("Symbol") == kMathFontNamed &&
+                          MathFontByte("Times-Roman") == 0,
+                      2381);
+        Formula f;
+        float u = f.Add("\xCF\x86", 0, 0, 10, kText, kMathNamed);  // φ of a Symbol font
+        u = f.Add(",", u, 0, 10, kText);
+        f.Add("\xCF\x95", u, 0, 10, kText, kMathNamed);  // ϕ
+        Expect(f.Latex(), "\\phi,\\varphi", 2382);
+        Formula g;
+        u = g.Add("K", 0, 0);
+        g.Add("\xE2\x97\x8B", u, 4, 7, kSymbol);  // MnSymbol's ○
+        Expect(g.Latex(), "K^{\\circ}", 2383);
+    }
+    {
+        // r_{0} at scriptscript size: the 0 as large as the r and wider, dropped 0.32 em.
+        Formula f;
+        const float u = f.Add("r", 0, 0, 5);
+        f.Add("0", u, -1.6f, 5, kText, 0, 0.7f);
+        Expect(f.Latex(), "r_{0}", 2384);
+    }
+}
 } // namespace
 
 int main() {
@@ -1387,6 +1459,7 @@ int main() {
     TestDisplayWordLimits();
     TestStackedFractions();
     TestSpacedSymbols();
+    TestRowNeighbours();
     std::puts("test_layout_math: ok");
     return 0;
 }

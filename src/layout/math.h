@@ -64,7 +64,8 @@ MathFont MathFontOf(std::string_view baseName);
 
 // PageData::fontMath bit: a math italic font whose glyphs got their text from glyph names (no
 // ToUnicode), where the Adobe Glyph List reads TeX's "phi" as φ and "phi1" as ϕ, the other way
-// round from TeX's \phi and \varphi (and "epsilon" as ε for TeX's \epsilon ϵ).
+// round from TeX's \phi and \varphi (and "epsilon" as ε for TeX's \epsilon ϵ). On a text font (class
+// None): Adobe Symbol or a clone of it, whose "phi" φ is drawn as TeX's \phi ϕ and "phi1" ϕ as \varphi.
 constexpr uint8_t kMathFontNamed = 0x80;
 // PageData::fontMath bits: a font of mathabx (TeX-matha, TeX-mathb, TeX-mathx). Their Type 1
 // versions name the glyphs as the T1 (Cork) text encoding names its codes, so that a ToUnicode
@@ -80,8 +81,8 @@ constexpr uint8_t kMathFontClass = 0x0F;
 // reads a glyph whose text is nothing or its code's WinAnsi character by its code (CodedSymbol).
 constexpr uint8_t kMathFontCoded = 0x40;
 
-// The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf, the mathabx bits and
-// kMathFontCoded.
+// The PageData::fontMath byte of a font by its /BaseFont name: MathFontOf, the mathabx bits,
+// kMathFontCoded, and kMathFontNamed for Symbol fonts.
 uint8_t MathFontByte(std::string_view baseName);
 
 // Whether a glyph's text is φ (U+03C6), ϕ (U+03D5), ε (U+03B5) or ϵ (U+03F5): the letters TeX has

@@ -602,10 +602,11 @@ bool HangingInk(MathFont font, uint32_t cp, uint8_t family, float size, float wi
 }
 
 // Characters that stand for others in math: compatibility forms (∆ U+2206, µ U+00B5, Ω U+2126)
-// and math fonts' symbols that text fonts read differently (◦ is ∘, \ is ∖, ǫ is ϵ, and the
-// hooks pdfTeX's glyph names map to U+0592 and U+0593 are \lhook and \rhook, read as the arrows
-// they make); with `named`, a math italic font's Greek through the Adobe Glyph List (φ is TeX's
-// \phi ϕ).
+// and math fonts' symbols that text fonts read differently (◦ and MnSymbol's ○ are ∘, \ is ∖, ǫ
+// is ϵ, and the hooks pdfTeX's glyph names map to U+0592 and U+0593 are \lhook and \rhook, read as
+// the arrows they make); with `named`, a math italic font's Greek through the Adobe Glyph List (φ
+// is TeX's \phi ϕ), and so is the φ of a Symbol font (kMathFontNamed of a text font: Adobe
+// Symbol draws its "phi" as TeX's \phi ϕ, its "phi1" as \varphi φ).
 uint32_t MathCharacter(uint32_t cp, MathFont font, bool named) {
     switch (cp) {
     case 0x2206: return 0x394;
@@ -615,16 +616,16 @@ uint32_t MathCharacter(uint32_t cp, MathFont font, bool named) {
     default: break;
     }
     if (font != MathFont::None) {
-        if (cp == 0x25E6) return 0x2218;
+        if (cp == 0x25E6 || (cp == 0x25CB && font == MathFont::Symbol)) return 0x2218;
         if (cp == '\\') return 0x2216;
         if (cp == 0x1EB) return 0x3F5;
         if (cp == 0x592) return 0x21AA;
         if (cp == 0x593) return 0x21A9;
     }
-    if (named && font == MathFont::Italic) {
+    if (named && (font == MathFont::Italic || font == MathFont::None)) {
         if (cp == 0x3C6) return 0x3D5;
         if (cp == 0x3D5) return 0x3C6;
-        if (cp == 0x3B5) return 0x3F5;
+        if (cp == 0x3B5 && font == MathFont::Italic) return 0x3F5;
     }
     return cp;
 }
@@ -1307,7 +1308,12 @@ bool Builder::Expr(const std::vector<uint32_t>& atoms, const std::vector<uint32_
         Item item;
         item.structure = true;
         item.u0 = Fmin(sign.u0, rule.u0), item.u1 = Fmax(sign.u1, rule.u1);
-        item.size = em, item.top = rule.v1, item.bottom = bottom;
+        // A radical is as large as its sign and radicand: one set small (in a limit, an exponent)
+        // is a script. A sign of an extension font keeps its font's size in larger text (cmex10 in
+        // 12 pt text): the radicand tells.
+        float size = sign.size;
+        for (uint32_t k : radicand) size = Fmax(size, atoms_[atoms[k]].size);
+        item.size = Fmin(em, size), item.top = rule.v1, item.bottom = bottom;
         std::vector<uint32_t> part;
         std::string text, indexText;
         for (uint32_t k : radicand) part.push_back(atoms[k]), used[k] = 1;
@@ -1695,6 +1701,14 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
                 break;
             }
     }
+    // Nothing of a row's own size stands raised before its base: a first glyph of ordinary size
+    // over the main baseline by more than a script's shift is the base, and its baseline the
+    // row's (at scriptscript size a script is as large as its base: r_{0} in a subscript's
+    // subscript, whose wider 0 outweighs the r).
+    const Item& first = items[0];
+    if (best >= 0 && first.atom >= 0 && first.kind != Kind::Accent && first.kind != Kind::Prime && first.kind != Kind::BigOp &&
+        !first.tall && first.size >= 0.92f * em && first.v - mainV > 0.3f * em)
+        mainV = first.v;
     const size_t n = items.size();
     // 0 base, 1 superscript, 2 subscript, 3 consumed (an accent, a limit).
     // role and wordPart, and the limits and words below, in this depth's storage.
@@ -1720,10 +1734,11 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
         else if ((small && d < -0.08f * em) || d < -0.3f * em) role[i] = 2;
     }
     // A small glyph next to a script, on neither side of the baseline (a subscript's own raised
-    // script), goes with it.
+    // script), goes with it. A structure is no such glyph: a text-style fraction set on the
+    // baseline after a script (c_{i}\frac{t^{i}}{i!}) is small too, and the script's sibling.
     for (size_t i = 1; i < n; ++i) {
         if (role[i] != 0 || items[i].size >= 0.92f * em || items[i].kind == Kind::Accent || items[i].tall ||
-            items[i].kind == Kind::BigOp)
+            items[i].kind == Kind::BigOp || (items[i].structure && !items[i].lined))
             continue;
         if ((role[i - 1] == 1 || role[i - 1] == 2) && items[i].u0 - items[i - 1].u1 < 0.3f * em) role[i] = role[i - 1];
     }
@@ -1910,7 +1925,22 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
                                          : it.v > Fmax(mainV + 0.65f * em, op.top - 0.2f * em))
                     picked.push_back(k);
             }
-            // Grown along the limit's baseline to the glyphs beside it.
+            // Grown along the limit's baseline to the glyphs beside it, short of those of another
+            // large operator of the row: under or over it, or, when both are large operators,
+            // nearer its middle (\sum_{n=1}^{N}\sum_{m=1}^{N}). A word's limit is as wide as TeX
+            // makes the word's box, so the operator after it starts past its end (\max_{s\in[0,1]}\int).
+            const float opMiddle = (op.u0 + op.u1) / 2;
+            const bool bigOp = op.kind == Kind::BigOp;
+            const auto otherOperator = [&](const Item& it) {
+                const float cx = (it.u0 + it.u1) / 2;
+                for (size_t j = 0; j < n; ++j) {
+                    const Item& o = items[j];
+                    if (j == i || role[j] != 0 || o.kind != Kind::BigOp) continue;
+                    if (cx >= o.u0 - 0.1f * em && cx <= o.u1 + 0.1f * em) return true;
+                    if (bigOp && std::fabs(cx - (o.u0 + o.u1) / 2) < std::fabs(cx - opMiddle)) return true;
+                }
+                return false;
+            };
             for (size_t grow = 0; grow < picked.size() && grow < n; ++grow) {
                 const Item& seed = items[picked[grow]];
                 for (const uint32_t k : scripted) {
@@ -1920,6 +1950,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
                     const Item& it = items[k];
                     if (std::fabs(it.v - seed.v) > 0.5f * seed.size + 0.1f * em) continue;
                     if (it.u0 > seed.u1 + 0.35f * em || it.u1 < seed.u0 - 0.35f * em) continue;
+                    if (!relation && otherOperator(it)) continue;
                     picked.push_back(k);
                 }
             }
@@ -2082,7 +2113,8 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
         if (!JoinMathSymbols(a, b, items[i].latex, items[k].latex, items[k].u0 - items[i].u1, em, joined)) continue;
         words[i] = std::move(joined);
         wordPart[k] = 1;
-        items[i].u1 = items[k].u1;
+        // \not's slash has no width: the pair ends where the wider of the two does.
+        items[i].u1 = Fmax(items[i].u1, items[k].u1);
         i = k;
     }
     // Emission: each base with the scripts after it (up to the next base); scripts before the
@@ -2413,7 +2445,10 @@ MathFont MathFontOf(std::string_view name) {
 
 uint8_t MathFontByte(std::string_view name) {
     const uint8_t font = static_cast<uint8_t>(MathFontOf(name));
-    if (font == 0) return font;
+    // Adobe Symbol and its clones (StandardSymL, mathptmx's slanted psyro): text fonts whose φ is
+    // TeX's \phi.
+    if (font == 0)
+        return Starts(name, "symbol") || Starts(name, "standardsym") || Starts(name, "psyr") ? kMathFontNamed : 0;
     if (Starts(name, "oamathsymbols") || Starts(name, "txexs")) return static_cast<uint8_t>(font | kMathFontCoded);
     if (!Starts(name, "tex-math") || name.size() < 9) return font;
     const char which = Lower(name[8]);
