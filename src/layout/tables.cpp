@@ -717,6 +717,7 @@ private:
     std::string_view WordText(const TWord& w, std::string& scratch) const;
     const WordChars& Chars(const TWord& w) const;  // w is one of words_
     unsigned char FirstByte(const TWord& w) const;  // of its text, 0 when it has none
+    bool PhraseGoesOn(const TWord& p, const TWord& w) const;
     // out[k - rows[rowBegin].first]: ColumnOf(gaps, centre) of each word k of rows [rowBegin, rowEnd).
     void WordColumns(const std::vector<Row>& rows, const std::vector<uint32_t>& rowWords, size_t rowBegin, size_t rowEnd,
                      const std::vector<Gap>& gaps, std::vector<int>& out) const;
@@ -883,6 +884,20 @@ unsigned char Detector::FirstByte(const TWord& w) const {
         if (!t.empty()) return static_cast<unsigned char>(t[0]);
     }
     return 0;
+}
+
+// Whether `w`, the word after `p` in a line, goes on with p's phrase, so that the two are one
+// label however they stand over columns: it starts in lower case ("Homogeneous treatment
+// effects") or with an opening parenthesis ("Number (female)"), it is a number after a word
+// ("Room 205"), or it stands no further from p than the page's median word space ("ORDERING
+// INFORMATION"; labels set apart stand wider: "HR1 HR2 HR1+HR2" at 0.44 em on a page of 0.36 em
+// spaces).
+bool Detector::PhraseGoesOn(const TWord& p, const TWord& w) const {
+    if (w.x0 - p.x1 <= wordSpace_ * w.size) return true;
+    const unsigned char first = Chars(w).head[0];
+    if ((first >= 'a' && first <= 'z') || first == '(' || first == '[') return true;
+    const WordChars& before = Chars(p);
+    return first >= '0' && first <= '9' && before.digits == 0 && before.letters > 0;
 }
 
 // Chars' byte classes: a digit, an ASCII letter, a byte of a number (a digit, '.', '-' or a byte of
@@ -1328,9 +1343,35 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // A header label (words a word space apart) wider than its column's text may reach past the
     // middle of the gap beside it (labels centred over narrow columns of figures; a label centred
     // over the gap spans both columns instead): the gap narrows to its widest stretch clear of the
-    // labels of the header lines with such a label, when it has one a point wide.
+    // labels of the header lines with such a label, when it has one a point wide. Two words a word
+    // space apart each centred over its own column's body text are two labels ("HR2 HR1+HR2" over
+    // two narrow columns of figures), unless the second goes on with the first's phrase
+    // (PhraseGoesOn: "Room 205" over the two columns of its room).
     std::vector<Gap>& gaps = scratch_.gridGaps;
     gaps.assign(bodyGaps.begin(), bodyGaps.end());
+    std::vector<float>& colLeft = scratch_.colLeft;
+    std::vector<float>& colRight = scratch_.colRight;
+    // Whether words `p` and `w` (a word space apart) stand in different columns of `columnGaps`,
+    // each centred within a third of its size on its column's text in [colLeft, colRight], and w
+    // does not go on with p's phrase.
+    const auto centredApart = [&](const TWord& p, const TWord& w, const std::vector<Gap>& columnGaps) {
+        const int cp = ColumnOf(columnGaps, (p.x0 + p.x1) / 2), cw = ColumnOf(columnGaps, (w.x0 + w.x1) / 2);
+        const auto centred = [&](const TWord& word, int c) {
+            const size_t i = static_cast<size_t>(c);
+            return colLeft[i] <= colRight[i] && std::fabs((word.x0 + word.x1) / 2 - (colLeft[i] + colRight[i]) / 2) <= 0.3f * word.size;
+        };
+        return cp != cw && centred(p, cp) && centred(w, cw) && !PhraseGoesOn(p, w);
+    };
+    if (headerRows > 0) {
+        colLeft.assign(static_cast<size_t>(cols), INFINITY);
+        colRight.assign(static_cast<size_t>(cols), -INFINITY);
+        for (size_t r = std::min<size_t>(rowBegin + headerRows, rowEnd); r < rowEnd; ++r)
+            for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && !(labels && (*labels)[r]); ++k) {
+                const TWord& w = words_[rowWords[k]];
+                const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+                colLeft[c] = Fmin(colLeft[c], w.x0), colRight[c] = Fmax(colRight[c], w.x1);
+            }
+    }
     {
         std::vector<Gap>& inks = scratch_.gridInks;
         const size_t headerEnd = std::min<size_t>(rowBegin + headerRows, rowEnd);
@@ -1344,7 +1385,9 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                     float a = words_[rowWords[k]].x0, b = words_[rowWords[k]].x1;
                     for (++k; k < rows[r].first + rows[r].count; ++k) {
                         const TWord& w = words_[rowWords[k]];
-                        if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size))) break;
+                        if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size)) ||
+                            centredApart(words_[rowWords[k - 1]], w, bodyGaps))
+                            break;
                         b = Fmax(b, w.x1);
                     }
                     if (b <= gap.a || a >= gap.b) continue;
@@ -1381,8 +1424,6 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     const uint32_t base = rows[rowBegin].first;
     // The columns' extents, from the body's lines under a header set off by a rule (a header label
     // over several columns reaches past the column its centre lies in).
-    std::vector<float>& colLeft = scratch_.colLeft;
-    std::vector<float>& colRight = scratch_.colRight;
     colLeft.assign(static_cast<size_t>(cols), INFINITY);
     colRight.assign(static_cast<size_t>(cols), -INFINITY);
     const size_t bodyBegin = ruled && rowBegin + headerRows < rowEnd ? rowBegin + headerRows : rowBegin;
@@ -2010,9 +2051,12 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
             if (t.size >= 3 && t.head[0] == 0xE2 && t.head[1] == 0x8E && t.head[2] >= 0x9B && t.head[2] <= 0xAD) return;
             // The word before it in the row, when only a word space apart: one cell's text, unless
             // the word starts where its column's text starts (labels set a word space apart, each at
-            // its column's left edge) or a joint of the table's rules lies between them.
+            // its column's left edge), both words stand centred over their own columns' text
+            // (labels centred over narrow columns of figures, not one phrase) or a joint of the
+            // table's rules lies between them.
             const TWord* before = k > rows[r].first ? &words_[rowWords[k - 1]] : nullptr;
-            const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size);
+            const bool joined = before && w.x0 - before->x1 < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size) &&
+                                !centredApart(*before, w, gaps);
             for (int c = 1; c < cols; ++c) {
                 const float x = g.xs[static_cast<size_t>(c)];
                 const auto jointBetween = [&]() {
@@ -3237,6 +3281,28 @@ void Detector::Lattices() {
         if (g.Rows() < 1 || g.Cols() < 1 || g.Rows() > kMaxTableRows || g.Cols() > kMaxTableCols) continue;
         if (!Free(g.x0, g.y0, g.x1, g.y1)) continue;
         Boundaries(g, comp);
+        // An outer column whose only rules are inside it and stop at its inner side (none along
+        // its outer side, over or under it, nor any reaching past its inner side): a rule poking
+        // out of a box, as a fraction's bar beside a \framebox around the rest of a displayed
+        // formula, draws no cell; the column goes. Rules running on across the table (a table
+        // drawn without top, bottom and side rules) keep it.
+        for (int side = 0; side < 2 && g.Cols() >= 2; ++side) {
+            const int rows = g.Rows(), cols = g.Cols(), c = side == 0 ? 0 : cols - 1;
+            bool ruled = g.hb[static_cast<size_t>(c)] || g.hb[static_cast<size_t>(rows * cols + c)];
+            for (int r = 0; r < rows && !ruled; ++r) ruled = g.vb[static_cast<size_t>(r * (cols + 1) + (side == 0 ? 0 : cols))];
+            bool inner = false;
+            for (int r = 1; r < rows && !inner; ++r) inner = g.hb[static_cast<size_t>(r * cols + c)];
+            const float x = g.xs[static_cast<size_t>(side == 0 ? 1 : cols - 1)];
+            for (size_t m = 0; m < comp.hCount && !ruled; ++m) {
+                const Edge& e = h_[comp.h[m]];
+                ruled = e.a < x - kSnap && e.b > x + kSnap;
+            }
+            if (ruled || !inner) continue;
+            if (side == 0) g.xs.erase(g.xs.begin());
+            else g.xs.pop_back();
+            g.x0 = g.xs.front(), g.x1 = g.xs.back();
+            Boundaries(g, comp);
+        }
         // A horizontal boundary drawn across fewer than half the columns (the bottom of a short
         // header cell, a line under one value) parts no rows: it goes, and the rows join.
         {
@@ -4112,6 +4178,56 @@ void Detector::RuleStacks() {
                             if (label[q]) labels = &label;
                         }
                     }
+                }
+                // A label band's line whose labels (words a word space apart, parted where two words
+                // each stand centred over their own column's text and the second does not go on
+                // with the first's phrase, PhraseGoesOn) stand one to a column of the body (each
+                // centred in a column, none across a gap: a label centred over its narrow column
+                // may reach into the gaps beside it; two columns or more) is a row of the table,
+                // not a label across it: a header row between rules ("HR1 HR2 HR1+HR2" over three
+                // columns of figures beside an empty corner cell). A label of several words over
+                // the gaps ("Rheumatoid Arthritis", "Homogeneous treatment effects") stays one.
+                if (labels == &label && !gaps.empty() && gaps.size() < 64) {
+                    float textLeft[64], textRight[64];
+                    for (size_t c = 0; c <= gaps.size(); ++c) textLeft[c] = INFINITY, textRight[c] = -INFINITY;
+                    for (size_t q = begin; q < end; ++q)
+                        for (uint32_t k = rows[q].first; k < rows[q].first + rows[q].count && !label[q]; ++k) {
+                            const TWord& w = words_[rowWords[k]];
+                            const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+                            textLeft[c] = Fmin(textLeft[c], w.x0), textRight[c] = Fmax(textRight[c], w.x1);
+                        }
+                    const auto centred = [&](const TWord& w) {
+                        const size_t c = static_cast<size_t>(ColumnOf(gaps, (w.x0 + w.x1) / 2));
+                        return textLeft[c] <= textRight[c] && std::fabs((w.x0 + w.x1) / 2 - (textLeft[c] + textRight[c]) / 2) <= 0.3f * w.size;
+                    };
+                    for (size_t q = begin; q < end; ++q) {
+                        if (!label[q] || rows[q].count < 2) continue;
+                        uint64_t taken = 0;
+                        int count = 0;
+                        bool apart = true;
+                        for (uint32_t k = rows[q].first, after = rows[q].first + rows[q].count; k < after && apart;) {
+                            float a = words_[rowWords[k]].x0, b = words_[rowWords[k]].x1;
+                            for (++k; k < after; ++k) {
+                                const TWord& p = words_[rowWords[k - 1]];
+                                const TWord& w = words_[rowWords[k]];
+                                if (!(w.x0 - b < Fmax(1.0f, Fmin(2 * wordSpace_, 0.45f) * w.size)) ||
+                                    (ColumnOf(gaps, (p.x0 + p.x1) / 2) != ColumnOf(gaps, (w.x0 + w.x1) / 2) && centred(p) && centred(w) &&
+                                     !PhraseGoesOn(p, w)))
+                                    break;
+                                b = Fmax(b, w.x1);
+                            }
+                            const float cx = (a + b) / 2;
+                            for (const Gap& gap : gaps) apart = apart && !(a < gap.a && b > gap.b) && !(cx >= gap.a && cx <= gap.b);
+                            const uint64_t bit = uint64_t(1) << ColumnOf(gaps, cx);
+                            apart = apart && !(taken & bit);
+                            taken |= bit;
+                            count++;
+                        }
+                        if (apart && count >= 2) label[q] = 0;
+                    }
+                    bool any = false;
+                    for (size_t q = 0; q < label.size() && !any; ++q) any = label[q] != 0;
+                    if (!any) labels = nullptr;
                 }
                 // A header label over several columns (a unit over its sub-columns) closes the gaps
                 // between them: the body rows, three at least, say where the columns are, and the

@@ -100,8 +100,8 @@ void Show(const char* name, const std::string& md) {
     if (std::getenv("RAYOPDF_TEST_VERBOSE")) std::fprintf(stderr, "--- %s\n%s", name, md.c_str());
 }
 
-// Prose filling [x0, x0 + width) from y down, `lines` lines of words.
-float AddProse(PageData& page, float x0, float width, float y, int lines, float size = 10) {
+// Prose filling [x0, x0 + width) from y down, `lines` lines of words `space` em apart.
+float AddProse(PageData& page, float x0, float width, float y, int lines, float size = 10, float space = 0.5f) {
     static const char* const kWords[] = {"the", "quick", "brown", "fox", "jumps", "over", "lazy", "dogs", "while",
                                          "seven", "wizards", "quietly", "examine", "every", "document"};
     int w = 0;
@@ -109,10 +109,10 @@ float AddProse(PageData& page, float x0, float width, float y, int lines, float 
         float x = x0;
         for (;;) {
             const char* word = kWords[w % 15];
-            const float advance = float(std::strlen(word) + 1) * 0.5f * size;
+            const float advance = (float(std::strlen(word)) * 0.5f + space) * size;
             if (x + advance > x0 + width) break;
             x = AddText(page, word, x, y, size);
-            x = AddText(page, " ", x, y, size);
+            x = AddText(page, " ", x, y, size, 0, space);
             ++w;
         }
         y -= 1.2f * size;
@@ -3254,6 +3254,147 @@ void TestRuledSentenceTable() {
     RAYOPDF_CHECK(build(false).first == 0, 2339);
 }
 
+// Booktabs around a header of labels a word space apart (0.39 em, on a page of words 0.33 em
+// apart), each centred over its own narrow column of figures and wider than it, beside an empty
+// corner cell (arXiv 2310.14638's Table A1): the header band is no label across the table, and
+// each label heads its own column.
+void TestCentredLabelsOverNarrowColumns() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 700, 3, 10, 0.33f);
+    HLine(page, 72, 210, 610);
+    AddText(page, "HR10", 127.75f, 598, 9);
+    AddText(page, "HR20", 149.25f, 598, 9);
+    AddText(page, "HR1+HR2", 170.75f, 598, 9);
+    HLine(page, 72, 210, 590);
+    const char* const names[] = {"Damping", "Mass", "Stiffness"};
+    const char* const values[3][3] = {{"1.4", "1.7", "\u22120.10"}, {"5.4", "9.0", "\u22124.00"}, {"0.9", "0.8", "\u22120.39"}};
+    const float xs[] = {130, 151.5f, 175.25f};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 575 - 13.0f * float(r);
+        AddText(page, names[r], 76, y, 9);
+        for (int c = 0; c < 3; ++c) AddText(page, values[r][c], xs[c], y, 9);
+    }
+    HLine(page, 72, 210, 540);
+    AddProse(page, 72, 400, 510, 3, 10, 0.33f);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("centred labels over narrow columns", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "|  | HR10 | HR20 | HR1+HR2 |\n| --- | --- | --- | --- |\n| Damping | 1.4 | 1.7 | \u22120.10 |"),
+                  2301);
+}
+
+// A displayed formula: a fraction (F² over 2η) whose bar touches a \framebox drawn around a second
+// fraction (arXiv 2310.14638's energy formula). The bar beside the box rules no column: no table.
+void TestFractionBesideFramebox() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 450, 700, 3);
+    AddText(page, "F2", 404, 238);
+    HLine(page, 402.5f, 415.2f, 234.5f, 0.4f);
+    AddText(page, "2\u03b7", 404, 224);
+    HLine(page, 416, 514.1f, 250.1f, 0.4f);
+    HLine(page, 416, 514.1f, 219.5f, 0.4f);
+    VLine(page, 416.4f, 219.5f, 250.1f, 0.4f);
+    VLine(page, 513.7f, 219.5f, 250.1f, 0.4f);
+    AddText(page, "\u03b32\u03c92", 455, 238);
+    HLine(page, 420.5f, 509.5f, 234.5f, 0.4f);
+    AddText(page, "(\u03c92 \u2212 \u03c92)2 + (\u03b3\u03c9)2", 422, 224);
+    AddProse(page, 72, 450, 190, 3);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("fraction beside framebox", md);
+    RAYOPDF_CHECK(report.tables == 0 && Contains(md, "2\u03b7"), 2303);
+}
+
+// Booktabs around a band of one line, `words` at 9 pt set `gaps` em apart, over as many columns of
+// figures beside an empty corner cell, each word centred over its own column, on a page of words
+// 0.33 em apart. Returns the Markdown.
+std::string BandOverColumns(std::initializer_list<const char*> words, std::initializer_list<float> gaps,
+                            ConvertReport& report) {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 700, 3, 10, 0.33f);
+    HLine(page, 72, 280, 610);
+    std::vector<float> centres;
+    float x = 120;
+    const float* gap = gaps.begin();
+    for (const char* word : words) {
+        const float end = AddText(page, word, x, 598, 9);
+        centres.push_back((x + end) / 2);
+        x = end + (gap != gaps.end() ? *gap++ : 0.0f) * 9;
+    }
+    HLine(page, 72, 280, 590);
+    const char* const names[] = {"Damping", "Mass", "Stiffness"};
+    for (int r = 0; r < 3; ++r) {
+        const float y = 575 - 13.0f * float(r);
+        AddText(page, names[r], 76, y, 9);
+        for (size_t c = 0; c < centres.size(); ++c) {
+            const std::string value = std::to_string(r + 1) + "." + std::to_string(c + 4);
+            AddText(page, value, centres[c] - 6.75f, y, 9);
+        }
+    }
+    HLine(page, 72, 280, 540);
+    AddProse(page, 72, 400, 510, 3, 10, 0.33f);
+    return Run(pages, &report);
+}
+
+// A band of one phrase over three columns of figures, each word centred over its own column and a
+// little more than the page's word space apart (arXiv 2210.15829's "Homogeneous treatment
+// effects"): words that go on in lower case are one label, never three header cells.
+void TestPhraseOverNarrowColumns() {
+    ConvertReport report;
+    std::string md = BandOverColumns({"Homogeneous", "treatment", "effects"}, {0.4f, 0.4f}, report);
+    Show("lower-case phrase over columns", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Homogeneous treatment effects") && !Contains(md, "| treatment |"), 2340);
+    // Capitals no further apart than the page's word space (olmOCR's "ORDERING INFORMATION").
+    md = BandOverColumns({"MEDIAN", "AGE"}, {0.3f}, report);
+    Show("capitals a word space apart over columns", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "MEDIAN AGE") && !Contains(md, "| AGE |"), 2342);
+    // A parenthesis that qualifies the word before it ("Number (female)").
+    md = BandOverColumns({"Number", "(female)"}, {0.4f}, report);
+    Show("parenthesis over columns", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Number (female)") && !Contains(md, "| (female) |"), 2343);
+}
+
+// A booktabs header of rooms over pairs of columns (T and RH), "Room" centred over the first and
+// the room's number over the second, a little more than the page's word space apart, "Model"
+// centred down the two header lines with the \cmidrules under the rooms just below its baseline
+// (arXiv 2403.04326's Table I): a number after a word goes on with its label, never two header
+// cells.
+void TestRoomLabelsOverColumnPairs() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 700, 3, 10, 0.33f);
+    HLine(page, 72, 286.4f, 620);
+    AddText(page, "Model", 76, 605.6f, 8);
+    const char* const rooms[] = {"103", "205"};
+    const float xs[] = {200, 250};
+    for (int g = 0; g < 2; ++g) {
+        const float end = AddText(page, "Room", xs[g], 610, 8, 0, 0.6f);
+        AddText(page, rooms[g], end + 3.2f, 610, 8, 0, 0.6f);
+        HLine(page, xs[g] + 1.5f, xs[g] + 36.4f, 605.4f, 0.4f);
+        AddText(page, "T", xs[g] + 7.6f, 596, 8);
+        AddText(page, "RH", xs[g] + 25.6f, 596, 8);
+    }
+    HLine(page, 72, 286.4f, 590);
+    const char* const names[] = {"LSTM", "TCN", "TFT", "TiDE"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = 582 - 11.0f * float(r);
+        AddText(page, names[r], 76, y, 8);
+        for (int g = 0; g < 2; ++g) {
+            AddText(page, std::to_string(r + 2) + "." + std::to_string(g + 1), xs[g] + 3.6f, y, 8);
+            AddText(page, std::to_string(r + 5) + std::to_string(g + 3), xs[g] + 25.6f, y, 8);
+        }
+    }
+    HLine(page, 72, 286.4f, 534);
+    AddProse(page, 72, 400, 500, 3, 10, 0.33f);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("room labels over column pairs", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "Room 205") && Contains(md, "Room 103") && !Contains(md, "| 205 |"), 2341);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3362,6 +3503,10 @@ int main(int argc, char** argv) {
     TestNumberedHeaderUnderCmidrules();
     TestAiryRuledRows();
     TestRuledSentenceTable();
+    TestCentredLabelsOverNarrowColumns();
+    TestFractionBesideFramebox();
+    TestPhraseOverNarrowColumns();
+    TestRoomLabelsOverColumnPairs();
     std::puts("test_layout_tables: ok");
     return 0;
 }
