@@ -507,12 +507,14 @@ bool Font::Impl::NextSimple(std::string_view bytes, size_t& at, Code& out) const
     return true;
 }
 
-void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
+// NextComposite's code: inline there, its one caller, as NextComposite is in NextSlow. An Identity
+// CMap's CID is the code, read without CidOf's call.
+RAYOPDF_HOT_INLINE void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
     out.code = code;
     out.bytes = length;
     out.wordSpace = length == 1 && code == 32;
-    uint32_t cid = 0;
-    const bool known = CidOf(code, length, cid);
+    uint32_t cid = code;
+    const bool known = cmapKind == CMapKind::Identity || CidOf(code, length, cid);
     out.width = known ? WidthOf(cid) : defaultWidth;
     out.verticalAdvance = vertical ? (known ? VerticalOf(cid) : defaultVertical) : 0;
     if (cmapKind == CMapKind::Ucs2 && length == 4) {
@@ -570,7 +572,7 @@ void Font::Impl::Composite(uint32_t code, uint8_t length, Code& out) const {
     out.unicode = {};
 }
 
-bool Font::Impl::NextComposite(std::string_view bytes, size_t& at, Code& out) const {
+RAYOPDF_HOT_INLINE bool Font::Impl::NextComposite(std::string_view bytes, size_t& at, Code& out) const {
     if (at >= bytes.size()) return false;
     uint32_t code = 0;
     uint8_t length = 0;
