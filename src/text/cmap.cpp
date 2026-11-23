@@ -211,6 +211,8 @@ public:
     virtual void Char(uint32_t code, const Token& destination) = 0;
     // A range whose destination is a string or a number.
     virtual void Range(uint32_t low, uint32_t high, const Token& destination, Section section) = 0;
+    // A bfchar section that announces `count` entries begins.
+    virtual void ExpectChars(size_t count) { (void)count; }
     // Element `index` of an array destination of a bfrange starting at `low`.
     virtual void ArrayItem(uint32_t code, const Token& destination) = 0;
     virtual void Cut() = 0;
@@ -257,6 +259,7 @@ void Parse(std::string_view data, S& sink) {
     size_t operands = 0;
     Section section = Section::None;
     bool lastWasWMode = false;
+    int64_t lastNumber = -1;  // the number token just before, a section's count
     std::string lastName;
     while (!sink.Full()) {
         if (operands == 0 && (section == Section::BfChar || section == Section::BfRange) &&
@@ -269,6 +272,11 @@ void Parse(std::string_view data, S& sink) {
             const Section begins = SectionOf(token.text);
             if (begins != Section::None) {
                 section = begins;
+                // Room for the entries the count announces, each at least 6 bytes ("<0><0>").
+                if (begins == Section::BfChar && lastNumber > 0) {
+                    const uint64_t most = (data.size() - lexer.Position()) / 6;
+                    sink.ExpectChars(static_cast<size_t>(static_cast<uint64_t>(lastNumber) < most ? lastNumber : most));
+                }
             } else if (token.text.substr(0, 3) == "end") {
                 section = Section::None;
             } else if (token.text == "usecmap" && !lastName.empty()) {
@@ -276,9 +284,11 @@ void Parse(std::string_view data, S& sink) {
             }
             operands = 0;
             lastWasWMode = false;
+            lastNumber = -1;
             lexer.Release();
             continue;
         }
+        lastNumber = token.kind == TokenKind::Number ? token.number : -1;
         if (token.kind == TokenKind::Name) {
             lastName.assign(token.text.data(), token.text.size());
             lastWasWMode = token.text == "WMode";
@@ -384,6 +394,13 @@ public:
 
     void ArrayItem(uint32_t code, const Token& destination) override { Char(code, destination); }
 
+    // Room for `count` more entries and two bytes of text each (most texts are one unit below
+    // U+0800), grown at least twofold: a section's entries are added without a copy each.
+    void ExpectChars(size_t count) override {
+        Reserve(map_.entries, count);
+        Reserve(map_.text, 2 * count);
+    }
+
     void Range(uint32_t low, uint32_t high, const Token& destination, Section section) override {
         if (section == Section::NotdefRange) return;
         if (destination.kind == TokenKind::Number) {
@@ -479,6 +496,12 @@ public:
     }
 
 private:
+    template <typename Buffer>
+    static void Reserve(Buffer& buffer, size_t more) {
+        const size_t want = buffer.size() + more;
+        if (want > buffer.capacity()) buffer.reserve(std::max(want, 2 * buffer.capacity()));
+    }
+
     void Add(uint32_t code, size_t start) {
         const size_t length = map_.text.size() - start;
         if (length == 0) return;
