@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 
 namespace RayoPdf::Text {
 namespace {
@@ -710,6 +711,16 @@ RAYOPDF_HOT_INLINE uint8_t CountCodePointEntry(uint32_t cp, Repair::MapStats& st
     return flags;
 }
 
+// The first code point after `u` (at most U+FFFF) where CountCodePointEntry's flags or counts may
+// differ from u's: the bounds of every class it and Repair::CountCodePoint test, and the space
+// (which casts no vote) alone.
+uint32_t SegmentEnd(uint32_t u) {
+    static constexpr uint32_t kBounds[] = {0x09,  0x0A,  0x0B,  0x0C,   0x0D,   0x0E,   0x20,   0x21,   0x41,  0x5B,
+                                           0x61,  0x7B,  0x7F,  0x80,   0xA0,   0xC0,   0xD7,   0xD8,   0xF7,  0xF8,
+                                           0x250, 0xE01, 0xE5C, 0xD800, 0xE000, 0xF900, 0xFFFD, 0xFFFE, 0x10000};
+    return *std::upper_bound(std::begin(kBounds), std::end(kBounds), u);
+}
+
 // Adds `text` to `stats` (Repair::Count) and gives MayRepair and UsableText of it as flags, with
 // kEntryThai when Count finds Thai in it. A text of one code point (nearly every entry) is read
 // here.
@@ -777,6 +788,37 @@ struct Vote {
             --votes;
         }
     }
+    // Add of the `n` entries from `entries`, whose texts are the code points from `first` on,
+    // alone: distinct, none a space. Once the votes are spent, the entries take turns: one sets
+    // the candidate, the next takes its vote; before that, each votes against the candidate but
+    // the one of its code point.
+    void AddDistinct(const UnicodeEntry* entries, uint32_t first, uint32_t n) {
+        voters += n;
+        uint32_t k = 0;
+        while (k < n) {
+            if (votes == 0) {
+                const uint32_t last = k + ((n - k - 1) & ~1u);  // the last entry that sets it
+                candidate = entries[last];
+                candidatePoint = first + last;
+                votes = (n - k) & 1;
+                return;
+            }
+            if (candidatePoint == kPointUnread) candidatePoint = SingleCodePoint(Candidate());
+            const uint32_t against = candidatePoint >= first + k && candidatePoint - first < n
+                                         ? candidatePoint - first - k  // then the candidate's own
+                                         : n - k;
+            if (votes <= against) {
+                k += votes;
+                votes = 0;
+                continue;
+            }
+            votes -= against;
+            k += against;
+            if (k == n) return;
+            ++votes;  // the candidate's code point
+            ++k;
+        }
+    }
 };
 
 // Repairs every entry's text (Repair::RepairText; Thai forms when the map has Thai), judges the map
@@ -807,14 +849,35 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
             if (!(f & kEntryMayRepair)) vote.Add(entry);
         }
         if (run == runEnd) break;
-        for (uint32_t i = 0; i < run->count; ++i, ++e) {
-            uint32_t cp = static_cast<uint16_t>(run->unit + i);
-            if (cp >= 0xD800 && cp <= 0xDFFF) cp = Utf8::kReplacement;
-            const uint8_t f = CountCodePointEntry(cp, stats);
-            flags[e] = f;
-            anyFlags |= f;
-            allFlags &= f;
-            if (!(f & kEntryMayRepair)) vote.Add(map.entries[e], cp);
+        // A run a segment at a time: within a segment every code point has the same counts and
+        // flags (SegmentEnd), so they are counted and set once; the surrogates (each U+FFFD, equal
+        // texts) one by one.
+        for (uint32_t i = 0; i < run->count;) {
+            const uint32_t u = static_cast<uint16_t>(run->unit + i);
+            const uint32_t n = std::min<uint32_t>(SegmentEnd(u) - u, run->count - i);
+            if (u >= 0xD800 && u <= 0xDFFF) {
+                for (uint32_t k = 0; k < n; ++k, ++e) {
+                    const uint8_t f = CountCodePointEntry(Utf8::kReplacement, stats);
+                    flags[e] = f;
+                    anyFlags |= f;
+                    allFlags &= f;
+                    if (!(f & kEntryMayRepair)) vote.Add(map.entries[e], Utf8::kReplacement);
+                }
+            } else {
+                Repair::MapStats one;
+                const uint8_t f = CountCodePointEntry(u, one);
+                stats.entries += n * one.entries;
+                stats.junk += n * one.junk;
+                stats.latinLetters += n * one.latinLetters;
+                stats.accented += n * one.accented;
+                stats.thai = stats.thai || one.thai;
+                std::memset(flags.data() + e, f, n);
+                anyFlags |= f;
+                allFlags &= f;
+                if (!(f & kEntryMayRepair) && u != ' ') vote.AddDistinct(map.entries.data() + e, u, n);
+                e += n;
+            }
+            i += n;
         }
         ++run;
     }
