@@ -458,24 +458,45 @@ public:
                 UnicodeEntry* const to = entry + i;
                 const uint32_t code = low + static_cast<uint32_t>(i);
                 const uint32_t offset = static_cast<uint32_t>(at);
-                if (piece.width == 1) {
+                const uint32_t width = piece.width;
+                if (width == 1) {
                     for (size_t j = 0; j < m; ++j) out[j] = static_cast<char>(u + j);
-                } else if (piece.width == 2) {
+                } else if (piece.surrogate) {
                     for (size_t j = 0; j < m; ++j) {
-                        const uint32_t v = u + static_cast<uint32_t>(j);
-                        out[2 * j] = static_cast<char>(0xC0 | (v >> 6));
-                        out[2 * j + 1] = static_cast<char>(0x80 | (v & 0x3F));
+                        out[3 * j] = static_cast<char>(0xEF);
+                        out[3 * j + 1] = static_cast<char>(0xBF);
+                        out[3 * j + 2] = static_cast<char>(0xBD);
                     }
                 } else {
-                    for (size_t j = 0; j < m; ++j) {
-                        const uint32_t v = piece.surrogate ? Utf8::kReplacement : u + static_cast<uint32_t>(j);
-                        out[3 * j] = static_cast<char>(0xE0 | (v >> 12));
-                        out[3 * j + 1] = static_cast<char>(0x80 | ((v >> 6) & 0x3F));
-                        out[3 * j + 2] = static_cast<char>(0x80 | (v & 0x3F));
+                    // A block of the units sharing all but their last six bits at a time: their
+                    // bytes before the last are the same.
+                    for (size_t j = 0; j < m;) {
+                        const uint32_t v = u + static_cast<uint32_t>(j);
+                        const size_t block = std::min<size_t>(m - j, 64 - (v & 0x3F));
+                        const char tail = static_cast<char>(0x80 | (v & 0x3F));
+                        if (width == 2) {
+                            const char lead = static_cast<char>(0xC0 | (v >> 6));
+                            char* const o = out + 2 * j;
+                            for (size_t k = 0; k < block; ++k) {
+                                o[2 * k] = lead;
+                                o[2 * k + 1] = static_cast<char>(tail + k);
+                            }
+                        } else {
+                            const char lead = static_cast<char>(0xE0 | (v >> 12));
+                            const char middle = static_cast<char>(0x80 | ((v >> 6) & 0x3F));
+                            char* const o = out + 3 * j;
+                            for (size_t k = 0; k < block; ++k) {
+                                o[3 * k] = lead;
+                                o[3 * k + 1] = middle;
+                                o[3 * k + 2] = static_cast<char>(tail + k);
+                            }
+                        }
+                        j += block;
                     }
                 }
-                for (size_t j = 0; j < m; ++j) {
-                    to[j] = UnicodeEntry{code + static_cast<uint32_t>(j), offset + static_cast<uint32_t>(j * piece.width), piece.width};
+                uint32_t textAt = offset;
+                for (size_t j = 0; j < m; ++j, textAt += width) {
+                    to[j] = UnicodeEntry{code + static_cast<uint32_t>(j), textAt, width};
                 }
                 at += m * piece.width;
                 i += m;
