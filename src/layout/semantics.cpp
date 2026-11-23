@@ -1825,6 +1825,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     Marks marks;
     std::string scratch;
     std::vector<uint32_t> byBase;
+    std::vector<uint32_t> inSentence;  // lines whose marker in parentheses refers to an equation
     // Glyphs of the ordered lines, and those of them bold and italic (BlockList::boldBody).
     uint64_t faceGlyphs = 0, boldGlyphs = 0, italicGlyphs = 0;
     for (uint32_t p = 0; p < pages.size(); ++p) {
@@ -1961,6 +1962,41 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             in.ClearMarker();
             in.textU0 = in.markerU0 = in.u0;
             in.startsLower = true;
+        }
+        // A number or letter in parentheses that starts a line inside a sentence refers to an
+        // equation or a part ("we solve\n(3) and characterize ..."): the line before it in the order,
+        // directly above and not set in left of it, ends without a sentence end, and the text after
+        // the marker starts in lower case. An item of a run stays: another item in parentheses within
+        // 24 lines before or after it, its value one apart (or one a letter and one a roman numeral).
+        inSentence.clear();
+        for (size_t i = pageFirst + 1; i < infos.size(); ++i) {
+            const Info& in = infos[i];
+            if (!in.listStart() || !in.verbatimMarker || in.bracketed || !in.startsLower || in.markerAlone ||
+                in.marker == Marker::Bullet || page.GlyphText(page.glyphs[page.lineGlyphs[page.lines[in.line].first]]) != "(")
+                continue;
+            const Info& prev = infos[i - 1];
+            if ((prev.flags & kLineAnchor) || prev.dir != in.dir || !prev.hasLetter || prev.endsTerminal) continue;
+            const float pitch = prev.baseline - in.baseline;
+            if (!(pitch > 0.5f * in.size && pitch <= 2 * in.size) || in.u0 > prev.u0 + in.size || prev.u1 < in.u0) continue;
+            const auto lettered = [](Marker m) { return m == Marker::Letter || m == Marker::Roman; };
+            bool run = false;
+            for (size_t j = i > pageFirst + 24 ? i - 24 : pageFirst; j < infos.size() && j <= i + 24 && !run; ++j) {
+                const Info& o = infos[j];
+                run = j != i && o.listStart() && o.verbatimMarker && !o.bracketed &&
+                      ((o.marker == in.marker && (o.value + 1 == in.value || in.value + 1 == o.value)) ||
+                       (o.marker != in.marker && lettered(o.marker) && lettered(in.marker)));
+            }
+            if (run) continue;
+            // "...; and" or "...; or" before it: the last item of an enumeration in a sentence.
+            LineText(page, page.lines[prev.line], scratch);
+            std::string_view t = scratch;
+            while (!t.empty() && t.back() == ' ') t.remove_suffix(1);
+            const bool joined = (t.size() >= 4 && t.substr(t.size() - 4) == " and") || (t.size() >= 3 && t.substr(t.size() - 3) == " or");
+            if (!(joined && t.find(';') != std::string_view::npos)) inSentence.push_back(static_cast<uint32_t>(i));
+        }
+        for (uint32_t i : inSentence) {
+            infos[i].ClearMarker();
+            infos[i].textU0 = infos[i].markerU0 = infos[i].u0;
         }
         // The page's topmost line, alone in the top 6 % of the page: a running head when set in
         // the body face with a wide gap below it (decided once the body size is known), even on a

@@ -1441,6 +1441,28 @@ void TestListMarkerText() {
     Show("bullets apart", md);
     RAYOPDF_CHECK(Contains(md, "- Vegetables\n  - Carrots\n  - Leeks\n- Grains"), 1938);
     RAYOPDF_CHECK(!Contains(md, "- 5,004"), 1939);
+
+    // An equation's number that starts a line inside a sentence is no list item; an item "(a)"
+    // after a sentence end is one, and so is the next of its run after a line without one.
+    std::vector<PageData> refer{NewPage(1)};
+    AddText(refer[0], "Letting O denote the optimal value of the problem, we embark to solve", 72, 740, 10);
+    AddText(refer[0], "(3) and characterize the optimal value. Towards that end, we assume", 72, 728, 10);
+    AddText(refer[0], "a labeling of the user indices such that the rates are ordered.", 72, 716, 10);
+    AddText(refer[0], "The method has two parts, each of them described below in turn.", 72, 690, 10);
+    AddText(refer[0], "(a) the first part computes the mean of all of the samples and", 72, 676, 10);
+    AddText(refer[0], "(b) the second part computes the variance of the same samples.", 72, 662, 10);
+    md = Run(refer);
+    Show("equation numbers starting lines", md);
+    RAYOPDF_CHECK(Contains(md, "we embark to solve (3) and characterize") && !Contains(md, "- (3)"), 1941);
+    RAYOPDF_CHECK(Contains(md, "- (a) the first part") && Contains(md, "- (b) the second part"), 1942);
+    // The last item of an enumeration in a sentence ("...; and" before it) stays an item.
+    std::vector<PageData> last{NewPage(1)};
+    AddText(last[0], "Records kept by the hospital hold the dates of all of the inspections.", 72, 740, 10);
+    AddText(last[0], "They also hold the measures taken to prevent any exposure; and", 72, 726, 10);
+    AddText(last[0], "(v) the names of the physicians who use the radioactive sources.", 72, 712, 10);
+    md = Run(last);
+    Show("last item of an enumeration", md);
+    RAYOPDF_CHECK(Contains(md, "- (v) the names"), 1942);
 }
 
 void TestMonospaceDocument() {
