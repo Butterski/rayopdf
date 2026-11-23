@@ -721,6 +721,20 @@ uint32_t SegmentEnd(uint32_t u) {
     return *std::upper_bound(std::begin(kBounds), std::end(kBounds), u);
 }
 
+// The first index from `i` on whose flag has `bit` (kHas) or lacks it, else `count`: eight flags a
+// load while eight remain.
+template <bool kHas>
+size_t NextFlag(const uint8_t* flags, size_t i, size_t count, uint8_t bit) {
+    const uint64_t lanes = 0x0101010101010101u * bit;
+    for (; i + 8 <= count; i += 8) {
+        uint64_t word;
+        std::memcpy(&word, flags + i, sizeof(word));
+        if (((kHas ? word : ~word) & lanes) != 0) break;
+    }
+    while (i < count && ((flags[i] & bit) != 0) != kHas) ++i;
+    return i;
+}
+
 // Adds `text` to `stats` (Repair::Count) and gives MayRepair and UsableText of it as flags, with
 // kEntryThai when Count finds Thai in it. A text of one code point (nearly every entry) is read
 // here.
@@ -888,8 +902,8 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
         Repair::MapStats before, after;
         uint32_t thaiLost = 0, thaiGained = 0;  // repaired entries that were Thai, that are Thai
         bool repairedAny = false, full = false;
-        for (size_t i = 0; i < count; ++i) {
-            if (!(flags[i] & kEntryMayRepair)) continue;
+        for (size_t i = NextFlag<true>(flags.data(), 0, count, kEntryMayRepair); i < count;
+             i = NextFlag<true>(flags.data(), i + 1, count, kEntryMayRepair)) {
             UnicodeEntry& entry = map.entries[i];
             const std::string_view text = map.Text(entry);
             // A private-use code point alone changes only through SymbolCodePoint.
@@ -942,8 +956,7 @@ bool RepairToUnicode(ToUnicodeMap& map, Repair::Context context) {
                 ++i;
                 continue;
             }
-            size_t end = i + 1;
-            while (end < count && (flags[end] & kEntryUsable)) ++end;
+            const size_t end = NextFlag<false>(flags.data(), i + 1, count, kEntryUsable);
             if (kept != i) std::memmove(entries + kept, entries + i, (end - i) * sizeof(UnicodeEntry));
             kept += end - i;
             i = end;
