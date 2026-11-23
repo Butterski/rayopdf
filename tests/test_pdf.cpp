@@ -1349,7 +1349,9 @@ void TestContentArrays() {
     RAYOPDF_CHECK(!unended.Next(op) && unended.Offset() == 4, 263);
 }
 
-// The string, name and number readers: hex strings with white space and an odd last digit, the
+// The string, name and number readers: hex strings with white space and an odd last digit, long
+// ones (sixteen digits at a time) in both cases, with a space or a stray byte past their first
+// sixteen digits, the
 // cursor after a failure, literal strings with and without escapes, names and strings viewing the
 // data with Builder::views, and numbers read at once with the reference test of File mode.
 void TestSyntaxReaders() {
@@ -1366,6 +1368,21 @@ void TestSyntaxReaders() {
     RAYOPDF_CHECK(!Syntax::ReadHexString(bad, copies, out) && bad.pos == 4, 257);
     Cursor open{"<4142", 0};
     RAYOPDF_CHECK(!Syntax::ReadHexString(open, copies, out) && open.pos == 5, 257);
+    Cursor longHex{"<0024004500460047004800490a4B4c4D4e4F>", 0};
+    RAYOPDF_CHECK(Syntax::ReadHexString(longHex, copies, out) &&
+                      out == std::string_view("\x00\x24\x00\x45\x00\x46\x00\x47\x00\x48\x00\x49\x0A\x4B\x4C\x4D\x4E\x4F", 18) &&
+                      longHex.pos == 38,
+                  257);
+    Cursor spaced{"<00240045004600470 048>", 0};
+    RAYOPDF_CHECK(Syntax::ReadHexString(spaced, copies, out) &&
+                      out == std::string_view("\x00\x24\x00\x45\x00\x46\x00\x47\x00\x48", 10) && spaced.pos == 23,
+                  257);
+    Cursor stray{"<0024004500460047g0>", 0};
+    RAYOPDF_CHECK(!Syntax::ReadHexString(stray, copies, out) && stray.pos == 18, 257);
+    Cursor eight{"<0024004a0>", 0};
+    RAYOPDF_CHECK(Syntax::ReadHexString(eight, copies, out) && out == std::string_view("\x00\x24\x00\x4A\x00", 5) &&
+                      eight.pos == 11,
+                  257);
 
     const std::string_view plain = "(plain text) Tj";
     Cursor viewed{plain, 0};

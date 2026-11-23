@@ -9,6 +9,10 @@
 #include <mutex>
 #include <vector>
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 namespace RayoPdf {
 
 int64_t PdfValue::Int(int64_t fallback) const {
@@ -277,6 +281,24 @@ struct ScanTables {
 };
 constexpr ScanTables kScan;
 
+#if defined(__SSE2__)
+// The hexadecimal digits of `bytes` in pairs: `packed`'s low eight bytes are the pairs' values
+// (first digit high), and the result has a bit set for each lane that holds a digit (0-9, A-F or
+// a-f).
+RAYOPDF_HOT_INLINE int HexPairs(__m128i bytes, __m128i& packed) {
+    const __m128i digit = _mm_sub_epi8(bytes, _mm_set1_epi8('0'));
+    const __m128i letter = _mm_sub_epi8(_mm_or_si128(bytes, _mm_set1_epi8(0x20)), _mm_set1_epi8('a'));
+    const __m128i isDigit = _mm_cmpeq_epi8(_mm_min_epu8(digit, _mm_set1_epi8(9)), digit);
+    const __m128i isLetter = _mm_cmpeq_epi8(_mm_min_epu8(letter, _mm_set1_epi8(5)), letter);
+    const __m128i value =
+        _mm_or_si128(_mm_and_si128(isDigit, digit), _mm_andnot_si128(isDigit, _mm_add_epi8(letter, _mm_set1_epi8(10))));
+    const __m128i pairs =
+        _mm_or_si128(_mm_slli_epi16(_mm_and_si128(value, _mm_set1_epi16(0x00FF)), 4), _mm_srli_epi16(value, 8));
+    packed = _mm_packus_epi16(pairs, pairs);
+    return _mm_movemask_epi8(_mm_or_si128(isDigit, isLetter));
+}
+#endif
+
 // The end of the literal string run from `at`: the first byte that needs a look, or `size`.
 inline size_t LiteralRunEnd(const char* data, size_t at, size_t size) {
     while (at < size && kScan.literal[static_cast<unsigned char>(data[at])] == 0) at++;
@@ -449,6 +471,26 @@ bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
     }
     size_t n = 0;
     size_t i = first;
+#if defined(__SSE2__)
+    // Sixteen digits a step while sixteen remain before '>', then eight: each byte's value (a
+    // digit, or a letter A-F in either case, compared lane by lane), a byte made of each pair; a
+    // step with any other byte is left to the loops below.
+    for (; i + 16 <= end; i += 16) {
+        __m128i packed;
+        if (HexPairs(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i)), packed) != 0xFFFF) break;
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(block + n), packed);
+        n += 8;
+    }
+    if (i + 8 <= end) {
+        __m128i packed;
+        if ((HexPairs(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p + i)), packed) & 0xFF) == 0xFF) {
+            const uint32_t four = static_cast<uint32_t>(_mm_cvtsi128_si32(packed));
+            std::memcpy(block + n, &four, sizeof(four));
+            n += 4;
+            i += 8;
+        }
+    }
+#endif
     // The digits in pairs while no white space comes (a value of 16 or more is no digit).
     for (; i + 1 < end; i += 2) {
         const uint8_t high = kScan.hex[p[i]], low = kScan.hex[p[i + 1]];
