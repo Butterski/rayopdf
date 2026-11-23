@@ -1657,6 +1657,55 @@ Tried and rejected (2026-11-18, `instr.sh` against the step before; the bar is 0
   `lower_bound`'s glyph only when glyph text offsets never go down, which ActualText spans,
   replaced OCR texts and rebuilt accented letters do not ensure.
 
+## Twenty-first round: the parsing side, ToUnicode maps and composite fonts (2026-11-23)
+
+Callgrind of `c59243c` (Release with `-g`, linked with gold) over odl, heavy10, safe40 and
+`multi_column`, self cost of the parsing side in percent of the group: the content lexer (inlined
+in `RunStream`) odl 12.4 %, heavy10 31.4 %, safe40 15.0 %, `multi_column` 5.3 %;
+`DecodeCodesBmi2` (inflate) 12.2 %, 28.2 %, 12.6 %, 5.8 %; `ShowText` (with its SSE2 box) odl
+8.3 %, heavy10 2.5 %, safe40 5.8 %, `multi_column` 10.0 %; `MeasurePage` 1.4 %, 0.5 %, 0.9 %,
+1.6 %; `ParseArray` and `ParseDict` odl 2.1 %, safe40 1.6 %; the lexer's `ReadArray` odl 0.9 %,
+`multi_column` 1.1 %; `ParseToUnicode` odl 0.9 %; on safe40 and `multi_column` the ToUnicode maps
+of one-unit bfranges (identity maps of up to 65,536 codes): `LoadToUnicode` with its repair pass
+2.4 % and 1.9 %, `UnicodeSink::Range` 1.1 % and 0.8 %, `ToUnicodeMap::Index` 0.3 % and 0.2 %;
+inclusive, `FontCache::Get` 11.0 % of odl. The lexer's numbers are short (about 1.5 digits after
+the point on heavy10, 3.2 on odl) and inflate is libdeflate's design: neither gave a step. Every
+step is byte-identical (`bench.py identical`, see below); instruction counts only, no times:
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(cmap): a ToUnicode bfchar section's announced count reserves its entries and text`|The count before `beginbfchar` (at most a sixth of the bytes left) grows the entries and text once, at least twofold|odl -0.093 %, `tables` -0.052 %, `multi_column` -0.047 %, `arxiv_math` +0.057 %|
+|`perf(font): a ToUnicode run's code points counted and voted a segment at a time`|Within the bounds of the classes `CountCodePointEntry` tests (`SegmentEnd`) a run's code points are counted once, their flags set with `memset`, the majority vote over distinct code points in closed form (`Vote::AddDistinct`); the surrogates one by one|SafeDocs -1.737 %, `multi_column` -1.206 %, `tables` -1.113 %, odl -0.015 %|
+|`perf(font): RepairToUnicode's later passes find the entries to repair and the unusable ones eight flags a load`|`NextFlag`: a 64-bit load tests eight flags|SafeDocs -0.347 %, `multi_column` -0.235 %, `tables` -0.219 %|
+|`perf(cmap): a one-unit bfrange's UTF-8 written a block of 64 units at a time`|Lead and middle bytes once a block, the last counting up; U+FFFD as its bytes; entries with a running offset|SafeDocs -0.453 %, `multi_column` -0.314 %, `tables` -0.283 %|
+|`perf(cmap): a ToUnicode map's dense index filled 64 consecutive codes at a time`|Sorted entries, one per code: 64 whose codes span 63 fill a row of counting slots|SafeDocs -0.186 %, `multi_column` -0.127 %, `tables` -0.116 %|
+|`perf(font): a composite font's code decoded inline in NextSlow, an Identity CMap's CID without a call`|`NextComposite` and `Composite` inlined into their one caller; an Identity CMap's CID is the code|syn6 -1.053 %, `multi_column` -0.439 %, SafeDocs -0.345 %, `tables` -0.248 %, odl -0.127 %, heavy10 -0.107 %|
+|`perf(syntax): hexadecimal strings decoded sixteen digits at a time, then eight, with SSE2`|`HexPairs`: digits and A-F in either case lane by lane, pairs packed into bytes; any other byte left to the scalar loops|syn6 -0.120 %, `multi_column` -0.102 %, odl -0.068 %|
+|`perf(lexer): an array's literal strings that end at their first look-at byte read in ReadArray`|A TJ string whose first `\`, `(`, `)` or CR is its closing parenthesis becomes its item in place|`arxiv_math` -0.561 %, `tables` -0.526 %, `multi_column` -0.505 %, odl -0.374 %, SafeDocs -0.373 %, heavy10 -0.096 %|
+
+Against `c59243c`: odl -0.668 % (767.39 M), heavy10 -0.213 %, syn6 -1.188 %, SafeDocs -3.440 %,
+`multi_column` -2.938 %, `tables` -2.524 %, `arxiv_math` -0.497 %. The round's last binary against
+`c59243c`'s (`bench.py identical` over the synthetic corpus, odl, olmOCR-Bench, READoc and the
+SafeDocs sample the folders hold, 1,857 documents, with `--images=none` alone and with
+`--math=latex`, `--format=json`, `--plain`, `--tables=html` and `--tables=pipe-latex` beside it):
+11,142 comparisons, 0 differ. Tried and rejected (2026-11-23, `instr.sh` against the step before;
+the bar is 0.05 % of odl or 0.1 % of a group):
+
+- The lexer's numbers read 8 bytes at a time (SWAR digit mask, the point removed, fast_float's
+  eight-digit product): odl +3.99 %, heavy10 +11.6 % (the numbers are too short).
+- `LiteralRunEnd` with SSE2, 16 bytes a step: odl +0.030 %, `tables` +0.139 % (short strings).
+- `ToUnicodeMap::Find`'s dense case inline in `cmap.h`: `multi_column` -0.070 %, odl -0.015 %.
+- Tj operands' literal strings read in `ReadValue` as in `ReadArray`: syn6 +0.666 %, odl
+  +0.064 %; with the first run's end handed to the escape reader (`ReadLiteralRest`) and one
+  shared reader for arrays and operands: odl +0.238 %, syn6 +0.681 % (`ReadText` no longer
+  inlined); with `ReadText` forced inline: odl +0.124 %.
+- The glyph loop's printable ASCII held in a cursor buffer and appended per text operator
+  instead of `push_back` (6.3 instructions a glyph): odl +0.938 % with the buffer in the cursor
+  (its address taken by `append`), +0.571 % with it outside.
+- A lean `Font::NextSlow` case for two-byte Identity codes with a dense ToUnicode entry: odl
+  -0.083 %, `multi_column` -0.450 %, but syn6 +0.545 % (its maps have no dense index); with the
+  other cases inline after it: syn6 +0.331 %.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
