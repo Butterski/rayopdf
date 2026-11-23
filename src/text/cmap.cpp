@@ -665,7 +665,20 @@ void ToUnicodeMap::Index() {
     const uint64_t span = uint64_t(entries.back().code) - low + 1;
     if (span > 65536 || span > 16 * uint64_t(entries.size())) return;
     dense.assign(static_cast<size_t>(span), 0);
-    for (size_t e = 0; e < entries.size(); ++e) dense[entries[e].code - low] = static_cast<uint16_t>(e + 1);
+    // Sorted, one per code: 64 entries whose codes span 63 are 64 consecutive codes, their
+    // slots filled in a row (kept within the slots whatever the entries hold).
+    const size_t size = entries.size();
+    uint16_t* const slots = dense.data();
+    for (size_t e = 0; e < size;) {
+        if (e + 64 <= size && entries[e + 63].code - entries[e].code == 63 && entries[e].code - low <= span - 64) {
+            uint16_t* const row = slots + (entries[e].code - low);
+            for (size_t k = 0; k < 64; ++k) row[k] = static_cast<uint16_t>(e + 1 + k);
+            e += 64;
+            continue;
+        }
+        slots[entries[e].code - low] = static_cast<uint16_t>(e + 1);
+        ++e;
+    }
     denseLow = low;
 }
 
