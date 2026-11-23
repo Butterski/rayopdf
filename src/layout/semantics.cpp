@@ -1946,6 +1946,22 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             }
             if (prev != SIZE_MAX && !prevKept) drop(infos[prev]);
         }
+        // A lowercase letter enumerator opening the line right below a word broken at a hyphen is
+        // that word's end ("objec-" over "t. Examples"): no list item, a lowercase continuation.
+        for (size_t i = pageFirst + 1; i < infos.size(); ++i) {
+            Info& in = infos[i];
+            const Info& above = infos[i - 1];
+            if (in.marker != Marker::Letter || !above.hyphenBreak || above.dir != in.dir || (in.flags & kLineAnchor))
+                continue;
+            const float pitch = above.baseline - in.baseline;
+            if (!(pitch > 0.3f * in.size && pitch <= 2.5f * Fmax(above.size, in.size)) || in.u0 > above.u1 || in.u1 < above.u0)
+                continue;
+            const Line& line = page.lines[in.line];
+            if (!IsLower(FirstCodePoint(page.GlyphText(page.glyphs[page.lineGlyphs[line.first]])))) continue;
+            in.ClearMarker();
+            in.textU0 = in.markerU0 = in.u0;
+            in.startsLower = true;
+        }
         // The page's topmost line, alone in the top 6 % of the page: a running head when set in
         // the body face with a wide gap below it (decided once the body size is known), even on a
         // page of its own, where no repeat on other pages removed it.

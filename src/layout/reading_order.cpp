@@ -248,6 +248,13 @@ constexpr size_t kOverWords = (kTopologicalMax + 63) / 64;
 // Topological's ranges of lines between a pair up to this long are scanned line by line; longer
 // ones through the lines' overlap bitsets.
 constexpr size_t kShortRange = 32;
+// Line pairs InsetColumns compares at most, candidates against a region's lines and again insets
+// against the candidates adjoining them.
+constexpr uint64_t kInsetChecks = uint64_t(1) << 18;
+
+// A line of running text rather than a label or a formula's piece: twelve characters and eight
+// ems wide at least.
+bool RunningText(const Line& l) { return l.chars >= 12 && l.u1 - l.u0 >= 8 * l.size; }
 
 // The index of the lowest set bit of m (m != 0).
 int LowestBit(uint64_t m) {
@@ -529,6 +536,9 @@ struct Orderer {
             Recurse(items, xCuts, depth);
             return;
         }
+        // A figure, its caption or a pull quote set into a gutter, with column text wrapped around
+        // it, hides the gutter: the columns found without it come first, as a gutter does.
+        if (xCuts.empty() && items.size() >= 6 && InsetColumns(items, size, depth)) return;
         if (xCuts.empty() && items.size() >= 6) {
             std::vector<uint32_t>& soft = level.soft;
             soft.assign(items.begin(), items.end());
@@ -745,6 +755,96 @@ struct Orderer {
         return true;
     }
 
+    // A line that may be an inset of a region whose body text is set in `size`: a figure, or a line
+    // in another size.
+    bool InsetCandidate(uint32_t f, float size) const {
+        const Line& lf = L(f);
+        return f >= obstacleFrom || (lf.count > 0 && std::fabs(lf.size - size) > 0.1f * size);
+    }
+
+    // An inset candidate with the region's body text wrapped around it: a figure, or a line of
+    // running text (RunningText), with a line of that text, four ems wide at least and no figure's
+    // own text, beside it on each side, overlapping its height. A figure set into two columns, its
+    // caption and a pull quote are.
+    bool Wrapped(uint32_t f, const std::vector<uint32_t>& items, float size) const {
+        const Line& lf = L(f);
+        if (f < obstacleFrom && !RunningText(lf)) return false;
+        bool left = false, right = false;
+        for (uint32_t g : items) {
+            const Line& lg = L(g);
+            if (g == f || lg.count == 0 || (lg.flags & (kLineAllMono | kLineFigure)) ||
+                std::fabs(lg.size - size) > 0.1f * size || lg.u1 - lg.u0 < 4 * lg.size || !(lg.vb < lf.vt && lf.vb < lg.vt))
+                continue;
+            left = left || lg.u1 <= lf.u0;
+            right = right || lg.u0 >= lf.u1;
+            if (left && right) return true;
+        }
+        return false;
+    }
+
+    // A region whose gutters its insets cover: the candidates wrapped by its text (Wrapped), with
+    // the other candidates that adjoin them above or below (a caption's lines beside a paragraph
+    // break). Its columns found without them are read in turn, the insets of each column (those
+    // starting in it) after its text, top to bottom. Returns whether it cut. A region whose line
+    // pairs to compare exceed kInsetChecks has no insets (fails closed).
+    bool InsetColumns(const std::vector<uint32_t>& items, float size, int depth) {
+        size_t candidates = 0;
+        bool wrapped = false;
+        for (uint32_t i : items) candidates += InsetCandidate(i, size);
+        if (candidates == 0 || uint64_t(candidates) * items.size() > kInsetChecks) return false;
+        for (size_t k = 0; k < items.size() && !wrapped; ++k)
+            wrapped = InsetCandidate(items[k], size) && Wrapped(items[k], items, size);
+        if (!wrapped) return false;
+        std::vector<uint32_t> insets, others, rest;
+        for (uint32_t i : items)
+            if (InsetCandidate(i, size)) (Wrapped(i, items, size) ? insets : others).push_back(i);
+        // Adjoining: overlapping horizontally, at most 1.5 sizes apart vertically.
+        uint64_t budget = kInsetChecks;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (uint32_t& o : others) {
+                if (o == UINT32_MAX) continue;
+                if (insets.size() > budget) return false;
+                budget -= insets.size();
+                const Line& lo = L(o);
+                for (size_t k = 0; k < insets.size(); ++k) {
+                    const Line& li = L(insets[k]);
+                    if (lo.u0 < li.u1 && li.u0 < lo.u1 && Fmax(li.vb - lo.vt, lo.vb - li.vt) <= 1.5f * Fmax(lo.size, li.size)) {
+                        insets.push_back(o);
+                        o = UINT32_MAX;
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+        }
+        std::sort(insets.begin(), insets.end());
+        for (uint32_t i : items)
+            if (!std::binary_search(insets.begin(), insets.end(), i)) rest.push_back(i);
+        if (rest.size() < 6) return false;
+        std::vector<size_t> cuts;
+        SplitX(rest, Fmax(3.0f, 0.5f * size), cuts);
+        DropLabelCuts(rest, cuts, size);
+        if (cuts.empty() || !ColumnsLike(rest, cuts, size)) return false;
+        std::vector<std::vector<uint32_t>> groups(2 * (cuts.size() + 1));
+        std::vector<float> starts;
+        size_t begin = 0;
+        for (size_t c = 0; c <= cuts.size(); ++c) {
+            const size_t end = c < cuts.size() ? cuts[c] : rest.size();
+            groups[2 * c].assign(rest.begin() + static_cast<std::ptrdiff_t>(begin), rest.begin() + static_cast<std::ptrdiff_t>(end));
+            starts.push_back(L(rest[begin]).u0);
+            begin = end;
+        }
+        for (uint32_t f : insets) {
+            size_t g = 0;
+            while (g + 1 < starts.size() && L(f).u0 >= starts[g + 1]) ++g;
+            groups[2 * g + 1].push_back(f);
+        }
+        for (std::vector<uint32_t>& group : groups)
+            if (!group.empty()) Cut(group, depth + 1);
+        return true;
+    }
+
     void Recurse(const std::vector<uint32_t>& items, const std::vector<size_t>& cuts, int depth) {
         size_t begin = 0;
         std::vector<uint32_t>& part = PerThread<CutLevels>().level[depth].part;
@@ -784,6 +884,7 @@ struct Orderer {
         float left = L(items[0]).u0, right = L(items[0]).u1;
         for (uint32_t i : items) left = Fmin(left, L(i).u0), right = Fmax(right, L(i).u1);
         const float wide = 0.25f * (right - left);
+        const float body = MedianSize(items);
         // XY-Cut++'s length condition: a cross-layout line is longer than β = 1.3 times the
         // median line, so a line of text wrapped around a pull quote or a figure is not one.
         scratch.clear();
@@ -808,16 +909,35 @@ struct Orderer {
                 continue;
             }
             const float window = 6 * lf.size;
-            float minRight = INFINITY, maxLeft = -INFINITY;
-            for (uint32_t g : scratch) {
-                if (g == f) continue;
-                const Line& lg = L(g);
-                if (lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
-                if (std::fabs(lg.baseline - lf.baseline) > window) continue;
-                minRight = Fmin(minRight, lg.u1);
-                maxLeft = Fmax(maxLeft, lg.u0);
+            // A column's line running under a narrow line of its own column, with an inset of
+            // another size wrapped by the text beside that line (a caption, a pull quote: Wrapped),
+            // bridges no gutter: when f is set in the size of one of the two lines it bridges and the
+            // other is such an inset, they must be of one size. (A headline in a size of its own over
+            // columns that open with titles and subtitles bridges any two.)
+            const auto bridges = [&](float like, uint32_t& right, uint32_t& left) {
+                float minRight = INFINITY, maxLeft = -INFINITY;
+                for (uint32_t g : scratch) {
+                    if (g == f) continue;
+                    const Line& lg = L(g);
+                    if (lg.u1 <= lf.u0 || lg.u0 >= lf.u1) continue;
+                    if (std::fabs(lg.baseline - lf.baseline) > window) continue;
+                    if (like > 0 && std::fabs(lg.size - like) > 0.1f * like) continue;
+                    if (lg.u1 < minRight) minRight = lg.u1, right = g;
+                    if (lg.u0 > maxLeft) maxLeft = lg.u0, left = g;
+                }
+                return maxLeft > minRight;
+            };
+            const auto alike = [](float a, float b) { return std::fabs(a - b) <= 0.1f * Fmax(a, b); };
+            uint32_t right = f, left = f, a = f, b = f;
+            bool crosses = bridges(0, right, left);
+            if (crosses) {
+                const Line& lr = L(right);
+                const Line& ll = L(left);
+                if (!alike(lr.size, ll.size) && ((alike(lf.size, lr.size) && Wrapped(left, items, body)) ||
+                                                 (alike(lf.size, ll.size) && Wrapped(right, items, body))))
+                    crosses = bridges(lr.size, a, b) || bridges(ll.size, a, b);
             }
-            if (maxLeft > minRight && !Beside(f, items))
+            if (crosses && !Beside(f, items))
                 separators.push_back(f);
             else
                 rest.push_back(f);

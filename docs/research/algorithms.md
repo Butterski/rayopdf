@@ -310,7 +310,7 @@ Also use the actual **space glyphs in the stream**:
   - Spacing diacritics (`dieresis` drawn as a separate glyph over the letter, typical of TeX) → combine when the mark box is ≥ 50% inside the base x-extent and above or below it `[INFERENCE]`.
 - **Dehyphenation**: join `-`/U+00AD at line end with the next line's first word when the next word starts lowercase and the line is inside a paragraph; keep hard hyphens in compounds (MuPDF `dehyphenate`, [mupdf-opts]).
   - RayoPDF keeps a hard hyphen (and joins without a space) when the part before it is one letter ("N-" / "fertilizer") or holds a hyphen of its own ("state-of-the-" / "art"), since hyphenation breaks neither a single letter off nor a word already hyphenated (TeX breaks such a word only at its explicit hyphens), when the next line goes on in a capital ("anti-" / "American"), and when the document writes the same pair of letter runs as a two-part compound inside a line elsewhere (a document lexicon of in-line compounds: "cross-" / "correlation" after "cross-correlation"; "to-day" inside "day-to-day" does not count).
-  - A line ending in a word broken at a hyphen ends no paragraph: the lowercase line below it continues the block whatever the leading (list items keep their own continuation rules).
+  - A line ending in a word broken at a hyphen ends no paragraph: the lowercase line below it continues the block whatever the leading (list items keep their own continuation rules); a lowercase letter enumerator opening that line ("objec-" over "t. Examples") is the word's end, no list item.
   - ActualText may carry the correct spelling (the spec's German "Druk-ker" → "Drucker" example, §14.9.4).
 - **Rotated text**: group by text direction (the Trm baseline vector, as MuPDF does); read 90° and 270° text in its own frame. `/Rotate` on the page rotates the whole frame (§7.7.3.3).
 - **Sub/superscript**: a baseline offset with a smaller font (or Ts ≠ 0) stays in the line (MuPDF tolerance 0.8 em). Classify it as sup/sub by offset sign and size ratio < 0.85 `[INFERENCE]`, then emit `<sup>`/`<sub>` or footnote references (§6).
@@ -365,8 +365,8 @@ Also use the actual **space glyphs in the stream**:
 - Order of preference:
   1. a **valid structure tree** (§6.10);
   2. otherwise a geometry-only XY-Cut++ variant on *text blocks* (not glyphs), with:
-     - cross-layout masking (β ≈ 1.3–2.0, to tune on the corpus);
-     - pre-masking of tables and figures already found from vector rulings and images;
+     - cross-layout masking (β ≈ 1.3–2.0, to tune on the corpus); RayoPDF counts a line as crossing a gutter only when the two lines it bridges are of one size (a column's line beside a caption or a pull quote of another size is no pair of columns);
+     - pre-masking of tables and figures already found from vector rulings and images; RayoPDF also masks **insets wrapped by the text**: a figure, or a line in another size than the region's body (a caption, a pull quote), with a body line of four ems or more beside it on each side, together with the figures and other-size lines adjoining it (the rest of its caption). When the region's columns are found without them, the columns are read in turn, each column's insets after its text; without the mask no gutter crosses the region, and Breuel's order (below) would leave the left column at the inset's foot for the right one.
      - Breuel's two partial-order rules as the **tie-breaker and validator**: if the XY-cut order violates rule 1 (an x-overlapping block above comes later), fall back to the topological order of rule 1 + rule 2.
 - Cost is O(n log n) per recursion level on block projections (sorted intervals), so cheap. Avoid pdfminer's O(n²) agglomeration.
 - Remove headers, footers and page numbers by repetition **before** ordering.

@@ -217,7 +217,8 @@ void TestDehyphenation() {
 // already, the line goes on in a capital, or the document writes the pair as a two-part compound
 // inside a line elsewhere ("to-day" of "day-to-day" is none). A paragraph never ends inside a
 // word: a line ending in a word broken at a hyphen goes on below it however wide the leading (its
-// first line too; a list item keeps its own rules).
+// first line too; a list item keeps its own rules); a lowercase letter enumerator right below such
+// a line is the word's end, no list item.
 void TestHyphenBreaks() {
     std::vector<PageData> pages{NewPage(1)};
     AddText(pages[0], "The method is state-of-the-", 72, 700, 10);
@@ -254,6 +255,13 @@ void TestHyphenBreaks() {
     md = Run(known);
     Show("known compound", md);
     RAYOPDF_CHECK(Contains(md, "the cross-correlation peaks early while the experiment ends."), 2589);
+    std::vector<PageData> letter{NewPage(1)};
+    AddText(letter[0], "we can manually select multiple regions that comprise a single objec-", 72, 700, 9);
+    AddText(letter[0], "t. Examples of this user-guided object segmentation are shown in", 72, 689, 9);
+    AddText(letter[0], "the figure below and in the text.", 72, 678, 9);
+    md = Run(letter);
+    Show("letter enumerator after a broken word", md);
+    RAYOPDF_CHECK(Contains(md, "a single object. Examples of this"), 2592);
 }
 
 // A soft hyphen right after a word break (a typesetter's hyphenation point at a word's start) is

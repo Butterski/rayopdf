@@ -953,6 +953,72 @@ void TestCaptionBesideColumn() {
                   1890);
 }
 
+// Two columns of 10 pt text, at 72 and 330, with an inset set into their gutter: rows of both
+// columns above it, narrow lines on each side of it, rows of both columns below it with a
+// paragraph break at one height in both. `inset` adds the inset's own lines and figure.
+template <class Inset>
+std::string WrappedInsetPage(Inset inset) {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    const auto row = [](const char* what, int i, size_t chars) {
+        std::string s = std::string(what) + (i < 10 ? " 0" : " ") + std::to_string(i);
+        while (s.size() < chars) s += s.size() % 5 == 4 ? " " : "x";
+        return s;
+    };
+    for (int i = 0; i < 5; ++i) {
+        AddText(page, row("Left top line", i, 44), 72, 700 - 12.0f * i, 10);
+        AddText(page, row("Right top line", i, 44), 330, 700 - 12.0f * i, 10);
+    }
+    for (int i = 0; i < 14; ++i) {
+        AddText(page, row("Left narrow line", i, 26), 72, 640 - 12.0f * i, 10);
+        AddText(page, row("Right narrow line", i, 26), 420, 640 - 12.0f * i, 10);
+    }
+    for (int i = 0; i < 8; ++i) {
+        const float y = 464 - 12.0f * i - (i >= 4 ? 12.0f : 0.0f);
+        AddText(page, row("Left low line", i, 44), 72, y, 10);
+        AddText(page, row("Right low line", i, 44), 330, y, 10);
+    }
+    inset(page);
+    return Run(pages);
+}
+
+// A figure set into the gutter of two columns with its caption below it, the columns' text
+// wrapped around both: each column is read whole, the left one first, the figure's caption after
+// it. The wide lines right below the narrow ones bridge a column's line and the caption, two
+// sizes, which is no gutter they cross.
+void TestFigureInset() {
+    const std::string md = WrappedInsetPage([](PageData& page) {
+        ImageBox figure;
+        figure.x0 = 210, figure.x1 = 412, figure.y0 = 560, figure.y1 = 650;
+        page.images.push_back(figure);
+        const char* caption[] = {"Caption of the inset figure runs here and", "on over a second line and a third one",
+                                 "and a fourth one of the same small type", "set under the picture in the gutter of",
+                                 "both columns with the text wrapped all", "around it on its left and on its right",
+                                 "which ends the caption of the figure."};
+        for (int i = 0; i < 7; ++i) AddText(page, caption[i], 215, 546 - 10.0f * i, 8);
+    });
+    const size_t caption = Find(md, "Caption of the inset");
+    RAYOPDF_CHECK(Find(md, "Left narrow line 13") < Find(md, "Left low line 00") &&
+                      Find(md, "Left low line 07") < caption && caption < Find(md, "Right top line 00") &&
+                      Find(md, "Right narrow line 13") < Find(md, "Right low line 00") &&
+                      Find(md, "the caption of the figure.") != std::string::npos,
+                  1879);
+}
+
+// A pull quote in a larger size set into the gutter, the columns' text wrapped around it: each
+// column is read whole, the left one first, the quote after it.
+void TestPullQuoteInset() {
+    const std::string md = WrappedInsetPage([](PageData& page) {
+        AddText(page, "A pull quote set in the gutter", 205, 610, 14);
+        AddText(page, "of the columns in larger type", 205, 590, 14);
+    });
+    const size_t quote = Find(md, "A pull quote set");
+    RAYOPDF_CHECK(Find(md, "Left narrow line 13") < Find(md, "Left low line 00") &&
+                      Find(md, "Left low line 07") < quote && quote < Find(md, "Right top line 00") &&
+                      Find(md, "Right narrow line 13") < Find(md, "Right low line 00"),
+                  1891);
+}
+
 int main() {
     TestFolioHeader();
     TestLabelColumn();
@@ -999,6 +1065,8 @@ int main() {
     TestLargeFoot();
     TestBodySizeFoot();
     TestCaptionBesideColumn();
+    TestFigureInset();
+    TestPullQuoteInset();
     std::printf("test_layout_order: ok\n");
     return 0;
 }
