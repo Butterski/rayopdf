@@ -70,6 +70,16 @@ RAYOPDF_HOT_INLINE bool ReadShortNumber(const char*& p, PdfValue& value, double&
     return true;
 }
 
+// The bytes Syntax::ReadLiteralString looks at in a string: '\\', '(', ')' and '\r'.
+struct LiteralStops {
+    bool of[256] = {};
+    constexpr LiteralStops() {
+        of[static_cast<unsigned char>('\\')] = of[static_cast<unsigned char>('(')] = true;
+        of[static_cast<unsigned char>(')')] = of[static_cast<unsigned char>('\r')] = true;
+    }
+};
+constexpr LiteralStops kLiteralStops;
+
 // A name, a literal string or a hexadecimal string at the cursor (at '/', '(' or a '<' not
 // followed by '<'): Syntax::ParseValue's own case for them.
 bool ReadText(Cursor& c, Syntax::Builder& b, unsigned char ch, PdfValue& out) {
@@ -119,6 +129,20 @@ bool ContentLexer::ReadArray(Cursor& c, size_t numbersEnd, Syntax::Builder& b, P
                                   : ReadShortNumber(p, item, number);
             if (read) continue;
             items.pop_back();
+        }
+        if (ch == '(' && b.views) {
+            // A string whose first byte that needs a look is its closing ')' (most): read here,
+            // as ReadLiteralString reads it when the builder views the data.
+            const char* q = p + 1;
+            while (q < end && !kLiteralStops.of[static_cast<unsigned char>(*q)]) q++;
+            if (q < end && *q == ')' && static_cast<size_t>(q - p - 1) <= UINT32_MAX) {
+                PdfValue& item = items.emplace_back();
+                item.type = PdfValue::Type::String;
+                item.count = static_cast<uint32_t>(q - p - 1);
+                item.data = q > p + 1 ? p + 1 : nullptr;
+                p = q + 1;
+                continue;
+            }
         }
         c.pos = static_cast<size_t>(p - data);
         if (ch == '%') {
