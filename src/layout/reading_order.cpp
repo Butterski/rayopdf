@@ -769,14 +769,18 @@ struct Orderer {
     bool Wrapped(uint32_t f, const std::vector<uint32_t>& items, float size) const {
         const Line& lf = L(f);
         if (f < obstacleFrom && !RunningText(lf)) return false;
+        const float u0 = lf.u0, u1 = lf.u1, vb = lf.vb, vt = lf.vt;
         bool left = false, right = false;
         for (uint32_t g : items) {
+            // The cheap geometric tests first: most lines lie above or below f.
             const Line& lg = L(g);
-            if (g == f || lg.count == 0 || (lg.flags & (kLineAllMono | kLineFigure)) ||
-                std::fabs(lg.size - size) > 0.1f * size || lg.u1 - lg.u0 < 4 * lg.size || !(lg.vb < lf.vt && lf.vb < lg.vt))
+            if (!(lg.vb < vt && vb < lg.vt)) continue;
+            const bool isLeft = lg.u1 <= u0, isRight = lg.u0 >= u1;
+            if (!(isLeft || isRight) || g == f || lg.count == 0 || (lg.flags & (kLineAllMono | kLineFigure)) ||
+                std::fabs(lg.size - size) > 0.1f * size || lg.u1 - lg.u0 < 4 * lg.size)
                 continue;
-            left = left || lg.u1 <= lf.u0;
-            right = right || lg.u0 >= lf.u1;
+            left = left || isLeft;
+            right = right || isRight;
             if (left && right) return true;
         }
         return false;
