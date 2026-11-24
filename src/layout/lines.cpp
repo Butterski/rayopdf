@@ -1706,8 +1706,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         // holds only a marker while its reach is kMarkerGap.
         float reach = kFragmentGap;
         if (f.any) {
+            // A text of one byte is a marker only as "-" or "*" (ParseMarker's bullets; an
+            // enumerator has two bytes at least).
+            const std::string_view text = page.GlyphText(start);
             uint32_t value;
-            if (ParseMarker(page.GlyphText(start), value) != Marker::None) reach = kMarkerGap;
+            if (text.size() == 1 ? (text[0] == '-' || text[0] == '*') : ParseMarker(text, value) != Marker::None)
+                reach = kMarkerGap;
         }
         for (++k; k < visCount; ++k) {
             const Glyph& g = records[order[k]];
