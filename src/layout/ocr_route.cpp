@@ -100,10 +100,11 @@ struct AsciiClasses {
 constexpr AsciiClasses kAscii;
 
 // MeasurePage's count of Latin letters and their vowels, in one word: letters in the low 32 bits,
-// vowels in the high ones (kLetter, plus kVowel for a vowel).
+// vowels in the high ones (kLetter, plus kVowel for a vowel). Indexed by any byte: 0 from 0x80 on,
+// so an ASCII letter is found without testing the byte's range first.
 constexpr uint64_t kLetter = 1, kVowel = uint64_t(1) << 32;
 struct AsciiLetters {
-    uint64_t of[128];
+    uint64_t of[256];
     constexpr AsciiLetters() : of() {
         for (int c = 0; c < 128; ++c)
             of[c] = (kAscii.of[c] & kAsciiLetter) ? kLetter | ((kAscii.of[c] & kAsciiVowel) ? kVowel : 0) : 0;
@@ -120,7 +121,10 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
     // and their vowels are counted together (kLetter, kVowel), a word's as the count since its
     // start; a character is a letter or one of `others`; a counted glyph is visible unless
     // invisible.
-    uint32_t counted = 0, invisible = 0;
+    // Counted glyphs in the low 32 bits of `tally`, the invisible ones among them in the high: one
+    // addition a glyph (the invisible flag shifted up to bit 32).
+    static_assert(kGlyphInvisible == 1u << 3, "the shift moves kGlyphInvisible to bit 32");
+    uint64_t tally = 0;
     uint32_t others = 0, junk = 0, accented = 0, wordLetters = 0, wordVowels = 0;
     uint64_t letters = 0, wordStart = 0;
     const auto endWord = [&] {
@@ -144,15 +148,14 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
         if (length == 1) {
             // Most glyphs: one character, most of them ASCII.
             if (start >= textSize) continue;
-            counted++;
-            invisible += (flags & kGlyphInvisible) ? 1 : 0;
+            tally += 1 + (uint64_t(flags & kGlyphInvisible) << 29);
             const unsigned char c = base[start];
+            const uint64_t letter = kAsciiLetters.of[c];
+            if (letter != 0) {
+                letters += letter;
+                continue;
+            }
             if (c < 0x80) {
-                const uint64_t letter = kAsciiLetters.of[c];
-                if (letter != 0) {
-                    letters += letter;
-                    continue;
-                }
                 const uint8_t k = kAscii.of[c];
                 if (!(k & kAsciiSpace)) others++;
                 junk += (k & kAsciiJunk) ? 1 : 0;
@@ -161,8 +164,7 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
             }
         } else {
             if (length == 0 || start + length > textSize) continue;
-            counted++;
-            invisible += (flags & kGlyphInvisible) ? 1 : 0;
+            tally += 1 + (uint64_t(flags & kGlyphInvisible) << 29);
         }
         const unsigned char* p = base + start;
         const unsigned char* const end = p + length;
@@ -199,6 +201,7 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
     endWord();
     const uint32_t latin = static_cast<uint32_t>(letters);
     const uint32_t chars = latin + others;
+    const uint32_t counted = static_cast<uint32_t>(tally), invisible = static_cast<uint32_t>(tally >> 32);
     signals.visibleChars = counted - invisible;
     signals.invisibleChars = invisible;
     signals.chars = chars, signals.junk = junk, signals.latin = latin, signals.accented = accented;
