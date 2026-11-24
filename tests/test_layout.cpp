@@ -1611,6 +1611,21 @@ void TestAlertAndListings() {
     md = Run(dots);
     Show("dotted rule", md);
     RAYOPDF_CHECK(!Contains(md, "- ") && Contains(md, "number 0 here."), 728);
+    // Upright closing punctuation set after an italic glyph with TeX's italic correction
+    // (0.14 em) stays in the word; an italic word, a space and an upright word stay two words.
+    std::vector<PageData> ital{NewPage(1)};
+    float x = AddText(ital[0], "The genes ", 72, 700, 10);
+    x = AddText(ital[0], "Toc1", x, 700, 10, kGlyphItalic);
+    x = AddText(ital[0], "/", x + 1.4f, 700, 10);
+    x = AddText(ital[0], "Cca1", x, 700, 10, kGlyphItalic);
+    AddText(ital[0], " are expressed in the cells.", x + 1.4f, 700, 10);
+    x = AddText(ital[0], "Here the ", 72, 680, 10);
+    x = AddText(ital[0], "italic", x, 680, 10, kGlyphItalic);
+    AddText(ital[0], " word ends before more text.", x, 680, 10);
+    md = Run(ital);
+    Show("italic correction", md);
+    RAYOPDF_CHECK(Contains(md, "*Toc1/Cca1* are"), 1944);
+    RAYOPDF_CHECK(Contains(md, "*italic* word ends"), 1948);
 }
 
 void TestTitleBlockAndRtlStop() {

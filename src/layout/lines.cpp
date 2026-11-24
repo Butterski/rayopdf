@@ -2119,6 +2119,17 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
                     wordBreak = DroppedSpace(page, before, g, gap, em, previous, next, lineBegin, lineEnd, spaceFonts,
                                              spaceFontCount);
                 }
+                // TeX's italic correction (about 0.14 em) sets upright closing punctuation
+                // after an italic glyph apart: it stays in the word.
+                if (wordBreak && gap <= 0.25f * em) {
+                    const Glyph& before = glyphs[protoAt[protoCount - 1]];
+                    if ((before.flags & kGlyphItalic) && !(g.flags & kGlyphItalic) && g.textLength == 1) {
+                        const char c = page.GlyphText(g)[0];
+                        if (c == ')' || c == ']' || c == ',' || c == '.' || c == ';' || c == ':' || c == '/' ||
+                            c == '-')
+                            wordBreak = false;
+                    }
+                }
             }
             // A combining mark (two bytes at least) takes no space before it.
             if (wordBreak && !(g.textLength >= 2 && StartsWithCombiningMark(page.GlyphText(g))))
