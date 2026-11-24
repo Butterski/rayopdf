@@ -587,9 +587,9 @@ one fixed, published set of options, its declared profile, in `eval/profiles.jso
 |---|---|
 |odl|`--images=none --furniture=keep --plain --tables=html --quotes=ascii --small-caps=keep` (`--small-caps=keep` from 2026-11-17: its Markdown writes small-capitals headings in capitals, as printed)|
 |synthetic|none (the default)|
-|olmocr|`--plain --small-caps=keep` (`--plain` from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in; `--small-caps=keep` from 2026-11-17: they compare small-capitals titles as printed)|
-|olmocr-math|`--math=latex --plain --small-caps=keep`|
-|readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe-latex` (`--tables=pipe` until 2026-11-17: the evaluator reads the cells through LaTeX, where a bare `%` ends the row)|
+|olmocr|`--plain --small-caps=keep --figure-text=drop` (`--figure-text=drop` from 2026-11-24: headers_footers +0.0027, the other categories unchanged; `--plain` from 2026-11-16: the tests compare text with links, `<sup>`/`<sub>` tags and footnote references left in; `--small-caps=keep` from 2026-11-17: they compare small-capitals titles as printed)|
+|olmocr-math|`--math=latex --plain --small-caps=keep --figure-text=drop`|
+|readoc, readoc-dev, readoc-dev2, readoc-val|`--math=latex --tables=pipe-latex --figure-text=drop` (`--tables=pipe` until 2026-11-17: the evaluator reads the cells through LaTeX, where a bare `%` ends the row; `--figure-text=drop` from 2026-11-24: the ground truth comes from the LaTeX source, which never holds a figure's inner text)|
 |doclaynet-dev, doclaynet-val|`--format=json --images=none` (the scorer reads the blocks' boxes)|
 |omni-dev, omni-val|`--format=json --images=none --math=latex` (the adapter builds the HTML and the layout blocks from the blocks; the math tests compare LaTeX)|
 

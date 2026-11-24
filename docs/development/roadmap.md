@@ -236,11 +236,14 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   capitals in capitals, where READoc's sources write them in their case; `arxiv_math` and READoc
   arXiv write LaTeX), so each benchmark is measured with one fixed, published set of options, its
   declared profile in `eval/profiles.json`: odl `--images=none --furniture=keep --plain
-  --tables=html --quotes=ascii` (quotes from 2026-11-14), olmOCR `--plain --small-caps=keep` and
-  its `arxiv_math` (the `olmocr-math` suite) `--math=latex --plain --small-caps=keep` (`--plain`
-  from 2026-11-16, `--small-caps=keep` from 2026-11-17), READoc
-  `--math=latex --tables=pipe-latex` (its evaluator reads pipe tables only, their cells through
-  LaTeX; `--tables=pipe` until 2026-11-17), the others the default.
+  --tables=html --quotes=ascii` (quotes from 2026-11-14), olmOCR `--plain --small-caps=keep
+  --figure-text=drop` and its `arxiv_math` (the `olmocr-math` suite) `--math=latex --plain
+  --small-caps=keep --figure-text=drop` (`--plain` from 2026-11-16, `--small-caps=keep` from
+  2026-11-17, `--figure-text=drop` from 2026-11-24), READoc
+  `--math=latex --tables=pipe-latex --figure-text=drop` (its evaluator reads pipe tables only,
+  their cells through LaTeX; `--tables=pipe` until 2026-11-17; its ground truth comes from the
+  LaTeX source, which never holds a figure's inner text, where odl's does: `--figure-text=drop`
+  from 2026-11-24), the others the default.
   Version records show the default row beside the declared row where they differ; the quality
   gate measures the declared rows only, and no gated metric may fall more than 0.0001 below its
   best (AGENTS.md rule 7).
