@@ -116,6 +116,43 @@ void AddFragment(std::string_view t, uint32_t& codePoints, bool& hyphen) {
 // nor a word that has a hyphen of its own. The halves join without a space.
 bool CompoundBreak(bool upperNext, uint32_t codePoints, bool hyphen) { return upperNext || codePoints == 1 || hyphen; }
 
+// Whether the line that glyph `from` of `line` starts goes on in a function word and a hyphen
+// before a letter ("of-" of "state-" / "of-the-art", "to-" of "signal-" / "to-noise"): a compound
+// broken at its own hyphen, which stays. Hyphenation leaves no such fragment before a hyphen,
+// while other fragments may stand there ("sin-" / "gle-nucleotide", "Twen-" / "ty-two").
+bool FunctionWordCompound(const PageData& page, const Line& line, uint32_t from) {
+    static constexpr std::string_view kWords[] = {"of", "to", "and", "in", "on", "by", "for", "or", "the"};
+    char word[3];
+    uint32_t n = 0;
+    for (uint32_t k = from; k + 1 < line.count; ++k) {
+        const Glyph& g = page.glyphs[page.lineGlyphs[line.first + k]];
+        if (k > from && (g.flags & kGlyphSpaceBefore)) return false;
+        const std::string_view t = page.GlyphText(g);
+        if (t.size() != 1) return false;
+        if (t[0] == '-') {
+            const Glyph& after = page.glyphs[page.lineGlyphs[line.first + k + 1]];
+            const std::string_view a = page.GlyphText(after);
+            const unsigned char a0 = a.empty() ? 0 : static_cast<unsigned char>(a[0] | 0x20);
+            if ((after.flags & kGlyphSpaceBefore) || a0 < 'a' || a0 > 'z') return false;
+            for (const std::string_view w : kWords)
+                if (w == std::string_view(word, n)) return true;
+            return false;
+        }
+        if (t[0] < 'a' || t[0] > 'z' || n == 3) return false;
+        word[n++] = t[0];
+    }
+    return false;
+}
+
+// An en or em dash: TeX may break a line after one set without spaces ("291–" / "302",
+// "Hirzebruch–" / "Riemann"); the words on both sides join without a space, the dash between them.
+bool JoiningDash(std::string_view t) { return t == "\xE2\x80\x93" || t == "\xE2\x80\x94"; }
+
+// A letter or digit a joining dash stands between: ASCII, or Latin-1 and Latin Extended-A letters.
+bool DashNeighbour(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || (c >= 0xC3 && c <= 0xC5);
+}
+
 // CJK ideographs, kana, Hangul, CJK punctuation and fullwidth forms.
 bool IsCjk(uint32_t cp) {
     return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
@@ -635,12 +672,14 @@ void Writer::CollectWords(const Block& block) {
         joinNext = false;
         // Dehyphenation (algorithms §4.4): a hyphen ending a line, after a letter, before a line
         // that starts in lowercase, joins the halves of the word; a compound's hyphen
-        // (CompoundBreak) joins them and stays.
+        // (CompoundBreak, FunctionWordCompound) joins them and stays. A dash between a letter or
+        // digit and the next line's (JoiningDash) joins the words and stays.
         if (bl + 1 >= block.first + block.count || n == 0) continue;
         const uint32_t wordFirst = words_.back().first;
         if (n - wordFirst < 2) continue;
         const std::string_view last = Text(refs[n - 1]);
-        if (last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
+        const bool dash = JoiningDash(last);
+        if (!dash && last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
         const std::string_view before = Text(refs[n - 2]);
         const unsigned char b0 = before.empty() ? 0 : static_cast<unsigned char>(before[0]);
         const bool letterBefore = (b0 >= 'a' && b0 <= 'z') || (b0 >= 'A' && b0 <= 'Z') || b0 >= 0xC3;
@@ -650,6 +689,10 @@ void Writer::CollectWords(const Block& block) {
         if (nextRef.skip >= nextLine.count) continue;
         const std::string_view next = nextPage.GlyphText(nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]]);
         const unsigned char n0 = next.empty() ? 0 : static_cast<unsigned char>(next[0]);
+        if (dash) {
+            joinNext = DashNeighbour(b0) && DashNeighbour(n0);
+            continue;
+        }
         const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
         const bool upperNext = n0 >= 'A' && n0 <= 'Z';
         if (!letterBefore || !(lowerNext || (upperNext && last != "\xC2\xAD"))) {
@@ -663,6 +706,7 @@ void Writer::CollectWords(const Block& block) {
             bool hyphen = false;
             for (uint32_t i = wordFirst; i + 1 < n; ++i) AddFragment(Text(refs[i]), codePoints, hyphen);
             if (CompoundBreak(upperNext, codePoints, hyphen) ||
+                FunctionWordCompound(nextPage, nextLine, nextRef.skip) ||
                 (ref.skip < line.count && KnownCompound(page, line, line.count - 1, nextPage, nextLine, nextRef.skip)))
                 continue;
         }
@@ -1399,7 +1443,8 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         if (wrote) last = page.GlyphText(page.glyphs[page.lineGlyphs[line.first + line.count - 1]]);
         // Dehyphenation, as CollectWords does it.
         if (bl + 1 >= blockEnd || !any || wordCount < 2) continue;
-        if (last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
+        const bool dash = JoiningDash(last);
+        if (!dash && last != "-" && last != "\xC2\xAD" && last != "\xE2\x80\x90") continue;
         if (!wrote) return abandon();
         // The glyph written before the hyphen: in this line past the soft hyphens left out, or the
         // one before the line (the word has both, so both are its glyphs).
@@ -1419,6 +1464,10 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
         if (nextRef.skip >= nextLine.count) continue;
         const std::string_view next = nextPage.GlyphText(nextPage.glyphs[nextPage.lineGlyphs[nextLine.first + nextRef.skip]]);
         const unsigned char n0 = next.empty() ? 0 : static_cast<unsigned char>(next[0]);
+        if (dash) {
+            joinNext = DashNeighbour(b0) && DashNeighbour(n0);
+            continue;
+        }
         const bool lowerNext = (n0 >= 'a' && n0 <= 'z') || n0 == 0xC3 || n0 == 0xC4 || n0 == 0xC5;
         const bool upperNext = n0 >= 'A' && n0 <= 'Z';
         const bool hard = last != "\xC2\xAD";
@@ -1427,6 +1476,7 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
             bool hyphen = false;
             AddFragment(std::string_view(out_).substr(wordAt, out_.size() - wordAt - last.size()), codePoints, hyphen);
             if (CompoundBreak(upperNext, codePoints, hyphen) ||
+                FunctionWordCompound(nextPage, nextLine, nextRef.skip) ||
                 KnownCompound(page, line, line.count - 1, nextPage, nextLine, nextRef.skip)) {
                 joinNext = true;
                 continue;

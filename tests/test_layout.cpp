@@ -294,6 +294,29 @@ void TestHyphenBreaks() {
     RAYOPDF_CHECK(Contains(md, "a single object. Examples of this"), 2592);
 }
 
+// A dash ending a line right after a letter or digit joins the next line's word without a space
+// ("291–" / "302", "Hirzebruch–" / "Riemann"); a dash set apart by a space keeps the space. A
+// hyphen ending a line before a function word and a hyphen stays ("state-" / "of-the-art"): no
+// hyphenation leaves "of" before a hyphen. Another fragment there is a word broken in two
+// ("sin-" / "gle-cell"). The same with an italic word in the paragraph (the writer's full path).
+void TestLineEndJoins() {
+    for (int styled = 0; styled < 2; ++styled) {
+        std::vector<PageData> pages{NewPage(1)};
+        const float x = styled ? AddText(pages[0], "Note: ", 72, 700, 10, kGlyphItalic) : 72;
+        AddText(pages[0], "the bound of Hirzebruch\xE2\x80\x93", x, 700, 10);
+        AddText(pages[0], "Riemann\xE2\x80\x93Roch holds on pages 291\xE2\x80\x93", 72, 688, 10);
+        AddText(pages[0], "302 and the state-", 72, 676, 10);
+        AddText(pages[0], "of-the-art signal ratio is high \xE2\x80\x93", 72, 664, 10);
+        AddText(pages[0], "as expected in the sin-", 72, 652, 10);
+        AddText(pages[0], "gle-cell case.", 72, 640, 10);
+        const std::string md = Run(pages);
+        Show(styled ? "line-end joins, styled" : "line-end joins", md);
+        RAYOPDF_CHECK(Contains(md, "Hirzebruch\xE2\x80\x93Riemann\xE2\x80\x93Roch holds on pages 291\xE2\x80\x93" "302 and the "
+                                   "state-of-the-art signal ratio is high \xE2\x80\x93 as expected in the single-cell case."),
+                      2590 + styled);
+    }
+}
+
 // A soft hyphen right after a word break (a typesetter's hyphenation point at a word's start) is
 // invisible inside a line, but the word break before it stays: "these ­distributions" is two
 // words, mid-line or at a line's start.
@@ -2259,6 +2282,7 @@ int main() {
     TestRunningHeaders();
     TestDehyphenation();
     TestHyphenBreaks();
+    TestLineEndJoins();
     TestSoftHyphenWordBreak();
     TestCodeBlock();
     TestDuplicateBold();
