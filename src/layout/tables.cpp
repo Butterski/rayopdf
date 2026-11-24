@@ -615,6 +615,9 @@ struct TableScratch {
     std::vector<uint32_t> pageRowWords;
     std::vector<float> sizes, spaces, lefts, rights, centres, pitches;
     std::vector<uint8_t> split, label;
+    // Borderless: per row of pageRows, its widest gap before a word and whether it holds code.
+    std::vector<float> rowGaps;
+    std::vector<uint8_t> rowGapped, rowCode;
     std::vector<Gap> gaps, trial, narrowed;
     Ink ink, grown;
     std::vector<WordChars> chars;  // per word of words; the page's entries bear its charsPage
@@ -4334,30 +4337,47 @@ void Detector::MarkUsed(const Grid& g) {
 // Confidence comes from Camelot-style stream evidence (algorithms §6.7): several rows, filled cells,
 // column edges aligned left, right or centred, numeric cells, an even row pitch.
 void Detector::Borderless(float gapFactor) {
-    // The rows of all words left: the second pass reuses the first's while no grid took words.
+    // The rows of all words left: the second pass reuses the first's while no grid took words, with
+    // each row's widest gap between a word and the ink before it (`rowGapped` when it has one that
+    // is no NaN) and whether it holds code.
+    std::vector<float>& rowGaps = scratch_.rowGaps;
+    std::vector<uint8_t>& rowGapped = scratch_.rowGapped;
+    std::vector<uint8_t>& rowCode = scratch_.rowCode;
     if (pageRowsMarks_ != marks_) {
         BuildRows(-INFINITY, INFINITY, -INFINITY, INFINITY, pageRows_, pageRowWords_);
         pageRowsMarks_ = marks_;
+        rowGaps.resize(pageRows_.size());
+        rowGapped.resize(pageRows_.size());
+        rowCode.resize(pageRows_.size());
+        const TWord* const words = words_.data();
+        const uint32_t* const order = pageRowWords_.data();
+        for (size_t r = 0; r < pageRows_.size(); ++r) {
+            const uint32_t first = pageRows_[r].first, end = first + pageRows_[r].count;
+            bool mono = false, gapped = false;
+            float right = -INFINITY, widest = -INFINITY;
+            for (uint32_t k = first; k < end; ++k) {
+                const TWord& w = words[order[k]];
+                mono = mono || w.mono;
+                if (right > -INFINITY) {
+                    const float gap = w.x0 - right;
+                    if (gap == gap) gapped = true, widest = gap > widest ? gap : widest;
+                }
+                right = Fmax(right, w.x1);
+            }
+            rowGaps[r] = widest;
+            rowGapped[r] = gapped;
+            rowCode[r] = mono;
+        }
     }
     const std::vector<Row>& rows = pageRows_;
     const std::vector<uint32_t>& rowWords = pageRowWords_;
     if (rows.size() < 3 || rows.size() > 4000) return;
     // Rows that split at a column gap (gapFactor ems: wider than any word space) and hold no code
-    // are candidates.
+    // are candidates: a row has a gap that wide when its widest is.
     std::vector<uint8_t>& split = scratch_.split;
     split.assign(rows.size(), 0);
-    for (size_t r = 0; r < rows.size(); ++r) {
-        int segments = 1;
-        bool mono = false;
-        float right = -INFINITY;
-        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count; ++k) {
-            const TWord& w = words_[rowWords[k]];
-            mono = mono || w.mono;
-            if (right > -INFINITY && w.x0 - right >= gapFactor * rows[r].size) segments++;
-            right = Fmax(right, w.x1);
-        }
-        split[r] = segments >= 2 && !mono;
-    }
+    for (size_t r = 0; r < rows.size(); ++r)
+        split[r] = rowGapped[r] && !rowCode[r] && rowGaps[r] >= gapFactor * rows[r].size;
     std::vector<Gap>& gaps = scratch_.gaps;
     std::vector<Gap>& trial = scratch_.trial;
     std::string scratch, cellText;
