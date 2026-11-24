@@ -49,7 +49,7 @@ struct Box {
     bool Empty() const { return !(x1 > x0) || !(y1 > y0); }
 };
 
-Box Intersect(const Box& a, const Box& b) {
+RAYOPDF_HOT_INLINE Box Intersect(const Box& a, const Box& b) {
     Box r;
     r.x0 = Fmax(a.x0, b.x0);
     r.y0 = Fmax(a.y0, b.y0);
