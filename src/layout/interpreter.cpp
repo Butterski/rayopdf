@@ -407,7 +407,7 @@ private:
     void Paint(bool fill, bool stroke);
     template <int kCount>
     RAYOPDF_HOT_INLINE void PathPoints(const double* xy, bool curve);
-    void AddPiece(double x0, double y0, double x1, double y1, bool rect);
+    RAYOPDF_HOT_INLINE void AddPiece(double x0, double y0, double x1, double y1, bool rect);
     RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources, std::string_view data);
     void PaintedSample(const PdfValue& dictionary, std::string_view data);
     void ReadLinks(int index);
