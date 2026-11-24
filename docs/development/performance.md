@@ -1766,6 +1766,70 @@ a group):
 - The content lexer's fraction digits read two a step: odl +0.392 %, heavy10 +0.960 %.
 - `Multiply` (matrices) inlined: heavy10 -0.063 %, odl -0.006 %, `multi_column` +0.010 %.
 
+## Twenty-third round: the accents' glyph list, the table detector's rows and cells, font classes (2026-11-24)
+
+From the twentieth round's base `6698987` to master `e8d8371` the LaTeX path and the table detector
+grew: `c59243c` (row neighbours in `--math=latex`) raised `arxiv_math` by 0.07 %, the landings up to
+`a64be6a` (stray accents seated over their glyph, a spacing accent no word break in `FactsOf`,
+header labels centred over narrow columns) by 0.22 %, and `tables` by 0.13 %. Callgrind of both
+(Release with `-g`, linked with gold; `--batch --workers=1`, images off; `arxiv_math` with
+`--math=latex`) over `arxiv_math`, `tables` and `multi_column`: `math.cpp` self +6.2 M on
+`arxiv_math` (`MarkDisplayFormulas` with `FactsOf` +2.6 M, the spacing-accent test's `AccentOf`
++0.3 M more; `Builder::Row`, both depths, +2.5 M: the raised first glyph and the other operators'
+limits; `Builder::Expr` +0.35 M, `ResolveAtom` +0.2 M); `tables.cpp` +0.76 M on `tables` and
++0.32 M on `multi_column`, nearly all `TextGrid`'s centred-label tests (now out of line). The
+costliest code of the two files at `e8d8371`, self, in percent of the group under callgrind:
+`arxiv_math` (5,274 M) `FindInlineFormulas` 1.63 %, `PrepareMathGlyphs` 1.52 % (its main pass
+about 33 M, the list of the glyphs an accent may sit on 17.5 M, that list's unsorted walks 21.3 M),
+`MarkDisplayFormulas` 1.44 % (`FactsOf` 53.7 M of its 76.1 M), `Builder::Row` 1.79 % with both
+depths (no line above 4 M), `ResolveAtom` 0.97 %; `tables` (1,020 M) `Detector::Commit` 1.42 %
+(the glyph-to-cell loop with `Locator::Find` about 9 M), `Run` 0.99 % (`CollectWords` and
+`SortWords` inlined), `BuildRows` 0.93 %, `Chars` 0.44 %, `TextGrid` 0.29 %, `SplitHeaderLevels`
+0.03 %; `multi_column` (1,638 M) `BuildRows` 1.14 %, `Run` 1.05 % (`SortWords`' insertion sort
+10.1 M, `CollectWords` 6.4 M), `AddInk` 0.50 %, `Borderless` 0.46 % (3.7 M its split test);
+odl (773 M) `BuildRows` 0.81 %, `Run` 0.75 %, `Commit` 0.38 %, `Borderless` 0.32 %, and
+`MathFontByte` 0.13 % inclusive (every font of every page classed by name in every mode). Every
+step is byte-identical (`bench.py identical` against the step before over the synthetic corpus,
+odl, olmOCR-Bench with `arxiv_math`, READoc dev and dev2, OmniParseBench's PDF pages and 1,000
+SafeDocs documents (`0000.zip`), 5,886 documents, with `--images=none` alone and with
+`--math=latex`, `--format=json`, `--plain`, `--tables=html`, `--tables=pipe-latex` and
+`--math=latex --format=json` beside it: 41,202 comparisons a step, 0 differ); instruction counts
+only, no times:
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(math): PrepareMathGlyphs walks the accents' glyph list four reaches a test, sorted after 64 accents`|The glyphs an accent may sit on listed as three arrays (the left and right ends of their reach, their glyph) written by index; without the sorted list an accent's walk tests four reaches at a time with SSE2 and calls the distance test only for those that hold its centre; the list sorted after 64 accents instead of 16|`arxiv_math` -0.365 %, the rest within 0.002 %|
+|`perf(tables): Locator keeps the bounds of the cell it found, and tests a point against them alone`|The x range of the last column and the y range of the last row found (NaN where the boundaries are out of order): a point inside them by two comparisons, instead of the order flag, the index, two boundary loads and the last-boundary test|`tables` -0.174 %, SafeDocs -0.103 %, heavy10 -0.047 %, `multi_column` -0.046 %, syn6 -0.038 %, odl -0.035 %, `arxiv_math` -0.005 %|
+|`perf(tables): Commit fills glyphs outside cells only when a line has them, and appends a cell line's glyphs through pointers`|A line whose glyphs all fall in a cell skips the two neighbour-fill passes; a piece's glyphs appended through pointers into arrays grown once, its box and faces in locals|`tables` -0.158 %, SafeDocs -0.055 %, odl -0.054 %, heavy10 -0.037 %, syn6 -0.029 %, `multi_column` -0.013 %, `arxiv_math` -0.001 %|
+|`perf(tables): BuildRows builds the open row in a local and reads the words through pointers`|The row a word joins was `rows.back()`, loaded and stored for each word: a local, stored when the next row opens|`multi_column` -0.221 %, `tables` -0.183 %, odl -0.151 %, SafeDocs -0.117 %, syn6 -0.104 %, `arxiv_math` -0.095 %, heavy10 -0.064 %|
+|`perf(tables): Borderless tests each row against its widest gap, found once for both passes`|A row splits at a column gap when its widest gap between a word and the ink before it is that wide (NaN gaps passed over); the widest gap and the code flag found when the page's rows are built, so the second pass compares one value a row|syn6 -0.122 %, odl -0.083 %, `multi_column` -0.067 %, `arxiv_math` -0.051 %, SafeDocs -0.036 %, `tables` -0.032 %, heavy10 -0.021 %|
+|`perf(math): MathFontOf lowercases a font's name once and finds its parts in one pass`|The name lowercased into a buffer; a name whose first byte starts none of the 43 prefixes skips them, a prefix with another first byte is passed over before it is compared; "math", "mathitalic" and "doublestruck" found in one scan|syn6 -0.071 %, odl -0.060 %, SafeDocs -0.059 %, `multi_column` -0.054 %, `tables` -0.051 %, heavy10 -0.023 %, `arxiv_math` -0.017 %|
+|`perf(tables): AddInk merges a row's words into the ink through pointers`|The merged spans written through a pointer into room for both lists, the old spans and the row's words read through pointers taken once, the proper flag in a local (each `push_back` stored the vector's end, which may alias the old list's bounds)|`multi_column` -0.134 %, odl -0.062 %, `tables` -0.048 %, `arxiv_math` -0.030 %, SafeDocs -0.024 %, heavy10 -0.016 %, syn6 -0.001 %|
+
+Against `e8d8371`: odl -0.445 % (762.43 M), heavy10 -0.206 %, syn6 -0.366 %, SafeDocs -0.391 %,
+`multi_column` -0.535 %, `tables` -0.643 %, `arxiv_math` -0.559 % (5,190.02 M); against
+`6698987` `arxiv_math` -1.043 % and `tables` -3.542 % (with the twenty-first and twenty-second
+rounds). Callgrind of the round's `PrepareMathGlyphs` on `arxiv_math`: 64.2 M, the list 21.9 M
+(three arrays), its walks 5.6 M. Tried and rejected (2026-11-24, `instr.sh` against the step before;
+the bar is 0.05 % of odl or 0.1 % of a group, 0.2 % of `arxiv_math`):
+
+- The accents' reaches pushed back into three vectors instead of written by index: `arxiv_math`
+  +0.619 % (`emplace_back` left out of line, 39 M). The sorted list's threshold with the SSE2 walk:
+  after 8 accents +0.203 %, 32 -0.058 %, 64 -0.103 % (kept), 128 -0.112 % against 16.
+- The reaches and the accents listed in `PrepareMathGlyphs`' main pass, without a pass of their
+  own (most of the group's glyphs are on pages with an accent): `arxiv_math` +0.200 %.
+- `SortWords` as a merge of the runs each strictly in order, two by two, instead of the bounded
+  insertion sort: `multi_column` +0.071 %, `tables` +0.025 %, odl -0.019 % (many short runs, few
+  moves).
+- `BuildRows` joining a word on the open row's baseline without `Fmax` when a size is above 0:
+  odl +0.011 %, `multi_column` +0.026 %; each word's centre computed once a page into an array:
+  odl -0.012 %, `multi_column` -0.028 %, `tables` -0.021 %.
+- `Chars` counting a word's bytes in locals, stored once: `tables` +0.157 %, odl +0.041 %.
+- Not attempted: `FactsOf`'s counts in locals and `FindInlineFormulas`' per-word flags from its
+  first pass (both rejected in the seventeenth round); `Builder::Row` (no line above 4 M);
+  `MarkDisplayFormulas`' growth rounds over every line (a line's join depends on the box grown
+  before it in the same round, so a line cannot be passed over without that box).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1783,11 +1847,15 @@ a group):
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
   items' LaTeX). After the seventeenth round (self costs in percent of `arxiv_math`):
   `Builder::Row` 2.45 % (spread over its passes: no line above 4 M), `PrepareMathGlyphs` 2.30 %
-  (the main pass about 33 M, the accents' list about 17 M and its unsorted walks 20.7 M: see that
-  round's Tried and rejected), `MarkDisplayFormulas` 2.13 %, `FindInlineFormulas` 2.11 %,
+  (after the twenty-third round 64.2 M: the main pass about 33 M, the accents' list 21.9 M, its
+  walks 5.6 M), `MarkDisplayFormulas` 2.13 %, `FindInlineFormulas` 2.11 %,
   `ResolveAtom` 1.12 %, `std::vector<Item>` growth 0.50 % with `ItemOf`'s copies of the atoms'
   LaTeX 9.8 M; inclusive, `BuildLatex` 7.71 %, `Builder::Expr` 5.66 %, `Builder::Layout` 4.47 %.
   `math.cpp` has had its unit budget raised (sixteenth round).
+- **The table detector:** after the twenty-third round `BuildRows` (about 0.8 % of odl, 1.1 % of
+  `multi_column`: each band's words walked from its top, those outside its x range passed over
+  one by one), `SortWords`' insertion sort (10 M on `multi_column`), `CollectWords`' word records
+  and spaces.
 - **Blocks:** after the sixteenth round, `BuildBlocks`' tests spread over many loops (card titles,
   the OCR layer's headings, `Continues`, `NoTitle`); none holds 0.15 % of a group.
 - **The compound lexicon:** after the eighteenth round 0.22 % of `multi_column` and 0.09 % of odl
