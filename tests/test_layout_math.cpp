@@ -503,6 +503,9 @@ void TestInline() {
     // Numbers around ± stay text: "0.85 ± 0.06" is 0.85 $\pm$ 0.06.
     run = Runs("at 0.85 \xC2\xB1 0.06 here", "", store);
     RAYOPDF_CHECK(run[2] == 0 && run[6] == 7 && run[7] == 0, 2368);
+    // A check mark of AMS's symbol font is text, as the sources' tables write it.
+    run = Runs("yes \xE2\x9C\x93", "...m", store);
+    RAYOPDF_CHECK(run[3] == 0, 2369);
 }
 
 // A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the

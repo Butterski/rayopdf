@@ -2886,10 +2886,12 @@ RAYOPDF_HOT_INLINE void AppendText(std::string& out, std::string_view t) {
         out.append(t.data(), t.size());
 }
 
-// Symbols of math fonts that text uses too: footnote and section marks, bullets.
+// Symbols of math fonts that text uses too: footnote and section marks, bullets, check and
+// cross marks (a table's ✓ is \checkmark of AMS's font but text in the source).
 bool IsTextMark(uint32_t cp) {
     return cp == 0x2020 || cp == 0x2021 || cp == 0xA7 || cp == 0xB6 || cp == 0x2022 || cp == 0xA9 || cp == 0x25E6 ||
-           cp == 0x2023 || cp == 0x2219 || cp == 0x25A1 || cp == 0x2610 || cp == 0x2611 || cp == 0x2612;
+           cp == 0x2023 || cp == 0x2219 || cp == 0x25A1 || cp == 0x2610 || cp == 0x2611 || cp == 0x2612 ||
+           (cp >= 0x2713 && cp <= 0x2718);
 }
 
 RAYOPDF_HOT_INLINE bool IsLetterCp(uint32_t cp) {
@@ -2918,8 +2920,9 @@ RAYOPDF_HOT_INLINE uint8_t ClassOf(uint8_t font, uint16_t flags, std::string_vie
 uint8_t ClassOfOther(uint8_t font, uint16_t flags, std::string_view text, bool alone) {
     const uint32_t cp = MathCharacter(FirstCp(text), MathFont::None, false);  // ∆ is Δ, µ is μ
     if (cp == 0) return kClassText;
-    // Footnote marks are text in any font; bullets and the like only in text fonts.
-    if (IsTextMark(cp) && (font == static_cast<uint8_t>(MathFont::None) || cp == 0x2020 || cp == 0x2021 || cp == 0xA7 || cp == 0xB6))
+    // Footnote, check and cross marks are text in any font; bullets and the like only in text fonts.
+    if (IsTextMark(cp) && (font == static_cast<uint8_t>(MathFont::None) || cp == 0x2020 || cp == 0x2021 || cp == 0xA7 ||
+                           cp == 0xB6 || cp >= 0x2713))
         return kClassText;
     uint32_t base = 0;
     Alphabet alphabet = kAlphaNone;
