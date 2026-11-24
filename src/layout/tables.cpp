@@ -1057,15 +1057,22 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
     // rowWords is written by index, grown to the words from yhi to the end.
     const size_t start = static_cast<size_t>(it - words_.begin());
     if (rowWords.size() < words_.size() - start) rowWords.resize(words_.size() - start);
+    // The open row is built in a local and stored when the next one opens: the loop reads the words
+    // and their flags through pointers, and nothing it stores aliases them.
+    uint32_t* const out = rowWords.data();
+    const TWord* const words = words_.data();
+    const uint8_t* const used = wordUsed_.data();
+    const size_t n = words_.size();
     size_t count = 0;
-    for (size_t i = start; i < words_.size(); ++i) {
-        const TWord& w = words_[i];
+    Row r;
+    bool open = false;
+    for (size_t i = start; i < n; ++i) {
+        const TWord& w = words[i];
         if (w.base < ylo) break;
-        if (wordUsed_[i]) continue;
+        if (used[i]) continue;
         const float cx = (w.x0 + w.x1) / 2;
         if (cx < xa || cx > xb) continue;
-        if (!rows.empty() && rows.back().base - w.base <= 0.35f * Fmax(rows.back().size, w.size)) {
-            Row& r = rows.back();
+        if (open && r.base - w.base <= 0.35f * Fmax(r.size, w.size)) {
             r.count++;
             // Word boxes are never NaN: plain comparisons give what Fmin and Fmax would.
             r.top = r.top > w.y1 ? r.top : w.y1, r.bottom = r.bottom < w.y0 ? r.bottom : w.y0;
@@ -1078,17 +1085,18 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
                 r.proseGlyphs = w.k1 - w.k0;
             }
         } else {
-            Row r;
+            if (open) rows.push_back(r);
+            open = true;
             r.first = static_cast<uint32_t>(count);
             r.count = 1;
             r.base = w.base, r.top = w.y1, r.bottom = w.y0, r.x0 = w.x0, r.x1 = w.x1, r.size = w.size;
             r.mono = w.mono ? 1 : 0;
             r.prose = w.mono ? 0 : w.size;
             r.proseGlyphs = w.mono ? 0 : w.k1 - w.k0;
-            rows.push_back(r);
         }
-        rowWords[count++] = static_cast<uint32_t>(i);
+        out[count++] = static_cast<uint32_t>(i);
     }
+    if (open) rows.push_back(r);
     // Words of a row left to right (rows may gather words of several lines). Words already strictly
     // left to right are in the only order std::sort can leave them.
     for (const Row& r : rows) {
