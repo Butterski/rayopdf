@@ -11,6 +11,10 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
+
 namespace RayoPdf::Layout {
 namespace {
 
@@ -2531,6 +2535,21 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
     }
 }
 
+namespace {
+
+// The index of the lowest set bit of m (m != 0).
+int LowestBit(unsigned m) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctz(m);
+#else
+    int n = 0;
+    for (; !(m & 1); m >>= 1) n++;
+    return n;
+#endif
+}
+
+} // namespace
+
 void PrepareMathGlyphs(PageData& page) {
     // Math font glyphs without text whose code TeX's encodings know get its symbol as their text,
     // and so do mathabx glyphs whose text is nothing, a guess, or their code's Cork character,
@@ -2684,15 +2703,19 @@ void PrepareMathGlyphs(PageData& page) {
     const size_t n = page.glyphs.size();
     // The glyphs an accent may sit on: visible text glyphs of direction 0 whose text starts with no
     // accent. Nothing below changes which glyphs they are or their boxes (only accents move), so
-    // they are listed once, when the first accent needs them, and after 16 accents sorted by the
-    // left end of their reach, with the furthest right end up to each. With every box finite the
-    // glyph under an accent is the nearest by `d`, the first of equal ones, in any order; otherwise
-    // all glyphs are walked in order as they always were.
+    // they are listed once, when the first accent needs them, as the left and right ends of their
+    // reach and their glyph in three arrays (walked four reaches a test with SSE2), and after 64
+    // accents copied and sorted by the left end of their reach, with the furthest right end up to
+    // each. With every box finite the glyph under an accent is the nearest by `d`, the first of
+    // equal ones, in any order; otherwise all glyphs are walked in order as they always were.
     struct Reach {
         float lo, hi;  // the glyph's reach: u0 - 0.1 size to u1 + 0.1 size
         uint32_t glyph;
     };
-    std::vector<Reach> reach;
+    std::vector<float> reachLo, reachUp;  // sized once for every glyph, written by index
+    std::vector<uint32_t> reachGlyph;
+    size_t reaches = 0;
+    std::vector<Reach> reach;  // sorted
     std::vector<float> reachHi;
     bool listed = false, finite = true, sorted = false;
     uint32_t accents = 0;
@@ -2708,6 +2731,7 @@ void PrepareMathGlyphs(PageData& page) {
         budget -= n;
         if (!listed) {
             listed = true;
+            reachLo.resize(n), reachUp.resize(n), reachGlyph.resize(n);
             for (size_t k = 0; k < n; ++k) {
                 const Glyph& b = page.glyphs[k];
                 if (b.dir != 0 || b.textLength == 0 || (b.flags & (kGlyphInvisible | kGlyphSpace))) continue;
@@ -2717,12 +2741,16 @@ void PrepareMathGlyphs(PageData& page) {
                 if (lead < 0x80 ? lead == '^' || lead == '~' : Utf8::Decode(bt, 0, bcp, length) && !AccentOf(bcp).empty())
                     continue;
                 finite = finite && Finite4(b.u0, b.u1, b.v, b.size);
-                reach.push_back(Reach{b.u0 - 0.1f * b.size, b.u1 + 0.1f * b.size, static_cast<uint32_t>(k)});
+                reachLo[reaches] = b.u0 - 0.1f * b.size;
+                reachUp[reaches] = b.u1 + 0.1f * b.size;
+                reachGlyph[reaches++] = static_cast<uint32_t>(k);
             }
         }
         // Many accents: the list sorted once pays for itself.
-        if (finite && !sorted && ++accents > 16) {
+        if (finite && !sorted && ++accents > 64) {
             sorted = true;
+            reach.resize(reaches);
+            for (size_t r = 0; r < reach.size(); ++r) reach[r] = Reach{reachLo[r], reachUp[r], reachGlyph[r]};
             std::sort(reach.begin(), reach.end(), [](const Reach& x, const Reach& y) { return x.lo < y.lo; });
             reachHi.resize(reach.size());
             float hi = -INFINITY;
@@ -2735,20 +2763,40 @@ void PrepareMathGlyphs(PageData& page) {
         float best = INFINITY;
         size_t under = n;
         if (finite) {
-            const auto consider = [&](const Reach& r) {
-                if (cx < r.lo || cx > r.hi || r.glyph == i) return;
-                const Glyph& b = page.glyphs[r.glyph];
+            // A glyph whose reach holds cx.
+            const auto consider = [&](uint32_t glyph) {
+                if (glyph == i) return;
+                const Glyph& b = page.glyphs[glyph];
                 const float d = a.v - b.v;
                 if (d < -0.05f * b.size || d > 1.0f * b.size) return;
-                if (d < best || (d == best && r.glyph < under)) best = d, under = r.glyph;
+                if (d < best || (d == best && glyph < under)) best = d, under = glyph;
             };
             if (!sorted || cx != cx) {
-                for (const Reach& r : reach) consider(r);
+                const size_t count = reaches;
+                const float* lo = reachLo.data();
+                const float* up = reachUp.data();
+                size_t k = 0;
+#if defined(__SSE2__)
+                // cmplt and cmpgt are false with a NaN, as the scalar tests are.
+                const __m128 x = _mm_set1_ps(cx);
+                for (; k + 8 <= count; k += 8) {
+                    const __m128 out0 = _mm_or_ps(_mm_cmplt_ps(x, _mm_loadu_ps(lo + k)), _mm_cmpgt_ps(x, _mm_loadu_ps(up + k)));
+                    const __m128 out1 =
+                        _mm_or_ps(_mm_cmplt_ps(x, _mm_loadu_ps(lo + k + 4)), _mm_cmpgt_ps(x, _mm_loadu_ps(up + k + 4)));
+                    unsigned in = ~static_cast<unsigned>(_mm_movemask_ps(out0) | _mm_movemask_ps(out1) << 4) & 0xFFu;
+                    for (; in != 0; in &= in - 1) consider(reachGlyph[k + static_cast<size_t>(LowestBit(in))]);
+                }
+#endif
+                for (; k < count; ++k)
+                    if (!(cx < lo[k] || cx > up[k])) consider(reachGlyph[k]);
             } else {
                 // Glyphs whose reach starts left of cx, back to where none reaches it any more.
                 size_t end = std::upper_bound(reach.begin(), reach.end(), cx, [](float x, const Reach& r) { return x < r.lo; }) -
                              reach.begin();
-                while (end > 0 && !(reachHi[end - 1] < cx)) consider(reach[--end]);
+                while (end > 0 && !(reachHi[end - 1] < cx)) {
+                    const Reach& r = reach[--end];
+                    if (!(cx < r.lo || cx > r.hi)) consider(r.glyph);
+                }
             }
         } else {
             for (size_t k = 0; k < n; ++k) {
