@@ -7,7 +7,7 @@
 **PDF to Markdown in about a millisecond a page, from a single small executable.**<br>
 No Python. No JVM. No models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
-<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.4.0" src="https://img.shields.io/badge/version-0.4.0-informational?style=for-the-badge"></a>
+<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational?style=for-the-badge"></a>
 <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=for-the-badge"></a>
 
 <a href="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml/badge.svg"></a>
@@ -23,7 +23,7 @@ No Python. No JVM. No models to download. The reverse of [RayoMD](https://github
 </div>
 
 > [!TIP]
-> **0.4.0** adds `--tables=pipe` (every table as a GitHub pipe table) and `--quotes=ascii`, the first small model in the core (trees trained on DocLayNet that take running heads and footers the rules keep), table rules for HTML and ConTeXt layouts, row labels and fraction bars, and a formula tree in LaTeX mode: opendataloader-bench 0.936 → 0.941 with the benchmark's own conventions (kordoc: 0.939), READoc arXiv tables 0.618 → 0.636 with READoc's. Archives for Linux and Windows below. Every item of the release bar holds except tables on arXiv papers (READoc 0.636 against docling's 0.656), which is named as open.
+> **0.5.0** adds `--figure-text=drop` (a figure's own text left out), `--small-caps=keep` and `--tables=pipe-latex` for benchmark conventions, a LaTeX mode that reads formulas by their fonts' codes and spells them as arXiv sources do, and table, heading, list, footnote and furniture rules: opendataloader-bench 0.941 → 0.944 with its conventions (kordoc: 0.939), READoc arXiv tables 0.636 → 0.730 with READoc's (docling: 0.656), olmOCR arXiv math 0.721 → 0.860, on 4 % fewer instructions. Archives for Linux and Windows below. Every item of the release bar holds.
 
 RayoPDF reads a PDF and writes GitHub Flavored Markdown, in its own C++17 code: a small
 command-line tool for Linux and Windows that starts, converts and exits in the time other tools
@@ -32,16 +32,15 @@ PDFs from Markdown.
 
 ## Status
 
-Version 0.4.0: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
+Version 0.5.0: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
 block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
 included, or to JSON (`--format=json`), chunks for retrieval (`--format=chunks`) or an HTML
 layout inspector (`--format=inspect`); tagged PDFs are read through their structure tree.
 Scanned pages, text inside images and tables drawn as images are read by the optional OCR add-on;
 math is written as Unicode text, or as LaTeX with `--math=latex`. A C++ API, a C ABI, Python
 wheels and an npm package (WebAssembly) embed the converter; a container image runs it. Every item
-of the [release bar](docs/development/roadmap.md#goal-and-release-bar) holds except one, released
-as open: table structure on arXiv papers (READoc `table_teds` 0.636 against docling's 0.656;
-[release check](docs/benchmarks/release-check-2026-11-15.md)).
+of the [release bar](docs/development/roadmap.md#goal-and-release-bar) holds
+([release check](docs/benchmarks/release-check-2026-11-24.md)).
 
 ## Highlights
 
@@ -100,9 +99,9 @@ in the output, never dropped silently.
 <summary><b>Linux</b>: download and run</summary>
 
 ```sh
-curl -LO https://github.com/Butterski/rayopdf/releases/download/v0.4.0/rayopdf-0.4.0-linux-x64-static.tar.gz
-tar -xzf rayopdf-0.4.0-linux-x64-static.tar.gz
-./rayopdf-0.4.0-linux-x64-static/rayopdf --convert input.pdf output.md
+curl -LO https://github.com/Butterski/rayopdf/releases/download/v0.5.0/rayopdf-0.5.0-linux-x64-static.tar.gz
+tar -xzf rayopdf-0.5.0-linux-x64-static.tar.gz
+./rayopdf-0.5.0-linux-x64-static/rayopdf --convert input.pdf output.md
 ```
 
 </details>
@@ -110,7 +109,7 @@ tar -xzf rayopdf-0.4.0-linux-x64-static.tar.gz
 <details>
 <summary><b>Windows</b>: <code>rayopdf.exe</code></summary>
 
-Download `rayopdf-0.4.0-windows-x64.zip` from [Releases](https://github.com/Butterski/rayopdf/releases/latest) and unpack it:
+Download `rayopdf-0.5.0-windows-x64.zip` from [Releases](https://github.com/Butterski/rayopdf/releases/latest) and unpack it:
 
 ```sh
 rayopdf.exe --convert input.pdf output.md
@@ -121,7 +120,7 @@ rayopdf.exe --convert input.pdf output.md
 <details>
 <summary><b>Scans</b>: the OCR add-on</summary>
 
-Unpack `rayopdf-ocr-0.4.0-<platform>` into the same folder. `rayopdf` then finds `rayopdf-ocr`
+Unpack `rayopdf-ocr-0.5.0-<platform>` into the same folder. `rayopdf` then finds `rayopdf-ocr`
 beside itself and starts it only for pages that have no usable text.
 
 </details>
@@ -144,19 +143,19 @@ build.
 
 </details>
 
-| Package | Size, 0.4.0 | For |
+| Package | Size, 0.5.0 | For |
 |---|---:|---|
-| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,874 KB | Linux: one static executable, no dependency |
-| `rayopdf-<version>-windows-x64.zip` | 1,827 KB | Windows: `rayopdf.exe` |
-| `rayopdf-lib-<version>-<platform>` | 1,715 KB / 1,809 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
-| `rayopdf-<version>-py3-none-<platform>.whl` | 1,522 KB / 1,795 KB | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
-| `rayopdf-<version>.tgz` | 1,078 KB | JavaScript (WebAssembly) for browsers and Node.js 18+: `npm install ./rayopdf-<version>.tgz` |
+| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,972 KB | Linux: one static executable, no dependency |
+| `rayopdf-<version>-windows-x64.zip` | 1,927 KB | Windows: `rayopdf.exe` |
+| `rayopdf-lib-<version>-<platform>` | 1,822 KB / 1,920 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
+| `rayopdf-<version>-py3-none-<platform>.whl` | 1,618 KB / 1,896 KB | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
+| `rayopdf-<version>.tgz` | 1,136 KB | JavaScript (WebAssembly) for browsers and Node.js 18+: `npm install ./rayopdf-<version>.tgz` |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
 | `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: Cyrillic, Korean, Arabic, Devanagari, Tamil, Kannada for the add-on |
 
 ## Performance
 
-Measured on 2026-11-10 (the other tools) and 2026-11-15 (RayoPDF 0.4.0) on an AMD Ryzen 5 PRO 4650GE, every tool in its own Docker image
+Measured on 2026-11-10 (the other tools) and 2026-11-24 (RayoPDF 0.5.0) on an AMD Ryzen 5 PRO 4650GE, every tool in its own Docker image
 without network. A one-shot conversion is a fresh process, start to exit.
 
 ### Against other tools
@@ -172,23 +171,23 @@ xychart-beta
     title "One page to Markdown, in ms (lower is better)"
     x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown"]
     y-axis "Milliseconds" 0 --> 1500
-    bar [1, 16.9, 27.1, 45.2, 1074, 1236]
+    bar [1.01, 16.9, 27.1, 45.2, 1074, 1236]
 ```
 
 | Tool | Version | One page | A 33-page report | Peak memory | Writes |
 |---|---|---:|---:|---:|---|
-| **RayoPDF** | 0.4.0 | **1.00 ms** | **11.1 ms** | **7 MiB** | Markdown |
-| pdftotext | Poppler 25.03 | 17 ms (17×) | 46 ms (4.2×) | 18 MiB | plain text |
-| liteparse | 2.18.0 | 27 ms (27×) | 138 ms (12×) | 33 MiB | Markdown |
+| **RayoPDF** | 0.5.0 | **1.01 ms** | **10.8 ms** | **7 MiB** | Markdown |
+| pdftotext | Poppler 25.03 | 17 ms (17×) | 46 ms (4.3×) | 18 MiB | plain text |
+| liteparse | 2.18.0 | 27 ms (27×) | 138 ms (13×) | 33 MiB | Markdown |
 | edgeparse | 0.3.2 | 45 ms (45×) | 306 ms (28×) | 27 MiB | Markdown |
-| opendataloader | 2.5.19 | 1,074 ms (1,074×) | 3,705 ms (334×) | 250 MiB | Markdown |
-| markitdown | 0.1.9 | 1,236 ms (1,236×) | 3,143 ms (283×) | 104 MiB | Markdown |
-| PyMuPDF | 2.1, layout on | 4,749 ms (4,749×) | 70,092 ms (6,315×) | 346 MiB | Markdown |
-| docling | 2.147.0, no OCR | 9,490 ms (9,490×) | 93,052 ms (8,383×) | 1,905 MiB | Markdown |
+| opendataloader | 2.5.19 | 1,074 ms (1,063×) | 3,705 ms (343×) | 250 MiB | Markdown |
+| markitdown | 0.1.9 | 1,236 ms (1,224×) | 3,143 ms (291×) | 104 MiB | Markdown |
+| PyMuPDF | 2.1, layout on | 4,749 ms (4,702×) | 70,092 ms (6,490×) | 346 MiB | Markdown |
+| docling | 2.147.0, no OCR | 9,490 ms (9,396×) | 93,052 ms (8,616×) | 1,905 MiB | Markdown |
 
-On four cores RayoPDF reads the report's pages on threads and takes 8.0 ms; the others take
+On four cores RayoPDF reads the report's pages on threads and takes 7.3 ms; the others take
 38 ms to 42 s. In a running process (`--batch`, `--serve --json`) a page takes **0.37 ms** (median of
-the benchmark's 200 pages; 2,188 pages a second on one core).
+the benchmark's 200 pages; 2,207 pages a second on one core).
 
 > [!NOTE]
 > This compares the time to a finished file, not identical output: the tools differ in what they
@@ -204,21 +203,21 @@ The same tools on public benchmarks and on a synthetic corpus with exact ground 
 
 | Benchmark | RayoPDF | Best other text-layer tool | docling | kordoc |
 |---|---:|---:|---:|---:|
-| opendataloader-bench, 200 pages, with its conventions (`--images=none --furniture=keep --plain --tables=html --quotes=ascii`): overall | **0.941** | 0.885 | 0.884 | 0.939 |
-| – text (NID) / tables (TEDS) / headings (MHS) | **0.954** / 0.929 / 0.917 | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 | 0.940 / **0.937** / **0.934** |
-| opendataloader-bench, default output: overall / text / tables / headings | 0.916 / 0.925 / 0.915 / 0.891 | 0.885 / 0.914 / 0.818 / 0.822 | 0.884 / 0.902 / 0.879 / 0.827 | **0.939** / **0.940** / **0.937** / **0.934** |
-| Synthetic corpus, the 11 PDF producers every tool ran on: Markdown constructs (F1) | **0.969** | 0.628 | 0.560 | 0.468 |
-| olmOCR-bench: multi-column / tables / headers and footers (pass rate) | **0.710** / **0.631** / 0.850 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** | 0.490 / 0.534 / 0.421 |
-| olmOCR-bench: arXiv math, with `--math=latex` | **0.721** | 0.538 | 0.000 | 0.000 |
+| opendataloader-bench, 200 pages, with its conventions (`--images=none --furniture=keep --plain --tables=html --quotes=ascii --small-caps=keep`): overall | **0.944** | 0.885 | 0.884 | 0.939 |
+| – text (NID) / tables (TEDS) / headings (MHS) | **0.954** / 0.934 / 0.927 | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 | 0.940 / **0.937** / **0.934** |
+| opendataloader-bench, default output: overall / text / tables / headings | 0.917 / 0.926 / 0.915 / 0.898 | 0.885 / 0.914 / 0.818 / 0.822 | 0.884 / 0.902 / 0.879 / 0.827 | **0.939** / **0.940** / **0.937** / **0.934** |
+| Synthetic corpus, the 11 PDF producers every tool ran on: Markdown constructs (F1) | **0.971** | 0.628 | 0.560 | 0.468 |
+| olmOCR-bench, with its conventions (`--plain --small-caps=keep --figure-text=drop`): multi-column / tables / headers and footers (pass rate) | **0.762** / **0.653** / 0.891 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** | 0.490 / 0.534 / 0.421 |
+| olmOCR-bench: arXiv math, with `--math=latex` | **0.860** | 0.538 | 0.000 | 0.000 |
 | READoc GitHub, 150 documents: text / headings | **0.936** / **0.882** | 0.874 / 0.778 | 0.908 / 0.471 | 0.835 / 0.405 |
-| READoc arXiv, 150 papers, with its conventions (`--math=latex --tables=pipe`): text / headings / tables / order | **0.884** / **0.697** / 0.636 / 0.981 | 0.826 / 0.515 / **0.685** / 0.976 | 0.841 / 0.403 / 0.656 / **0.984** | 0.787 / 0.297 / 0.322 / 0.958 |
-| READoc arXiv with its conventions: inline math | **0.654** | 0.369 | 0.001 | 0.001 |
-| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.919** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) | – |
+| READoc arXiv, 150 papers, with its conventions (`--math=latex --tables=pipe-latex --figure-text=drop`): text / headings / tables / order | **0.893** / **0.719** / **0.730** / 0.983 | 0.826 / 0.515 / 0.685 / 0.976 | 0.841 / 0.403 / 0.656 / **0.984** | 0.787 / 0.297 / 0.322 / 0.958 |
+| READoc arXiv with its conventions: inline math | **0.687** | 0.369 | 0.001 | 0.001 |
+| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.918** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) | – |
 
 "Text-layer tools" are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse and edgeparse;
 docling is the machine-learning reference; kordoc (its OCR off) claims the top of opendataloader-bench.
-RayoPDF 0.4.0, core alone unless the OCR add-on is named (with it, opendataloader-bench overall is
-0.922 in the default output); the rows "with its conventions" use the options the benchmark's
+RayoPDF 0.5.0, core alone unless the OCR add-on is named (with it, opendataloader-bench overall is
+0.924 in the default output); the rows "with its conventions" use the options the benchmark's
 ground truth calls for (`eval/profiles.json`), the others the default output; the other tools ran
 in their own default output. The READoc sets and one producer of the synthetic corpus are holdouts,
 scored once per version and never inspected. Every table, per suite and per tool:
@@ -242,6 +241,7 @@ program takes 0.22 ms in the same timer).
 | 0.2.0 | **2,231** | 0.89 ms | JSON output, the C++ API, image tables, table and furniture rules; the ninth round won back their cost |
 | 0.3.0 | 2,214 | 0.90 ms | output options, chunks, the inspector, the C ABI, title and page-number rules (they cost 0.5 %: 0.2.0 gave 2,225 and 0.89 ms in the same runs) |
 | 0.4.0 | 2,188 | 0.91 ms | pipe tables and ASCII quotes, the edge-row model, table and formula rules (they cost 1.1 %: 0.3.0 gave 2,212 and 0.90 ms in the same runs) |
+| 0.5.0 | 2,207 | 0.91 ms | figure-text, small-capitals and LaTeX-table options, LaTeX by font codes, table, heading, list and furniture rules; fourteen speed rounds won back their cost (0.4.0 gave 2,194 and 0.91 ms in the same runs) |
 
 Every speed change is profiled, kept only if a pinned A/B shows it faster, and leaves the output
 byte for byte the same on the whole corpus. [`performance.md`](docs/development/performance.md)
@@ -560,8 +560,9 @@ under the folders it is given with `--root`.
 
 - **Not a renderer.** RayoPDF recovers text and structure; it does not rasterise pages, and a
   figure made of vector drawings is not turned into an image.
-- **Tables in scientific papers** score below the best tools on arXiv papers (the quality table
-  above).
+- **Tables in scientific papers** score below the best tools on arXiv papers in the default
+  output (READoc `table_teds` 0.604, docling 0.656); in READoc's conventions above them (the
+  quality table above).
 - **Math** is rebuilt from glyph positions, not recognised from pixels: formulas in scanned pages
   stay text.
 - **Scans need the add-on**, and OCR takes seconds a page, not milliseconds. Hebrew is not read

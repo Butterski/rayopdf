@@ -1895,6 +1895,27 @@ Tried and rejected (2026-11-24, user instructions as above against the step befo
   vector and taking the four integers out costs as much as the four scalar additions and
   truncations).
 
+## 0.5.0 (2026-11-24)
+
+Fourteen rounds since 0.4.0 (eleventh to twenty-fourth, above), each winning back the cost of the
+quality steps landed before it. `src/hot.ld` was regenerated over the release's code (`a95ad7f`;
+860 sections, 815 before; output byte-identical, G-bytes 0 of 997 differ): CPU 3, 2026-11-24
+17:58-18:00 UTC, against the same code with the old list, warm odl 2,210 → 2,214 pages/s, fresh
+0.920 → 0.915 ms, page faults median 157 → 152.
+
+### Result (0.4.0 against 0.5.0)
+
+User instructions, as above, CPU 11: odl −4.07 %, heavy10 −1.87 %, syn6 −7.85 %, SafeDocs
+−10.01 %, `multi_column` −7.20 %, `tables` −5.52 %, `arxiv_math` −7.88 %. Times on CPU 3, the 0.4.0
+release binary and 0.5.0's interleaved, 2026-11-24 18:00-18:07 UTC, nothing of this project
+running: warm odl (three runs) 2,187-2,195 → 2,204-2,209 pages/s (+0.6 %), p95 0.701-0.716 →
+0.706-0.707 ms a page; fresh 0.911 → 0.912 ms (12 rotated rounds, +0.1 % paired), page faults
+median 149 → 152; `--batch --workers=1 --images=none` over odl, CPU time (the child's rusage)
+100.0 → 99.3 ms; a JPEG 2000 page with its image written (40 documents, 100 pages) 108.7 → 108.7
+ms median; 27 documents of 4 to 39 pages on four cores 140.5 ms (0.4.0, default threads) → 132.9
+ms (`--workers=4`). The instructions fell four to ten times as far as the times: a short page's
+fresh time is mostly the process and the file, and the warm time the memory the pages touch.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of

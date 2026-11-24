@@ -511,52 +511,50 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-15)
+### Status (2026-11-24)
 
-0.4.0 is released ([v0.4.0](../benchmarks/v0.4.0-2026-11-15.md),
-[release check](../benchmarks/release-check-2026-11-15.md)): `--tables=pipe` and `--quotes=ascii`
-for conventions (D6, D7), READoc's, opendataloader-bench's and OmniParseBench's declared profiles
-with them and with LaTeX math, the first small model in the core (M9), table rules (rules drawn
-cell by cell, cells set to the middle, row labels between rows, tables continued under
-themselves, fraction bars), a minimum-cost formula tree in LaTeX mode, and two costly rules
-rewritten before landing. Against 0.3.0: odl 0.936 → 0.941 in its declared options (0.915 →
-0.916 default); READoc arXiv `table_teds` 0.618 → 0.636 on the holdout in READoc's declared
-options (0.618 in LaTeX mode); synthetic untagged TEDS 0.912 → 0.961 (the holdout producer 0.722 →
-0.792); DocLayNet `furniture_f1` +0.002 on both splits; olmOCR `headers_footers` 0.849 → 0.850,
-`arxiv_math` 0.7202 → 0.7205; speed 1.1 % lower warm and fresh.
+0.5.0 is released ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md),
+[release check](../benchmarks/release-check-2026-11-24.md)): `--figure-text=drop`,
+`--small-caps=keep` and `--tables=pipe-latex` for conventions (D6, D7) and in the declared
+profiles of READoc, olmOCR and opendataloader-bench; LaTeX mode reading formulas by their fonts'
+codes and spelling them as arXiv sources do; table, heading, list, footnote and furniture rules;
+the edge-row model retrained twice; fourteen rounds of output-identical speed work. Against 0.4.0:
+odl 0.941 → 0.944 in its declared options (0.916 → 0.917 default); READoc arXiv `table_teds` on
+the holdout 0.636 → 0.730 in READoc's declared options (0.618 → 0.609 in LaTeX mode); olmOCR
+`arxiv_math` 0.721 → 0.860, `headers_footers` 0.850 → 0.890, `multi_column` 0.710 → 0.732;
+DocLayNet validation lists 0.528 → 0.687 and footnotes 0.506 → 0.711; instructions −4.1 % on odl,
+speed within 0.6 % of 0.4.0's.
 
-The bar stands as for 0.3.0 ([release check](../benchmarks/release-check-2026-11-15.md)): every
-item holds except one key, released as open by the user's decision of 2026-11-11: READoc arXiv
-`table_teds` 0.618 in LaTeX mode, 0.636 in READoc's declared options (held to docling's 0.656
-under (b)). (a): `text_eds` 0.882, `head_teds` 0.697, `seg_kt` 0.981, `inline_eds` 0.654 on READoc
-arXiv and every other suite above the best text-layer tool, NID and MHS above docling. (c): 2,188
-pages/s warm, 0.906 ms fresh. (d): 25 fuzz targets, 26.1 h, clean; ASan sweeps in three modes
-clean. (e): reported in the release check.
+The bar holds in every item ([release check](../benchmarks/release-check-2026-11-24.md)): READoc
+arXiv `table_teds`, open since 0.1.0, is 0.730 in READoc's declared options against docling's
+0.656 under (b) (0.609 in LaTeX mode). (a): `text_eds` 0.887, `head_teds` 0.718, `seg_kt` 0.983,
+`inline_eds` 0.685 on READoc arXiv in LaTeX mode and every other suite above the best text-layer
+tool, NID and MHS above docling. (c): 2,207 pages/s warm, 0.912 ms fresh. (d): 25 fuzz targets,
+26.1 h, clean; ASan sweeps in three modes clean. (e): reported in the release check.
 
-- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.4.0
+- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 0.5.0
   campaign covered all 25 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
-- **M3 Layout:** open: olmOCR `headers_footers` (0.850, docling 0.898), `long_tiny_text` without
-  the add-on, synthetic `xelatex-2col` NID ([v0.4.0](../benchmarks/v0.4.0-2026-11-15.md)).
-- **M4 Semantics:** open: holdout construct F1 ([v0.4.0](../benchmarks/v0.4.0-2026-11-15.md));
+- **M3 Layout:** open: olmOCR `headers_footers` (0.890, docling 0.898), `long_tiny_text` in the
+  default output (0.509; 0.525 in olmOCR's declared options, docling 0.523), synthetic
+  `xelatex-2col` NID ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md)).
+- **M4 Semantics:** open: holdout construct F1 ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md));
   READoc arXiv `head_teds` met.
-- **M5 Tables:** open: READoc arXiv `table_teds`; odl, synthetic and olmOCR gates met
-  ([v0.4.0](../benchmarks/v0.4.0-2026-11-15.md)).
+- **M5 Tables:** met in the declared profiles: READoc arXiv `table_teds` 0.730 against docling's
+  0.656; odl, synthetic and olmOCR gates met ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md)).
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M7 Product:** front ends, Windows build, packaging, the speed bar, structured output, the C++
   API, library archives, the container image, the C ABI, Python wheels and the npm package done;
-  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0 and 0.4.0 ([v0.4.0](../benchmarks/v0.4.0-2026-11-15.md),
-  [performance.md](performance.md)).
+  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0 and 0.5.0
+  ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md), [performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn
   as images since 0.2.0; open: Hebrew, Kannada and Arabic quality.
-- **M9 Small models:** met in 0.4.0 ([decision](ocr_ml_decision.md#small-models-in-the-core-m9)):
-  the edge-row model ships with local removals (its rows count as text in every decision; only
-  the blocks they alone make are left out, and after 0.4.0 also those rows at the start or end of
-  a paragraph that keeps two other lines); DocLayNet `furniture_f1` +0.002 on both splits, odl
-  instructions +0.24 %). In 0.3.0 it had lowered DocLayNet validation `heading_f1` beyond the
-  gate's epsilon; the table-gap model had no negative examples to learn from.
+- **M9 Small models:** met in 0.4.0 ([decision](ocr_ml_decision.md#small-models-in-the-core-m9));
+  the edge-row model was retrained twice for 0.5.0 (23 features and a sentence guard, then rows up
+  to 1.6 body sizes on the rules' current features), each through the strict gate. A lower
+  threshold for it (more running heads and feet) failed the gate on OmniParseBench validation.
 
 ## Engineering conventions
 
