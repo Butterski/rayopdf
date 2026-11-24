@@ -2553,9 +2553,10 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
     }
 }
 
+#if defined(__SSE2__)
 namespace {
 
-// The index of the lowest set bit of m (m != 0).
+// The index of the lowest set bit of m (m != 0): the SSE2 accent walk's matches.
 int LowestBit(unsigned m) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_ctz(m);
@@ -2567,6 +2568,7 @@ int LowestBit(unsigned m) {
 }
 
 } // namespace
+#endif
 
 void PrepareMathGlyphs(PageData& page) {
     // Math font glyphs without text whose code TeX's encodings know get its symbol as their text,
