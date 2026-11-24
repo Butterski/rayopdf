@@ -454,8 +454,14 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     bool windowSmall = false;  // tolerance <= 3.5
     bool probing = false;  // the probe's table exists
     uint32_t kept = 0, entryCount = 0, placed = 0;
-    // The finiteness sums: one per field, each added from memory without a load of its own.
+    // The finiteness sums: one per field, each added from memory without a load of its own; where
+    // SSE2 is, u0 u1 vb vt in one register and v and size in the low lanes of another, added lane
+    // by lane in the same order.
+#if defined(__SSE2__)
+    __m128 sumBox = _mm_setzero_ps(), sumRest = _mm_setzero_ps();
+#else
     float sumU0 = 0, sumU1 = 0, sumVb = 0, sumVt = 0, sumV = 0, sumSize = 0;
+#endif
     for (uint32_t i = 0; i < n; ++i) {
         Glyph& g = glyphs[i];
         if (RAYOPDF_UNLIKELY((g.flags & (kGlyphDropped | kGlyphClipped | kGlyphInvisible)) != 0 || g.size < 1.0f ||
@@ -479,7 +485,12 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 g.flags = static_cast<uint16_t>(flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
         }
         placed++;
+#if defined(__SSE2__)
+        sumBox = _mm_add_ps(sumBox, _mm_loadu_ps(&g.u0));
+        sumRest = _mm_add_ps(sumRest, _mm_loadl_pi(_mm_setzero_ps(), reinterpret_cast<const __m64*>(&g.v)));
+#else
         sumU0 += g.u0, sumU1 += g.u1, sumVb += g.vb, sumVt += g.vt, sumV += g.v, sumSize += g.size;
+#endif
         if (g.flags & kGlyphSpace) {
             order[kept++] = i;
             continue;
@@ -530,7 +541,14 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     fold.base = base + kept;
     if (scratch)
         for (uint32_t e = 0; e < entryCount; ++e) bits[entries[e].word] = 0;
+#if defined(__SSE2__)
+    float lanes[8];
+    _mm_storeu_ps(lanes, sumBox);
+    _mm_storeu_ps(lanes + 4, sumRest);
+    const float sum = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3])) + (lanes[4] + lanes[5]);
+#else
     const float sum = ((sumU0 + sumU1) + (sumVb + sumVt)) + (sumV + sumSize);
+#endif
     return sum - sum == 0;
 }
 
