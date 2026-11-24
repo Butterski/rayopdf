@@ -621,56 +621,76 @@ struct Orderer {
         };
         std::vector<uint8_t> edge(n * n, 0);
         std::vector<uint32_t> indegree(n, 0);
+        // Each pair once, both directions: a before b, b before a.
         for (size_t a = 0; a < n; ++a) {
             const Box la = box[a];
-            for (size_t b = 0; b < n; ++b) {
-                if (a == b) continue;
-                const Box& lb = box[b];
+            for (size_t b = a + 1; b < n; ++b) {
+                const Box lb = box[b];
                 const float tolerance = 0.3f * Fmin(la.size, lb.size);
-                bool before = la.u0 < lb.u1 && lb.u0 < la.u1 && la.baseline > lb.baseline + tolerance;
-                if (!before && la.u1 <= lb.u0) {
-                    before = true;
+                bool ab = false, ba = false;
+                if (la.u0 < lb.u1 && lb.u0 < la.u1) {
+                    ab = la.baseline > lb.baseline + tolerance;
+                    ba = lb.baseline > la.baseline + tolerance;
+                } else {
+                    // One wholly left of the other (each, for boxes of no width): it comes first
+                    // unless a line between them overlaps both, the line left of the gap tested
+                    // first (a line of either column fails one of the first two tests).
+                    const bool aLeft = la.u1 <= lb.u0, bLeft = lb.u1 <= la.u0;
+                    if (!aLeft && !bLeft) continue;
+                    const Box& l = aLeft ? la : lb;
+                    const Box& r = aLeft ? lb : la;
+                    bool clear = true;
                     const float high = Fmax(la.baseline, lb.baseline) - tolerance;
                     const float low = Fmin(la.baseline, lb.baseline) + tolerance;
-                    const size_t from = std::min(a, b) + 1, to = std::max(a, b);
+                    const size_t from = a + 1, to = b;
                     if (to - from <= kShortRange) {
-                        for (size_t c = from; c < to && before; ++c) {
+                        for (size_t c = from; c < to && clear; ++c) {
                             const Box& lc = box[c];
                             if (lc.baseline >= high || lc.baseline <= low) continue;
-                            before = !(lc.u0 < la.u1 && lc.u1 > la.u0 && lc.u0 < lb.u1 && lc.u1 > lb.u0);
+                            clear = !(lc.u1 > r.u0 && lc.u0 < l.u1 && lc.u0 < r.u1 && lc.u1 > l.u0);
                         }
                     } else {
                         overlaps(a), overlaps(b);
-                        for (size_t w = from / 64; w * 64 < to && before; ++w) {
+                        for (size_t w = from / 64; w * 64 < to && clear; ++w) {
                             uint64_t m = over[a * kOverWords + w] & over[b * kOverWords + w];
                             if (w == from / 64) m &= ~uint64_t(0) << (from % 64);
                             if ((w + 1) * 64 > to) m &= (uint64_t(1) << (to % 64)) - 1;
-                            for (; m && before; m &= m - 1) {
+                            for (; m && clear; m &= m - 1) {
                                 const float c = box[w * 64 + static_cast<size_t>(LowestBit(m))].baseline;
-                                before = c >= high || c <= low;
+                                clear = c >= high || c <= low;
                             }
                         }
                     }
+                    ab = aLeft && clear;
+                    ba = bLeft && clear;
                 }
-                if (before) {
+                if (ab) {
                     edge[a * n + b] = 1;
                     indegree[b]++;
+                }
+                if (ba) {
+                    edge[b * n + a] = 1;
+                    indegree[a]++;
                 }
             }
         }
         // v is sorted top first: the first free line is the topmost. A cycle (possible with
-        // overlapping boxes) is broken by taking the topmost line left.
+        // overlapping boxes) is broken by taking the topmost line left. Lines before `first` are
+        // done or not free.
         std::vector<uint8_t> done(n, 0);
+        size_t first = 0;
         for (size_t step = 0; step < n; ++step) {
             size_t pick = n;
-            for (size_t k = 0; k < n && pick == n; ++k)
+            for (size_t k = first; k < n && pick == n; ++k)
                 if (!done[k] && indegree[k] == 0) pick = k;
+            first = std::min(pick + 1, n);
             for (size_t k = 0; k < n && pick == n; ++k)
                 if (!done[k]) pick = k;
             done[pick] = 1;
             out.push_back(v[pick]);
+            const uint8_t* const row = edge.data() + pick * n;
             for (size_t b = 0; b < n; ++b)
-                if (edge[pick * n + b] && indegree[b] > 0) indegree[b]--;
+                if (row[b] && indegree[b] > 0 && --indegree[b] == 0) first = std::min(first, b);
         }
         return true;
     }
