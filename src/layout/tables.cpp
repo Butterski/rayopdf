@@ -5004,11 +5004,14 @@ void Detector::Commit() {
             }
         }
         if (in * 2 < line.count) continue;
-        // Glyphs outside every cell follow their neighbour.
-        for (uint32_t k = 1; k < line.count; ++k)
-            if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k - 1];
-        for (uint32_t k = line.count - 1; k-- > 0;)
-            if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k + 1];
+        // Glyphs outside every cell follow their neighbour (every glyph in a cell: none is outside,
+        // since every cell of a grid has its owner).
+        if (in < line.count) {
+            for (uint32_t k = 1; k < line.count; ++k)
+                if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k - 1];
+            for (uint32_t k = line.count - 1; k-- > 0;)
+                if (glyphCell[k] < 0) glyphCell[k] = glyphCell[k + 1];
+        }
         if (line.flags & kLineRemoved) restored_++;
         page_.lines[li].flags = static_cast<uint16_t>((page_.lines[li].flags | kLineTableCell) & ~kLineRemoved);
         uint32_t k = 0;
@@ -5061,16 +5064,23 @@ void Detector::Commit() {
                 l.dir = dir_;
                 l.first = static_cast<uint32_t>(page_.lineGlyphs.size());
                 l.count = p.count;
-                l.u0 = INFINITY, l.u1 = -INFINITY, l.vb = INFINITY, l.vt = -INFINITY;
+                // The piece's glyphs appended through pointers, the box and faces in locals (a store
+                // into lineGlyphs may alias what the loop reads).
+                page_.lineGlyphs.resize(size_t(l.first) + p.count);
+                uint32_t* out = page_.lineGlyphs.data() + l.first;
+                const uint32_t* from = pieceGlyphs.data() + p.first;
+                const Glyph* glyphs = page_.glyphs.data();
+                float u0 = INFINITY, u1 = -INFINITY, vb = INFINITY, vt = -INFINITY;
                 uint16_t all = kGlyphBold | kGlyphItalic | kGlyphMonospace;
                 for (uint32_t k = 0; k < p.count; ++k) {
-                    const uint32_t gi2 = pieceGlyphs[p.first + k];
-                    const Glyph& gl = page_.glyphs[gi2];
-                    page_.lineGlyphs.push_back(gi2);
-                    l.u0 = Fmin(l.u0, gl.u0), l.u1 = Fmax(l.u1, gl.u1);
-                    l.vb = Fmin(l.vb, gl.vb), l.vt = Fmax(l.vt, gl.vt);
+                    const uint32_t gi2 = from[k];
+                    const Glyph& gl = glyphs[gi2];
+                    out[k] = gi2;
+                    u0 = Fmin(u0, gl.u0), u1 = Fmax(u1, gl.u1);
+                    vb = Fmin(vb, gl.vb), vt = Fmax(vt, gl.vt);
                     all &= gl.flags;
                 }
+                l.u0 = u0, l.u1 = u1, l.vb = vb, l.vt = vt;
                 l.chars = p.count;
                 l.flags = static_cast<uint16_t>(kLineTableCell | (src.flags & (kLineArtifact | kLineInvisible)));
                 if (all & kGlyphBold) l.flags |= kLineAllBold;
