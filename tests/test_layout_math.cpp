@@ -500,10 +500,13 @@ void TestInline() {
     // A bold letter after a full stop is a panel's label too ("[50]. b Measured").
     run = Runs("is it. b so", ".....b..", store);
     RAYOPDF_CHECK(run[5] == 0, 2372);
+    // Numbers around ± stay text: "0.85 ± 0.06" is 0.85 $\pm$ 0.06.
+    run = Runs("at 0.85 \xC2\xB1 0.06 here", "", store);
+    RAYOPDF_CHECK(run[2] == 0 && run[6] == 7 && run[7] == 0, 2368);
 }
 
 // A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the
-// decimal point; a run with a letter stays a formula.
+// decimal point, a ± alone between numbers too ("0.88 ± 0.06"); a run with a letter stays a formula.
 void TestNumbersText() {
     std::vector<Glyph> store;
     std::vector<InlineGlyph> glyphs;
@@ -513,6 +516,11 @@ void TestNumbersText() {
     const bool found = run[0] == 4 && run[7] == 12 && run[14] == 17 && run[20] == 24;
     KeepNumbersText(glyphs, run);
     RAYOPDF_CHECK(found && run[0] == 0 && run[7] == 0 && run[14] == 17 && run[20] == 0, 1597);
+    // Glyphs: 0 . 8 8 | ± | 0 . 0 6
+    run = Runs("0.88 \xC2\xB1 0.06", "", store, &glyphs);
+    const bool sign = run[4] == 5;
+    KeepNumbersText(glyphs, run);
+    RAYOPDF_CHECK(sign && run[4] == 0, 2371);
 }
 
 // A page: glyphs of `text` at (x, y) in font `font` (page-local: 0 text, 1 math italic).

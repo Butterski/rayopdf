@@ -3137,6 +3137,17 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
                 break;
             }
         }
+        // "0.85 ± 0.06", spaces around the sign: the sources write the numbers as text and only the
+        // sign as math ($\pm$, READoc's ground truth, far more often than $0.85\pm0.06$).
+        uint32_t sign = UINT32_MAX;
+        bool numbers = e - b >= 3;
+        for (uint32_t i = b; i < e && numbers; ++i) {
+            const uint32_t c = FirstCp(glyphs[i].text);
+            if (c == 0xB1 || c == 0x2213) numbers = sign == UINT32_MAX, sign = i;
+            else numbers = !glyphs[i].script && ((c >= '0' && c <= '9') || c == '.' || c == ',');
+        }
+        if (numbers && sign != UINT32_MAX && sign > b && sign + 1 < e && glyphs[sign].wordStart && glyphs[sign + 1].wordStart)
+            b = sign, e = sign + 1;
         bool strong = false;
         for (uint32_t i = b; i < e; ++i) strong = strong || (cls[i] == kClassStrong && !glyphs[i].script);
         if (strong && e > b) run[b] = e, closedEnd = e;
@@ -3332,6 +3343,12 @@ void KeepNumbersText(const std::vector<InlineGlyph>& glyphs, std::vector<uint32_
                          cp == 0x202F;
             }
         }
+        // A sign alone between numbers (FindInlineFormulas's $\pm$ of "0.85 ± 0.06") is the number's.
+        const auto digitAt = [&](uint32_t i) {
+            const uint32_t cp = i < n ? FirstCp(glyphs[i].text) : 0;
+            return cp >= '0' && cp <= '9';
+        };
+        digit = digit || (k > 0 && digitAt(k - 1) && digitAt(to));
         if (number && digit) run[k] = 0;
     }
 }
