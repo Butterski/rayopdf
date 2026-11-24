@@ -245,9 +245,6 @@ struct Rule {
 // lines: larger regions are cut row by row instead.
 constexpr size_t kTopologicalMax = 200;
 constexpr size_t kOverWords = (kTopologicalMax + 63) / 64;
-// Topological's ranges of lines between a pair up to this long are scanned line by line; longer
-// ones through the lines' overlap bitsets.
-constexpr size_t kShortRange = 32;
 // Line pairs InsetColumns compares at most, candidates against a region's lines and again insets
 // against the candidates adjoining them.
 constexpr uint64_t kInsetChecks = uint64_t(1) << 18;
@@ -606,9 +603,9 @@ struct Orderer {
             box[k] = Box{l.u0, l.u1, l.baseline, l.size};
         }
         // over[a * kOverWords + c / 64] bit c % 64: line v[c] overlaps line v[a] horizontally, built
-        // for a line when a pair with a long range between them first needs it. A line c between a
-        // and b comes between them when it overlaps both and lies between their baselines: in a short
-        // range each line is tested, in a long one the lines set in the bits of both.
+        // for a line when a pair with lines between them first needs it. A line c between a and b
+        // comes between them when it overlaps both and lies between their baselines: the lines set
+        // in the bits of both are tested.
         std::vector<uint64_t> over;  // allocated with the first row built
         std::vector<uint8_t> built;
         const auto overlaps = [&](size_t a) {
@@ -633,23 +630,14 @@ struct Orderer {
                     ba = lb.baseline > la.baseline + tolerance;
                 } else {
                     // One wholly left of the other (each, for boxes of no width): it comes first
-                    // unless a line between them overlaps both, the line left of the gap tested
-                    // first (a line of either column fails one of the first two tests).
+                    // unless a line between them overlaps both.
                     const bool aLeft = la.u1 <= lb.u0, bLeft = lb.u1 <= la.u0;
                     if (!aLeft && !bLeft) continue;
-                    const Box& l = aLeft ? la : lb;
-                    const Box& r = aLeft ? lb : la;
                     bool clear = true;
-                    const float high = Fmax(la.baseline, lb.baseline) - tolerance;
-                    const float low = Fmin(la.baseline, lb.baseline) + tolerance;
                     const size_t from = a + 1, to = b;
-                    if (to - from <= kShortRange) {
-                        for (size_t c = from; c < to && clear; ++c) {
-                            const Box& lc = box[c];
-                            if (lc.baseline >= high || lc.baseline <= low) continue;
-                            clear = !(lc.u1 > r.u0 && lc.u0 < l.u1 && lc.u0 < r.u1 && lc.u1 > l.u0);
-                        }
-                    } else {
+                    if (to > from) {
+                        const float high = Fmax(la.baseline, lb.baseline) - tolerance;
+                        const float low = Fmin(la.baseline, lb.baseline) + tolerance;
                         overlaps(a), overlaps(b);
                         for (size_t w = from / 64; w * 64 < to && clear; ++w) {
                             uint64_t m = over[a * kOverWords + w] & over[b * kOverWords + w];
