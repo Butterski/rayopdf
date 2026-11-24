@@ -16,7 +16,7 @@
 // cases, a radical over a fraction, \Re, lim inf and arg max, readings by spacing ("..." and
 // \ldots, \setminus and \backslash, \tfrac), neighbours in a row (a fraction after a subscript,
 // \neq, a small radical, two operators' limits, Symbol's φ, MnSymbol's ○, a base outweighed by its
-// subscript). Exit codes 1550-1599, 2202-2249 and 2350-2385.
+// subscript). Exit codes 1550-1599, 2202-2249 and 2350-2386.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -105,28 +105,50 @@ void TestScripts() {
         Expect(f.Latex(), "e^{x_{i}}", 1553);
     }
     {
-        // f'(x): a prime alone in the superscript.
+        // f'(x): a prime alone in the superscript, \prime as the sources' LaTeX reads it.
         Formula f;
         float u = f.Add("f", 0, 0);
         u = f.Add("\xE2\x80\xB2", u, 4, 7, kSymbol);
         u = f.Add("(", u, 0, 10, kText);
         u = f.Add("x", u, 0);
         f.Add(")", u, 0, 10, kText);
-        Expect(f.Latex(), "f'(x)", 1554);
+        Expect(f.Latex(), "f^{\\prime}(x)", 1554);
     }
     {
-        // g_{x'}: a prime of the subscript, lifted over it but not over the baseline; g_{x}' when
-        // lifted as a superscript of g.
+        // g_{x^{\prime}}: a prime of the subscript, lifted over it but not over the baseline;
+        // g_{x}^{\prime} when lifted as a superscript of g.
         Formula f;
         float u = f.Add("g", 0, 0);
         u = f.Add("x", u, -1.5f, 7);
         f.Add("\xE2\x80\xB2", u, 0.5f, 5, kSymbol);
-        Expect(f.Latex(), "g_{x'}", 2231);
+        Expect(f.Latex(), "g_{x^{\\prime}}", 2231);
         Formula h;
         u = h.Add("g", 0, 0);
         u = h.Add("x", u, -1.5f, 7);
         h.Add("\xE2\x80\xB2", u, 3.6f, 7, kSymbol);
-        Expect(h.Latex(), "g_{x}'", 2232);
+        Expect(h.Latex(), "g_{x}^{\\prime}", 2232);
+    }
+    {
+        // The sources' spellings: a space between a command and a digit, → as \to; ∗ stays \ast, as
+        // KaTeX names it, in a script and on the baseline.
+        Formula f;
+        float u = f.Add("x", 0, 0);
+        u = f.Add("\xE2\x89\xA4", u + 2, 0, 10, kSymbol);
+        u = f.Add("1", u + 2, 0, 10, kText);
+        u = f.Add("a", u + 2, 0);
+        u = f.Add("\xE2\x88\x97", u, 4, 7, kSymbol);
+        u = f.Add("\xE2\x86\x92", u + 2, 0, 10, kSymbol);
+        u = f.Add("b", u + 2, 0);
+        u = f.Add("\xE2\x88\x97", u + 2, 0, 10, kSymbol);
+        f.Add("c", u + 2, 0);
+        Expect(f.Latex(), "x\\leq 1a^{\\ast}\\to b\\ast c", 2370);
+    }
+    {
+        // A raised † is \dagger, the sources' spelling (KaTeX's first name is \dag).
+        Formula f;
+        float u = f.Add("x", 0, 0);
+        f.Add("\xE2\x80\xA0", u, 4, 7, kSymbol);
+        Expect(f.Latex(), "x^{\\dagger}", 2386);
     }
 }
 
@@ -191,7 +213,7 @@ void TestRadicals() {
     Formula g;
     float u = g.Add("\xE2\x88\x9A", 0, 0, 10, kText);
     g.Add("2", u, 0, 10, kText);
-    Expect(g.Latex(), "\\surd2", 1560);
+    Expect(g.Latex(), "\\surd 2", 1560);
 }
 
 void TestOperators() {
@@ -223,7 +245,7 @@ void TestOperators() {
         f.Add("n\xE2\x86\x92\xE2\x88\x9E", 0, -8, 7, kSymbol);
         float u = f.Add("sin", 18, 0, 10, kText);
         f.Add("x", u + 2, 0);
-        Expect(f.Latex(), "\\lim_{n\\rightarrow\\infty}\\sin x", 1563);
+        Expect(f.Latex(), "\\lim_{n\\to\\infty}\\sin x", 1563);
     }
     {
         // An operator name without a KaTeX command: \operatorname.
@@ -643,9 +665,9 @@ void TestConstructs() {
             f.Add("n", 7.5f - 0.25f * size, -6, size);
             f.Add("y", 10, 0);
             if (size < 8)
-                Expect(f.Latex(), "x\\underset{n}{\\rightarrow}y", 2209);
+                Expect(f.Latex(), "x\\underset{n}{\\to}y", 2209);
             else
-                Expect(f.Latex(), "x\\rightarrow_{n}y", 2210);
+                Expect(f.Latex(), "x\\to_{n}y", 2210);
         }
     }
     {
@@ -1263,7 +1285,7 @@ void TestCodedFonts() {
     x = AddText(page, "b", x + 1, 700, 10, 1);
     AddText(page, " hold.", x, 700, 10);
     const std::string md = Convert({page}, MathMode::Latex);
-    const bool oa = md.find("$c:X\\rightarrow S$") != std::string::npos && md.find("$x\\mapsto y$") != std::string::npos;
+    const bool oa = md.find("$c:X\\to S$") != std::string::npos && md.find("$x\\mapsto y$") != std::string::npos;
     const bool tx = md.find("$p=\\prod a$") != std::string::npos && md.find("$q=\\sum b$") != std::string::npos;
     if (!oa || !tx) std::fprintf(stderr, "latex page:\n%s\n", md.c_str());
     RAYOPDF_CHECK(oa, 2350);

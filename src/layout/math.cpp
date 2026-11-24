@@ -165,17 +165,21 @@ uint32_t LatinLookalike(uint32_t cp) {
 }
 
 // Commands chosen over KaTeX's first name, and characters KaTeX names nothing for; empty for the
-// rest.
+// rest. Where LaTeX has two spellings, the one arXiv sources use most (READoc's ground truth:
+// `\to` over `\rightarrow`, `\dagger` over `\dag`).
 std::string_view OverrideOf(uint32_t cp) {
     switch (cp) {
     case 0x00B7: return "\\cdot";
     case 0x2016: return "\\|";
     case 0x2022: return "\\bullet";
     case 0x2024: return ".";
+    case 0x2020: return "\\dagger";
+    case 0x2021: return "\\ddagger";
     case 0x2026: return "\\ldots";
-    case 0x2032: return "'";
-    case 0x2033: return "''";
-    case 0x2034: return "'''";
+    case 0x2032: return "\\prime";
+    case 0x2033: return "\\prime\\prime";
+    case 0x2034: return "\\prime\\prime\\prime";
+    case 0x2192: return "\\to";
     case 0x2212: return "-";
     case 0x2215: return "/";
     case 0x2223: return "|";
@@ -690,8 +694,10 @@ bool JoinPart(uint32_t cp) {
 void AppendToken(std::string& out, std::string_view token) {
     if (token.empty()) return;
     // A command name ending in a letter runs into a following letter: a space between (only a
-    // token starting with a letter can run into one).
-    if (!out.empty() && IsAsciiLetter(static_cast<unsigned char>(token[0]))) {
+    // token starting with a letter can run into one). Before a digit the space is the sources'
+    // habit (\leq 1, READoc's ground truth), not a need.
+    const unsigned char first = static_cast<unsigned char>(token[0]);
+    if (!out.empty() && (IsAsciiLetter(first) || (first >= '0' && first <= '9'))) {
         size_t i = out.size();
         while (i > 0 && IsAsciiLetter(static_cast<unsigned char>(out[i - 1]))) --i;
         if (i > 0 && i < out.size() && out[i - 1] == '\\') out.push_back(' ');
@@ -916,7 +922,7 @@ bool Builder::ResolveAtom(const MathGlyph& g, Atom& a) {
     }
     if (cp == 0x2032 || cp == 0x2033 || cp == 0x2034 || ((cp == 0x2019 || cp == '\'') && font != MathFont::None)) {
         a.kind = Kind::Prime;
-        a.latex.assign(cp == 0x2033 ? "''" : cp == 0x2034 ? "'''" : "'");
+        a.latex.assign(cp == 0x2033 ? "\\prime\\prime" : cp == 0x2034 ? "\\prime\\prime\\prime" : "\\prime");
         return true;
     }
     // TeX's \Re and \Im are cmsy10 symbols (ℜ, ℑ); a Fraktur font's R and I are \mathfrak letters.
@@ -2130,7 +2136,7 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
             else if (role[k] == 2) sub.push_back(std::move(items[k]));
         }
         if (!sup.empty()) {
-            // Primes alone are written as such.
+            // Primes alone are \prime each (x^{\prime\prime}, as LaTeX reads x'').
             bool primes = true;
             for (const Item& s : sup) primes = primes && s.kind == Kind::Prime;
             if (primes) {
@@ -2142,30 +2148,25 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
         if (!sub.empty() && !Layout(sub, depth + 1, subText)) return false;
         return true;
     };
-    const auto writeScripts = [&](bool primeOnly) {
+    const auto writeScripts = [&]() {
         if (!subText.empty()) {
             out.append("_{");
             out.append(subText);
             out.push_back('}');
         }
         if (!supText.empty()) {
-            if (primeOnly) {
-                out.append(supText);
-            } else {
-                out.append("^{");
-                out.append(supText);
-                out.push_back('}');
-            }
+            out.append("^{");
+            out.append(supText);
+            out.push_back('}');
         }
     };
     // Prescripts.
     while (i < n && role[i] != 0) ++i;
     if (i > 0) {
         if (!scripts(0, i)) return false;
-        const bool primes = !supText.empty() && supText.find_first_not_of('\'') == std::string::npos;
         if (!sup.empty() || !sub.empty()) {
             out.append("{}");
-            writeScripts(primes);
+            writeScripts();
         }
     }
     while (i < n) {
@@ -2184,6 +2185,13 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
         }
         std::string_view token = !words[i].empty() ? std::string_view(words[i]) : std::string_view(b.latex);
         std::string built;
+        if (b.kind == Kind::Prime) {
+            // A prime of the row's own size is still a superscript.
+            built.assign(out.empty() || out.back() == '{' ? "{}^{" : "^{");
+            built += b.latex;
+            built.push_back('}');
+            token = built;
+        }
         if (words[i].empty() && b.tall && (b.kind == Kind::Open || b.kind == Kind::Close || b.kind == Kind::Bar)) {
             built.assign(SizePrefix((b.top - b.bottom) / em));
             built += b.kind == Kind::Open ? "l" : b.kind == Kind::Close ? "r" : "";
@@ -2230,9 +2238,8 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
         }
         if (!scripts(i + 1, next)) return false;
         if (!sup.empty() || !sub.empty()) {
-            const bool primes = !supText.empty() && supText.find_first_not_of('\'') == std::string::npos;
-            if ((!lower[i].empty() && !subText.empty()) || (!upper[i].empty() && !supText.empty() && !primes)) out.append("{}");
-            writeScripts(primes);
+            if ((!lower[i].empty() && !subText.empty()) || (!upper[i].empty() && !supText.empty())) out.append("{}");
+            writeScripts();
         }
         i = next;
     }

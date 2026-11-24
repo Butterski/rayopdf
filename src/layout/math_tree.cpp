@@ -232,7 +232,6 @@ private:
     bool Inside(const Node& structure, const Node& n) const;
     bool EmitRow(const uint32_t* heads, size_t count, int depth, std::string& out);
     bool EmitGroup(uint32_t node, Relation relation, int depth, std::string& out);
-    bool PrimesOnly(uint32_t node, int depth) const;
     const uint32_t* Children(uint32_t node, Relation relation, size_t& count) const {
         const size_t at = size_t(node) * kRelationCount + relation;
         count = s_.childStart[at + 1] - s_.childStart[at];
@@ -520,23 +519,6 @@ void Tree::Edges() {
     }
 }
 
-// Whether `node` and what its Right chain reaches are primes (at most 8) with nothing on them.
-bool Tree::PrimesOnly(uint32_t node, int depth) const {
-    const Node& p = s_.nodes[node];
-    if (depth >= 8 || p.kind != kGlyph || s_.units[p.unit].glyph == kNone ||
-        !(s_.symbols[s_.units[p.unit].glyph].role & kSymbolPrime))
-        return false;
-    size_t m = 0;
-    for (Relation r : {kSup, kSub, kAbove, kBelow, kInside}) {
-        Children(node, r, m);
-        if (m != 0) return false;
-    }
-    const uint32_t* right = Children(node, kRight, m);
-    for (size_t k = 0; k < m; ++k)
-        if (!PrimesOnly(right[k], depth + 1)) return false;
-    return true;
-}
-
 bool Tree::EmitGroup(uint32_t node, Relation relation, int depth, std::string& out) {
     size_t count = 0;
     const uint32_t* heads = Children(node, relation, count);
@@ -631,14 +613,9 @@ bool Tree::EmitRow(const uint32_t* heads, size_t count, int depth, std::string& 
             out.push_back('}');
         }
         if (ok && sups > 0) {
-            // Primes alone are written as such.
-            size_t m = 0;
-            const uint32_t* sup = Children(last, kSup, m);
-            bool primes = true;
-            for (size_t k = 0; k < m && primes; ++k) primes = PrimesOnly(sup[k], 0);
-            if (!primes) out.append("^{");
+            out.append("^{");
             ok = EmitGroup(last, kSup, depth, out);
-            if (!primes) out.push_back('}');
+            out.push_back('}');
         }
         lastU1 = reach_;
         reach_ = Fmax(saved, reach_);

@@ -1978,7 +1978,7 @@ void TestCellNumbersLatex() {
     const std::string md = Run(pages, &report, MathMode::Latex);
     Show("cell numbers latex", md);
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Error | 308\xC2\xB1" "6 |\n| --- | --- |\n| Shift | \xE2\x88\x92" "0.1 |"), 890);
-    RAYOPDF_CHECK(Contains(md, "The error is $308\\pm6$ in all runs."), 891);
+    RAYOPDF_CHECK(Contains(md, "The error is $308\\pm 6$ in all runs."), 891);
 }
 
 // A ruled table a few points right of a chart's filled background, beside it on the page but much
