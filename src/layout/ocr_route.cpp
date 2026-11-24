@@ -268,12 +268,13 @@ void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, Oc
         }
         if (repeated) continue;
         uint32_t covering = 0;
+        const float x0 = image.x0, y0 = image.y0, x1 = image.x1, y1 = image.y1;
         for (const Glyph& g : page.glyphs) {
-            if (!Counted(g)) continue;
+            // Most glyphs lie outside the image: the box test first.
             const UprightBox box = GlyphPageBox(g);
             const float cx = 0.5f * (box.x0 + box.x1), cy = 0.5f * (box.y0 + box.y1);
-            if (cx >= image.x0 && cx <= image.x1 && cy >= image.y0 && cy <= image.y1 && ++covering > kRegionMaxCoveringChars)
-                break;
+            if (!(cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) || !Counted(g)) continue;
+            if (++covering > kRegionMaxCoveringChars) break;
         }
         if (covering > kRegionMaxCoveringChars) continue;
         plan.images.push_back(i);
