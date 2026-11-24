@@ -1626,19 +1626,34 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
     // current line while direction and baseline match).
     std::vector<Fragment>& frags = place.frags;
     frags.clear();
-    // The fragment being extended stays in `f` until the next one starts, out of memory that the
-    // glyphs' fields might alias. Every glyph after its first joins it until one starts the next:
-    // its end is set as it closes.
+    // The fragment being extended stays in `f` until it closes, out of memory that the glyphs'
+    // fields might alias. A fragment starts at a glyph and takes the glyphs after it while they
+    // join it; the first that does not closes it and starts the next (no flag of an open fragment
+    // tested at each glyph).
     Fragment f;
-    bool open = false;
     // In locals: the vector's own fields are reloaded after each store the loop makes.
     const uint32_t* const order = vis.data();
     const uint32_t visCount = static_cast<uint32_t>(vis.size());
     const Glyph* const records = glyphs.data();
-    for (uint32_t k = 0; k < visCount; ++k) {
-        const Glyph& g = records[order[k]];
-        const bool space = (g.flags & kGlyphSpace) != 0;
-        if (open) {
+    for (uint32_t k = 0; k < visCount;) {
+        const Glyph& start = records[order[k]];
+        f = Fragment();
+        f.begin = k;
+        f.dir = start.dir;
+        f.u0 = start.u0, f.u1 = start.u1, f.vb = start.vb, f.vt = start.vt;
+        f.baseline = start.v;
+        f.size = start.size;
+        f.lastU1 = start.u1;
+        f.lastSize = start.size;
+        f.any = (start.flags & kGlyphSpace) == 0;
+        f.spaces = !f.any;
+        if (f.any) {
+            uint32_t value;
+            f.marker = ParseMarker(page.GlyphText(start), value) != Marker::None;
+        }
+        for (++k; k < visCount; ++k) {
+            const Glyph& g = records[order[k]];
+            const bool space = (g.flags & kGlyphSpace) != 0;
             const float em = M::Max(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
             const float dv = std::fabs(g.v - f.baseline);
@@ -1648,52 +1663,32 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             // under kScriptRatio of the fragment's size (TeX's scriptscript style is 0.5) above the
             // baseline of a single letter is no script (a drop cap, then its first line:
             // SeatDropCaps).
-            if (g.dir == f.dir && gap >= -0.6f * em && gap <= maxGap && dv <= 0.6f * em &&
-                (dv <= 0.25f * em || space ||
-                 ((g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size) &&
-                  !(g.size < kScriptRatio * f.size && g.v > f.baseline && InitialAlone(page, order, f.begin, k))))) {
-                f.lastU1 = M::Max(f.lastU1, g.u1);
-                if (!space) {
-                    f.lastSize = g.size;
-                    if (!f.any) {
-                        f.u0 = g.u0, f.u1 = g.u1, f.vb = g.vb, f.vt = g.vt;
-                        f.baseline = g.v, f.size = g.size;
-                        f.any = true;
-                    } else {
-                        f.u0 = M::Min(f.u0, g.u0), f.u1 = M::Max(f.u1, g.u1);
-                        f.vb = M::Min(f.vb, g.vb), f.vt = M::Max(f.vt, g.vt);
-                        // A fragment that began with a superscript takes the baseline of the
-                        // full-size text that follows.
-                        if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
-                    }
-                    f.marker = false;
+            if (!(g.dir == f.dir && gap >= -0.6f * em && gap <= maxGap && dv <= 0.6f * em &&
+                  (dv <= 0.25f * em || space ||
+                   ((g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size) &&
+                    !(g.size < kScriptRatio * f.size && g.v > f.baseline && InitialAlone(page, order, f.begin, k))))))
+                break;
+            f.lastU1 = M::Max(f.lastU1, g.u1);
+            if (!space) {
+                f.lastSize = g.size;
+                if (!f.any) {
+                    f.u0 = g.u0, f.u1 = g.u1, f.vb = g.vb, f.vt = g.vt;
+                    f.baseline = g.v, f.size = g.size;
+                    f.any = true;
                 } else {
-                    f.spaces = true;
+                    f.u0 = M::Min(f.u0, g.u0), f.u1 = M::Max(f.u1, g.u1);
+                    f.vb = M::Min(f.vb, g.vb), f.vt = M::Max(f.vt, g.vt);
+                    // A fragment that began with a superscript takes the baseline of the
+                    // full-size text that follows.
+                    if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
                 }
-                continue;
+                f.marker = false;
+            } else {
+                f.spaces = true;
             }
-            f.end = k;
-            frags.emplace_back() = f;  // f's address never escapes: it stays in registers
         }
-        f = Fragment();
-        f.begin = k;
-        f.dir = g.dir;
-        f.u0 = g.u0, f.u1 = g.u1, f.vb = g.vb, f.vt = g.vt;
-        f.baseline = g.v;
-        f.size = g.size;
-        f.lastU1 = g.u1;
-        f.lastSize = g.size;
-        f.any = !space;
-        f.spaces = space;
-        if (f.any) {
-            uint32_t value;
-            f.marker = ParseMarker(page.GlyphText(g), value) != Marker::None;
-        }
-        open = true;
-    }
-    if (open) {
-        f.end = visCount;
-        frags.emplace_back() = f;
+        f.end = k;
+        frags.emplace_back() = f;  // f's address never escapes: it stays in registers
     }
     SeatDropCaps(page, vis, frags);
     // Leading space-only fragments carry nothing.
