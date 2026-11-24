@@ -53,6 +53,13 @@ enum class Quotes : uint8_t { Keep, Ascii };
 // letter a capital ("V. CONCLUSION").
 enum class SmallCaps : uint8_t { Lower, Keep };
 
+// A figure's own text (tick labels, legends, axis titles, the labels of a diagram: blocks standing
+// wholly in or beside a figure region on a page with a figure caption, layout/figures.h) kept as
+// paragraphs, as printed (the default), or left out. Drop keeps what reads as prose near a figure:
+// captions, subfigure captions, sentences. READoc's gold comes from the LaTeX source, which never
+// holds a figure's inner text; opendataloader-bench's gold does.
+enum class FigureText : uint8_t { Keep, Drop };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -82,6 +89,7 @@ struct ConvertOptions {
     TableFormat tables = TableFormat::Auto;
     Quotes quotes = Quotes::Keep;
     SmallCaps smallCaps = SmallCaps::Lower;
+    FigureText figureText = FigureText::Keep;
     // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
     uint32_t chunkChars = kDefaultChunkChars;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are

@@ -34,6 +34,9 @@ enum class Quotes : uint8_t { Keep, Ascii };
 // Headings set in small capitals in the source's case (small capitals as lower-case letters), or
 // as printed (every letter a capital).
 enum class SmallCaps : uint8_t { Lower, Keep };
+// A figure's own text (tick labels, legends, the labels of a diagram) kept as paragraphs, as
+// printed, or left out (captions and sentences near a figure stay).
+enum class FigureText : uint8_t { Keep, Drop };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -62,6 +65,7 @@ struct Options {
     Tables tables = Tables::Auto;            // Html: every table as HTML; Pipe: every table as GFM; PipeLatex: LaTeX-escaped
     Quotes quotes = Quotes::Keep;            // Ascii: typographic quotation marks as ' and "
     SmallCaps smallCaps = SmallCaps::Lower;  // Keep: small-capitals headings as printed, in capitals
+    FigureText figureText = FigureText::Keep;  // Drop: a figure's own text left out
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic

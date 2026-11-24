@@ -460,6 +460,75 @@ void TestFigureText() {
     RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Austria | 1200 | 1300 | 2.1% |"), 869);
 }
 
+// On a page with a figure's caption, the text standing in or beside the plot is the figure's own
+// (tick labels, the rows of names and numbers). It is kept by default (FigureText::Keep) and left
+// out with Drop, where what reads as prose there stays: a paragraph of two lines just above the
+// plot (both within two ems of it), or in its place a short line at the body size that ends a
+// sentence ("Shares by country:"), a subfigure's caption inside the plot, the caption under it,
+// and the paragraph below.
+void TestFigureLabels() {
+    const auto build = [](bool brief) {
+        std::vector<PageData> pages{NewPage()};
+        PageData& page = pages[0];
+        if (brief) {
+            AddText(page, "Shares by country:", 72, 680);
+        } else {
+            AddText(page, "Our survey counted the people of five countries over ten years,", 72, 692);
+            AddText(page, "and the plot below shows how each of them has grown since then.", 72, 680);
+        }
+        const char* const names[] = {"Austria", "Belgium", "Croatia", "Denmark", "Estonia"};
+        for (int r = 0; r < 5; ++r) {
+            const float y = 660 - 14.0f * float(r);
+            AddText(page, names[r], 72, y);
+            AddText(page, std::to_string(1200 + 37 * r), 250, y);
+            AddText(page, std::to_string(1300 + 29 * r), 330, y);
+            AddText(page, std::to_string(r + 2) + ".1%", 410, y);
+        }
+        AddText(page, "(a) Growth of the population", 72, 594);
+        Shape s;
+        s.x0 = 66, s.x1 = 456, s.y0 = 584, s.y1 = 676;
+        s.kind = ShapeKind::Other, s.stroked = true, s.curved = true, s.segments = 40;
+        page.shapes.push_back(s);
+        for (int k = 0; k < 10; ++k) {
+            Shape tick;
+            tick.x0 = tick.x1 = 70 + 40.0f * float(k), tick.y0 = 584, tick.y1 = 587;
+            tick.kind = ShapeKind::Line, tick.stroked = true, tick.segments = 1;
+            page.shapes.push_back(tick);
+        }
+        AddText(page, "Figure 1: Population of five countries.", 72, 566);
+        AddProse(page, 72, 450, 540, 3);
+        return pages;
+    };
+    const auto convert = [](std::vector<PageData>& pages, FigureText figureText) {
+        std::string md;
+        ConvertReport report;
+        std::vector<PageTextQuality> quality(pages.size());
+        OutputSettings output;
+        output.figureText = figureText;
+        ConvertPages(pages, quality, {}, false, md, report, nullptr, nullptr, MathMode::Unicode, nullptr, nullptr, &output);
+        return md;
+    };
+    std::vector<PageData> pages = build(false);
+    std::string md = convert(pages, FigureText::Keep);
+    RAYOPDF_CHECK(Contains(md, "Austria") && Contains(md, "1348") && Contains(md, "2.1%"), 2323);
+    pages = build(false);
+    md = convert(pages, FigureText::Drop);
+    Show("figure labels", md);
+    RAYOPDF_CHECK(!Contains(md, "Austria") && !Contains(md, "1348") && !Contains(md, "2.1%"), 2320);
+    RAYOPDF_CHECK(Contains(md, "over ten years, and the plot below") && Contains(md, "Figure 1: Population of five") &&
+                      Contains(md, "(a) Growth of the population") && Contains(md, "wizards quietly examine"),
+                  2321);
+    // The paragraph above stands wholly within the figure's reach: the prose test keeps it.
+    int flagged = 0;
+    for (const Line& l : pages[0].lines) flagged += (l.flags & kLineFigure) && l.u1 - l.u0 > 300;
+    RAYOPDF_CHECK(flagged == 2, 2322);
+    pages = build(true);
+    md = convert(pages, FigureText::Drop);
+    flagged = 0;
+    for (const Line& l : pages[0].lines) flagged += (l.flags & kLineFigure) && l.u1 - l.u0 < 100 && l.vb > 670;
+    RAYOPDF_CHECK(flagged == 1 && Contains(md, "Shares by country:") && !Contains(md, "Austria"), 2324);
+}
+
 // Figure regions from marks whose cells touch only at their corners: eight marks set corner to
 // corner on a diagonal are one cluster that weighs enough; the same eight with one empty cell
 // between the fourth and the fifth are two that do not. Six hundred long slanted strokes far
@@ -3409,6 +3478,7 @@ int main(int argc, char** argv) {
     TestHeaderRule();
     TestBorderless();
     TestFigureText();
+    TestFigureLabels();
     TestFigureCorners();
     TestLatticeInFigure();
     TestHeatMapAxes();

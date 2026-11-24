@@ -6,7 +6,7 @@
 // break; chunks (--format=chunks with the smallest chunk size), every line one object; the
 // inspector (--format=inspect), one HTML file without a script; Markdown with the output options
 // --plain, --tables=html, --tables=pipe or --tables=pipe-latex (by the size again),
-// --furniture=keep, --quotes=ascii and --small-caps=keep;
+// --furniture=keep, --quotes=ascii, --small-caps=keep and --figure-text=drop;
 // or Markdown with a feature sink (`rayopdf --features`) counting the edge rows and table gaps,
 // which must be the same Markdown.
 // Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
@@ -58,6 +58,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         options.furniture = RayoPdf::Layout::Furniture::Keep;
         options.quotes = RayoPdf::Layout::Quotes::Ascii;
         options.smallCaps = RayoPdf::Layout::SmallCaps::Keep;
+        options.figureText = RayoPdf::Layout::FigureText::Drop;
         RayoPdf::Layout::Convert(*document, options, out, report);
         break;
     default: {

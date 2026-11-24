@@ -294,8 +294,15 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   dehyphenation reads; `--quotes=keep`, the default, writes them as printed);
   `--small-caps=keep` (2026-11-17) writes a heading set in small capitals (capitals in two sizes,
   semantics' `SmallCapsSize`) as printed, every letter a capital (`--small-caps=lower`, the
-  default, writes it in the source's case, its small capitals as lower-case letters). Each changes
-  the JSON output's `markdown` and cells the same way.
+  default, writes it in the source's case, its small capitals as lower-case letters);
+  `--figure-text=drop` (2026-11-24) leaves out a figure's own text: on a page with a figure
+  caption, the blocks whose every line stands in a figure region or within two ems of it
+  (`MarkFigureText`'s `kLineFigure`) and that do not read as prose (semantics' `ChartText`:
+  a caption, a subfigure's caption, a sentence's end at the body size, or text at 0.8 of the
+  body size or more whose widest line runs 12 ems and holds four lowercase words, half of its
+  words, are prose); `--figure-text=keep`, the default, writes them as paragraphs, as printed.
+  READoc's ground truth comes from the LaTeX source, which never holds a figure's inner text;
+  odl's ground truth does. Each changes the JSON output's `markdown` and cells the same way.
 - Chunks for retrieval (`--format=chunks`, decided 2026-11-13): JSON Lines, one compact object a
   chunk, `{"chunk": N, "heading_path": [...], "pages": [first, last], "boxes": [...], "blocks":
   [...], "markdown": "..."}`: `chunk` counts from 0; `heading_path` holds the text (without
@@ -366,11 +373,13 @@ JSON object a line;
 - **`--format=json`**, **`--format=chunks`** (with **`--chunk-chars=N`**, 256 to 1,000,000,
   else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
   **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--tables=pipe-latex`**,
-  **`--furniture=keep`**, **`--quotes=ascii`** and **`--small-caps=keep`** choose what is
+  **`--furniture=keep`**, **`--quotes=ascii`**, **`--small-caps=keep`** and
+  **`--figure-text=drop`** choose what is
   written (D6): the JSON document, chunks for retrieval or the layout inspector's HTML instead of
   Markdown, page markers in the Markdown, front matter before it, text without inline markup,
   every table as HTML or every table as a pipe table (its cells escaped for a LaTeX reader with
-  `pipe-latex`), page furniture kept, ASCII quotation marks, small-capitals headings as printed.
+  `pipe-latex`), page furniture kept, ASCII quotation marks, small-capitals headings as printed,
+  a figure's own text left out.
   A RayoMD payload is not used with any of them except
   `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,

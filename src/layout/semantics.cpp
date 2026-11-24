@@ -1189,6 +1189,65 @@ constexpr uint64_t kBottomChecks = uint64_t(1) << 22;  // line comparisons AtBot
 constexpr size_t kMaxFloatRun = 8;  // floats (captions, tables, images) a paragraph runs on around
 constexpr float kProseWidth = 15.0f;  // ems a column of prose is wide at least
 
+// A figure's own text, left out with FigureText::Drop: a block every line of which stands in or
+// beside a figure region (kLineFigure: tick labels, legends, axis titles, the boxes of a diagram),
+// unless it reads as prose or is furniture kept as text. Prose near a figure stays: a caption
+// ("Figure 3: …"); a subfigure's caption ("(b) Trained on …"); a sentence's end at the body size
+// ("Result:", the last words of a paragraph run on below the figure); or text set at 0.8 of the
+// body size or larger whose widest line runs 12 ems or more and holds four words with a lowercase
+// letter and no digit, half of its words at least (ten letters of a script without case, as Chinese
+// or Japanese, count as such a sentence). Tick numbers, short labels and legends fail all of these.
+bool ChartText(const std::vector<PageData>& pages, const std::vector<Info>& infos, const RawBlock& b, float body,
+               std::string& line) {
+    float size = 0, wide = 0;
+    for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+        if (infos[i].flags & kLineFurniture) return false;
+        size = Fmax(size, infos[i].size);
+        if (infos[i].size > 0) wide = Fmax(wide, (infos[i].u1 - infos[i].u0) / infos[i].size);
+    }
+    const Info& first = infos[b.first];
+    LineText(pages[first.page], pages[first.page].lines[first.line], line);
+    if (IsCaption(line)) return false;
+    if (line.size() >= 5 && line[0] == '(' && line[1] >= 'a' && line[1] <= 'z' && line[2] == ')' && line[3] == ' ' &&
+        line[4] != ' ')
+        return false;
+    const bool sentenceEnd = infos[b.first + b.count - 1].endsTerminal && size >= 0.95f * body;
+    const bool wideProse = size >= 0.8f * body && wide >= 12.0f;
+    if (!sentenceEnd && !wideProse) return true;
+    uint32_t words = 0, lower = 0, caseless = 0;
+    for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+        if (i != b.first) LineText(pages[infos[i].page], pages[infos[i].page].lines[infos[i].line], line);
+        bool inWord = false, hasLower = false, hasDigit = false;
+        uint32_t letters = 0;
+        const auto endWord = [&] {
+            if (!inWord) return;
+            ++words;
+            lower += hasLower && !hasDigit && letters >= 2;
+            inWord = hasLower = hasDigit = false;
+            letters = 0;
+        };
+        uint32_t cp = 0;
+        size_t length = 0;
+        for (size_t k = 0; Utf8::Decode(line, k, cp, length); k += length) {
+            if (cp == ' ') {
+                endWord();
+                continue;
+            }
+            inWord = true;
+            if (cp >= '0' && cp <= '9') hasDigit = true;
+            else if (IsLower(cp)) hasLower = true, ++letters;
+            else if ((cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0x24F && cp != 0xD7 && cp != 0xF7) ||
+                     (cp >= 0x391 && cp <= 0x3A9) || (cp >= 0x400 && cp <= 0x42F))
+                ++letters;
+            else if ((cp >= 0x3040 && cp <= 0x30FF) || (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF))
+                ++caseless;
+        }
+        endWord();
+    }
+    if (sentenceEnd && (lower >= 1 || caseless >= 1)) return false;
+    return !(wideProse && (caseless >= 10 || (lower >= 4 && lower * 2 >= words)));
+}
+
 // A page footnote sits below the text of its column: in the lower half of the page's text, and no
 // line under it that it overlaps along the baseline is set larger, except in the page's last row
 // (a running footer or page number left on a single page). Superscript-marked lines higher up are
@@ -1815,7 +1874,7 @@ void PlaceNotes(const std::vector<PageData>& pages, std::vector<Block>& blocks, 
 } // namespace
 
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
-                 const std::vector<uint8_t>& unmappedPages, BlockList& out) {
+                 const std::vector<uint8_t>& unmappedPages, bool dropFigureText, BlockList& out) {
     std::vector<Block>& blocks = out.blocks;
     std::vector<BlockLine>& lines = out.lines;
     blocks.clear();
@@ -3490,6 +3549,17 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 alert = alertTitle[r];
                 ++r;
                 continue;
+            }
+            // FigureText::Drop: a figure's own text (every line of it in or beside a figure region)
+            // that does not read as prose is left out (ChartText).
+            if (dropFigureText && (kinds[r].kind == BlockKind::Paragraph || kinds[r].kind == BlockKind::ListItem)) {
+                bool inFigure = true;
+                for (uint32_t i = b.first; i < b.first + b.count && inFigure; ++i)
+                    inFigure = (infos[i].flags & kLineFigure) != 0;
+                if (inFigure && ChartText(pages, infos, b, body, capText)) {
+                    ++r;
+                    continue;
+                }
             }
             Block block;
             block.kind = kinds[r].kind;

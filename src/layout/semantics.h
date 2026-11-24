@@ -93,9 +93,10 @@ struct BlockList {
 };
 
 // Pages carry their lines in reading order (PageData::order). `unmappedPages` holds per page (index
-// into `pages`) bit 1 when its text is mostly unmapped and bit 2 when OCR failed on it. `out` is
-// replaced.
+// into `pages`) bit 1 when its text is mostly unmapped and bit 2 when OCR failed on it.
+// `dropFigureText` (FigureText::Drop, layout/convert.h) leaves out a figure's own text: blocks
+// whose every line is marked kLineFigure and that do not read as prose. `out` is replaced.
 void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEntry>& outline,
-                 const std::vector<uint8_t>& unmappedPages, BlockList& out);
+                 const std::vector<uint8_t>& unmappedPages, bool dropFigureText, BlockList& out);
 
 } // namespace RayoPdf::Layout

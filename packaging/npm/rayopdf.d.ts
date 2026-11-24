@@ -14,6 +14,8 @@ export interface ConvertOptions {
   quotes?: "keep" | "ascii";
   /** Headings set in small capitals in the source's case (default), or as printed, in capitals. */
   smallCaps?: "lower" | "keep";
+  /** A figure's own text (tick labels, legends, the labels of a diagram) as paragraphs (default), or left out. */
+  figureText?: "keep" | "drop";
   /** OCR needs the native add-on, which WebAssembly cannot start: "auto" and "force" find none. */
   ocr?: "off" | "auto" | "force";
   /** User or owner password of an encrypted PDF. */

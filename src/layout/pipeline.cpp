@@ -190,7 +190,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         if (p < quality.size() && quality[p].ocrFailed) unmapped[p] |= 2;
     }
     BlockList blocks;
-    BuildBlocks(pages, outline, unmapped, blocks);
+    BuildBlocks(pages, outline, unmapped, output && output->figureText == FigureText::Drop, blocks);
     if (tree) tagged.Blocks(pages, blocks);
     if (!tree && !keepFurniture) report.headerFooterLines += DropEdgeModelBlocks(pages, blocks);
     if (output && output->quotes == Quotes::Ascii) {

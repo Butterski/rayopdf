@@ -168,6 +168,16 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             error = "--small-caps takes lower or keep: " + std::string(mode);
             return FlagStatus::Invalid;
         }
+    } else if (StartsWith(arg, "--figure-text=")) {
+        const std::string_view mode = arg.substr(14);
+        if (mode == "keep") {
+            options.convert.figureText = Layout::FigureText::Keep;
+        } else if (mode == "drop") {
+            options.convert.figureText = Layout::FigureText::Drop;
+        } else {
+            error = "--figure-text takes keep or drop: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
     } else {
         return FlagStatus::Unknown;
     }

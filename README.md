@@ -389,6 +389,12 @@ output faithful to the page.
 - `--small-caps=keep` writes a heading set in small capitals as printed, every letter a capital
   (`## V. CONCLUSION`). By default (`--small-caps=lower`) such a heading is written in the
   source's case, its small capitals as lower-case letters (`## V. Conclusion`).
+- `--figure-text=drop` leaves out a figure's own text: on a page with a figure caption, the
+  blocks standing wholly in or beside a drawn figure or an image (tick labels, axis titles,
+  legends, the labels of a diagram) that do not read as prose. Captions, subfigure captions
+  (`(b) …`) and sentences near a figure stay. By default (`--figure-text=keep`) a figure's text
+  is written as paragraphs, as printed. READoc's ground truth comes from the LaTeX source, which
+  never holds a figure's inner text; opendataloader-bench's ground truth does.
 
 ```sh
 rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep
@@ -407,7 +413,8 @@ link targets beyond that allowance. The profile carries no images: the source's 
 as written and no image files are written. The record's `exact` says what happened: `used`,
 `none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
 with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html`, `--tables=pipe`, `--tables=pipe-latex`, `--furniture=keep`, `--quotes=ascii` or `--small-caps=keep`,
+`--tables=html`, `--tables=pipe`, `--tables=pipe-latex`, `--furniture=keep`, `--quotes=ascii`, `--small-caps=keep` or
+`--figure-text=drop`,
 which need the pages' layout), or why the payload was rejected and the pages converted instead:
 `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts
 the pages.
