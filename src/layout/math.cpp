@@ -28,13 +28,6 @@ bool Starts(std::string_view name, std::string_view prefix) {
     return true;
 }
 
-// Whether `name` holds `part` (lowercase), case-insensitively.
-bool Holds(std::string_view name, std::string_view part) {
-    for (size_t at = 0; at + part.size() <= name.size(); ++at)
-        if (Starts(name.substr(at), part)) return true;
-    return false;
-}
-
 bool Finite(float x) { return x == x && x - x == 0; }
 // Finite() of four values at once: x - x is 0 for a finite x and NaN for an infinite or NaN one,
 // and a NaN term makes the sum NaN.
@@ -2415,6 +2408,10 @@ void AppendUprightWord(const std::string& word, bool spaceAfter, std::string& ou
 
 MathFont MathFontOf(std::string_view name) {
     if (name.size() > 128) return MathFont::None;
+    // The name lowercased once: the prefixes and parts below are lowercase.
+    char buffer[128];
+    for (size_t i = 0; i < name.size(); ++i) buffer[i] = Lower(name[i]);
+    const std::string_view lower(buffer, name.size());
     // TeX's own fonts and their clones, by the prefixes their families share.
     struct Prefix {
         std::string_view prefix;
@@ -2437,13 +2434,34 @@ MathFont MathFontOf(std::string_view name) {
         {"dsrom", MathFont::Blackboard},    {"bbm", MathFont::Blackboard},     {"mtextra", MathFont::Symbol},
         {"mt extra", MathFont::Symbol},     {"oamathsymbols", MathFont::Symbol},
     };
-    for (const Prefix& p : kPrefixes)
-        if (Starts(name, p.prefix)) return p.font;
+    // The first bytes of the prefixes: a name starting with none of them is passed over at once, and
+    // a prefix whose first byte is not the name's is passed over before it is compared.
+    struct Leads {
+        bool is[256] = {};
+        constexpr Leads() {
+            for (const Prefix& p : kPrefixes) is[static_cast<unsigned char>(p.prefix[0])] = true;
+        }
+    };
+    static constexpr Leads kLeads;
+    const char first = lower.empty() ? 0 : lower[0];
+    if (kLeads.is[static_cast<unsigned char>(first)])
+        for (const Prefix& p : kPrefixes)
+            if (p.prefix[0] == first && lower.substr(0, p.prefix.size()) == p.prefix) return p.font;
     // OpenType math fonts ("LatinModernMath-Regular", "STIXTwoMath", "CambriaMath"), MathDesign's
-    // "...-MathItalic-10" and other "Math" names; double-struck alphabets ("BoondoxDoubleStruck").
-    if (Holds(name, "mathitalic")) return MathFont::Italic;
-    if (Holds(name, "doublestruck")) return MathFont::Blackboard;
-    if (Holds(name, "math")) return MathFont::Unicode;
+    // "...-MathItalic-10" and other "Math" names; double-struck alphabets ("BoondoxDoubleStruck"):
+    // the name's "math", "mathitalic" and "doublestruck" found in one pass.
+    bool math = false, mathItalic = false, doubleStruck = false;
+    for (size_t at = 0; at < lower.size(); ++at) {
+        if (lower[at] == 'm' && lower.substr(at, 4) == "math") {
+            math = true;
+            mathItalic = mathItalic || lower.substr(at, 10) == "mathitalic";
+        } else if (lower[at] == 'd' && lower.substr(at, 12) == "doublestruck") {
+            doubleStruck = true;
+        }
+    }
+    if (mathItalic) return MathFont::Italic;
+    if (doubleStruck) return MathFont::Blackboard;
+    if (math) return MathFont::Unicode;
     return MathFont::None;
 }
 
