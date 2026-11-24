@@ -5,7 +5,8 @@
 // cards, a page's lead line and an italic subtitle under a heading; a cover's title and date, a
 // chapter's number, a division's label and a display title's stacked lines; the centred headings
 // of a page's own OCR layer; numbered section titles in italics on their own line, centred over
-// their text and set bold below the body's size; a short italic line over its upright paragraph.
+// their text and set bold below the body's size; a short italic line over its upright paragraph;
+// a copyright notice and a bold label inside a numbered list that runs on, which head nothing.
 // Pages are built glyph by glyph and converted by the whole pipeline. Exit codes 1800-1849 and
 // 2500-2549.
 #include "check.h"
@@ -739,6 +740,55 @@ void TestItalicTitleLine() {
     RAYOPDF_CHECK(Contains(md, "Required") && HeadingWith(md, "Required").empty(), 2520);
 }
 
+// A copyright or licence notice set apart like a heading ("CC0, 2022" in bold at the body's size,
+// "© 2021 Elsevier B.V." set larger) titles nothing; a bold title about copyright without a year
+// still heads its text.
+void TestRightsLine() {
+    const auto over = [](std::string_view line, float size) {
+        std::vector<PageData> page{NewPage(1)};
+        AddBody(page[0], 740, 4);
+        AddText(page[0], line, 72, 680, size, kGlyphBold);
+        AddBody(page[0], 660, 4);
+        const std::string out = Run(page);
+        Show("rights line", out);
+        return out;
+    };
+    const std::string cc0 = over("CC0, 2022", 10);
+    const std::string elsevier = over("© 2021 Elsevier B.V.", 14);
+    const std::string title = over("Copyright Protects Creative Work", 10);
+    RAYOPDF_CHECK(Contains(cc0, "CC0, 2022") && HeadingWith(cc0, "CC0").empty() && Contains(elsevier, "Elsevier") &&
+                      HeadingWith(elsevier, "Elsevier").empty() && !HeadingWith(title, "Copyright Protects").empty(),
+                  2521);
+}
+
+// A bold lead-in ending in a colon inside a numbered list whose numbers run on across it ("19."
+// above, "20." below) introduces a step of the list; a title without the colon there (a statute's
+// heading between its articles) and a lead-in over a list that starts again at "1." head their text.
+void TestLabelInList() {
+    const auto between = [](std::string_view label, std::string_view next) {
+        std::vector<PageData> page{NewPage(1)};
+        AddBody(page[0], 740, 3);
+        AddText(page[0], "18. Spin the tubes in a balanced configuration in the centrifuge for a minute.", 72, 690, 10);
+        AddText(page[0], "19. Allow the tubes to dry by leaving the tube caps open for three minutes.", 72, 670, 10);
+        AddText(page[0], label, 72, 645, 10, kGlyphBold);
+        AddText(page[0], next, 72, 620, 10);
+        AddText(page[0], "Dissolve the pellets by pipetting in and out and rinse the sides of the tube.", 92, 608, 10);
+        AddBody(page[0], 580, 3);
+        const std::string out = Run(page);
+        Show("bold line in a numbered list", out);
+        return out;
+    };
+    const std::string next = "20. Add ten microlitres of the buffer solution to each of the tubes in turn.";
+    const std::string on = between("Digest Prep (switch to the small micropipette):", next);
+    const std::string title = between("Digest Preparation", next);
+    const std::string again =
+        between("Digest Prep (switch to the small micropipette):",
+                "1. Add ten microlitres of the buffer solution to each of the tubes in turn.");
+    RAYOPDF_CHECK(Contains(on, "Digest Prep") && HeadingWith(on, "Digest Prep").empty() &&
+                      !HeadingWith(title, "Digest Preparation").empty() && !HeadingWith(again, "Digest Prep").empty(),
+                  2522);
+}
+
 } // namespace
 
 int main() {
@@ -761,6 +811,8 @@ int main() {
     TestNumberedTitles();
     TestSmallBoldTitles();
     TestItalicTitleLine();
+    TestRightsLine();
+    TestLabelInList();
     std::puts("test_layout_headings: all checks passed");
     return 0;
 }

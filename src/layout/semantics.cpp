@@ -342,6 +342,43 @@ bool DateLine(std::string_view t) {
     return at >= t.size() && ((months == 1 && numbers >= 1 && numbers <= 2) || (numeric == 1 && months == 0 && numbers == 0));
 }
 
+// A copyright or licence notice ("© 2021 Elsevier B.V.", "Copyright 2019 IEEE", "CC0, 2022",
+// "CC BY 4.0, 2023"): a "©" anywhere, or the word "copyright", the mark "(c)" or a Creative
+// Commons licence ("CC0", "CC BY", "CC-BY") with a year from 1900 to 2099 or "rights reserved"
+// beside it, in any letter case. It states the document's rights and titles nothing; a title
+// about copyright ("Copyright Protects Creative Work") holds no year.
+bool RightsLine(std::string_view t) {
+    const auto alnum = [](char c) { return (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z'); };
+    // `word` (lowercase ASCII) at `at` in any letter case, not inside a longer word of letters
+    // and digits.
+    const auto wordAt = [&](size_t at, std::string_view word) {
+        if (at + word.size() > t.size() || (at > 0 && alnum(t[at - 1]) && alnum(word.front()))) return false;
+        for (size_t k = 0; k < word.size(); ++k)
+            if ((word[k] >= 'a' && word[k] <= 'z' ? t[at + k] | 0x20 : t[at + k]) != word[k]) return false;
+        const size_t end = at + word.size();
+        return end == t.size() || !alnum(t[end]) || !alnum(word.back());
+    };
+    bool mark = false, dated = false;
+    for (size_t at = 0; at < t.size(); ++at) {
+        const char c = t[at];
+        if (c == '\xC2' && at + 1 < t.size() && t[at + 1] == '\xA9') return true;
+        if ((c | 0x20) == 'c') {
+            mark = mark || wordAt(at, "copyright") || wordAt(at, "cc0") || wordAt(at, "cc by") || wordAt(at, "cc-by");
+        } else if (c == '(') {
+            mark = mark || wordAt(at, "(c)");
+        } else if ((c | 0x20) == 'r') {
+            dated = dated || wordAt(at, "rights reserved");
+        } else if (c >= '0' && c <= '9' && (at == 0 || !alnum(t[at - 1]))) {
+            size_t end = at;
+            while (end < t.size() && t[end] >= '0' && t[end] <= '9') ++end;
+            dated = dated || (end - at == 4 && (end == t.size() || !alnum(t[end])) &&
+                              (t.substr(at, 2) == "19" || t.substr(at, 2) == "20"));
+            at = end - 1;
+        }
+    }
+    return mark && dated;
+}
+
 // Text that titles nothing: display math (an equation, with "=" and fewer than two words of three
 // letters; a math symbol from Mathematical Alphanumeric Symbols, Mathematical Operators or
 // Supplemental Mathematical Operators and fewer than three letters of ordinary text, or more math
@@ -2680,8 +2717,8 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         // Captions are set apart like headings but title no section; display math set large (an
         // integral sign, a fraction's numerator), a figure set large ("20%↑"), an author list
         // (names with raised affiliation marks: after a word of two letters or more, not after a
-        // symbol as in "L²(Rᵈ)") and an affiliation (its raised mark first, "¹University of …")
-        // title nothing either.
+        // symbol as in "L²(Rᵈ)"), an affiliation (its raised mark first, "¹University of …"), a
+        // date and a copyright or licence notice ("CC0, 2022": RightsLine) title nothing either.
         const auto caption = [&]() {
             const PageData& page = pages[first.page];
             LineText(page, page.lines[first.line], line);
@@ -2714,7 +2751,7 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
                 text += ' ';
                 text += line;
             }
-            return marks >= 2 || NoTitle(text) || DateLine(text);
+            return marks >= 2 || NoTitle(text) || DateLine(text) || RightsLine(text);
         };
         // Slightly larger text (from 7 % up) is a heading only as one or two short unpunctuated lines.
         const bool larger = size >= body * kHeadingSize ||
@@ -2930,6 +2967,31 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
             address = HoldsAddress(line);
         }
         if (address) k.kind = infos[raws[r].first].listStart() ? BlockKind::ListItem : BlockKind::Paragraph;
+    }
+
+    // A lead-in ending in a colon, set no larger than the text, inside a numbered list whose numbers
+    // run on across it ("19." above it, "20." below: a lab protocol's "Digest Prep (switch to the
+    // 20-μL pipette):") introduces the next step of that list and opens no section. A title without
+    // the colon there (a statute's "Planning permission" between its articles 6 and 7) stays a
+    // heading. The items are numbered ones (Marker::Number) on its page, the one above within three
+    // blocks before it, the one below within two after it.
+    for (size_t r = 1; r + 1 < raws.size(); ++r) {
+        Classified& k = kinds[r];
+        const Info& h = infos[raws[r].first];
+        if (k.kind != BlockKind::Heading || k.level > 0 || raws[r].take != 0 || h.listStart() ||
+            !(k.size < kHeadingSize * body) || infos[raws[r].first + raws[r].count - 1].lastCp != ':')
+            continue;
+        const auto item = [&](size_t q) {
+            const Info& in = infos[raws[q].first];
+            return in.page == h.page && kinds[q].kind == BlockKind::ListItem && in.marker == Marker::Number;
+        };
+        size_t above = r, below = r;
+        for (size_t q = r; q-- > 0 && q + 3 >= r && above == r;)
+            if (item(q)) above = q;
+        for (size_t q = r + 1; q < raws.size() && q <= r + 2 && below == r; ++q)
+            if (item(q)) below = q;
+        if (above != r && below != r && infos[raws[below].first].value == infos[raws[above].first].value + 1)
+            k.kind = BlockKind::Paragraph;
     }
 
     // A kicker: a short line set above a page's title in a smaller size ("AI Pack" over a slide's
