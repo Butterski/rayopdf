@@ -304,12 +304,10 @@ public:
 
     RAYOPDF_HOT_INLINE bool Find(float x, float y, int& r, int& c) {
         if (x < left_ || x > right_ || y > top_ || y < bottom_) return false;
-        size_t k = static_cast<size_t>(column_);
-        if (!(ordered_ && column_ >= 0 && xs_[k] <= x && (k + 1 == nx_ || x < xs_[k + 1]))) Column(x);
+        if (!(x >= columnLeft_ && x < columnRight_)) Column(x);
         if (!(y == y_)) {  // the same y (glyphs of a line) has the same row; NaN is never the same
             y_ = y;
-            k = static_cast<size_t>(row_);
-            if (!(ordered_ && row_ >= 0 && ys_[k] >= y && (k + 1 == ny_ || y > ys_[k + 1]))) Row(y);
+            if (!(y <= rowTop_ && y > rowBottom_)) Row(y);
         }
         c = std::min(std::max(column_, 0), cols_ - 1);
         r = std::min(std::max(row_, 0), rows_ - 1);
@@ -320,14 +318,30 @@ private:
     // The column of x past the last point's: the next one (a line's glyphs left to right), or searched.
     RAYOPDF_NOINLINE void Column(float x) {
         const size_t k = static_cast<size_t>(column_) + 1;
-        if (ordered_ && k < nx_ && xs_[k] <= x && (k + 1 == nx_ || x < xs_[k + 1])) {
+        if (ordered_ && k < nx_ && xs_[k] <= x && (k + 1 == nx_ || x < xs_[k + 1]))
             column_ = static_cast<int>(k);
-            return;
+        else
+            column_ = static_cast<int>(std::upper_bound(xs_, xs_ + nx_, x) - xs_) - 1;
+        // Where the boundaries are in order, the column holds every x in [xs[column], xs[column + 1])
+        // (up from the last boundary); otherwise each point is searched.
+        const size_t at = static_cast<size_t>(column_);
+        if (ordered_ && column_ >= 0) {
+            columnLeft_ = xs_[at];
+            columnRight_ = at + 1 == nx_ ? INFINITY : xs_[at + 1];
+        } else {
+            columnLeft_ = columnRight_ = NAN;
         }
-        column_ = static_cast<int>(std::upper_bound(xs_, xs_ + nx_, x) - xs_) - 1;
     }
     RAYOPDF_NOINLINE void Row(float y) {
         row_ = static_cast<int>(std::upper_bound(ys_, ys_ + ny_, y, std::greater<float>()) - ys_) - 1;
+        // As for columns: the row holds every y in (ys[row + 1], ys[row]] (down from the last boundary).
+        const size_t at = static_cast<size_t>(row_);
+        if (ordered_ && row_ >= 0) {
+            rowTop_ = ys_[at];
+            rowBottom_ = at + 1 == ny_ ? -INFINITY : ys_[at + 1];
+        } else {
+            rowTop_ = rowBottom_ = NAN;
+        }
     }
 
     // The grid's boundaries, read once (the grid does not change while in use).
@@ -340,6 +354,8 @@ private:
     int column_ = -1;      // the last point's: the last xs at or left of it
     int row_ = -1;         // the last ys at or above it
     float y_ = NAN;        // the last point's y
+    // The x range of column_ and the y range of row_ that the last search found (NaN: none).
+    float columnLeft_ = NAN, columnRight_ = NAN, rowTop_ = NAN, rowBottom_ = NAN;
 };
 
 // A page reference of a contents list: a number of four digits at most, or a roman numeral.
