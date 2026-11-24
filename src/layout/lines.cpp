@@ -1702,9 +1702,12 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         f.lastSize = start.size;
         f.any = (start.flags & kGlyphSpace) == 0;
         f.spaces = !f.any;
+        // How far the next glyph may be, in em: a list marker alone reaches further. The fragment
+        // holds only a marker while its reach is kMarkerGap.
+        float reach = kFragmentGap;
         if (f.any) {
             uint32_t value;
-            f.marker = ParseMarker(page.GlyphText(start), value) != Marker::None;
+            if (ParseMarker(page.GlyphText(start), value) != Marker::None) reach = kMarkerGap;
         }
         for (++k; k < visCount; ++k) {
             const Glyph& g = records[order[k]];
@@ -1712,7 +1715,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             const float em = M::Max(f.size, g.size);
             const float gap = g.u0 - f.lastU1;
             const float dv = std::fabs(g.v - f.baseline);
-            const float maxGap = (f.marker ? kMarkerGap : kFragmentGap) * em;
+            const float maxGap = reach * em;
             // On its baseline (within 0.25 em), a space, or a script: smaller than the glyph
             // before it or than the fragment, within 0.6 em of the baseline as all are. A glyph
             // under kScriptRatio of the fragment's size (TeX's scriptscript style is 0.5) above the
@@ -1736,12 +1739,13 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
                     // full-size text that follows.
                     if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
                 }
-                f.marker = false;
+                reach = kFragmentGap;
             } else {
                 f.spaces = true;
             }
         }
         f.end = k;
+        f.marker = reach == kMarkerGap;
         Fragment& closed = frags.emplace_back();  // f's address never escapes: it stays in registers
         closed = f;
         box.Write(closed);
