@@ -1706,17 +1706,79 @@ the bar is 0.05 % of odl or 0.1 % of a group):
   -0.083 %, `multi_column` -0.450 %, but syn6 +0.545 % (its maps have no dense index); with the
   other cases inline after it: syn6 +0.331 %.
 
+## Twenty-second round: the inset landing won back, Breuel's order, path pieces (2026-11-24)
+
+`feb9e88` (insets set into a gutter read after their column; columns found without them, a capped
+number of line comparisons) raised user instructions against `e4bf63d` (`instr.sh`, `--batch
+--workers=1`, images off; `arxiv_math` with `--math=latex`): odl by 0.125 %, heavy10 by 0.021 %,
+syn6 by 0.090 %, SafeDocs by 0.135 %, `multi_column` by 0.306 %, `tables` by 0.140 %,
+`arxiv_math` by 0.086 %. Callgrind of both (Release with `-g`, linked with gold) over odl,
+`multi_column` and safe40: `InsetColumns` (inlined in `Cut`) odl about 0.9 M, of which `Wrapped`'s
+pass over a region's lines for each candidate of running text 0.55 M and `InsetCandidate`'s passes
+0.22 M; `multi_column` 4.7 M (`Wrapped` about 3.5 M); safe40 1.8 M; the median size `Order` takes
+for its bridging test about 0.1 M of odl. `Cut` grew enough that GCC left Breuel's `Topological`
+out of line (20.5 M self on `multi_column`, 1.24 %) and took `SplitXSoft` in. The costliest code of
+this round's files, self, in percent of odl, `multi_column` and safe40: the content lexer (inlined in
+`RunStream`) 12.5, 5.5, 15.7; `ShowText` 6.8, 8.2, 5.0 (its SSE2 box 1.6, 1.9, 1.0 more); the
+interpreter's operator loop 1.8, 1.0, 2.5; `MeasurePage` 1.4, 1.7, 1.0; the writer's `StyleWords`,
+`CollectWords`, `Inline` and `WriteWords` 4.6, 5.2, 3.1 together; `AddPiece` 0.37, 0.25, 1.39
+(304,213 calls on safe40, about 85 instructions each, a fifth of them the call); `PlanPage` 0.30 %
+of odl, most of it its scan of the glyphs under each large image. Every step is byte-identical
+(`bench.py identical` against the step before, see below); instruction counts only, no times:
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(order): Wrapped tests a line's vertical overlap with the inset first`|The overlap with the candidate's height and the side tests, on its box held in locals, before the line's identity, count, flags, size and width|`multi_column` -0.150 %, `tables` -0.055 %, SafeDocs -0.051 %, odl -0.050 %, `arxiv_math` -0.025 %, syn6 -0.015 %, heavy10 -0.004 %|
+|`perf(order): Topological tests each pair of lines once for both directions, and finds the next free line from the first that can be`|One test of horizontal overlap and tolerance gives both directions of a pair; the scan of the lines between a line and one wholly right of it, the same for both, runs once, starting with the two comparisons a line of either column fails; the topmost free line searched from the first that can be free|`multi_column` -0.206 %, `arxiv_math` -0.063 %, `tables` -0.041 %, SafeDocs -0.015 %, odl -0.012 %, syn6 -0.006 %, heavy10 -0.004 %|
+|`perf(ocr): PlanPage tests a glyph's centre against the image before the glyph's flags`|Most glyphs lie outside a large image: the centre test, on the image's box in locals, before `Counted`|`multi_column` -0.061 %, odl -0.056 %, SafeDocs -0.030 %, `tables` -0.026 %, syn6 -0.025 %, `arxiv_math` -0.012 %, heavy10 +0.000 %|
+|`perf(interpreter): AddPiece inlined into the path operators`|`l`, `h` and `re` without the call|SafeDocs -0.260 %, heavy10 -0.205 %, `tables` -0.161 %, `arxiv_math` -0.066 %, odl -0.054 %, `multi_column` -0.051 %, syn6 +0.005 %|
+|`perf(interpreter): a diagonal path piece is left before its ends' finiteness tests`|A piece more than a hundredth of a point long both ways adds nothing, finite or not: that test first|SafeDocs -0.200 %, heavy10 -0.129 %, `tables` -0.129 %, `multi_column` -0.040 %, odl -0.038 %, `arxiv_math` -0.038 %, syn6 -0.002 %|
+|`perf(interpreter): Intersect inlined`|The clip and visibility boxes of paths, rulings, images and glyph runs without the call|heavy10 -0.182 %, SafeDocs -0.149 %, `tables` -0.125 %, odl -0.071 %, `arxiv_math` -0.044 %, `multi_column` -0.037 %, syn6 -0.010 %|
+|`perf(ocr): MeasurePage counts a glyph with one addition and finds an ASCII letter before testing the byte's range`|Counted and invisible glyphs in the two halves of one 64-bit tally (the invisible flag shifted up to bit 32); the letter table indexed by any byte (0 from 0x80 on), so a one-byte glyph's letter is found before the ASCII range test|syn6 -0.171 %, `multi_column` -0.136 %, odl -0.113 %, `tables` -0.087 %, SafeDocs -0.067 %, `arxiv_math` -0.053 %, heavy10 -0.033 %|
+|`perf(order): Topological finds the lines between two lines side by side through the overlap bitsets alone`|Ranges of up to 32 lines were scanned line by line, longer ones through the lines' overlap bitsets (a row per line, built when first needed); the bitsets now serve every range with lines in it|`multi_column` -0.291 %, `arxiv_math` -0.080 %, `tables` -0.077 %, syn6 -0.007 %, heavy10 +0.003 %, odl +0.008 %, SafeDocs +0.020 %|
+
+Against `feb9e88`: odl -0.385 % (765.40 M), heavy10 -0.553 %, syn6 -0.239 %, SafeDocs -0.752 %,
+`multi_column` -0.968 %, `tables` -0.699 %, `arxiv_math` -0.380 %; against `e4bf63d` (before the
+inset landing) odl -0.261 %, heavy10 -0.532 %, syn6 -0.150 %, SafeDocs -0.618 %,
+`multi_column` -0.665 %, `tables` -0.560 %, `arxiv_math` -0.294 %. Each step's binary against the
+step before's (`bench.py identical` over the synthetic corpus, odl, olmOCR-Bench, READoc dev and
+dev2 and 1,000 SafeDocs documents (`0000.zip`), 3,737 documents, with `--images=none` alone and
+with `--math=latex`, `--format=json`, `--plain`, `--tables=html`, `--tables=pipe-latex`,
+`--quotes=ascii` and `--small-caps=keep` beside it): 29,896 comparisons a step, 0 differ. Tried
+and rejected (2026-11-24, `instr.sh` against the step before; the bar is 0.05 % of odl or 0.1 % of
+a group):
+
+- `Order` handing the median size it takes to `Cut` (which took it again for the same lines): odl
+  -0.014 %, `multi_column` -0.012 %.
+- `Topological`'s side-by-side test over the lines six ems wide only, copied to an array first:
+  against the kept step odl +0.013 %, syn6 +0.038 %, `multi_column` +0.043 % (a pair is usually
+  found early, and the copy costs more than the pairs it saves).
+- `Topological`'s ranges scanned line by line up to 8 or 16 lines instead of none: `multi_column`
+  -0.246 % and -0.194 % where none gives -0.291 % (odl +0.016 %, +0.002 %, +0.008 %); after it, the
+  overlap rows built a word at a time (`multi_column` -0.011 %) and the edges kept as bit rows, the
+  in-degrees lowered along their set bits (`multi_column` -0.021 %, odl -0.003 %).
+- `TallGutter` counting mates only until the answer is settled (half the left group mated, or too
+  few lines left to reach half): `multi_column` -0.042 %, odl -0.006 %; with `CrossLines` scanning
+  the wide lines only, kept in an array of their own: odl +0.058 %, syn6 +0.036 %,
+  `multi_column` -0.011 %.
+- `MeasurePage`'s one-addition tally without the letter found first: odl -0.040 %, syn6 -0.061 %,
+  `multi_column` -0.049 % (kept with it).
+- The content lexer's fraction digits read two a step: odl +0.392 %, heavy10 +0.960 %.
+- `Multiply` (matrices) inlined: heavy10 -0.063 %, odl -0.006 %, `multi_column` +0.010 %.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
   copied by the callers that only read them (twelfth round: only one-word lines are contiguous,
   the copies being 0.4-0.5 % of odl, `multi_column` and `tables`).
-- **The OCR route's `MeasurePage`** (1.4 % of odl after round 11): counts per font slot are
-  untried.
-- **Order and the writer:** Breuel's topological order (about 20 M on `multi_column`); the writer's
-  `StyleWords` (31 M on `multi_column` after the twentieth round). Round 10's rewrites of both
-  gained nothing (tenth round, Tried and rejected), nor did skipping the link test of words outside
-  the page's links (twelfth round).
+- **The OCR route's `MeasurePage`** (1.3 % of odl, 1.6 % of `multi_column` after the
+  twenty-second round, about 27 instructions a glyph): counts per font slot are untried.
+- **Order and the writer:** Breuel's topological order (about 14 M on `multi_column` after the
+  twenty-second round, spread over the pairs' tests, the overlap rows, the side-by-side search and
+  the picks); the writer's `StyleWords` (31 M on `multi_column` after the twentieth round). Round
+  10's rewrites of both gained nothing (tenth round, Tried and rejected), nor did skipping the link
+  test of words outside the page's links (twelfth round). `InsetColumns`' passes for its
+  candidates (0.2 M of odl).
 - **The LaTeX rebuild:** after the twelfth round `malloc`, `free`, `new` and `delete` are still
   1.90 % of `arxiv_math` (`Matrix`, the limits' and braces' parts, `std::string` growth of the
   items' LaTeX). After the seventeenth round (self costs in percent of `arxiv_math`):
