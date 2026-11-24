@@ -403,6 +403,7 @@ std::vector<uint32_t> Runs(std::string_view text, std::string_view fonts, std::v
             g.font = index < fonts.size() && fonts[index] == 'm' ? kItalic : kText;
             if (index < fonts.size() && (fonts[index] == 'i' || fonts[index] == 's')) store[index].flags |= kGlyphItalic;
             if (index < fonts.size() && fonts[index] == 'b') store[index].flags |= kGlyphBold;
+            g.bold = index < fonts.size() && fonts[index] == 'b';
             g.script = index < fonts.size() && fonts[index] == 's';
             g.wordStart = space || glyphs.empty();
             g.text = text.substr(at, length);
@@ -491,6 +492,14 @@ void TestInline() {
     // A name after a hyphen is a compound word's, not an operator's: "Val-Clash(↑)".
     run = Runs("Val-Clash(\xE2\x86\x91)", "", store);
     RAYOPDF_CHECK(run[4] == 0 && run[9] == 12, 2366);
+    // A bold letter alone is a vector (\mathbf{x}), before punctuation too, with its scripts
+    // ("y₀"); an initial among bold words ("J. Mo"), a bold letter in brackets ("(b)", a panel)
+    // and a capital before a full stop (a panel: "B. So") are text.
+    run = Runs("let x be y0, so J. Mo (b) B. So", "...b..bs...b.bb.b.b...", store);
+    RAYOPDF_CHECK(run[3] == 4 && run[6] == 8 && run[11] == 0 && run[13] == 0 && run[16] == 0 && run[18] == 0, 2367);
+    // A bold letter after a full stop is a panel's label too ("[50]. b Measured").
+    run = Runs("is it. b so", ".....b..", store);
+    RAYOPDF_CHECK(run[5] == 0, 2372);
 }
 
 // A table cell's number stays text (KeepNumbersText): signs, digits (bold ones too), ± and the

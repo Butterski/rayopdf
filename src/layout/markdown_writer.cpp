@@ -274,7 +274,7 @@ private:
     // make no words: in out_ from `from`, four dots and more a space apart become one run of dots.
     void JoinLeaderDots(size_t from);
     // LaTeX mode: the inline formulas of the collected glyphs (mathRun_).
-    void FindFormulas();
+    void FindFormulas(const Block& block);
     // The LaTeX of the glyphs refs_[from, to) as `$…$` appended to out_; false when not rebuilt.
     bool WriteFormula(uint32_t from, uint32_t to);
     // A tagged formula's LaTeX (PageData::formulaAlts) appended to out_: its ends trimmed, line
@@ -1342,6 +1342,8 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
     if (styles)
         bail = static_cast<uint16_t>(bail | kGlyphStrike | (boldIsBody_ ? 0 : kGlyphBold) | (italicIsBody_ ? 0 : kGlyphItalic) |
                                      (monoIsBody_ ? 0 : kGlyphMonospace));
+    // LaTeX mode: a bold letter alone may be a formula (FindInlineFormulas).
+    if (kLatex && !boldIsBody_) bail = static_cast<uint16_t>(bail | kGlyphBold);
     const uint32_t blockEnd = block.first + block.count;
     // A glyph in a style written, an inline image, or (with styles) a page with link annotations:
     // the full path, found before anything is written. In LaTeX mode also a glyph that may be
@@ -1586,7 +1588,7 @@ void Writer::Inline(const Block& block, bool styles) {
     // LaTeX mode: formulas found among the glyphs are written as $…$ in their place; a table
     // cell's number stays text.
     if (math_ == MathMode::Latex) {
-        FindFormulas();
+        FindFormulas(block);
         if (block.kind == BlockKind::Table) KeepNumbersText(inline_, mathRun_);
     }
     // A block whose delimiters do not all flank is written again with fewer styles.
@@ -1862,7 +1864,9 @@ uint32_t Writer::ScriptForms(const Word& w, uint32_t k, uint32_t stop) {
     return letters > 0 ? end : 0;
 }
 
-void Writer::FindFormulas() {
+void Writer::FindFormulas(const Block& block) {
+    // A bold glyph in a heading is the heading's face.
+    const bool boldMath = !boldIsBody_ && block.kind != BlockKind::Heading;
     const uint32_t n = static_cast<uint32_t>(refs_.size());
     inline_.resize(n);
     // The arrays in locals, the page's read again only when the page changes: the bool stores
@@ -1892,6 +1896,7 @@ void Writer::FindFormulas() {
         ig.lineStart = r.lineStart != 0;
         ig.script = r.script != kScriptNone;
         ig.note = false;
+        ig.bold = boldMath && (g.flags & kGlyphBold) != 0;
         ig.text = Text(r);
     }
     for (const Word& w : words_) inline_[w.first].wordStart = true;

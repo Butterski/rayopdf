@@ -190,6 +190,7 @@ struct InlineGlyph {
     bool lineStart = false;
     bool script = false;   // raised or lowered in its line
     bool note = false;     // a footnote reference: never math
+    bool bold = false;     // bold where the body is not: a letter alone so is a vector (\mathbf{x})
     std::string_view text;
 };
 // Marks math runs: `run[i]` = the end (exclusive) of the formula that starts at glyph i, or 0.

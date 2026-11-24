@@ -3044,6 +3044,32 @@ void FindInlineFormulas(const std::vector<InlineGlyph>& glyphs, std::vector<uint
             for (uint32_t k = i + 1; k < e && glyphs[k].script; ++k)
                 if (cls[k] == kClassText && !glyphs[k].note) cls[k] = kClassNeutral;
         }
+        // A bold letter alone (but a, A and I), with its scripts and before sentence punctuation,
+        // is a vector or a matrix (\mathbf{x}): prose sets no single letter in bold (READoc's
+        // ground truth: 9 in 10 such words are \mathbf in the source). Not a panel's label at the
+        // block's start or after a sentence ("b Gene sets", "[50]. b Measured", "B. Results of"),
+        // nor an initial among bold words ("J. Moon").
+        if (b > 0 && glyphs[b].bold && !glyphs[b - 1].bold && (e == n || !glyphs[e].bold) && !glyphs[b].script &&
+            !glyphs[b].note && cls[b] == kClassText) {
+            const uint32_t lead = FirstCp(glyphs[b].text);
+            const uint32_t before = FirstCp(glyphs[b - 1].text);
+            bool alone = IsAsciiLetter(lead) && lead != 'a' && lead != 'A' && lead != 'I' && before != '.' && before != ':' &&
+                         before != '?' && before != '!';
+            bool punctuation = false;
+            for (uint32_t k = b + 1; k < e && alone; ++k) {
+                const uint32_t c = FirstCp(glyphs[k].text);
+                if (glyphs[k].note) alone = false;
+                else if (c == '.' || c == ',' || c == ';' || c == ':')
+                    punctuation = true, alone = !((c == '.' || c == ':') && lead >= 'A' && lead <= 'Z');
+                else alone = glyphs[k].script && !punctuation;
+            }
+            if (alone) {
+                cls[b] = kClassStrong;
+                any = strongWord = true;
+                for (uint32_t k = b + 1; k < e && glyphs[k].script; ++k)
+                    if (cls[k] == kClassText) cls[k] = kClassNeutral;
+            }
+        }
         // Letters of a text font in a word with math: a function name ("max_j", "log x"), up to
         // four letters right before a script or a math glyph ("GoE_m", "h_1"), up to eight before
         // the bracket of an argument at the word's start or after math ("GELU(x)", "π(conv(w))",
