@@ -1830,6 +1830,71 @@ the bar is 0.05 % of odl or 0.1 % of a group, 0.2 % of `arxiv_math`):
   `MarkDisplayFormulas`' growth rounds over every line (a line's join depends on the box grown
   before it in the same round, so a line cannot be passed over without that box).
 
+## Twenty-fourth round: the drop-cap landing won back, the fragment loop's registers (2026-11-24)
+
+`f367f1b` (drop caps: `SeatDropCaps`' pass over a page's fragments, `InitialAlone` out of line in
+`PlaceGlyphs`' script test, `FinishLine`'s drop-cap flag) raised user instructions against `0bbf680`
+(`instr.sh`, `--batch --workers=1`, images off; `arxiv_math` with `--math=latex`): odl +0.099 %,
+heavy10 +0.018 %, syn6 +0.096 %, SafeDocs +0.045 %, `multi_column` +0.089 %, `tables` +0.108 %,
+`arxiv_math` +0.035 %. Callgrind of both (Release with `-g`, linked with gold; `--batch
+--workers=1`, images off) over odl, syn6 and `multi_column`: on odl `PlaceGlyphs` self +269 K (its
+glyph loop one instruction more a glyph, 355,693 glyphs: the content order and the glyph array
+read from the stack at each glyph, the space flag kept there, since the call to `InitialAlone`
+had to find registers for its arguments), `FinishLine` +98 K (the flag's test, about 12
+instructions a line), `SeatDropCaps` +83 K (its pass, about 8 instructions a fragment),
+`InitialAlone` itself 66; on `multi_column` +651 K, +270 K and +288 K. The costliest code of
+`lines.cpp` and the writer at `f367f1b`, self, in percent of the group under callgrind: odl
+(769.8 M) `BuildLines` 6.67 % (with `CollectAndFold`'s duplicate filter inlined, about 30 M of
+it), `PlaceGlyphs` 6.30 % (its fragment loop about 25 M, the line builder's word loop about 8 M),
+`StyleWords` 1.35 %, `CollectWords` 1.14 %, `Inline` 1.12 %, `WriteWords` 1.00 %, `Folder::Place`
+0.96 %, `AppendLineText` 0.22 %; `multi_column` (1,632.2 M) `PlaceGlyphs` 8.40 %, `BuildLines`
+8.29 %, `Inline` 1.49 %, `StyleWords` 1.47 %, `CollectWords` 1.22 %, `Folder::Place` 1.16 %,
+`WriteWords` 1.08 %. The fragment loop and the duplicate filter were short of registers: the
+fragment's fields (box, baseline, size, last edge and size, flags) and six finiteness sums each
+held a float register, so values went to the stack and back at each glyph. Every step is
+byte-identical (`bench.py identical` against the step before over the synthetic corpus, odl,
+olmOCR-Bench (every category), READoc dev and dev2 and 1,000 SafeDocs documents (`0000.zip`),
+3,737 documents, with `--images=none` alone and with `--math=latex`, `--format=json`, `--plain`,
+`--tables=html`, `--tables=pipe-latex`, `--quotes=ascii` and `--small-caps=keep` beside it: 29,896
+comparisons a step, 0 differ); instruction counts only, no times:
+
+|Step|Change|Effect (`instr.sh`, against the step before)|
+|---|---|---|
+|`perf(lines): PlaceGlyphs starts a fragment and extends it in a loop of its own, without an open flag tested at each glyph`|A fragment starts at a glyph and an inner loop takes the glyphs after it while they join; the first that does not closes it and starts the next|syn6 -0.211 %, `multi_column` -0.151 %, odl -0.131 %, `tables` -0.092 %, SafeDocs -0.073 %, `arxiv_math` -0.055 %, heavy10 -0.031 %|
+|`perf(lines): PlaceGlyphs keeps the fragment's box in one SSE2 register`|The box as (-u0 u1 -vb vt): one load, one sign flip and one `_mm_max_ps` a glyph; -(a < b ? a : b) is -a > -b ? -a : -b, so the bits are FiniteMinMax's, signed zeros included (the checked path and targets without SSE2 keep four floats)|syn6 -0.611 %, `multi_column` -0.470 %, odl -0.383 %, `tables` -0.326 %, SafeDocs -0.250 %, `arxiv_math` -0.203 %, heavy10 -0.112 %|
+|`perf(lines): CollectAndFold adds the finiteness sums in two SSE2 registers`|u0 u1 vb vt added in one register, v and size in the low lanes of another, lane by lane in the same order, summed at the end as before|syn6 -0.298 %, `multi_column` -0.232 %, odl -0.192 %, `tables` -0.165 %, SafeDocs -0.127 %, `arxiv_math` -0.083 %, heavy10 -0.047 %|
+|`perf(lines): PlaceGlyphs keeps a fragment's reach in em as a float, its marker flag set as it closes`|The join gap's factor (kMarkerGap after a list marker, else kFragmentGap) a float set as the fragment starts and when a glyph that is no space joins; the marker flag is whether the reach is still kMarkerGap|syn6 -0.147 %, `multi_column` -0.110 %, odl -0.090 %, `tables` -0.074 %, SafeDocs -0.057 %, `arxiv_math` -0.044 %, heavy10 -0.025 %|
+|`perf(lines): a fragment starting with a one-byte glyph is a list marker only as - or *, without ParseMarker`|Of a one-byte text ParseMarker finds only the bullets "-" and "*" (an enumerator has two bytes at least): tested in place|`tables` -0.074 %, `multi_column` -0.071 %, syn6 -0.062 %, odl -0.054 %, SafeDocs -0.047 %, `arxiv_math` -0.028 %, heavy10 -0.015 %|
+
+Against `f367f1b`: odl -0.847 % (756.71 M), heavy10 -0.230 %, syn6 -1.322 %, SafeDocs -0.553 %,
+`multi_column` -1.029 %, `tables` -0.730 %, `arxiv_math` -0.413 % (5,170.30 M); against `0bbf680`
+(before the drop caps) odl -0.750 %, syn6 -1.227 %, `multi_column` -0.941 %, `tables` -0.622 %.
+Tried and rejected (2026-11-24, user instructions as above against the step before; the bar is
+0.05 % of odl or 0.1 % of a group):
+
+- `FinishLine`'s line flags in a local, the line's glyphs through pointers: odl +0.015 %, `tables`
+  +0.021 %; with bold, italic, monospace and artifact taken over by shifts +0.009 % and +0.014 %,
+  and out of line +0.007 % and +0.015 %.
+- `__builtin_expect` on the far-smaller test before `InitialAlone` (before the first step): odl
+  -0.003 %, `tables` +0.005 %.
+- The proto's box in one SSE2 register in the line builder's word loop, as the fragment's:
+  odl +0.012 %, `tables` +0.018 %.
+- `SeatDropCaps` only on pages with a fragment that may be a drop cap (found in the pass that lists
+  the fragments): odl -0.001 %, `multi_column` -0.003 %.
+- `InlinePlain` testing a glyph's faces as it writes it, without the pass before (abandoned when
+  one is set in a style): `tables` -0.070 %, `multi_column` -0.035 %, but syn6 +0.262 %,
+  `arxiv_math` +0.066 %, odl +0.015 % (styled blocks written, then taken back).
+- Fragments starting with spaces in a loop of their own, so that the main loop has no test of
+  whether the fragment has a glyph that is no space; the join test a lambda called from both
+  loops: odl +0.345 %, syn6 +0.555 % (the fragment left the registers).
+- The size above which a glyph resets the fragment's baseline (its size × 1.15) kept per fragment
+  instead of multiplied at each glyph: odl -0.038 %, syn6 -0.059 %, `multi_column` -0.045 %.
+- `StyleWords`' bold, italic and struck styles from the glyph flags by masks and a shift: odl
+  -0.012 %, `multi_column` -0.012 %.
+- Not attempted: the duplicate filter's four window offsets and cells in one register (building the
+  vector and taking the four integers out costs as much as the four scalar additions and
+  truncations).
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
