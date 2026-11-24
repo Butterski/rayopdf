@@ -206,6 +206,9 @@ enum : uint16_t {
     // as text by every stage, so that no other line's role changes; ConvertPages leaves out the
     // paragraphs and headings it alone makes.
     kLineEdgeModel = 1u << 14,
+    // Starts with a drop cap (layout/lines.h, kDropCapRatio): the lines beside the initial are
+    // indented by its width, and the paragraph goes on at the margin below it.
+    kLineDropCap = 1u << 15,
 };
 constexpr uint16_t kLineAnchor = kLineTableAnchor | kLineImage;  // lines with no glyphs
 

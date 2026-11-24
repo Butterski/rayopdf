@@ -1118,8 +1118,10 @@ bool Continues(const RawBlock& b, const Info& first, const Info& last, const Inf
     const bool centred = std::fabs((next.u0 + next.u1) - (last.u0 + last.u1)) <= 0.5f * em &&
                          std::fabs(next.u0 - last.u0) >= 0.8f * em;
     if (!centred) {
-        // A line set out to the left of the paragraph's lines ends it (the text after a quote).
-        if (b.count >= 2 && next.u0 < b.bodyU0 - 1.5f * em) return false;
+        // A line set out to the left of the paragraph's lines ends it (the text after a quote),
+        // but for the margin below a drop cap, beside which the lines after the first are indented.
+        const bool belowDropCap = (first.flags & kLineDropCap) && next.u0 >= first.u0 - 0.5f * em;
+        if (b.count >= 2 && next.u0 < b.bodyU0 - 1.5f * em && !belowDropCap) return false;
         if (b.count >= 2) {
             // A first-line indent starts a paragraph.
             if (next.u0 > b.bodyU0 + 0.8f * em && std::fabs(last.u0 - b.bodyU0) < 0.5f * em) return false;

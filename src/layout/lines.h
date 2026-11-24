@@ -4,6 +4,7 @@
 // drawn apart over or under a letter of their font (TeX's OT1 \accent, some word processors)
 // composed with it into one glyph (§4.4: NFC, else the letter and its combining mark; math's
 // accents stay apart), fragments built in content order and merged per baseline and direction,
+// drop caps seated at the start of the topmost line beside them (SeatDropCaps in lines.cpp),
 // superscripts and subscripts kept in their line, spacing accents that content order set apart
 // from the glyph they sit over (drawn after their line, or before the line their glyph starts:
 // TeX's \hat at a line start) seated just before it, or composed with it as beside it, and word
@@ -26,6 +27,8 @@ constexpr float kJoinGap = 0.8f;           // fragments not adjacent in content 
 constexpr float kGutterCandidate = 0.6f;   // a wider gap may be a column gutter or cell boundary: it
                                            // splits the line when the lines around it are blank there
 constexpr float kMarkerGap = 4.0f;         // a list marker joins the text this far to its right
+constexpr float kScriptRatio = 0.45f;      // smaller text beside a title or an initial is no script of it
+constexpr float kDropCapRatio = 2.5f;      // a drop cap is this many times the size of its text at least
 
 // Fills page.lines and page.lineGlyphs from page.glyphs, and page.hiddenGlyphs. Lines come
 // unordered; OrderLines orders them. `mathScripts` (--math=latex) also joins a script's own

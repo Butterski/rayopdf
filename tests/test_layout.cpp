@@ -114,6 +114,36 @@ void TestWordGaps() {
     RAYOPDF_CHECK(md == "Hello world\n", 400);
 }
 
+// Lines 1-3 (and 4-5) of a paragraph wrapped around a three-line initial at x 72, then a column
+// on the right; `cap` draws the initial first in content order, followed by a space glyph.
+std::string DropCapPage(bool cap) {
+    std::vector<PageData> pages{NewPage(1)};
+    if (cap) AddText(pages[0], "T ", 72, 676, 40);
+    const char* left[] = {cap ? "his is the opening line of a tale" : "This is the opening line of a tale",
+                          "that goes on beside the initial", "for a third line and then",
+                          "returns to the margin of the column", "where the paragraph ends."};
+    for (int i = 0; i < 5; ++i) AddText(pages[0], left[i], i >= 3 || (i == 0 && !cap) ? 72 : 92, 700 - 12.0f * i, 10);
+    const char* right[] = {"the other column opens here", "and runs down its own lines", "beside the first one",
+                           "until it comes to its", "own end on this line."};
+    for (int i = 0; i < 5; ++i) AddText(pages[0], right[i], 330, 700 - 12.0f * i, 10);
+    return Run(pages);
+}
+
+// A drop cap starts the topmost line beside it and completes its word ("T" and "his"); it bridges
+// no lines (on its own baseline the third line would join the first), and the paragraph goes on
+// at the margin below it. The same shape without an initial (the first line set out, the next
+// two indented) ends its paragraph where a line is set out to the left again.
+void TestDropCap() {
+    std::string md = DropCapPage(true);
+    Show("drop cap", md);
+    RAYOPDF_CHECK(Contains(md, "This is the opening line of a tale that goes on beside the initial for a third line"), 1920);
+    RAYOPDF_CHECK(Contains(md, "for a third line and then returns to the margin of the column where the paragraph ends.\n"),
+                  1924);
+    md = DropCapPage(false);
+    Show("set out without a drop cap", md);
+    RAYOPDF_CHECK(Contains(md, "for a third line and then\n\nreturns to the margin"), 1943);
+}
+
 void TestHeadingParagraph() {
     std::vector<PageData> pages{NewPage(1)};
     AddText(pages[0], "Big Title", 72, 700, 20);
@@ -2222,6 +2252,7 @@ void TestPdfSpacingAccents() {
 
 int main() {
     TestWordGaps();
+    TestDropCap();
     TestHeadingParagraph();
     TestTwoColumns();
     TestLists();

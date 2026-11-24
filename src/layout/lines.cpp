@@ -1197,6 +1197,7 @@ void FinishLine(PageData& page, Line& line, float size, float baseline, uint16_t
     if (allFlags & kGlyphMonospace) line.flags |= kLineAllMono;
     if (allFlags & kGlyphArtifact) line.flags |= kLineArtifact;
     if ((allFlags & (kGlyphInvisible | kGlyphOcr)) == kGlyphInvisible) line.flags |= kLineInvisible;
+    if (line.count > 1 && page.glyphs[page.lineGlyphs[line.first]].size >= kDropCapRatio * size) line.flags |= kLineDropCap;
     page.lines.push_back(line);
 }
 
@@ -1527,6 +1528,88 @@ bool SeatAccents(PageData& page, const uint32_t* begin, const uint32_t* end, boo
     return copied;
 }
 
+// A capital of Latin, Greek or Cyrillic text may be a drop cap; a lowercase letter continues its word.
+bool InitialLetter(const PageData& page, const Glyph& g) {
+    const std::string_view text = page.GlyphText(g);
+    uint32_t cp = 0;
+    size_t length = 0;
+    if (!Utf8::Decode(text, 0, cp, length) || length != text.size()) return false;
+    return AccentBase(cp) || (cp >= 0x391 && cp <= 0x3C9) || (cp >= 0x400 && cp <= 0x4FF);
+}
+bool LowercaseLetter(uint32_t cp) {
+    if (cp < 0x80) return cp >= 'a' && cp <= 'z';
+    return (cp >= 0xDF && cp <= 0xFF && cp != 0xF7) || (cp >= 0x100 && cp <= 0x17F && (cp & 1) == 1) ||
+           (cp >= 0x3B1 && cp <= 0x3C9) || (cp >= 0x430 && cp <= 0x45F);
+}
+
+// Whether the glyphs of `order[begin, k)` are one letter that may be an initial, spaces aside. Out
+// of line, with nothing of the fragment by reference: the fragment being built stays in registers
+// (passing it by reference cost the glyph loop 0.4 % of odl's instructions).
+RAYOPDF_NOINLINE bool InitialAlone(const PageData& page, const uint32_t* order, uint32_t begin, uint32_t k) {
+    const Glyph* letter = nullptr;
+    for (uint32_t i = begin; i < k; ++i) {
+        const Glyph& h = page.glyphs[order[i]];
+        if (h.flags & kGlyphSpace) continue;
+        if (letter != nullptr) return false;
+        letter = &h;
+    }
+    return letter != nullptr && InitialLetter(page, *letter);
+}
+
+constexpr float kDropCapMinSize = 12.0f;  // points: kDropCapRatio times text of 4.8 points
+constexpr uint32_t kDropCapTries = 64;    // fragments a page tries as drop caps, each against all
+
+// Drop caps: an initial letter set two lines tall or more at a paragraph's start. A fragment of
+// one letter (spaces aside), kDropCapRatio times the size of the text just right of it at least,
+// beside two lines or more whose baselines lie from its own up to below its top, takes the topmost
+// line's baseline, size and box: it starts that line, not the one it stands on. When that line
+// starts with a lowercase letter within 0.3 em of it, the initial begins its first word: a space
+// glyph drawn after it is no word break.
+void SeatDropCaps(const PageData& page, const std::vector<uint32_t>& vis, std::vector<Fragment>& frags) {
+    const GlyphVector& glyphs = page.glyphs;
+    uint32_t tried = 0;
+    for (Fragment& f : frags) {
+        if (!f.any || !(f.size >= kDropCapMinSize) || f.end - f.begin > 3) continue;
+        uint32_t capAt = f.end, letters = 0;
+        for (uint32_t k = f.begin; k < f.end; ++k)
+            if (!(glyphs[vis[k]].flags & kGlyphSpace)) capAt = k, ++letters;
+        if (letters != 1) continue;
+        const Glyph& cap = glyphs[vis[capAt]];
+        if (!InitialLetter(page, cap)) continue;
+        if (++tried > kDropCapTries) return;
+        // The text beside it: smaller by kDropCapRatio, starting at its right edge, its baseline
+        // from the initial's up to below its top.
+        const auto beside = [&](const Fragment& r) {
+            return r.any && r.dir == f.dir && r.size * kDropCapRatio <= f.size && &r != &f &&
+                   r.u0 >= f.u1 - 0.5f * r.size && r.u0 <= f.u1 + 1.5f * r.size &&
+                   r.baseline >= f.baseline - 0.35f * r.size && r.baseline + 0.35f * r.size <= f.baseline + 0.75f * f.size;
+        };
+        const Fragment* top = nullptr;
+        for (const Fragment& r : frags)
+            if (beside(r) && (top == nullptr || r.baseline > top->baseline)) top = &r;
+        if (top == nullptr) continue;
+        // Two lines at least, wrapped around the initial: their starts aligned.
+        float lowest = top->baseline;
+        for (const Fragment& r : frags)
+            if (beside(r) && std::fabs(r.u0 - top->u0) <= 0.5f * top->size && r.baseline < lowest) lowest = r.baseline;
+        if (!(top->baseline - lowest >= 0.8f * top->size)) continue;
+        // A word goes on from the initial: no digit.
+        uint32_t k = top->begin;
+        while (k < top->end && (glyphs[vis[k]].flags & kGlyphSpace)) ++k;
+        if (k == top->end) continue;
+        const std::string_view next = page.GlyphText(glyphs[vis[k]]);
+        uint32_t cp = 0;
+        size_t length = 0;
+        if (!Utf8::Decode(next, 0, cp, length) || (cp >= '0' && cp <= '9')) continue;
+        if (LowercaseLetter(cp) && glyphs[vis[k]].u0 - cap.u1 <= 0.3f * top->size) {
+            f.end = capAt + 1;  // the spaces after it leave: the glyphs before it are spaces
+            f.spaces = capAt > f.begin;
+        }
+        f.baseline = top->baseline, f.size = top->size;
+        f.vb = top->vb, f.vt = top->vt;
+    }
+}
+
 // Lines from the placed glyphs `vis` (content order), M the page's min and max. `stray`: the
 // positions in `vis` of the spacing accents ComposeAccents left there, ascending.
 template <typename M>
@@ -1561,9 +1644,14 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             const float dv = std::fabs(g.v - f.baseline);
             const float maxGap = (f.marker ? kMarkerGap : kFragmentGap) * em;
             // On its baseline (within 0.25 em), a space, or a script: smaller than the glyph
-            // before it or than the fragment, within 0.6 em of the baseline as all are.
+            // before it or than the fragment, within 0.6 em of the baseline as all are. A glyph
+            // under kScriptRatio of the fragment's size (TeX's scriptscript style is 0.5) above the
+            // baseline of a single letter is no script (a drop cap, then its first line:
+            // SeatDropCaps).
             if (g.dir == f.dir && gap >= -0.6f * em && gap <= maxGap && dv <= 0.6f * em &&
-                (dv <= 0.25f * em || space || g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size)) {
+                (dv <= 0.25f * em || space ||
+                 ((g.size < 0.87f * f.size || f.lastSize < 0.87f * g.size) &&
+                  !(g.size < kScriptRatio * f.size && g.v > f.baseline && InitialAlone(page, order, f.begin, k))))) {
                 f.lastU1 = M::Max(f.lastU1, g.u1);
                 if (!space) {
                     f.lastSize = g.size;
@@ -1607,6 +1695,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         f.end = visCount;
         frags.emplace_back() = f;
     }
+    SeatDropCaps(page, vis, frags);
     // Leading space-only fragments carry nothing.
     // Sort into baseline clusters per direction, then by position along the baseline.
     std::vector<uint32_t>& fo = place.fo;
