@@ -1176,10 +1176,15 @@ bool Detector::Columns(const std::vector<Row>& rows, const std::vector<uint32_t>
 }
 
 void Detector::AddInk(const Row& row, const std::vector<uint32_t>& rowWords, const Ink& from, Ink& to) const {
-    to.spans.clear();
-    to.proper = from.proper;
-    // Both lists ascend by start (a row's words by x0): merged into one, joining what overlaps.
-    const std::vector<Gap>& old = from.spans;
+    // Both lists ascend by start (a row's words by x0): merged into one, joining what overlaps. The
+    // spans are written through a pointer into room for every span of both, the old spans and the
+    // row's words read through pointers taken once (`from` and `to` are never one Ink).
+    const Gap* const old = from.spans.data();
+    const size_t oldCount = from.spans.size();
+    to.spans.resize(oldCount + row.count);
+    Gap* const out = to.spans.data();
+    size_t count = 0;
+    bool proper = from.proper;
     size_t i = 0;
     Gap cur{0, 0};
     bool open = false;
@@ -1188,23 +1193,27 @@ void Detector::AddInk(const Row& row, const std::vector<uint32_t>& rowWords, con
             if (b > cur.b) cur.b = b;
             return;
         }
-        if (open) to.spans.push_back(cur);
+        if (open) out[count++] = cur;
         cur = Gap{a, b};
         open = true;
     };
+    const TWord* const words = words_.data();
+    const uint32_t* const order = rowWords.data();
     float previous = -INFINITY;
-    for (uint32_t k = row.first; k < row.first + row.count; ++k) {
-        const TWord& w = words_[rowWords[k]];
+    for (uint32_t k = row.first, end = row.first + row.count; k < end; ++k) {
+        const TWord& w = words[order[k]];
         if (!(w.x0 <= w.x1) || w.x0 < previous) {
-            to.proper = false;
+            proper = false;
             continue;
         }
         previous = w.x0;
-        for (; i < old.size() && old[i].a <= w.x0; ++i) take(old[i].a, old[i].b);
+        for (; i < oldCount && old[i].a <= w.x0; ++i) take(old[i].a, old[i].b);
         take(w.x0, w.x1);
     }
-    for (; i < old.size(); ++i) take(old[i].a, old[i].b);
-    if (open) to.spans.push_back(cur);
+    for (; i < oldCount; ++i) take(old[i].a, old[i].b);
+    if (open) out[count++] = cur;
+    to.spans.resize(count);
+    to.proper = proper;
 }
 
 // The column of x for gaps.
