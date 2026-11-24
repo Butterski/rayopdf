@@ -16,6 +16,10 @@
 #include <memory>
 #include <type_traits>
 
+#if defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
+
 namespace RayoPdf::Layout {
 namespace {
 
@@ -1057,6 +1061,38 @@ struct CheckedMinMax {
     static float Max(float a, float b) { return Fmax(a, b); }
 };
 
+// The box (u0 u1 vb vt) of the fragment PlaceGlyphs is building: each glyph's box taken in as M's
+// Min of u0 and vb and Max of u1 and vt, the fragment's box first, written into the fragment as
+// it closes.
+template <typename M>
+struct Extent {
+    float u0 = 0, u1 = 0, vb = 0, vt = 0;
+    RAYOPDF_HOT_INLINE void Set(const Glyph& g) { u0 = g.u0, u1 = g.u1, vb = g.vb, vt = g.vt; }
+    RAYOPDF_HOT_INLINE void Add(const Glyph& g) {
+        u0 = M::Min(u0, g.u0), u1 = M::Max(u1, g.u1);
+        vb = M::Min(vb, g.vb), vt = M::Max(vt, g.vt);
+    }
+    RAYOPDF_HOT_INLINE void Write(Fragment& f) const { f.u0 = u0, f.u1 = u1, f.vb = vb, f.vt = vt; }
+};
+#if defined(__SSE2__)
+static_assert(offsetof(Glyph, u1) == offsetof(Glyph, u0) + 4 && offsetof(Glyph, vb) == offsetof(Glyph, u0) + 8 &&
+                  offsetof(Glyph, vt) == offsetof(Glyph, u0) + 12 && offsetof(Fragment, u1) == offsetof(Fragment, u0) + 4 &&
+                  offsetof(Fragment, vb) == offsetof(Fragment, u0) + 8 && offsetof(Fragment, vt) == offsetof(Fragment, u0) + 12,
+              "Glyph's and Fragment's u0, u1, vb, vt are four consecutive floats");
+// The four in one register as (-u0 u1 -vb vt), the minima negated: _mm_max_ps(a, b) is a > b ? a :
+// b lane by lane, and -(a < b ? a : b) is -a > -b ? -a : -b, so the box has FiniteMinMax's bits
+// (signed zeros too: of equal values the glyph's, as there). In four registers the box left the
+// glyph loop without registers for the fragment's other fields.
+template <>
+struct Extent<FiniteMinMax> {
+    __m128 box = _mm_setzero_ps();
+    static __m128 Flip() { return _mm_set_ps(0.0f, -0.0f, 0.0f, -0.0f); }
+    RAYOPDF_HOT_INLINE void Set(const Glyph& g) { box = _mm_xor_ps(_mm_loadu_ps(&g.u0), Flip()); }
+    RAYOPDF_HOT_INLINE void Add(const Glyph& g) { box = _mm_max_ps(box, _mm_xor_ps(_mm_loadu_ps(&g.u0), Flip())); }
+    RAYOPDF_HOT_INLINE void Write(Fragment& f) const { _mm_storeu_ps(&f.u0, _mm_xor_ps(box, Flip())); }
+};
+#endif
+
 // Line groups: runs of `members` (fragment indices) in u order.
 struct Group {
     uint32_t first = 0, count = 0;
@@ -1631,6 +1667,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
     // join it; the first that does not closes it and starts the next (no flag of an open fragment
     // tested at each glyph).
     Fragment f;
+    Extent<M> box;  // f's box, written into it as it closes
     // In locals: the vector's own fields are reloaded after each store the loop makes.
     const uint32_t* const order = vis.data();
     const uint32_t visCount = static_cast<uint32_t>(vis.size());
@@ -1640,7 +1677,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         f = Fragment();
         f.begin = k;
         f.dir = start.dir;
-        f.u0 = start.u0, f.u1 = start.u1, f.vb = start.vb, f.vt = start.vt;
+        box.Set(start);
         f.baseline = start.v;
         f.size = start.size;
         f.lastU1 = start.u1;
@@ -1672,12 +1709,11 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             if (!space) {
                 f.lastSize = g.size;
                 if (!f.any) {
-                    f.u0 = g.u0, f.u1 = g.u1, f.vb = g.vb, f.vt = g.vt;
+                    box.Set(g);
                     f.baseline = g.v, f.size = g.size;
                     f.any = true;
                 } else {
-                    f.u0 = M::Min(f.u0, g.u0), f.u1 = M::Max(f.u1, g.u1);
-                    f.vb = M::Min(f.vb, g.vb), f.vt = M::Max(f.vt, g.vt);
+                    box.Add(g);
                     // A fragment that began with a superscript takes the baseline of the
                     // full-size text that follows.
                     if (g.size > f.size * 1.15f) f.baseline = g.v, f.size = g.size;
@@ -1688,7 +1724,9 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             }
         }
         f.end = k;
-        frags.emplace_back() = f;  // f's address never escapes: it stays in registers
+        Fragment& closed = frags.emplace_back();  // f's address never escapes: it stays in registers
+        closed = f;
+        box.Write(closed);
     }
     SeatDropCaps(page, vis, frags);
     // Leading space-only fragments carry nothing.
