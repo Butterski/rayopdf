@@ -858,9 +858,11 @@ void Interpreter::AddPiece(double x0, double y0, double x1, double y1, bool rect
     const Matrix& m = gs_.ctm;
     const double ax = x0 * m.a + y0 * m.c + m.e, ay = x0 * m.b + y0 * m.d + m.f;
     const double bx = x1 * m.a + y1 * m.c + m.e, by = x1 * m.b + y1 * m.d + m.f;
-    if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx) || !std::isfinite(by)) return;
-    // Straight pieces count only when axis-aligned on the page (within a hundredth of a point).
+    // Straight pieces count only when axis-aligned on the page (within a hundredth of a point), and
+    // with finite ends. (A diagonal piece is left before the finiteness tests: either way it adds
+    // nothing.)
     if (!rect && std::fabs(ax - bx) > 0.01 && std::fabs(ay - by) > 0.01) return;
+    if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(bx) || !std::isfinite(by)) return;
     // Both ends finite: Fmin and Fmax are the plain comparisons.
     pieces_.push_back(PathPiece{ax < bx ? ax : bx, ay < by ? ay : by, ax > bx ? ax : bx, ay > by ? ay : by, rect});
 }
