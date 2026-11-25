@@ -10,12 +10,13 @@ newer on Linux x64 (glibc 2.28 or newer) or Windows x64.
 pip install rayopdf
 ```
 
-The PyPI package arrives with version 1.0. Until then, install the wheel attached to each
-[release](https://github.com/Butterski/rayopdf/releases/latest):
+The wheels are also attached to each [release](https://github.com/Butterski/rayopdf/releases/latest)
+(`rayopdf-<version>-py3-none-manylinux_2_28_x86_64.whl` for Linux,
+`rayopdf-<version>-py3-none-win_amd64.whl` for Windows) for installing without PyPI:
 
 ```sh
-pip install rayopdf-0.5.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
-pip install rayopdf-0.5.0-py3-none-win_amd64.whl                # Windows
+pip install rayopdf-1.0.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
+pip install rayopdf-1.0.0-py3-none-win_amd64.whl                # Windows
 ```
 
 The LangChain and LlamaIndex loaders need their own packages: the extras `rayopdf[langchain]`

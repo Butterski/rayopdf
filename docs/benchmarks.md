@@ -1,9 +1,11 @@
 # Benchmarks
 
-Where RayoPDF 0.5.0 stands against other PDF converters, on public benchmarks and on test sets
-of this project. Every number on this page was measured by this project on one machine, unless
-it is marked *claimed*. The [dated records](benchmarks/README.md) hold every number of every
-version; this page summarises them.
+Where RayoPDF 1.0.0 stands against other PDF converters, on public benchmarks and on test sets
+of this project. RayoPDF 1.0.0 converts every document exactly as 0.5.0 did (the same converter,
+byte for byte the same output), so 0.5.0's measurements below are 1.0.0's. Every number on this
+page was measured by this project on one machine, unless it is marked *claimed*. The
+[dated records](benchmarks/README.md) hold every number of every version; this page summarises
+them.
 
 - [Summary](#summary)
 - [Machine and dates](#machine-and-dates)
@@ -33,7 +35,8 @@ version; this page summarises them.
 
 - AMD Ryzen 5 PRO 4650GE (12 logical CPUs), Docker 29.8.2. Every tool ran in its own container
   image, pinned to an exact version, without network.
-- RayoPDF 0.5.0: quality and speed measured on 2026-11-24 (code `a95ad7f`).
+- RayoPDF 0.5.0, the converter of 1.0.0: quality and speed measured on 2026-11-24 (code
+  `a95ad7f`; [record of 1.0.0](benchmarks/v1.0.0-2026-11-25.md)).
 - The text-layer tools and docling: 2026-11-05 ([baselines](benchmarks/baselines-2026-11-05.md));
   on the synthetic corpus again on 2026-11-06, when it grew to 199 documents
   ([record of 0.0.3](benchmarks/v0.0.3-2026-11-06.md)).

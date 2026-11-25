@@ -511,9 +511,14 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-24)
+### Status (2026-11-25)
 
-0.5.0 is released ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md),
+1.0.0 is released ([v1.0.0](../benchmarks/v1.0.0-2026-11-25.md),
+[release check](../benchmarks/release-check-2026-11-25.md)): the converter of 0.5.0, byte for
+byte, as the first stable version, with the repository public, user documentation, a benchmark
+summary and the Python package on PyPI. Everything below is 0.5.0's measurement.
+
+0.5.0 was released ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md),
 [release check](../benchmarks/release-check-2026-11-24.md)): `--figure-text=drop`,
 `--small-caps=keep` and `--tables=pipe-latex` for conventions (D6, D7) and in the declared
 profiles of READoc, olmOCR and opendataloader-bench; LaTeX mode reading formulas by their fonts'
@@ -545,8 +550,8 @@ tool, NID and MHS above docling. (c): 2,207 pages/s warm, 0.912 ms fresh. (d): 2
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M7 Product:** front ends, Windows build, packaging, the speed bar, structured output, the C++
   API, library archives, the container image, the C ABI, Python wheels and the npm package done;
-  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0 and 0.5.0
-  ([v0.5.0](../benchmarks/v0.5.0-2026-11-24.md), [performance.md](performance.md)).
+  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0 and 1.0.0
+  ([v1.0.0](../benchmarks/v1.0.0-2026-11-25.md), [performance.md](performance.md)).
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn

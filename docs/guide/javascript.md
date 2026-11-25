@@ -10,7 +10,7 @@ The package is attached to each [release](https://github.com/Butterski/rayopdf/r
 as `rayopdf-VERSION.tgz`; it is not on the npm registry. Install it from the file:
 
 ```sh
-npm install ./rayopdf-0.5.0.tgz
+npm install ./rayopdf-1.0.0.tgz
 ```
 
 ## Convert
