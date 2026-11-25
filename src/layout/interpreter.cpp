@@ -542,11 +542,12 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
     ContentLexer lexer(content);
     const size_t stackBase = stack_.size();
     bool error = false;
-    size_t next = lexer.Offset();  // where the operator being read starts
+    // Where the operator being read starts: the end of the one before (the lexer's Offset() may be
+    // past a white-space byte after it), or after EI for an inline image.
+    const char* end = content.data() + lexer.Offset();
     lexer.Run([&](std::string_view op) RAYOPDF_HOT_LAMBDA {
-        // The lexer's offsets only grow and stay within the content: no substr checks.
-        const size_t start = next;
-        next = lexer.Offset();
+        const char* const start = end;
+        end = op.data() + op.size();
         if (RAYOPDF_UNLIKELY(++operators_ > kMaxOperatorsPerPage)) {
             budgetHit_ = true;
             return false;
@@ -649,7 +650,10 @@ void Interpreter::RunStream(std::string_view content, const PdfValue& resources,
             pendingClip_ = 1;
             return true;
         default:
-            if (code == Op::BI) opSource_ = std::string_view(content.data() + start, next - start);
+            if (code == Op::BI) {
+                end = content.data() + lexer.Offset();
+                opSource_ = std::string_view(start, static_cast<size_t>(end - start));
+            }
             if (!Execute(code, lexer, resources, depth)) error = true;
             return !budgetHit_;
         }

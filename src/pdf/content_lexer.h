@@ -78,7 +78,8 @@ public:
 
     // The data of the inline image Next just returned, empty after any other operator.
     std::string_view InlineImageData() const { return inlineData_; }
-    // Bytes of the data read so far.
+    // Bytes of the data read so far: after an operator, one white-space byte after it may be
+    // read too (the operator's own end is op's).
     size_t Offset() const { return cursor_.pos; }
     // Continues at `offset` (at most the data's size), an Offset() between two operators.
     void Seek(size_t offset) {
@@ -312,8 +313,13 @@ RAYOPDF_HOT_INLINE bool ContentLexer::Scan(std::string_view& op) {
         numeric_ = static_cast<size_t>(value - run);
         {
             const char* q = p + 1;
+            // An operator read here takes the one white-space byte after it, as a number does; its
+            // end is op's.
+            size_t white = 0;
             if (p < fast_) {
-                while (!(kContentClasses.of[static_cast<unsigned char>(*q)] & Classes::kNotRegular)) ++q;
+                uint8_t next;
+                while (!((next = kContentClasses.of[static_cast<unsigned char>(*q)]) & Classes::kNotRegular)) ++q;
+                white = next & Classes::kWhite;
             } else {
                 const char* const end = cursor_.data.data() + cursor_.data.size();
                 while (q < end && !(kContentClasses.of[static_cast<unsigned char>(*q)] & Classes::kNotRegular)) ++q;
@@ -321,7 +327,7 @@ RAYOPDF_HOT_INLINE bool ContentLexer::Scan(std::string_view& op) {
             // The operators start with letters or quotes: most need no test of what they are,
             // those not starting like true, false, null or a number.
             if (RAYOPDF_LIKELY(kContentClasses.of[c] == 0)) {
-                cursor_.pos = static_cast<size_t>(q - cursor_.data.data());
+                cursor_.pos = static_cast<size_t>(q + white - cursor_.data.data());
                 op = std::string_view(p, static_cast<size_t>(q - p));
                 if (RAYOPDF_UNLIKELY(q - p == 2 && c == 'B' && p[1] == 'I')) ReadInlineImage();
                 return true;

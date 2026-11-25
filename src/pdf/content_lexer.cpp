@@ -332,6 +332,10 @@ bool ContentLexer::Token(const char* start, const char* end, std::string_view& o
         }
         break;
     }
+    // The one white-space byte after the operator is read with it, as in Scan.
+    if (cursor_.pos < cursor_.data.size() &&
+        kClasses.of[static_cast<unsigned char>(cursor_.data[cursor_.pos])] == Classes::kWhite)
+        cursor_.pos++;
     op = token;
     return true;
 }
