@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/math.h"
 
-#include "common/compiler.h"
 #include "common/minmax.h"
 #include "common/per_thread.h"
 #include "common/utf8.h"
@@ -12,7 +11,7 @@
 #include <algorithm>
 #include <cmath>
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
 
@@ -2561,7 +2560,7 @@ void AddMathRules(const PageData& page, float u0, float u1, float vb, float vt, 
     }
 }
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 namespace {
 
 // The index of the lowest set bit of m (m != 0): the SSE2 accent walk's matches.
@@ -2804,7 +2803,7 @@ void PrepareMathGlyphs(PageData& page) {
                 const float* lo = reachLo.data();
                 const float* up = reachUp.data();
                 size_t k = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
                 // cmplt and cmpgt are false with a NaN, as the scalar tests are.
                 const __m128 x = _mm_set1_ps(cx);
                 for (; k + 8 <= count; k += 8) {

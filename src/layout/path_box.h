@@ -10,7 +10,7 @@
 
 #include "common/compiler.h"
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 #include <emmintrin.h>
 #define RAYOPDF_PATH_BOX_SSE2 1
 #endif

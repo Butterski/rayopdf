@@ -22,13 +22,3 @@
 #define RAYOPDF_LIKELY(x) (x)
 #define RAYOPDF_UNLIKELY(x) (x)
 #endif
-
-// RAYOPDF_SSE2: 1 where the SSE2 kernels are built (x86-64's baseline, and WebAssembly SIMD
-// through Emscripten's SSE2 headers), 0 for the scalar paths, which each kernel keeps as its
-// reference; RAYOPDF_SCALAR (CMake option RAYOPDF_SCALAR, tools/dev.py config scalar) builds
-// those everywhere. Test it with `#if RAYOPDF_SSE2`, after including this header.
-#if !defined(RAYOPDF_SCALAR) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
-#define RAYOPDF_SSE2 1
-#else
-#define RAYOPDF_SSE2 0
-#endif

@@ -22,9 +22,6 @@ option(RAYOPDF_FUZZ "Build the libFuzzer targets of tests/fuzz" OFF)
 # The C ABI as a shared library (librayopdf.so, rayopdf.dll) for the Python package: every target
 # position-independent, and on ELF platforms hidden symbols but the C ABI's.
 option(RAYOPDF_SHARED "Build the shared library of the C ABI" OFF)
-# The scalar paths instead of the SSE2 kernels (common/compiler.h, RAYOPDF_SSE2), as a target
-# without SSE2 runs them, built and tested on x86-64 (tools/dev.py config scalar).
-option(RAYOPDF_SCALAR "Build the scalar paths instead of the SSE2 kernels" OFF)
 
 if(RAYOPDF_FUZZ)
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -94,15 +91,6 @@ function(rayopdf_flags target)
         # AVX2 kernels (common/cpu.h) with aligned moves (GCC bug 54412): the assembler writes every
         # aligned vector move as an unaligned one, which is as fast on aligned addresses.
         target_compile_options(${target} PRIVATE -Wa,-muse-unaligned-vector-move)
-    endif()
-    if(RAYOPDF_SCALAR)
-        target_compile_definitions(${target} PRIVATE RAYOPDF_SCALAR=1)
-    endif()
-    if(EMSCRIPTEN)
-        # WebAssembly SIMD, and __SSE2__ with it: Emscripten's SSE2 headers map the SSE2 kernels'
-        # intrinsics onto it, so the module runs the vector code of x86-64 (RAYOPDF_SCALAR=ON
-        # still builds the scalar paths).
-        target_compile_options(${target} PRIVATE -msimd128 -msse2)
     endif()
     target_compile_definitions(${target} PRIVATE RAYOPDF_VERSION="${RAYOPDF_VERSION}")
 endfunction()
@@ -182,13 +170,13 @@ endif()
 
 # The WebAssembly module of the npm package (packaging/npm/): rayopdf-core.mjs (an ES6 module
 # factory for browsers and Node.js) and rayopdf-core.wasm, the C ABI and every module, built
-# with WebAssembly SIMD (the SSE2 kernels, rayopdf_flags) on one thread.
+# without SIMD (the scalar paths) on one thread.
 if(TARGET rayopdf_api AND EMSCRIPTEN)
     add_executable(rayopdf_wasm $<TARGET_OBJECTS:rayopdf_c_obj>)
     target_link_libraries(rayopdf_wasm PRIVATE rayopdf_api)
     rayopdf_flags(rayopdf_wasm)
     set_target_properties(rayopdf_wasm PROPERTIES OUTPUT_NAME rayopdf-core SUFFIX ".mjs")
-    target_link_options(rayopdf_wasm PRIVATE -msimd128 -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,node
+    target_link_options(rayopdf_wasm PRIVATE -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,node
         -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB
         -sEXPORTED_FUNCTIONS=_rayopdf_convert,_rayopdf_output_free,_rayopdf_version,_malloc,_free
         -sEXPORTED_RUNTIME_METHODS=FS,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAPU32)

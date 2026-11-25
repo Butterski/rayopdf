@@ -1765,15 +1765,9 @@ The heavy-page steps meet only odl 141 and heavy10 in full: heavy10 holds 29.7 K
 0.1 % would be 6.6 instructions a glyph of `ShowText`'s 213.
 
 **WebAssembly.** `bench.py wasm` times the npm package's module under Node.js and compares its
-output with a native binary's. The module is now built with WebAssembly SIMD (`-msimd128
--msse2`: the SSE2 kernels compile to SIMD instructions). `RAYOPDF_SSE2` (`common/compiler.h`) guards
-those kernels, and the `scalar` configuration builds and tests the paths without them:
-byte-identical to the static build over G-bytes' inputs in four sets, 23,544 comparisons. Over odl
-both modules give the native binary's output, 200 of 200; over the other 5,686 documents the
-scalar module differs from native in 36 and the SIMD module in the same 36, each byte for byte
-the scalar module's output (differences between the platforms, older than SIMD, causes not
-traced). CPU time on a shared core: scalar 741, SIMD 798 pages/s (+7.7 %; +5.8 % with the order
-reversed).
+output with a native binary's. Over odl the module gives the native binary's output, 200 of 200;
+over the other 5,686 documents of G-bytes' inputs it differs in 19 with images off (36 over three
+option sets; older than this round, causes not traced). It stays without WebAssembly SIMD (below).
 
 ### Tried and rejected (2026-11-25)
 
@@ -1799,6 +1793,14 @@ reversed).
 - **The content lexer's byte not held in a register across the scan's paths:** odl 141 +1.23 % (GCC
   kept the copies and spilled more). **`PlaceGlyphsGeneral` taking its placement by value:** odl
   +0.66 %, `multi_column` +0.74 %.
+- **The WebAssembly module with SIMD** (`-msimd128 -msse2`: Emscripten maps the SSE2 kernels onto
+  WebAssembly SIMD; output byte for byte the scalar module's): faster on most pages (odl median
+  0.575 against 0.600 ms a page, p95 1.15 against 1.25), slower on odl 141 once V8 has optimised
+  both (44.7 against 36.1 ms with 1.0.0's code: inflate and the content lexer), so over odl pages
+  a second moved +3.9 %, −5.6 % and −3.1 % in three runs of `bench.py wasm` on CPU 3 (+6.8 % with
+  ten runs a document), short of the 5 % the step asked. The scalar paths' native configuration
+  (`RAYOPDF_SSE2`, `RAYOPDF_SCALAR`) went with it: the module runs those paths again, and its test
+  checks them.
 
 ## Open candidates (measured, not done)
 

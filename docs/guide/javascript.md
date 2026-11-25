@@ -72,7 +72,6 @@ A failure rejects with a `RayoPdfError` whose `status` is the command line's exi
 
 ## Differences from the native program
 
-The WebAssembly build runs on one thread and uses WebAssembly SIMD: it needs Chrome or Edge 91,
-Firefox 89, Safari 16.4 or Node.js 16.4 or newer (the package asks for Node.js 18). It is slower
-than the native program; its output is the same. It cannot start the OCR add-on: `ocr: "auto"`
-and `"force"` find none, and pages without a text layer keep their comment.
+The WebAssembly build runs on one thread and without SIMD, so it is slower than the native
+program; its output is the same. It cannot start the OCR add-on: `ocr: "auto"` and `"force"`
+find none, and pages without a text layer keep their comment.

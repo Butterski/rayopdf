@@ -4,13 +4,11 @@
 // together.
 #pragma once
 
-#include "common/compiler.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
 #define RAYOPDF_PNG_SSE2 1
 #endif
 

@@ -2,8 +2,6 @@
 // Forked from rayomd-gui src/pdf/syntax.cpp at 9fbbfaf (Apache-2.0, same author).
 #include "pdf/syntax.h"
 
-#include "common/compiler.h"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -11,7 +9,7 @@
 #include <mutex>
 #include <vector>
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
 
@@ -283,7 +281,7 @@ struct ScanTables {
 };
 constexpr ScanTables kScan;
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 // The hexadecimal digits of `bytes` in pairs: `packed`'s low eight bytes are the pairs' values
 // (first digit high), and the result has a bit set for each lane that holds a digit (0-9, A-F or
 // a-f).
@@ -473,7 +471,7 @@ bool ReadHexString(Cursor& c, Builder& b, std::string_view& out) {
     }
     size_t n = 0;
     size_t i = first;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     // Sixteen digits a step while sixteen remain before '>', then eight: each byte's value (a
     // digit, or a letter A-F in either case, compared lane by lane), a byte made of each pair; a
     // step with any other byte is left to the loops below.

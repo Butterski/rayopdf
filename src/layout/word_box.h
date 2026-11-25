@@ -17,7 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 #include <xmmintrin.h>
 #define RAYOPDF_WORD_BOX_SSE2 1
 #endif

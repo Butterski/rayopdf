@@ -15,13 +15,11 @@
 // lanes for the horizontal pass, eight columns loaded per row for the vertical one.
 #include "image/jpx_internal.h"
 
-#include "common/compiler.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 #include <emmintrin.h>
 #endif
 
@@ -42,7 +40,7 @@ constexpr float kTwoInvK = 1.625732422f;
 
 // ------------------------------------------------------------------------------ eight lanes
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 struct F8 {
     __m128 a, b;
 };
@@ -205,7 +203,7 @@ inline void Lift(I8* low, I8* high, int32_t sn, int32_t dn, bool odd) { Lift53(l
 // Eight full rows to lane vectors and back, four samples at a time through 4x4 transposes (the
 // shuffles move bits, so integers ride in float registers unchanged). They return how many
 // samples they did; the caller does the rest one at a time.
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 inline __m128 AsFloats(const float* p) { return _mm_loadu_ps(p); }
 inline __m128 AsFloats(const int32_t* p) { return _mm_castsi128_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))); }
 inline void FromFloats(float* p, __m128 v) { _mm_storeu_ps(p, v); }
@@ -338,7 +336,7 @@ void InverseColumns(T* data, size_t stride, uint32_t height, uint32_t lowHeight,
     uint32_t x0 = first;
     for (; x0 + 16 <= end; x0 += 16) {
         for (uint32_t y = 0; y < height; y++) {
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
             if (y + 16 < height) {
                 _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0), _MM_HINT_T0);
                 _mm_prefetch(reinterpret_cast<const char*>(data + (y + 16) * stride + x0 + 15), _MM_HINT_T0);
@@ -465,7 +463,7 @@ void InverseIct(float* c0, float* c1, float* c2, size_t count) {
 
 void ShiftClamp(const int32_t* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     // Clipping to [low - shift, high - shift] before the shift cannot overflow (precisions are at
     // most 16 bits) and gives what clipping the exact sum gives.
     const __m128i s = _mm_set1_epi32(shift), l = _mm_set1_epi32(low - shift), h = _mm_set1_epi32(high - shift);
@@ -493,7 +491,7 @@ int32_t ShiftClampOne(float v, int32_t shift, int32_t low, int32_t high) {
     return static_cast<int32_t>(r < low ? low : (r > high ? high : r));
 }
 
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
 // Values beyond +-2^30 clip anyway (precisions are at most 16 bits); _mm_max_ps returns its second
 // operand for NaN, which then clips to `low` as lrintf's INT_MIN would. cvtps2dq rounds to
 // nearest even, as lrintf.
@@ -517,7 +515,7 @@ void StoreShiftedBytes(uint8_t* out, __m128i a, __m128i b, __m128i c, __m128i d)
 
 void ShiftClampFloat(const float* in, int32_t* out, size_t count, int32_t shift, int32_t low, int32_t high) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     const __m128i s = _mm_set1_epi32(shift), l = _mm_set1_epi32(low), h = _mm_set1_epi32(high);
     for (; i + 4 <= count; i += 4) {
         __m128i r = _mm_add_epi32(RoundClipped(in + i), s);
@@ -533,7 +531,7 @@ void ShiftClampFloat(const float* in, int32_t* out, size_t count, int32_t shift,
 
 void ShiftClampBytes(const int32_t* in, uint8_t* out, size_t count) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     for (; i + 16 <= count; i += 16) {
         const __m128i* p = reinterpret_cast<const __m128i*>(in + i);
         StoreShiftedBytes(out + i, _mm_loadu_si128(p), _mm_loadu_si128(p + 1), _mm_loadu_si128(p + 2),
@@ -548,7 +546,7 @@ void ShiftClampBytes(const int32_t* in, uint8_t* out, size_t count) {
 
 void ShiftClampFloatBytes(const float* in, uint8_t* out, size_t count) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     for (; i + 16 <= count; i += 16) {
         StoreShiftedBytes(out + i, RoundClipped(in + i), RoundClipped(in + i + 4), RoundClipped(in + i + 8),
                           RoundClipped(in + i + 12));
@@ -559,7 +557,7 @@ void ShiftClampFloatBytes(const float* in, uint8_t* out, size_t count) {
 
 void Dequantize53(const int32_t* in, int32_t* out, size_t count) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     for (; i + 4 <= count; i += 4) {
         // v / 2 rounds toward zero: add the sign bit before the arithmetic shift.
         const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(in + i));
@@ -571,7 +569,7 @@ void Dequantize53(const int32_t* in, int32_t* out, size_t count) {
 
 void Dequantize97(const int32_t* in, float* out, size_t count, float step) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     // cvtdq2ps rounds as the scalar conversion does (to nearest even).
     const __m128 s = _mm_set1_ps(step);
     for (; i + 4 <= count; i += 4) {
@@ -584,7 +582,7 @@ void Dequantize97(const int32_t* in, float* out, size_t count, float step) {
 
 void NarrowBytes(const int32_t* in, uint8_t* out, size_t count, size_t stride) {
     size_t i = 0;
-#if RAYOPDF_SSE2
+#if defined(__SSE2__)
     if (stride == 1) {
         // The saturating packs keep values in [0, 255] as they are.
         for (; i + 16 <= count; i += 16) {
