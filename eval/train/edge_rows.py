@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Train the edge-row furniture model (plan 5.2, M9) in the train image.
+"""Train the edge-row furniture model (roadmap M9) in the train image.
 
 Labels: a row examined by the furniture rules (`rayopdf --features edge-rows`, written by
 `tools/eval.py train-data --kind edge-rows` into train/edge-rows/<split>/<stem>.jsonl) is

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Training image of the small models (plan M9, eval/train/): LightGBM and NumPy on Python 3.13.
+# Training image of the small models (roadmap M9, eval/train/): LightGBM and NumPy on Python 3.13.
 # The repository's eval/train is mounted over /opt/eval/train at run time; training runs with
 # --network none, one thread and a fixed seed, so two runs give the same model bytes.
 # Build: docker build -f eval/docker/train.Dockerfile -t rayopdf-eval-train:1 eval
