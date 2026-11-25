@@ -132,17 +132,16 @@ RAYOPDF_HOT_INLINE Corner CornerOf(const Glyph& g) {
     return Corner{box.x0, box.y0};
 }
 
-// |x| < kFloatReach and |y| < kFloatReach (false for NaN), both at once on their bits: a float's
-// magnitude bits order as its magnitude, NaN's above infinity's, and 2048 is 0x45000000; adding
-// 0x80000000 - 0x45000000 to each 31-bit magnitude sets its bit 31 exactly when it is 2048 or more,
-// without a carry into the other half.
+// |x| < kFloatReach and |y| < kFloatReach (false for NaN), on their bits: a float's magnitude bits
+// order as its magnitude, NaN's above infinity's, and 2048 is 0x45000000. Each coordinate on its
+// own: the corner's floats are not adjacent in a glyph (u0 and vb), so packing them costs more
+// than a second comparison.
 static_assert(kFloatReach == 2048.0f, "Near's constant is 2048's bits");
-static_assert(sizeof(Corner) == 8, "Corner is two adjacent floats");
 RAYOPDF_HOT_INLINE bool Near(Corner c) {
-    uint64_t xy;
-    std::memcpy(&xy, &c, sizeof xy);
-    constexpr uint64_t kMagnitude = 0x7FFFFFFF7FFFFFFFull, kBias = 0x3B0000003B000000ull, kHigh = 0x8000000080000000ull;
-    return (((xy & kMagnitude) + kBias) & kHigh) == 0;
+    uint32_t x, y;
+    std::memcpy(&x, &c.x, sizeof x);
+    std::memcpy(&y, &c.y, sizeof y);
+    return (x & 0x7FFFFFFFu) < 0x45000000u && (y & 0x7FFFFFFFu) < 0x45000000u;
 }
 
 // A near corner's column and row.
