@@ -3,8 +3,8 @@
 
 #include "common/batch.h"
 
-#include <cinttypes>
-#include <cstdio>
+#include <charconv>
+#include <cstdint>
 
 #ifndef RAYOPDF_VERSION
 #define RAYOPDF_VERSION "0.0.0"
@@ -100,10 +100,12 @@ Status OpenDocument(const std::string& path, std::string_view bytes, std::string
 }
 
 void AppendField(std::string& out, const char* key, uint64_t value) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "\"%s\":%" PRIu64, key, value);
     if (out.size() > 1) out.push_back(',');
-    out += buf;
+    out += '"';
+    out += key;
+    out += "\":";
+    char buf[20];
+    out.append(buf, std::to_chars(buf, buf + sizeof buf, value).ptr);
 }
 
 void AppendField(std::string& out, const char* key, bool value) {

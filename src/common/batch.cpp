@@ -5,7 +5,8 @@
 #include "common/utf8.h"
 
 #include <atomic>
-#include <cinttypes>
+#include <charconv>
+#include <cstdint>
 #include <cstdio>
 #include <thread>
 #include <vector>
@@ -27,9 +28,11 @@ namespace RayoPdf::Batch {
 namespace {
 
 void AppendNumber(std::string& out, const char* key, uint64_t value) {
-    char buf[48];
-    std::snprintf(buf, sizeof buf, ",\"%s\":%" PRIu64, key, value);
-    out += buf;
+    out += ",\"";
+    out += key;
+    out += "\":";
+    char buf[20];
+    out.append(buf, std::to_chars(buf, buf + sizeof buf, value).ptr);
 }
 
 } // namespace

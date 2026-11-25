@@ -5,8 +5,8 @@
 #include "common/utf8.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
-#include <cstdio>
 
 #ifndef RAYOPDF_VERSION
 #define RAYOPDF_VERSION "0.0.0"
@@ -39,11 +39,11 @@ constexpr const char* kStyle =
     "p.note{color:#a00}\n"
     ".legend span{display:inline-block;margin-right:12px;padding:0 4px;border:1px solid}\n";
 
-// A number as `%.2f` (0 for a value that is not finite; -0 as 0).
+// A number as `%.2f` writes it (0 for a value that is not finite; -0 as 0).
 void AppendNumber(std::string& out, float value) {
     char buf[48];
-    std::snprintf(buf, sizeof buf, "%.2f", std::isfinite(value) ? static_cast<double>(value) + 0.0 : 0.0);
-    out += buf;
+    const double number = std::isfinite(value) ? static_cast<double>(value) + 0.0 : 0.0;
+    out.append(buf, std::to_chars(buf, buf + sizeof buf, number, std::chars_format::fixed, 2).ptr);
 }
 
 // Appends `text` escaped for HTML text and attribute values, at most `limit` characters (then
