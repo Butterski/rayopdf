@@ -122,9 +122,9 @@ rayopdf --convert locked.pdf locked.md --password=secret
 
 For a folder: `rayopdf --batch <in-folder> <out-folder> [flags] --report` (`--recursive`,
 `--skip-unchanged`, `--report=FILE`, `--workers=N`). Each `a.pdf` becomes `a.md` (`a.json` with
-`--format=json`, `a.jsonl` with `--format=chunks`, `a.html` with `--format=inspect`); the batch
-modes write no images
-(`--images=none` only).
+`--format=json`, `a.jsonl` with `--format=chunks`, `a.html` with `--format=inspect`), and its
+images go to `a-images/` beside it (`--images=none` for none; the batch modes refuse
+`--images=DIR`).
 
 For many conversions from one process, `rayopdf --serve --json [flags]` reads one JSON request a
 line on stdin and answers one JSON line a request, in order, with the fields of the report below

@@ -82,7 +82,8 @@ guides in `docs/guide/`, the benchmark summary and records, research and roadmap
 13. Each version measured on the harness gets one record `docs/benchmarks/v<version>-<date>.md`;
     baselines are `baselines-<suite>-<date>.md` or `baselines-<date>.md`, release checks
     `release-check-<date>.md`. Add every new record to `docs/benchmarks/README.md` (current
-    records and history) in the same commit.
+    records and history) in the same commit, and bring the public summary `docs/benchmarks.md`
+    up to the new numbers in the commit that releases them.
 
 14. To bump the version, change `VERSION` (CMake and `tools/package.py` read it) and the version
     in the README's Status section in the same commit. A release is the tag `v<VERSION>`

@@ -33,8 +33,8 @@ quality, speed, memory use and robustness: see the
 
 ## Highlights
 
-- **Fast:** under 1 ms for a one-page PDF, start to exit; over 2,000 pages a second on one core
-  in a running process.
+- **Fast:** a one-page PDF in under 1 ms, start to exit (median over opendataloader-bench's 200
+  pages); over 2,000 pages a second on one core in a running process.
 - **Small:** a 1.9 MB download; no runtime, no model files; 2 to 15 MiB of memory for most
   documents.
 - **Structured:** headings, lists, tables, code, quotes, links, footnotes and images; tagged PDFs
