@@ -7,7 +7,9 @@ crypt, pdf, text, image, raster, layout, api, ocr and cli; the C++ API's public 
 `rayopdf-ocr` is built from `src/ocr/addon`), its tests under `tests/`, the Python package over
 the C ABI under `python/` (ctypes, Python 3.9 or newer, the standard library only outside
 `rayopdf/integrations/`), the npm package over its WebAssembly build under `packaging/npm/`, the
-evaluation harness under `eval/` and `tools/eval.py`, and the research and roadmap under `docs/`.
+evaluation harness under `eval/` and `tools/eval.py`, and the documentation under `docs/` (user
+guides in `docs/guide/`, the benchmark summary and records, research and roadmap; index
+`docs/README.md`).
 
 ## Rules
 

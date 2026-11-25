@@ -4,8 +4,8 @@
 
 # RayoPDF
 
-**PDF to Markdown in about a millisecond a page, from a single small executable.**<br>
-No Python. No JVM. No models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
+**Fast, local PDF to Markdown and JSON, from one small executable.**<br>
+No GPU, no Python or Java runtime, no models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
 <a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational?style=for-the-badge"></a>
 <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=for-the-badge"></a>
@@ -15,584 +15,218 @@ No Python. No JVM. No models to download. The reverse of [RayoMD](https://github
 <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white">
 <img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2ea44f">
 
-[Quick start](#quick-start) ·
-[Benchmarks](#performance) ·
-[Usage](#usage) ·
-[Documentation](#documentation)
-
 </div>
 
-> [!TIP]
-> **0.5.0** adds `--figure-text=drop` (a figure's own text left out), `--small-caps=keep` and `--tables=pipe-latex` for benchmark conventions, a LaTeX mode that reads formulas by their fonts' codes and spells them as arXiv sources do, and table, heading, list, footnote and furniture rules: opendataloader-bench 0.941 → 0.944 with its conventions (kordoc: 0.939), READoc arXiv tables 0.636 → 0.730 with READoc's (docling: 0.656), olmOCR arXiv math 0.721 → 0.860, on 4 % fewer instructions. Archives for Linux and Windows below. Every item of the release bar holds.
-
-RayoPDF reads a PDF and writes GitHub Flavored Markdown, in its own C++17 code: a small
-command-line tool for Linux and Windows that starts, converts and exits in the time other tools
-take to load. It is the reverse of [RayoMD](https://github.com/Butterski/rayomd), which writes
-PDFs from Markdown.
+RayoPDF reads a PDF and writes GitHub Flavored Markdown: headings, paragraphs, lists, tables,
+code, links, footnotes, formulas and images, rebuilt from the page's layout. It can also write
+JSON with every block's position on the page, chunks for retrieval-augmented generation, or an
+HTML view of the page layout. It runs on your machine, converts a typical page in about a
+millisecond, and is one static executable for Linux or Windows. Python, JavaScript and C/C++
+programs can call it in-process.
 
 ## Status
 
-Version 0.5.0: PDFs to GitHub Flavored Markdown with headings, paragraphs, lists, code blocks,
-block quotes, alerts, emphasis, links, tables, footnotes and images, right-to-left and CJK text
-included, or to JSON (`--format=json`), chunks for retrieval (`--format=chunks`) or an HTML
-layout inspector (`--format=inspect`); tagged PDFs are read through their structure tree.
-Scanned pages, text inside images and tables drawn as images are read by the optional OCR add-on;
-math is written as Unicode text, or as LaTeX with `--math=latex`. A C++ API, a C ABI, Python
-wheels and an npm package (WebAssembly) embed the converter; a container image runs it. Every item
-of the [release bar](docs/development/roadmap.md#goal-and-release-bar) holds
-([release check](docs/benchmarks/release-check-2026-11-24.md)).
+Version 0.5.0, released on 2026-11-25. RayoPDF converts PDFs that have a text layer (most PDFs
+made by software); scanned pages need the optional OCR add-on. Each release is checked for
+quality, speed, memory use and robustness: see the
+[release check of 0.5.0](docs/benchmarks/release-check-2026-11-24.md).
 
 ## Highlights
 
-<table>
-<tr>
-<td width="33%" valign="top">
+- **Fast:** under 1 ms for a one-page PDF, start to exit; over 2,000 pages a second on one core
+  in a running process.
+- **Small:** a 1.9 MB download; no runtime, no model files; 2 to 15 MiB of memory for most
+  documents.
+- **Structured:** headings, lists, tables, code, quotes, links, footnotes and images; tagged PDFs
+  are read through their structure tree.
+- **Math:** formulas as Unicode text, or rebuilt as LaTeX with `--math=latex`.
+- **Scans:** an optional OCR add-on reads pages without text, in Latin, CJK and six more scripts.
+- **Careful:** every parser is fuzz-tested, and text that could not be read is marked in the
+  output, never dropped silently.
 
-### Fast
-A one-page PDF in under **1 ms**, start to exit; over 2,000 pages a second in a running
-process; a long document's pages on up to four threads.
+## Install
 
-</td>
-<td width="33%" valign="top">
+Download from [Releases](https://github.com/Butterski/rayopdf/releases/latest). Each archive
+holds one folder with the program, its licences and this README's usage section.
 
-### Small
-A **1.9 MB** download: one static executable for Linux or Windows. No runtime, no model
-files, 2 to 15 MiB of memory for most documents.
+```sh
+# Linux x64: one static executable, no dependencies
+curl -LO https://github.com/Butterski/rayopdf/releases/download/v0.5.0/rayopdf-0.5.0-linux-x64-static.tar.gz
+tar -xzf rayopdf-0.5.0-linux-x64-static.tar.gz
+./rayopdf-0.5.0-linux-x64-static/rayopdf --version
+```
 
-</td>
-<td width="33%" valign="top">
+- **Windows x64:** unpack `rayopdf-0.5.0-windows-x64.zip` and run `rayopdf.exe`.
+- **Python 3.9 or newer** (Linux x64 with glibc 2.28 or newer, Windows x64): `pip install rayopdf`.
+  The PyPI package arrives with version 1.0; until then, install the wheel attached to the
+  release: `pip install rayopdf-0.5.0-py3-none-manylinux_2_28_x86_64.whl`
+  (`…-win_amd64.whl` on Windows). See the [Python guide](docs/guide/python.md).
+- **JavaScript** (browsers and Node.js 18 or newer, WebAssembly): the npm package is attached to
+  the release and is not on the npm registry: `npm install ./rayopdf-0.5.0.tgz`. See the
+  [JavaScript guide](docs/guide/javascript.md).
+- **Container image:** `docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" ghcr.io/butterski/rayopdf:0.5.0 --convert in.pdf out.md`.
+  See the [container guide](docs/guide/container.md).
+- **C and C++:** the `rayopdf-lib` archives hold a static library and its header. See the
+  [C and C++ guide](docs/guide/cpp.md).
+- **OCR add-on (optional):** unpack `rayopdf-ocr-0.5.0-<platform>` into the same folder as
+  `rayopdf`. RayoPDF then finds `rayopdf-ocr` beside itself and starts it only for pages that
+  have no usable text. It reads Latin and CJK text; the optional script pack adds Cyrillic,
+  Korean, Arabic, Devanagari, Tamil and Kannada. OCR takes about 2 seconds a page, not
+  milliseconds. See the [OCR guide](docs/guide/ocr.md).
 
-### Structured
-Headings, lists, tables, code, quotes, links, footnotes and images rebuilt from the page's
-geometry; tagged PDFs read through their **structure tree**.
+| Release file | Size, 0.5.0 | For |
+|---|---:|---|
+| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,972 KB | Linux: one static executable |
+| `rayopdf-<version>-windows-x64.zip` | 1,927 KB | Windows: `rayopdf.exe` |
+| `rayopdf-lib-<version>-<platform>` | 1,822 KB / 1,920 KB | C++ API for Linux / Windows: `librayopdf.a`, header, example |
+| `rayopdf-<version>-py3-none-<platform>.whl` | 1,618 KB / 1,896 KB | Python on Linux / Windows |
+| `rayopdf-<version>.tgz` | 1,136 KB | JavaScript (WebAssembly) |
+| `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models |
+| `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: more scripts for the OCR add-on |
 
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Math
-Formulas as Unicode text, or rebuilt as **LaTeX** (`--math=latex`): fractions, roots, sums,
-matrices.
-
-</td>
-<td valign="top">
-
-### Scans
-An optional **OCR add-on** reads pages without text, sideways scans and text inside images, in
-Latin, CJK and six more scripts.
-
-</td>
-<td valign="top">
-
-### Careful
-Every parser is **fuzzed**, every limit fails closed, and text that could not be read is marked
-in the output, never dropped silently.
-
-</td>
-</tr>
-</table>
+To build from source (Linux with Docker and Python 3.10 or newer), see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick start
 
-<details open>
-<summary><b>Linux</b>: download and run</summary>
-
 ```sh
-curl -LO https://github.com/Butterski/rayopdf/releases/download/v0.5.0/rayopdf-0.5.0-linux-x64-static.tar.gz
-tar -xzf rayopdf-0.5.0-linux-x64-static.tar.gz
-./rayopdf-0.5.0-linux-x64-static/rayopdf --convert input.pdf output.md
+rayopdf --convert paper.pdf paper.md                   # Markdown; images in paper-images/
+rayopdf --convert paper.pdf - --images=none            # Markdown to the terminal
+rayopdf --convert paper.pdf paper.json --format=json   # every block with its page and position
+rayopdf --convert paper.pdf paper.md --math=latex      # formulas as LaTeX
+rayopdf --batch papers/ markdown/ --recursive          # every PDF of a folder
 ```
 
-</details>
-
-<details>
-<summary><b>Windows</b>: <code>rayopdf.exe</code></summary>
-
-Download `rayopdf-0.5.0-windows-x64.zip` from [Releases](https://github.com/Butterski/rayopdf/releases/latest) and unpack it:
-
-```sh
-rayopdf.exe --convert input.pdf output.md
+```python
+import rayopdf
+print(rayopdf.convert("paper.pdf").text)
 ```
-
-</details>
-
-<details>
-<summary><b>Scans</b>: the OCR add-on</summary>
-
-Unpack `rayopdf-ocr-0.5.0-<platform>` into the same folder. `rayopdf` then finds `rayopdf-ocr`
-beside itself and starts it only for pages that have no usable text.
-
-</details>
-
-<details>
-<summary><b>Build from source</b></summary>
-
-The compilers live in a Docker image; nothing is installed on the host. Requirements: Linux,
-Docker and Python 3.10 or newer.
-
-```sh
-python3 tools/dev.py image                    # the build image, once
-python3 tools/dev.py build --config static    # build/static/rayopdf: one static executable
-python3 tools/dev.py test --config windows    # build/windows/rayopdf.exe, tested under Wine
-./build/static/rayopdf --convert input.pdf output.md
-```
-
-[CONTRIBUTING.md](CONTRIBUTING.md) has the other configurations, the tests and the OCR add-on's
-build.
-
-</details>
-
-| Package | Size, 0.5.0 | For |
-|---|---:|---|
-| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,972 KB | Linux: one static executable, no dependency |
-| `rayopdf-<version>-windows-x64.zip` | 1,927 KB | Windows: `rayopdf.exe` |
-| `rayopdf-lib-<version>-<platform>` | 1,822 KB / 1,920 KB | The C++ API for Linux / Windows: `librayopdf.a`, its header and an example |
-| `rayopdf-<version>-py3-none-<platform>.whl` | 1,618 KB / 1,896 KB | Python 3.9+ on Linux (manylinux_2_28) / Windows: `import rayopdf`, LangChain and LlamaIndex loaders |
-| `rayopdf-<version>.tgz` | 1,136 KB | JavaScript (WebAssembly) for browsers and Node.js 18+: `npm install ./rayopdf-<version>.tgz` |
-| `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models, unpacked beside `rayopdf` |
-| `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: Cyrillic, Korean, Arabic, Devanagari, Tamil, Kannada for the add-on |
-
-## Performance
-
-Measured on 2026-11-10 (the other tools) and 2026-11-24 (RayoPDF 0.5.0) on an AMD Ryzen 5 PRO 4650GE, every tool in its own Docker image
-without network. A one-shot conversion is a fresh process, start to exit.
-
-### Against other tools
-
-Each tool converts one page of text and tables (document 183 of
-[opendataloader-bench](https://github.com/opendataloader-project/opendataloader-bench), its
-median page) through its own command line, as a fresh process on one pinned core; the median of
-3 to 40 runs.
-
-```mermaid
-%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2ea44f"}}}}%%
-xychart-beta
-    title "One page to Markdown, in ms (lower is better)"
-    x-axis ["RayoPDF", "pdftotext", "liteparse", "edgeparse", "opendataloader", "markitdown"]
-    y-axis "Milliseconds" 0 --> 1500
-    bar [1.01, 16.9, 27.1, 45.2, 1074, 1236]
-```
-
-| Tool | Version | One page | A 33-page report | Peak memory | Writes |
-|---|---|---:|---:|---:|---|
-| **RayoPDF** | 0.5.0 | **1.01 ms** | **10.8 ms** | **7 MiB** | Markdown |
-| pdftotext | Poppler 25.03 | 17 ms (17×) | 46 ms (4.3×) | 18 MiB | plain text |
-| liteparse | 2.18.0 | 27 ms (27×) | 138 ms (13×) | 33 MiB | Markdown |
-| edgeparse | 0.3.2 | 45 ms (45×) | 306 ms (28×) | 27 MiB | Markdown |
-| opendataloader | 2.5.19 | 1,074 ms (1,063×) | 3,705 ms (343×) | 250 MiB | Markdown |
-| markitdown | 0.1.9 | 1,236 ms (1,224×) | 3,143 ms (291×) | 104 MiB | Markdown |
-| PyMuPDF | 2.1, layout on | 4,749 ms (4,702×) | 70,092 ms (6,490×) | 346 MiB | Markdown |
-| docling | 2.147.0, no OCR | 9,490 ms (9,396×) | 93,052 ms (8,616×) | 1,905 MiB | Markdown |
-
-On four cores RayoPDF reads the report's pages on threads and takes 7.3 ms; the others take
-38 ms to 42 s. In a running process (`--batch`, `--serve --json`) a page takes **0.37 ms** (median of
-the benchmark's 200 pages; 2,207 pages a second on one core).
-
-> [!NOTE]
-> This compares the time to a finished file, not identical output: the tools differ in what they
-> recover (the quality table below). A fresh process pays each tool's start: the Python tools
-> import their packages and models, opendataloader starts a JVM; inside one running process
-> edgeparse takes about 5 ms a page and PyMuPDF and docling about 2 s. Commands, versions and the
-> four-core figures: [the record of 0.0.12](docs/benchmarks/v0.0.12-2026-11-10.md).
-
-### Quality
-
-The same tools on public benchmarks and on a synthetic corpus with exact ground truth
-([how it is measured](docs/development/evaluation.md)); higher is better.
-
-| Benchmark | RayoPDF | Best other text-layer tool | docling | kordoc |
-|---|---:|---:|---:|---:|
-| opendataloader-bench, 200 pages, with its conventions (`--images=none --furniture=keep --plain --tables=html --quotes=ascii --small-caps=keep`): overall | **0.944** | 0.885 | 0.884 | 0.939 |
-| – text (NID) / tables (TEDS) / headings (MHS) | **0.954** / 0.934 / 0.927 | 0.914 / 0.818 / 0.822 | 0.902 / 0.879 / 0.827 | 0.940 / **0.937** / **0.934** |
-| opendataloader-bench, default output: overall / text / tables / headings | 0.917 / 0.926 / 0.915 / 0.898 | 0.885 / 0.914 / 0.818 / 0.822 | 0.884 / 0.902 / 0.879 / 0.827 | **0.939** / **0.940** / **0.937** / **0.934** |
-| Synthetic corpus, the 11 PDF producers every tool ran on: Markdown constructs (F1) | **0.971** | 0.628 | 0.560 | 0.468 |
-| olmOCR-bench, with its conventions (`--plain --small-caps=keep --figure-text=drop`): multi-column / tables / headers and footers (pass rate) | **0.762** / **0.653** / 0.891 | 0.667 / 0.615 / 0.554 | 0.695 / 0.610 / **0.898** | 0.490 / 0.534 / 0.421 |
-| olmOCR-bench: arXiv math, with `--math=latex` | **0.860** | 0.538 | 0.000 | 0.000 |
-| READoc GitHub, 150 documents: text / headings | **0.936** / **0.882** | 0.874 / 0.778 | 0.908 / 0.471 | 0.835 / 0.405 |
-| READoc arXiv, 150 papers, with its conventions (`--math=latex --tables=pipe-latex --figure-text=drop`): text / headings / tables / order | **0.893** / **0.719** / **0.730** / 0.983 | 0.826 / 0.515 / 0.685 / 0.976 | 0.841 / 0.403 / 0.656 / **0.984** | 0.787 / 0.297 / 0.322 / 0.958 |
-| READoc arXiv with its conventions: inline math | **0.687** | 0.369 | 0.001 | 0.001 |
-| Scanned pages, with the OCR add-on: text (NID) / constructs (F1) | **0.918** / **0.623** | 0.856 / 0.219 (tesseract) | 0.754 / 0.530 (with OCR) | – |
-
-"Text-layer tools" are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse and edgeparse;
-docling is the machine-learning reference; kordoc (its OCR off) claims the top of opendataloader-bench.
-RayoPDF 0.5.0, core alone unless the OCR add-on is named (with it, opendataloader-bench overall is
-0.924 in the default output); the rows "with its conventions" use the options the benchmark's
-ground truth calls for (`eval/profiles.json`), the others the default output; the other tools ran
-in their own default output. The READoc sets and one producer of the synthetic corpus are holdouts,
-scored once per version and never inspected. Every table, per suite and per tool:
-[benchmark records](docs/benchmarks/README.md).
-
-### Release by release
-
-The 200 one-page PDFs of opendataloader-bench without images, one pinned core: pages a second in
-one running process, and the median time of a fresh process per document (an empty static
-program takes 0.22 ms in the same timer).
-
-| Version | Warm, pages/s | Fresh process, one page | What changed |
-|---|---:|---:|---|
-| 0.0.7 | about 1,050 | 1.72 ms | the first complete converter |
-| 0.0.8 | about 1,500 | 1.50 ms | numbers and glyph names read in one pass, fast paths for ASCII text |
-| 0.0.10 | 1,560 | 1.22 ms | content lexer, line building, lazy font programs |
-| 0.0.12 | 2,215 | **0.89 ms** | lexer loop inline, glyph placement, inflate, fonts, tables, hot code ordered, page threads |
-| 0.0.13 | 2,138 | 0.91 ms | headings, tables and text on papers (they cost 3 %), images on page threads |
-| 0.1.0 | 2,209 | 0.93 ms | tables, page furniture, escaping and script forms; round 5 and 6 costs won back |
-| 0.1.1 | 2,217 | 0.91 ms | lists of contents, slide kickers, heading styles and paper title blocks (they cost 1 %) |
-| 0.2.0 | **2,231** | 0.89 ms | JSON output, the C++ API, image tables, table and furniture rules; the ninth round won back their cost |
-| 0.3.0 | 2,214 | 0.90 ms | output options, chunks, the inspector, the C ABI, title and page-number rules (they cost 0.5 %: 0.2.0 gave 2,225 and 0.89 ms in the same runs) |
-| 0.4.0 | 2,188 | 0.91 ms | pipe tables and ASCII quotes, the edge-row model, table and formula rules (they cost 1.1 %: 0.3.0 gave 2,212 and 0.90 ms in the same runs) |
-| 0.5.0 | 2,207 | 0.91 ms | figure-text, small-capitals and LaTeX-table options, LaTeX by font codes, table, heading, list and furniture rules; fourteen speed rounds won back their cost (0.4.0 gave 2,194 and 0.91 ms in the same runs) |
-
-Every speed change is profiled, kept only if a pinned A/B shows it faster, and leaves the output
-byte for byte the same on the whole corpus. [`performance.md`](docs/development/performance.md)
-has the method, every step, and what was tried and rejected; `tools/bench.py` reruns the
-measurements.
-
-<p align="right"><a href="#readme-top">back to top ↑</a></p>
 
 ## Usage
 
 ```sh
-rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-                                [--ocr=auto|off|force] [--ocr-addon=PATH]
-                                [--no-exact] [--no-annotations] [--no-structure] [--report]
-                                [--math=unicode|latex] [--workers=N]
-                                [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
-                                [--page-markers] [--front-matter]
-                                [--furniture=drop|keep] [--plain]
-                                [--tables=auto|html|pipe|pipe-latex]
-rayopdf --batch IN-FOLDER OUT-FOLDER [--recursive] [--skip-unchanged] [--report[=FILE]]
-                                     [--workers=N] [--images=none] [--password=PW] ...
-rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
-rayopdf --inspect IN.pdf [--password=PW]   # the document's structure as one JSON object
+rayopdf --convert IN.pdf OUT.md [options]          # one PDF; OUT.md "-" writes to standard output
+rayopdf --batch IN-FOLDER OUT-FOLDER [options]     # every *.pdf of a folder
+rayopdf --serve --json [options]                   # a long-running process: JSON requests, one a line
+rayopdf --inspect IN.pdf                           # the document's properties as JSON, no conversion
 rayopdf --version | --help
 ```
 
-`OUT.md` `-` writes to standard output. Images go to `OUT-images/` beside `OUT.md` (PNG, or the
-PDF's own JPEG data when that file shows what the PDF shows) unless `--images` says otherwise.
+Options go after the paths, in any order. The most used:
+
+| Option | What it does |
+|---|---|
+| `--images=DIR` / `--images=none` | Write image files to DIR, or write none. Default: `OUT-images/` beside `OUT.md` (none with `-`). |
+| `--pages=A-B` | Convert pages A to B only (1-based; `3`, `3-` and `-7` work too). |
+| `--password=PW` | Open an encrypted PDF. |
+| `--format=json` | One JSON object: the document's metadata and its blocks, each with its type, page, position and Markdown. |
+| `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes). |
+| `--format=inspect` | One HTML file that draws each page's lines and blocks in reading order, to see what the layout analysis decided. |
+| `--math=latex` | Formulas as LaTeX (`$…$`, `$$…$$`) instead of Unicode text. |
+| `--page-markers` | Write `<!-- page N -->` before each page's Markdown. |
+| `--front-matter` | Start the Markdown with YAML front matter from the PDF's metadata. |
+| `--plain` | No inline markup: no emphasis, code spans, links or `<sup>`/`<sub>` (their text stays). |
+| `--tables=html` / `--tables=pipe` | Every table as HTML, or every table as a pipe table. Default: pipe tables, and HTML only for a table whose cells span rows. |
+| `--furniture=keep` | Keep running headers, footers and page numbers (removed by default). |
+| `--ocr=off` / `--ocr=force` | Never start the OCR add-on, or also OCR pages that already carry an invisible OCR text layer. |
+| `--report` | Print one JSON record with the document's counters (pages, repairs, OCR, …). |
+| `--workers=N` | Threads (1 to 64). The output never depends on it. |
+
+`rayopdf --help` lists every option. More options adapt the output to a reader's conventions
+(`--quotes`, `--small-caps`, `--figure-text`, `--tables=pipe-latex`), and `--batch` takes
+`--recursive`, `--skip-unchanged` and `--report=FILE`. The
+[command-line guide](docs/guide/cli.md) explains each of them, and the
+[output formats guide](docs/guide/formats.md) describes what is written.
+
 Text that could not be read is never dropped silently: a `<!-- rayopdf: ... -->` comment marks
-the spot. Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair, 11
-password required, 12 unwritable output, 13 unsupported encryption.
+the place, for example a page without a text layer. Exit codes: 0 converted, 2 usage error,
+3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 output not writable,
+13 unsupported encryption.
 
-Formulas are written as Unicode text by default: a formula's raised or lowered script in Unicode
-superscript and subscript characters (`mc²`, `x₀`), or as `<sup>`/`<sub>` when one of its
-characters has no such form; raised or lowered text (`H<sub>2</sub>O`) is `<sup>`/`<sub>` too.
-`--math=latex` writes them as LaTeX instead, rebuilt from the glyphs' positions: inline formulas
-as `$…$`, displayed ones as `$$…$$` (an equation number follows as `(n)`), with fractions,
-radicals, scripts (a script's own script too, drawn apart from its line), limits, matrices,
-cases, binomials, `\overset`/`\underset` and `\overbrace`/`\underbrace`; a formula whose
-accents that reading cannot attach (an accent with no letter under it, accents stacked on one
-letter) is read again as the cheapest tree joining its glyphs by baselines, scripts, fraction
-bars and radicals, unless it is a paragraph's whole text without being set as a display. A
-formula neither reading can rebuild stays Unicode text, a number in a table
-cell (`−0.1`, `308±6`) stays text as in the default mode, and a `$` of the text is written `\$`
-where it could open a formula (`$8,000` stays as it is). A tagged PDF's formula whose alternate
-text is LaTeX (a command, `^` or `_`, balanced braces) is written as that text, as `$$…$$` when
-the formula is a block of its own.
+## Benchmarks
 
-`--report` prints one JSON record of the document: `input`, `output`, `status` (`ok`, `skipped`
-or `error`), `code` (the exit code), `error` when it failed, `pages`, `bytes` (of Markdown), `ms`,
-then the counters behind the uncertainty comments (glyphs without Unicode, pages without text,
-repairs, limits reached, `exact`, ...).
+RayoPDF 0.5.0 against other converters on public benchmarks and on a synthetic corpus with
+exact ground truth. Higher is better. Measured by this project on an AMD Ryzen 5 PRO 4650GE,
+each tool in its own container: RayoPDF on 2026-11-24, docling and the text-layer tools on
+2026-11-05 (the synthetic corpus on 2026-11-06), kordoc on 2026-11-12.
 
-`--workers=N` (1 to 64) never changes the output. With `--convert` it is the number of pages of
-the document read at once (by default up to one a CPU and at most 4, each thread started only
-when the pages read so far are worth it).
+| Benchmark | RayoPDF, default output | RayoPDF, benchmark's conventions | kordoc 4.24.66 (OCR off) | docling 2.147.0 (no OCR) | Best text-layer tool |
+|---|---:|---:|---:|---:|---:|
+| opendataloader-bench, 200 pages: overall | 0.917 | **0.944** | 0.939 | 0.884 | 0.885 |
+| olmOCR-bench: multi-column / tables / headers and footers | 0.732 / 0.646 / 0.890 | **0.762** / **0.653** / 0.891 | 0.490 / 0.534 / 0.421 | 0.695 / 0.610 / **0.898** | 0.667 / 0.615 / 0.554 |
+| olmOCR-bench: arXiv math | – | **0.860** | 0.000 | 0.000 | 0.538 |
+| READoc, 150 arXiv papers: text / headings / tables | 0.803 / 0.716 / 0.604 | **0.893** / **0.719** / **0.730** | 0.787 / 0.297 / 0.322 | 0.841 / 0.403 / 0.656 | 0.826 / 0.515 / 0.685 |
+| READoc, 150 GitHub READMEs: text / headings | **0.936** / **0.882** | – | 0.835 / 0.405 | 0.908 / 0.471 | 0.874 / 0.778 |
+| Synthetic corpus, 11 PDF producers: Markdown constructs (F1) | **0.971** | (same) | 0.468 | 0.560 | 0.628 |
 
-### JSON, page markers and front matter
+"Benchmark's conventions" means RayoPDF ran with the options that match that benchmark's ground
+truth, for example `--furniture=keep --plain --tables=html` for opendataloader-bench, whose
+expected output keeps page headers and has no emphasis. The other tools ran with their own
+defaults. The text-layer tools are pdftotext, markitdown, PyMuPDF, opendataloader, liteparse
+and edgeparse; the last column shows the best of them for each number. A dash means not
+measured (arXiv math needs `--math=latex`). On scanned pages, with the OCR add-on, RayoPDF reads
+text with a similarity (NID) of 0.918, against 0.754 for docling with OCR and 0.856 for
+Tesseract (those two measured on 2026-11-07).
 
-`--format=json` writes the document as one JSON object instead (schema 1): its metadata, its
-pages' sizes and its blocks in reading order, each with its `type` (`heading`, `paragraph`,
-`list_item`, `code`, `table`, `image`, `footnote`, `comment`), its first `page`, its `boxes` on
-each page (`bbox` in points, origin at the lower left), what its type adds (a heading's `level`,
-a list item's `depth` and `number`, a table's `rows`, `cols` and `cells`, an image's `file` and
-`alt`, ...) and, last, the `markdown` the Markdown output writes for it.
-[roadmap D6](docs/development/roadmap.md#d6-output-dialect) has the full schema.
+Time to convert, start to exit, as a fresh process on one CPU core (other tools measured on
+2026-11-09, RayoPDF 0.5.0 on 2026-11-24):
 
-```sh
-rayopdf --convert paper.pdf paper.json --format=json
-```
+| Tool | Version | One page | A 33-page report | Peak memory |
+|---|---|---:|---:|---:|
+| **RayoPDF** | 0.5.0 | **1.01 ms** | **10.8 ms** | **7 MiB** |
+| pdftotext (plain text only) | Poppler 25.03 | 17 ms | 46 ms | 18 MiB |
+| liteparse | 2.18.0 | 27 ms | 138 ms | 33 MiB |
+| edgeparse | 0.3.2 | 45 ms | 306 ms | 27 MiB |
+| opendataloader | 2.5.19 | 1,074 ms | 3,705 ms | 250 MiB |
+| markitdown | 0.1.9 | 1,236 ms | 3,143 ms | 104 MiB |
+| PyMuPDF | 2.1, layout on | 4,749 ms | 70,092 ms | 346 MiB |
+| docling | 2.147.0, no OCR | 9,490 ms | 93,052 ms | 1,905 MiB |
 
-`--page-markers` writes `<!-- page N -->` before the Markdown of each page (a list or quote that
-runs across a page break is split there):
+Where other tools lead:
 
-```sh
-rayopdf --convert paper.pdf paper.md --page-markers
-```
+- **kordoc** leads opendataloader-bench in RayoPDF's default output (0.939 against 0.917), and
+  on its tables (0.937 against 0.934) and headings (0.934 against 0.927) even with the
+  benchmark's conventions. With its OCR on, kordoc scores 0.964.
+- **docling** leads olmOCR-bench's headers and footers (0.898 against 0.891), and the tables of
+  the synthetic PDFs rendered from HTML by WeasyPrint (0.877 against 0.792).
+- **PyMuPDF** and **docling** lead READoc's arXiv tables in the default output (0.685 and 0.656
+  against 0.604), and docling and liteparse lead its arXiv text there (0.841 and 0.826 against
+  0.803). READoc writes formulas and tables the way LaTeX sources do; with its conventions
+  RayoPDF leads.
+- **GPU converters** built on vision-language models (olmOCR, MinerU, marker) were not run; on
+  scanned pages they are expected to be stronger.
 
-`--front-matter` starts the Markdown with YAML front matter from the PDF's document information:
-`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created` and `modified` (dates in
-ISO 8601) when the file has them, and `pages`:
+Every benchmark, tool version and number, and how to reproduce them:
+[benchmarks](docs/benchmarks.md).
 
-```sh
-rayopdf --convert paper.pdf paper.md --front-matter
-```
+## Limitations
 
-Both apply to Markdown only; the JSON output always carries the metadata.
-
-### Chunks for retrieval
-
-`--format=chunks` writes the document as chunks for retrieval-augmented generation, one JSON
-object a line (JSON Lines): `chunk` (its number from 0), `heading_path` (the headings that enclose
-it, outermost first, as text), `pages` (first and last), `boxes` and `blocks` (the boxes and
-indices of its blocks, as `--format=json` gives them) and `markdown`. A heading starts a chunk
-(unless the chunk holds only headings so far); blocks follow under it, joined by a blank line,
-until the next would take the chunk past `--chunk-chars=N` bytes (256 to 1,000,000; default
-4,000). A block longer than that becomes chunks of its own: text at sentence ends, a table by
-rows with its header repeated in each, code by lines with its fence reopened.
-
-```sh
-rayopdf --convert paper.pdf paper.jsonl --format=chunks --chunk-chars=2000
-```
-
-### Layout inspector
-
-`--format=inspect` writes one HTML file (a style block, no script) that shows what the layout
-stages decided: each page drawn as SVG in PDF points, every line's text where it stands (running
-headers, footers and page numbers that were left out grey and struck through), every block's
-boxes coloured by type and numbered in reading order (hover one for its type and the start of
-its Markdown), a line through the blocks in output order, table cells and images. At most
-20,000 lines are drawn a page.
-
-```sh
-rayopdf --convert paper.pdf paper.html --format=inspect --images=none
-```
-
-### Plain text, HTML tables, page furniture, quotes and small capitals
-
-Six options change conventions on which readers and benchmarks disagree; the defaults keep the
-output faithful to the page.
-
-- `--plain` writes the text without inline markup: no emphasis, code spans, strikethrough or links
-  (the link text stays), no `<sup>`/`<sub>` tags (their text stays; Unicode script forms such as
-  `x₀` too), footnote references as their number (`text.1`) and footnote definitions as `1 text`.
-  Headings, lists, tables and escapes are written as always.
-- `--tables=html` writes every table as an HTML `<table>`, a row a line with a space between its
-  tags and around each cell's text (`<tr> <td> 12 </td> </tr>`, as HTML pretty-printers set
-  them); by default a table is a pipe table unless a cell spanning rows, or columns below the
-  header rows, needs HTML, written without those spaces.
-- `--tables=pipe` writes every table as a pipe table, for readers that take no HTML: a cell
-  spanning rows or columns is written in its first row and column, the cells it covers left
-  empty, and header rows after the first become body rows.
-- `--tables=pipe-latex` writes the pipe tables of `--tables=pipe` for a reader that takes table
-  cells through LaTeX, READoc's convention: its evaluator turns each cell's text into LaTeX as it
-  is, where a bare `%` comments out the rest of the row and `#` and `&` break it, so the cells'
-  `%`, `#` and `&` outside `$…$` math and code spans are written as the text `\%`, `\#`, `\&`
-  (in the Markdown `\\%`), which a Markdown reader shows with the backslash.
-- `--furniture=keep` keeps running headers, footers and page numbers as text: those in the upper
-  half of a page before its text, the others after it (and after the footnotes printed above
-  them), in paragraphs apart from the text and never as headings; by default they are left out. A
-  tagged PDF whose structure tree is used still leaves out what the tree marks as artifacts.
-- `--quotes=ascii` writes the typographic quotation marks of the pages' text (‘ ’ ‚ ‛ “ ” „ ‟)
-  as the ASCII `'` and `"`; dashes and other punctuation stay as printed (ASCII has no dash apart
-  from the hyphen). By default (`--quotes=keep`) quotation marks are written as printed.
-- `--small-caps=keep` writes a heading set in small capitals as printed, every letter a capital
-  (`## V. CONCLUSION`). By default (`--small-caps=lower`) such a heading is written in the
-  source's case, its small capitals as lower-case letters (`## V. Conclusion`).
-- `--figure-text=drop` leaves out a figure's own text: on a page with a figure caption, the
-  blocks standing wholly in or beside a drawn figure or an image (tick labels, axis titles,
-  legends, the labels of a diagram) that do not read as prose. Captions, subfigure captions
-  (`(b) …`) and sentences near a figure stay. By default (`--figure-text=keep`) a figure's text
-  is written as paragraphs, as printed. READoc's ground truth comes from the LaTeX source, which
-  never holds a figure's inner text; opendataloader-bench's ground truth does.
-
-```sh
-rayopdf --convert paper.pdf paper.md --plain --tables=html --furniture=keep
-```
-
-### Exact recovery of RayoMD PDFs
-
-A PDF that [RayoMD](https://github.com/Butterski/rayomd) exported with `--embed-source` carries
-its Markdown source (the `rayomd-source/1` profile). RayoPDF then writes that Markdown byte for
-byte instead of converting the pages, once two checks pass: the profile's own (its exact object
-layout, length, SHA-256 and UTF-8), and a comparison with the pages: the letters and digits of
-the source, compared in runs of 8 with the normal conversion's, may miss or add at most 32 plus
-20 % of either side's (link and image targets, TeX commands of formulas, comments). The digest
-detects damage, not forgery, and the comparison does not cover punctuation, Markdown syntax or
-link targets beyond that allowance. The profile carries no images: the source's image links stay
-as written and no image files are written. The record's `exact` says what happened: `used`,
-`none` (no payload), `off` (`--no-exact`), `pages` (not used with `--pages`), `format` (not used
-with `--format=json`, `--format=chunks`, `--format=inspect`, `--page-markers`, `--plain`,
-`--tables=html`, `--tables=pipe`, `--tables=pipe-latex`, `--furniture=keep`, `--quotes=ascii`, `--small-caps=keep` or
-`--figure-text=drop`,
-which need the pages' layout), or why the payload was rejected and the pages converted instead:
-`unsupported`, `corrupt`, `integrity`, `limit`, `utf8`, `mismatch`. `--no-exact` always converts
-the pages.
-
-### OCR add-on
-
-Pages without a text layer (scans) and text drawn inside images or as outlines are read by a
-separate program, `rayopdf-ocr`, shipped in its own archive with its models
-(`rayopdf-ocr-models/`, PP-OCRv6 small and tiny on ncnn; about 7 MB plus 36 MB). Unpacked into
-the same folder as `rayopdf`, it is found and started only when a page needs it; pages with a
-usable text layer never wait for it. It reads Latin and CJK text, turns pages scanned sideways or
-upside down upright, and also reads the shapes of glyphs whose font maps them to no or wrong text.
-With images written, the text read in an image becomes its alternate text; an image holding a
-table that fills it becomes that table instead (`ocr_tables` in the record).
-The optional script pack `rayopdf-ocr-scripts-VERSION-<platform>` (about 21 MB), unpacked over
-the add-on, adds Cyrillic, Korean, Arabic, Devanagari, Tamil and (roughly) Kannada; a script's
-model loads only when a page needs it. Hebrew is not read yet. Without the add-on, those pages
-keep the `<!-- rayopdf: page N has no extractable text -->` comment. `--ocr=off` never starts it,
-`--ocr=force` also re-reads pages that already carry an invisible OCR layer; `--ocr-addon=PATH` or
-the `RAYOPDF_OCR` environment variable name it elsewhere (otherwise: beside `rayopdf`, then
-`PATH`). The record counts routed, recognised and failed pages (`ocr_pages_routed`, `ocr_pages`,
-`ocr_failures`, `ocr_addon_missing`, ...). An OCR page takes seconds, not milliseconds: about 2 s
-on one core for a 300 dpi Latin page, more for other scripts.
-
-### Batch conversion
-
-`--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md` (with
-`--format=json` `NAME.json`, with `--format=chunks` `NAME.jsonl`, with `--format=inspect`
-`NAME.html`), its images to
-`OUT-FOLDER/NAME-images/`. `--recursive` adds the
-subfolders, except hidden ones, mirrored
-under `OUT-FOLDER`; `--skip-unchanged` keeps Markdown files at least as new as their PDF; `--report`
-writes one record a document, in the sorted order of the inputs, to standard output or to FILE.
-`--workers=N` converts N documents at once (1 to 64; by default one a CPU, at most 6). The files and
-records do not depend on N, only the `ms` of each record. The exit code is 0 when every document
-converted, else the code of the last one that failed (in input order); stderr names each failure.
-
-```sh
-rayopdf --batch papers md-out --recursive --skip-unchanged --report=report.jsonl --workers=8
-```
-
-### Front ends: `--serve --json`
-
-`--serve --json` keeps one process running for an editor plugin, an agent tool or a script, with
-[RayoMD](https://github.com/Butterski/rayomd)'s protocol 1: each line in is a JSON request, each
-line out is the request's record with its `id`. The first line out is
-`{"rayopdf":"VERSION","protocol":1}`. A request has `input` (a PDF), optionally `id` (a string or
-an integer, sent back as it came), `output` (a Markdown file; without it the record carries the
-Markdown as `markdown`, with `--format=json` the JSON object as `json`, with `--format=chunks`
-the chunks as the array `chunks`, or with `--format=inspect` the HTML as `html`, and no images
-are written) and `args` (flags of `--convert`:
-`--password`, `--pages`, `--images`, `--no-exact`, `--no-annotations`, `--no-structure`,
-`--math`, `--ocr`, `--ocr-addon`, `--format`, `--chunk-chars`, `--page-markers`,
-`--front-matter`, `--furniture`, `--plain`, `--tables`, over those
-the session started with). A malformed request gets an error record (code 2) and the session goes
-on; `quit`, `exit` or the end of the input ends it. With `--workers=N` requests already sent are
-converted N at a time, and the answers still come in request order.
-
-```sh
-printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-3"]}' \
-  '{"id":2,"input":"b.pdf"}' | rayopdf --serve --json
-```
-
-### C++ API
-
-The archives `rayopdf-lib-VERSION-linux-x64.tar.gz` and `rayopdf-lib-VERSION-windows-x64.zip`
-(MinGW-w64) hold the converter as a static library, `lib/librayopdf.a`, with its one header,
-`include/rayopdf/rayopdf.h`, and `example.cpp`. `RayoPdf::Api::ConvertFile` and `ConvertMemory`
-convert a file or the bytes of a PDF to Markdown, or with `Format::Json` to the JSON document,
-with the options of `--convert` (pages, password, images, `math`, OCR, page markers, front
-matter, page threads); the `Result` holds the status (the command line's exit code), the error,
-the pages converted and the `--report` counters as one JSON object. The library throws no
-exceptions and keeps no state between calls, which may run on several threads at once.
-
-```sh
-g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread
-./a.out paper.pdf > paper.md
-```
-
-### Python
-
-The wheels `rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl` (Linux with glibc 2.28 or newer)
-and `rayopdf-VERSION-py3-none-win_amd64.whl`, attached to each release (not on PyPI), hold the
-package `rayopdf` for Python 3.9 or newer: the converter as a shared library in the calling
-process, nothing else to install. `convert` takes a path or the PDF's bytes and the options of
-`--convert` as keyword arguments (`format`, `pages`, `password`, `math`, `plain`, `tables`,
-`furniture`, `chunk_chars`, `images` (a folder), `ocr`, `workers`, ...); the `Result` holds
-`text`, `data` (the parsed JSON document, or the list of chunks), `report` and `pages`. A failure
-raises a `RayoPdfError` whose `status` is the command line's exit code (`CorruptError`,
-`PasswordRequiredError`, ...).
-
-```sh
-pip install rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl
-python3 -c 'import rayopdf; print(rayopdf.convert("paper.pdf").text)'
-```
-
-`rayopdf.integrations.langchain.RayoPdfLoader` (LangChain, `pip install langchain-core`) loads a
-PDF as one `Document` a chunk with its `heading_path` and `pages`, or with `mode="single"` as one;
-`rayopdf.integrations.llama_index.RayoPdfReader` (`pip install llama-index-core`) is the same for
-LlamaIndex. Other languages call the C ABI of `include/rayopdf/rayopdf_c.h` (`rayopdf_convert`
-with the flags of `--convert` as strings) in the same library.
-
-### JavaScript (WebAssembly)
-
-`rayopdf-VERSION.tgz`, attached to each release (not on the npm registry), is the npm package
-`rayopdf`: the converter built with Emscripten for browsers and Node.js 18 or newer, an ES
-module. `convert(pdf, options)` takes the PDF as a `Uint8Array` and the options of the Python
-package in camelCase (`format`, `pages`, `password`, `math`, `plain`, `tables`, `furniture`,
-`chunkChars`, `pageMarkers`, `frontMatter`, ...); it resolves to `{text, data, report, pages,
-images}`, where `images` maps file names to bytes when `images` is `true` (linked as
-`images/NAME`) or a folder name, and rejects with a `RayoPdfError` carrying the `status`. It runs
-on one thread, without SIMD and without the OCR add-on, with the same output as the command line.
-
-```sh
-npm install ./rayopdf-VERSION.tgz
-node --input-type=module -e 'import { readFileSync } from "node:fs"; import { convert } from "rayopdf";
-console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
-```
-
-### Container image
-
-`ghcr.io/butterski/rayopdf` holds the static binary alone (no shell), run as user 65532 in `/w`.
-Mount the folder with the PDFs on `/w`; `-u` runs it as you, so that it may write there and the
-files it writes are yours:
-
-```sh
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" ghcr.io/butterski/rayopdf:VERSION \
-    --convert paper.pdf paper.md
-```
-
-### AI agents
-
-[`skills/rayopdf`](skills/rayopdf/SKILL.md) is an Agent Skill: copied into an agent's skills
-folder (for Claude Code `~/.claude/skills/rayopdf`), it tells the agent how to get the binary,
-convert a PDF or a folder of them, choose the flags and read `--report` and the JSON document.
-[rayopdf-mcp](https://github.com/Butterski/rayopdf-mcp) is an MCP server around one warm
-`rayopdf --serve --json` process: its tools `pdf_to_markdown` and `pdf_to_json` convert the PDFs
-under the folders it is given with `--root`.
-
-<p align="right"><a href="#readme-top">back to top ↑</a></p>
-
-## Boundaries
-
-- **Not a renderer.** RayoPDF recovers text and structure; it does not rasterise pages, and a
-  figure made of vector drawings is not turned into an image.
-- **Tables in scientific papers** score below the best tools on arXiv papers in the default
-  output (READoc `table_teds` 0.604, docling 0.656); in READoc's conventions above them (the
-  quality table above).
-- **Math** is rebuilt from glyph positions, not recognised from pixels: formulas in scanned pages
-  stay text.
-- **Scans need the add-on**, and OCR takes seconds a page, not milliseconds. Hebrew is not read
-  yet; Arabic and Kannada are rough.
-- **Encrypted PDFs** need the password (`--password`); certificate encryption is not supported.
-- **Tables with cells spanning rows** (or columns below the header) are written as HTML tables
-  inside the Markdown, everything else as GFM; `--tables=pipe` (and `--tables=pipe-latex`) writes
-  those as GFM too, a spanning cell's text in its first cell.
-- **Memory** grows with the largest JPEG or JPEG 2000 image of a document when images are
-  written, and with the input file, which is mapped.
+- **Not a renderer.** RayoPDF recovers text and structure; it does not render pages, and a
+  figure drawn as vector graphics does not become an image.
+- **Scans need the OCR add-on**, which takes seconds a page. Hebrew is not read yet; Arabic and
+  Kannada are rough. Formulas on scanned pages stay text.
+- **Tables of scientific papers** are weaker in the default output than with READoc's
+  conventions (above).
+- **Encrypted PDFs** need their password; certificate encryption is not supported.
+- **Memory** grows with the input file (it is mapped into memory) and, when images are written,
+  with the largest JPEG or JPEG 2000 image.
 
 ## Documentation
 
-| Topic | Where |
-|---|---|
-| Decisions, milestones and the release bar | [Roadmap](docs/development/roadmap.md) |
-| Suites, metrics, competitors, how to rerun the evaluation | [Evaluation](docs/development/evaluation.md) |
-| Every version on the harness, baselines, release checks | [Benchmark records](docs/benchmarks/README.md) |
-| Speed: method, steps, rejected attempts | [Performance](docs/development/performance.md) |
-| The OCR add-on: engine, build, pipe protocol, decision | [OCR engine](docs/development/ocr-engine.md), [protocol](docs/development/ocr-protocol.md), [decision](docs/development/ocr_ml_decision.md) |
-| Research notes | [Landscape](docs/research/landscape.md), [algorithms](docs/research/algorithms.md), [OCR and ML](docs/research/ocr-ml.md), [speed](docs/research/speed.md) |
-| Reporting a vulnerability | [SECURITY.md](SECURITY.md) |
+- [Documentation index](docs/README.md): every guide and document.
+- Guides: [command line](docs/guide/cli.md), [output formats](docs/guide/formats.md),
+  [OCR add-on](docs/guide/ocr.md), [Python](docs/guide/python.md),
+  [JavaScript](docs/guide/javascript.md), [C and C++](docs/guide/cpp.md),
+  [container image](docs/guide/container.md), [AI agents](docs/guide/agents.md).
+- [Benchmarks](docs/benchmarks.md): where RayoPDF stands, and the dated records.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability.
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test, fuzz and measure, and
-[AGENTS.md](AGENTS.md) holds the rules in short form. The core stays its own code with no runtime
-dependency; a change to the output comes with its scores on the evaluation harness, a change to
-the speed with before and after measurements and identical output; benchmark claims stay dated
-and scoped; builds, PDFs and corpora stay out of the repository.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to build, test, fuzz and measure, and
+[AGENTS.md](AGENTS.md) holds the project's rules in short form. The core stays its own code with
+no runtime dependency. A change to the output comes with its benchmark scores, a change to the
+speed with measurements before and after.
 
 ## License
 

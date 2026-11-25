@@ -1,5 +1,8 @@
 # Benchmark records
 
+For a summary of where RayoPDF stands against other converters, see
+[the benchmarks page](../benchmarks.md). This folder keeps the dated records it draws on.
+
 Every record is a dated run of the harness that [evaluation.md](../development/evaluation.md)
 specifies, on one machine (AMD Ryzen 5 PRO 4650GE, Docker). The roadmap's gates are stated
 against the baselines; each version record compares RayoPDF with them.

@@ -64,7 +64,8 @@ fuzz_<module>_<name>`), and commit the minimized input of anything it finds unde
 ## Changing the output
 
 Output quality is measured by the harness of
-[evaluation.md](docs/development/evaluation.md) (`tools/eval.py`; README § Running the evaluation).
+[evaluation.md](docs/development/evaluation.md) (`tools/eval.py`; its § Commands); the public
+summary of the results is [docs/benchmarks.md](docs/benchmarks.md).
 
 - Work against the development suites. The holdouts (the `weasyprint` producer, the `readoc`
   suite) are scored as aggregates only and never inspected per document.
@@ -113,10 +114,11 @@ or a model, regenerate and check: `python3 tools/gen_<name>_tables.py --check`.
 
 `VERSION` holds the version; CMake and `tools/package.py` read it, and the README's Status section
 names it (change both in one commit). `tools/package.py` builds the release archives byte for
-byte reproducibly from already-built binaries; it copies the README's `Status`, `Usage` and
-`License` sections, so those three headings stay, and puts into each archive the licences of what
-that archive holds (`LICENSES` in the script: a new file under `third_party/licenses/` is added
-there).
+byte reproducibly from already-built binaries; it copies the README's title block and its
+`Status`, `Usage` and `License` sections, so those three headings stay; the same excerpt is the
+Python wheel's description (`tools/build_wheel.py`), so it must read well on its own, offline.
+It puts into each archive the licences of what that archive holds (`LICENSES` in the script: a
+new file under `third_party/licenses/` is added there).
 
 A release is a tag `v<VERSION>` on a commit of master:
 
