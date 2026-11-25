@@ -146,6 +146,9 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
             BuildLines(page, math == MathMode::Latex);
         }
     }
+    // A conversion in a process of its own: the line builder's storage this thread kept for later
+    // pages goes back to the heap, where the stages after it reuse the memory.
+    if (output && output->oneShot) ReleaseLineScratch();
     // A structure tree that passes the checks decides blocks and order (D5, layout/structure.h).
     TaggedLayout tagged;
     if (structure && structure->use != StructureUse::None) {
@@ -188,6 +191,14 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         if (p < quality.size() && quality[p].glyphs >= 20 && quality[p].unreliable * 2 > quality[p].glyphs)
             unmapped[p] = 1;
         if (p < quality.size() && quality[p].ocrFailed) unmapped[p] |= 2;
+    }
+    // A conversion in a process of its own: the working storage this thread kept for later pages'
+    // tables, figures and order goes back to the heap, where the blocks and the writer reuse it
+    // instead of touching new pages.
+    if (output && output->oneShot) {
+        ReleaseTableScratch();
+        ReleaseFigureScratch();
+        ReleaseOrderScratch();
     }
     BlockList blocks;
     BuildBlocks(pages, outline, unmapped, output && output->figureText == FigureText::Drop, blocks);

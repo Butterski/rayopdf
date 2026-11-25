@@ -576,4 +576,10 @@ void ChartAxes(const PageData& page, std::vector<FigureRegion>& axes) {
     }
 }
 
+void ReleaseFigureScratch() {
+    PerThread<FigureScratch>() = FigureScratch();
+    PerThread<FigureMarks>() = FigureMarks();
+    PerThread<AxisScratch>() = AxisScratch();
+}
+
 } // namespace RayoPdf::Layout

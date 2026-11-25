@@ -37,5 +37,8 @@ int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink = n
 // Fills page.order with the lines not removed, in reading order: upright text first, then each
 // other direction in its own frame.
 void OrderLines(PageData& page);
+// Frees the calling thread's storage OrderLines keeps for its next page (a conversion in a process
+// of its own, after its last page's order: what follows reuses the memory).
+void ReleaseOrderScratch();
 
 } // namespace RayoPdf::Layout

@@ -43,4 +43,8 @@ void MarkFigureText(PageData& page);
 // candidate ticks or shapes than the search may look at (fail closed).
 void ChartAxes(const PageData& page, std::vector<FigureRegion>& axes);
 
+// Frees the calling thread's storage the three above keep for their next page (a conversion in a
+// process of its own, once its pages' tables and order are done: what follows reuses the memory).
+void ReleaseFigureScratch();
+
 } // namespace RayoPdf::Layout

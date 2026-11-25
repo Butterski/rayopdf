@@ -191,6 +191,10 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     report.pages = static_cast<int>(pages.size());
     RecognisePages(document, fonts, options.ocr, pages, quality, conversion->routes, report,
                    !options.imageDirectory.empty());
+    // The fonts are done with once the pages are read and recognised (the glyphs hold their texts
+    // and a page-local font number): in a process of its own their memory goes back to the heap
+    // for the stages that follow.
+    if (options.oneShot) fonts.Clear();
     ImageOutput images;
     images.document = &document;
     images.directory = options.imageDirectory;
@@ -213,6 +217,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.chunkChars = options.chunkChars;
     output.features = options.features;
     output.metadata = &metadata;
+    output.oneShot = options.oneShot;
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure, json ? &metadata : nullptr};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,

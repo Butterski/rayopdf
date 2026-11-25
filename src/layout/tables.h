@@ -59,6 +59,9 @@ struct TableContinuation {
 // BuildLines and RemoveRunningLines, before OrderLines. `continuation` (upright tables only) comes
 // from the previous page and is replaced for the next.
 int DetectTables(PageData& page, TableContinuation& continuation);
+// Frees the calling thread's storage DetectTables keeps for its next page (a conversion in a
+// process of its own, after its last page's tables: what follows reuses the memory).
+void ReleaseTableScratch();
 
 // What DetectTables changes on a page, to undo it (pages detected on several threads at once,
 // layout/pipeline.cpp): it only appends to page.lines, page.lineGlyphs, page.tableCells and

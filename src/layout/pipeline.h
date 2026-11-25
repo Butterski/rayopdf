@@ -37,7 +37,8 @@ struct DocumentRead {
 };
 
 // What the writer writes when it is not plain Markdown (ConvertOptions::format, pageMarkers,
-// furniture, plain, tables, quotes, smallCaps, figureText, chunkChars).
+// furniture, plain, tables, quotes, smallCaps, figureText, chunkChars), and how the conversion
+// runs (oneShot).
 struct OutputSettings {
     OutputFormat format = OutputFormat::Markdown;
     bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
@@ -50,6 +51,7 @@ struct OutputSettings {
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
     const FeatureSink* features = nullptr;       // developer mode: edge-row features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
+    bool oneShot = false;                        // ConvertOptions::oneShot: stage storage freed once the pages are past it
 };
 
 // Lines, header/footer removal, images, reading order, semantics and the writer over `pages`

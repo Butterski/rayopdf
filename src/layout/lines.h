@@ -37,6 +37,9 @@ constexpr float kDropCapRatio = 2.5f;      // a drop cap is this many times the 
 // a spacing accent with a bold letter only when another letter of its font is beside it (a word: a
 // formula's \tilde{\mathbf{u}} keeps its accent for the formula's rebuild).
 void BuildLines(PageData& page, bool mathScripts = false);
+// Frees the calling thread's storage BuildLines keeps for its next page (a conversion in a process
+// of its own, after its last page's lines: what follows reuses the memory).
+void ReleaseLineScratch();
 
 // Run-in headings (LaTeX \paragraph, the fourth and fifth levels of many templates): in an ordered
 // line, a bold run that starts it, ends without punctuation and is set off from the text after it

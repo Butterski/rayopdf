@@ -2189,4 +2189,8 @@ void OrderLines(PageData& page) {
     }
 }
 
+void ReleaseOrderScratch() {
+    PerThread<CutLevels>() = CutLevels();
+}
+
 } // namespace RayoPdf::Layout

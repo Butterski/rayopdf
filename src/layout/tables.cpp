@@ -851,6 +851,7 @@ void Detector::SortWords() {
     }
     std::vector<Key>& keys = scratch_.keys;
     keys.clear();
+    keys.reserve(n);
     for (size_t i = 0; i < n; ++i) keys.push_back(Key{words_[i].base, words_[i].x0, static_cast<uint32_t>(i)});
     size_t moves = 8 * n + 256;
     bool sorted = true;
@@ -876,6 +877,7 @@ void Detector::SortWords() {
     }
     std::vector<TWord>& ordered = scratch_.ordered;
     ordered.clear();
+    ordered.reserve(n);
     for (const Key& k : keys) ordered.push_back(words_[k.word]);
     words_.swap(ordered);
 }
@@ -5265,6 +5267,10 @@ int DetectTables(PageData& page, TableContinuation& continuation) {
     TableScratch& scratch = PerThread<TableScratch>();
     if (scratch.words.capacity() > kKeptWords) scratch = TableScratch();
     return restored;
+}
+
+void ReleaseTableScratch() {
+    PerThread<TableScratch>() = TableScratch();
 }
 
 bool TableContinues(const std::vector<PageData>& pages, const std::vector<BlockLine>& lines, const Block& previous,

@@ -2398,6 +2398,11 @@ void BuildLines(PageData& page, bool mathScripts) {
     }
 }
 
+void ReleaseLineScratch() {
+    PerThread<FoldScratch>() = FoldScratch();
+    PerThread<PlaceScratch>() = PlaceScratch();
+}
+
 namespace {
 
 // Extent, character count and common style of `line` from its glyphs.

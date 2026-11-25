@@ -1918,8 +1918,11 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     lines.clear();
     out.noteRefs.clear();
 
-    // Line facts in reading order.
+    // Line facts in reading order: one a line of every page's order.
     std::vector<Info> infos;
+    size_t ordered = 0;
+    for (const PageData& page : pages) ordered += page.order.size();
+    infos.reserve(ordered);
     Marks marks;
     std::string scratch;
     std::vector<uint32_t> byBase;
