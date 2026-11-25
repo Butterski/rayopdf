@@ -115,8 +115,7 @@ def main() -> int:
 
     first_pass = "with a tiny first pass" in out.stdout
     check(all(listed(name, digest) for name, digest in hello["models"].items()) and
-          "dict.txt" in hello["models"] and ("tiny/rec.ncnn.bin" in hello["models"] or
-                                             "tiny/rec.ort" in hello["models"]) == first_pass,
+          "dict.txt" in hello["models"] and ("tiny/rec.ncnn.bin" in hello["models"]) == first_pass,
           "handshake model hashes differ from models.txt")
     check("latin" in hello.get("scripts", []), f"scripts {hello.get('scripts')}")
 

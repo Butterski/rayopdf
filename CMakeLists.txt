@@ -98,9 +98,8 @@ endfunction()
 # One static library per module directory src/<module>/ (every .cpp in it). Dependencies:
 # common <- crypt <- pdf <- text, image <- layout <- api (the C++ API, its public header under
 # include/) <- the command line; raster (paths and the rasterizer for glyph-shape recovery) <- text.
-# `ocr` is the OCR add-on's own code (pre- and post-processing, protocol server, Tesseract backend;
-# no inference runtime): only the add-on rayopdf-ocr, its tests and its fuzz target link it, never
-# `rayopdf`.
+# `ocr` is the OCR add-on's own code (pre- and post-processing, protocol server; no inference
+# runtime): only the add-on rayopdf-ocr, its tests and its fuzz target link it, never `rayopdf`.
 set(RAYOPDF_MODULES common crypt pdf raster text image layout api ocr)
 set(RAYOPDF_DEPENDS_crypt common)
 set(RAYOPDF_DEPENDS_pdf crypt common)
@@ -273,38 +272,26 @@ if(TARGET rayopdf_api AND (RAYOPDF_STATIC OR WIN32))
     add_custom_target(rayopdf_bundle ALL DEPENDS "${bundle}")
 endif()
 
-# The OCR add-on rayopdf-ocr (docs/development/ocr-engine.md): src/ocr/addon/ plus one inference
-# runtime, a static build of it under RAYOPDF_OCR_RUNTIME_DIR (include/, lib/), as
-# docker/ocr.Dockerfile installs them (tools/dev.py configs ocr, ocr-ort, ocr-windows).
+# The OCR add-on rayopdf-ocr (docs/development/ocr-engine.md): src/ocr/addon/ plus the inference
+# runtime ncnn, a static build of it under RAYOPDF_OCR_RUNTIME_DIR (include/, lib/), as
+# docker/ocr.Dockerfile installs it (tools/dev.py configs ocr, ocr-windows).
 option(RAYOPDF_OCR_ADDON "Build the OCR add-on rayopdf-ocr" OFF)
-set(RAYOPDF_OCR_RUNTIME "ncnn" CACHE STRING "Inference runtime of rayopdf-ocr: ncnn or onnxruntime")
-set(RAYOPDF_OCR_RUNTIME_DIR "" CACHE PATH "Static build of that runtime (include/, lib/)")
-set(RAYOPDF_OCR_TIER "small" CACHE STRING "Default model tier of rayopdf-ocr: tiny, small or medium")
+set(RAYOPDF_OCR_RUNTIME_DIR "" CACHE PATH "Static build of ncnn (include/, lib/)")
+set(RAYOPDF_OCR_TIER "small" CACHE STRING "Default model tier of rayopdf-ocr: tiny or small")
 set(RAYOPDF_OCR_MODELS "" CACHE PATH "Model folder (with <tier>/) for tests/verify_ocr.py")
 if(RAYOPDF_OCR_ADDON)
     if(NOT RAYOPDF_OCR_RUNTIME_DIR)
         message(FATAL_ERROR "RAYOPDF_OCR_ADDON needs RAYOPDF_OCR_RUNTIME_DIR.")
     endif()
-    add_executable(rayopdf-ocr src/ocr/addon/main.cpp src/ocr/addon/runtime_${RAYOPDF_OCR_RUNTIME}.cpp)
+    add_executable(rayopdf-ocr src/ocr/addon/main.cpp src/ocr/addon/runtime_ncnn.cpp)
     target_link_libraries(rayopdf-ocr PRIVATE rayopdf_ocr)
     rayopdf_flags(rayopdf-ocr)
     target_compile_definitions(rayopdf-ocr PRIVATE RAYOPDF_OCR_TIER="${RAYOPDF_OCR_TIER}")
     # In a folder of its own: the core's add-on discovery looks beside the running executable, and
     # the core tests in this build directory must not find (and start) the real add-on.
     set_target_properties(rayopdf-ocr PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addon")
-    if(RAYOPDF_OCR_RUNTIME STREQUAL "ncnn")
-        target_include_directories(rayopdf-ocr SYSTEM PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/include/ncnn")
-        target_link_libraries(rayopdf-ocr PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/lib/libncnn.a" Threads::Threads)
-    elseif(RAYOPDF_OCR_RUNTIME STREQUAL "onnxruntime")
-        file(GLOB ort_libraries "${RAYOPDF_OCR_RUNTIME_DIR}/lib/*.a")
-        target_include_directories(rayopdf-ocr SYSTEM PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/include")
-        target_link_libraries(rayopdf-ocr PRIVATE -Wl,--start-group ${ort_libraries} -Wl,--end-group
-            Threads::Threads ${CMAKE_DL_LIBS})
-        # MLAS's assembly kernels lack .note.GNU-stack; the stack stays non-executable regardless.
-        target_link_options(rayopdf-ocr PRIVATE -Wl,-z,noexecstack)
-    else()
-        message(FATAL_ERROR "RAYOPDF_OCR_RUNTIME must be ncnn or onnxruntime.")
-    endif()
+    target_include_directories(rayopdf-ocr SYSTEM PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/include/ncnn")
+    target_link_libraries(rayopdf-ocr PRIVATE "${RAYOPDF_OCR_RUNTIME_DIR}/lib/libncnn.a" Threads::Threads)
     if(RAYOPDF_STATIC)
         target_link_options(rayopdf-ocr PRIVATE -static-pie)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)

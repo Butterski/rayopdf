@@ -2,24 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Download the pinned PP-OCRv6 models and convert them for rayopdf-ocr (runs in docker/ocr.Dockerfile).
 
-For each tier (tiny, small, medium) it fetches PaddlePaddle's official ONNX exports of the
-detection and recognition models at a fixed Hugging Face revision, checks their SHA-256, and
-writes into OUT/<tier>/:
+For each tier (tiny, small) it fetches PaddlePaddle's official ONNX exports of the detection and
+recognition models at a fixed Hugging Face revision, checks their SHA-256, and writes into
+OUT/<tier>/:
 
   det.ncnn.param, det.ncnn.bin, rec.ncnn.param, rec.ncnn.bin   ncnn, converted by pnnx (pinned)
-  det.ort, rec.ort                                            ONNX Runtime format (optimisation
-                                                              level "extended": no NCHWc/NHWC
-                                                              layouts, so one file fits every x86-64 CPU)
   dict.txt                                                    the recogniser's character list, one
                                                               entry a line, from inference.yml
   config.txt                                                  detection thresholds from inference.yml
   models.txt                                                  "<sha256> <bytes> <file>" of every file above
 
-and OUT/required_operators.config (the operators of all six ORT models) for ONNX Runtime's
-minimal build.
-
-The script pack and the orientation classifier (ncnn only: the ONNX Runtime build stays limited to
-the six tier models' operators) go to:
+The script pack and the orientation classifier go to:
 
   OUT/scripts/<script>/   rec.ncnn.param, rec.ncnn.bin, dict.txt, config.txt ("model", "script",
                           "order visual|logical"), models.txt: PaddleOCR's PP-OCRv5 mobile
@@ -44,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import shutil
 import subprocess
 import urllib.request
@@ -67,12 +59,6 @@ MODELS = {
     ("small", "rec"): ("b8f84f0b80c529de40b4fbb3544b84fa7233a513",
                        "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
                        "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"),
-    ("medium", "det"): ("61323801669c338b7891481ec7bac61ce31b576a",
-                        "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
-                        "7298d5ead546584af2504d03355f881ac7a7bc0eb1e282d3e159277c1d0af871"),
-    ("medium", "rec"): ("50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
-                        "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
-                        "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129"),
 }
 # pnnx needs two example shapes to keep the width and height dynamic in the ncnn graph.
 PNNX_SHAPES = {"det": ("[1,3,1536,1088]", "[1,3,960,736]"), "rec": ("[1,3,48,1600]", "[1,3,48,320]")}
@@ -211,20 +197,11 @@ def main() -> int:
         fetch(HF.format(tier=tier, kind=kind, rev=rev, name="inference.onnx"), onnx_dir / f"{tier}_{kind}.onnx", onnx_sha)
         fetch(HF.format(tier=tier, kind=kind, rev=rev, name="inference.yml"), work / f"{tier}_{kind}.yml", yml_sha)
 
-    # ONNX Runtime format, all six models at once, so one operator list covers every tier.
-    env = dict(os.environ, ORT_CONVERT_ONNX_MODELS_TO_ORT_OPTIMIZATION_LEVEL="extended")
-    ort_dir = work / "ort"
-    subprocess.run(["python3", "-m", "onnxruntime.tools.convert_onnx_models_to_ort", str(onnx_dir),
-                    "--output_dir", str(ort_dir), "--optimization_style", "Fixed", "--target_platform", "amd64"],
-                   check=True, env=env)
-    shutil.copyfile(ort_dir / "required_operators.extended.config", out / "required_operators.config")
-
-    for tier in ("tiny", "small", "medium"):
+    for tier in ("tiny", "small"):
         target = out / tier
         target.mkdir(exist_ok=True)
         for kind in ("det", "rec"):
             pnnx(args.pnnx, onnx_dir / f"{tier}_{kind}.onnx", PNNX_SHAPES[kind], target, kind, work / f"pnnx-{tier}-{kind}")
-            shutil.copyfile(ort_dir / f"{tier}_{kind}.extended.ort", target / f"{kind}.ort")
 
         rec = yaml.safe_load((work / f"{tier}_rec.yml").read_text(encoding="utf-8"))
         write_dict(target, rec["PostProcess"]["character_dict"], tier)
@@ -240,7 +217,7 @@ def main() -> int:
         (target / "config.txt").write_bytes(config.encode("ascii"))
 
         write_manifest(target, ["config.txt", "dict.txt", "det.ncnn.param", "det.ncnn.bin", "rec.ncnn.param",
-                                "rec.ncnn.bin", "det.ort", "rec.ort"])
+                                "rec.ncnn.bin"])
     scripts(args, work, out)
     return 0
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// The inference runtime the add-on rayopdf-ocr is built with: exactly one of runtime_ncnn.cpp and
-// runtime_onnxruntime.cpp is compiled in (CMake RAYOPDF_OCR_RUNTIME). Both load the tier's
-// detection and recognition networks from its model folder (models.h) and run them on one thread.
+// The inference runtime of the add-on rayopdf-ocr: ncnn (runtime_ncnn.cpp). It loads a model
+// folder's networks (models.h) and runs them on one thread. The tests run the engine on a fake
+// runtime instead (tests/ocr_fake_runtime.h).
 #pragma once
 
 #include "ocr/engine.h"
@@ -12,7 +12,7 @@
 
 namespace RayoPdf::Ocr {
 
-extern const char* const kRuntimeName;     // "ncnn" or "onnxruntime"
+extern const char* const kRuntimeName;     // "ncnn"
 extern const char* const kRuntimeVersion;  // the pinned version docker/ocr.Dockerfile builds
 // The files of the tier folder this runtime reads (besides config.txt and dict.txt), in the order
 // the handshake lists them.
@@ -28,8 +28,7 @@ enum class Networks : uint8_t { DetectAndRecognize, RecognizeOnly, Classify };
 // the detector fails Detect; only one loaded for it classifies.
 std::unique_ptr<Runtime> CreateRuntime(const ModelSet& set, Networks networks, std::string& detail);
 
-// Whether this runtime can read `set`: its manifest lists the runtime's file for that network
-// (the script pack and the classifier come for ncnn only).
+// Whether this runtime can read `set`: its manifest lists the runtime's file for that network.
 bool RuntimeReads(const ModelSet& set, Networks networks);
 
 } // namespace RayoPdf::Ocr

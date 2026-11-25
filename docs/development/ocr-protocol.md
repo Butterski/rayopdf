@@ -90,18 +90,16 @@ The add-on's first frame, sent unprompted after start:
 `rayopdf-ocr` (the add-on's version) and `protocol` are required; the core refuses any protocol
 other than 1. The other members describe the engine for reports:
 - `models`: the model files the engine reads, with their SHA-256 from `models.txt`. First the tier
-  folder's: `config.txt`, `dict.txt`, then the runtime's network files (`det.ort` and `rec.ort` for
-  ONNX Runtime). With a tiny first pass (the default, [ocr-engine.md](ocr-engine.md)) the tiny
-  folder's `config.txt`, `dict.txt` and recognition network follow as `tiny/<file>`; then the
-  orientation classifier's files as `orient/<file>` and those of each recogniser of the script pack
-  as `scripts/<script>/<file>`, when they are installed ([ocr-engine.md](ocr-engine.md)).
+  folder's: `config.txt`, `dict.txt`, then the runtime's network files. With a tiny first pass (the
+  default, [ocr-engine.md](ocr-engine.md)) the tiny folder's `config.txt`, `dict.txt` and
+  recognition network follow as `tiny/<file>`; then the orientation classifier's files as
+  `orient/<file>` and those of each recogniser of the script pack as `scripts/<script>/<file>`, when
+  they are installed ([ocr-engine.md](ocr-engine.md)).
 - `scripts`: the scripts with at least 20 entries in the tier's dictionary, in the order latin,
   greek, cyrillic, hebrew, arabic, devanagari, thai, kana, han, hangul; then the script pack's
   (cyrillic, hangul, arabic, devanagari, kannada, tamil) not listed yet.
 
-The Tesseract backend announces `"engine":"tesseract"`, its language as `tier`, its version as
-`runtime`, no `models` and its scripts. The handshake must arrive within 30 s (models are loaded
-before it).
+The handshake must arrive within 30 s (models are loaded before it).
 
 ## Requests
 

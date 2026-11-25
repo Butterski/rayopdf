@@ -4,7 +4,7 @@
 # SHA256SUMS, and builds the container image from the Linux archive, checks it and pushes it to
 # ghcr.io. Run by hand (`gh workflow run release.yml`) it is a dry run: the same archives as
 # workflow artifacts and the image checked, no release and no push. The OCR add-on's archives
-# need the rayopdf-ocr:1 image and are built and attached locally: CONTRIBUTING.md § Versions and
+# need the rayopdf-ocr:2 image and are built and attached locally: CONTRIBUTING.md § Versions and
 # releases.
 name: Release
 

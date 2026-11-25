@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// The engines of the OCR add-on rayopdf-ocr behind one interface: an Engine turns a gray page into
-// lines of text (detect + recognise), or line images into their text. PpOcrEngine runs PP-OCRv6's
-// detection and recognition networks through a Runtime (ncnn or ONNX Runtime, src/ocr/addon/) and
-// does all pre- and post-processing itself; TesseractEngine (tesseract.h) runs an external
-// `tesseract`.
+// The engine of the OCR add-on rayopdf-ocr: an Engine turns a gray page into lines of text (detect
+// + recognise), or line images into their text. PpOcrEngine runs PP-OCRv6's detection and
+// recognition networks through a Runtime (ncnn, src/ocr/addon/) and does all pre- and
+// post-processing itself.
 //
 // PpOcrEngine, one page:
 //  1. Detection input: the page resampled so that its longer side is at most `detMaxSide` (never
@@ -59,7 +58,7 @@
 // `lines` requests (Lines) read every image with the tier's recogniser, then route their unread
 // lines the same way (the images of one request come from one font: one script).
 // Lines with no text are left out of pages. At most kMaxPageLines lines per page. Inference is
-// single-threaded (the runtimes are set up so), and every step is deterministic: the same request
+// single-threaded (the runtime is set up so), and every step is deterministic: the same request
 // gives the same lines on every run on a machine, whatever came before (networks load on first
 // use but do not change results). Buffers are kept between calls.
 #pragma once

@@ -11,21 +11,18 @@
 //                                                        per run on stderr
 //   rayopdf-ocr --verify [OPTIONS]                       check the model files' SHA-256
 //   rayopdf-ocr --version
-// Options: --models DIR (default: rayopdf-ocr-models beside the executable), --tier tiny|small|
-// medium, --first-pass tiny|none (default tiny: tiny's recogniser reads every line first, the
-// tier's reads again what tiny reads doubtfully; engine.h), --scripts on|off (the script pack in
-// DIR/scripts/, default on when present), --orient on|off (the orientation classifier in
-// DIR/orient/, default on when present), --engine pp-ocrv6|tesseract, --tesseract PROGRAM
-// (default: tesseract on PATH), --lang L (Tesseract's language, default eng), --det-side N
-// (longest side of the detection input), --space-threshold P (space recovery, recognize.h; above 1
-// turns it off).
+// Options: --models DIR (default: rayopdf-ocr-models beside the executable), --tier tiny|small,
+// --first-pass tiny|none (default tiny: tiny's recogniser reads every line first, the tier's reads
+// again what tiny reads doubtfully; engine.h), --scripts on|off (the script pack in DIR/scripts/,
+// default on when present), --orient on|off (the orientation classifier in DIR/orient/, default on
+// when present), --det-side N (longest side of the detection input), --space-threshold P (space
+// recovery, recognize.h; above 1 turns it off).
 #include "common/file.h"
 #include "common/ocr_protocol.h"
 #include "ocr/addon/runtime.h"
 #include "ocr/engine.h"
 #include "ocr/models.h"
 #include "ocr/server.h"
-#include "ocr/tesseract.h"
 
 #include "common/utf8.h"
 
@@ -180,9 +177,6 @@ struct Options {
     std::string firstPass = "tiny";
     bool scripts = true, orient = true;
     bool stats = false;
-    std::string engine = kEngineName;
-    std::string tesseract = "tesseract";
-    std::string language = "eng";
     uint32_t dpi = 0;
     uint32_t repeat = 0;
     uint32_t detSide = Ocr::kDefaultDetMaxSide;
@@ -191,9 +185,8 @@ struct Options {
 
 const char kUsage[] =
     "usage: rayopdf-ocr --serve | --image PAGE.pgm [--dpi N] [--repeat N] | --verify | --version\n"
-    "       [--models DIR] [--tier tiny|small|medium] [--first-pass tiny|none] [--scripts on|off]\n"
-    "       [--orient on|off] [--engine pp-ocrv6|tesseract] [--tesseract PROGRAM] [--lang L]\n"
-    "       [--det-side N] [--space-threshold P] [--stats]\n";
+    "       [--models DIR] [--tier tiny|small] [--first-pass tiny|none] [--scripts on|off]\n"
+    "       [--orient on|off] [--det-side N] [--space-threshold P] [--stats]\n";
 
 // "on" or "off" into `value`.
 bool ReadSwitch(const std::string& text, bool& value) {
@@ -220,7 +213,7 @@ bool ParseOptions(const std::vector<std::string>& args, Options& options, std::s
             options.models = args[++i];
         } else if (a == "--tier" && hasValue) {
             options.tier = args[++i];
-            if (options.tier != "tiny" && options.tier != "small" && options.tier != "medium") {
+            if (options.tier != "tiny" && options.tier != "small") {
                 error = "unknown tier " + options.tier;
                 return false;
             }
@@ -235,16 +228,6 @@ bool ParseOptions(const std::vector<std::string>& args, Options& options, std::s
                 error = a + " takes on or off";
                 return false;
             }
-        } else if (a == "--engine" && hasValue) {
-            options.engine = args[++i];
-            if (options.engine != kEngineName && options.engine != "tesseract") {
-                error = "unknown engine " + options.engine;
-                return false;
-            }
-        } else if (a == "--tesseract" && hasValue) {
-            options.tesseract = args[++i];
-        } else if (a == "--lang" && hasValue) {
-            options.language = args[++i];
         } else if (a == "--dpi" && hasValue) {
             if (!ReadUnsigned(args[++i], OcrProtocol::kMaxDpi, options.dpi)) {
                 error = "bad --dpi";
@@ -279,8 +262,8 @@ bool ParseOptions(const std::vector<std::string>& args, Options& options, std::s
 }
 
 // Runs one page through `engine` (`repeat` times when timing) and prints the response header;
-// with --stats, what a PP-OCR engine did on its first run (Ocr::EngineStats) on standard error.
-int RunImage(const Options& options, Ocr::Engine& engine, const Ocr::EngineStats* stats) {
+// with --stats, what the engine did on its first run (Ocr::EngineStats) on standard error.
+int RunImage(const Options& options, Ocr::PpOcrEngine& engine) {
     File::InputFile file;
     if (file.Open(options.image, OcrProtocol::kMaxFrameBytes) != File::ReadStatus::Ok) {
         return Fail(kExitImage, "cannot read " + options.image);
@@ -299,14 +282,15 @@ int RunImage(const Options& options, Ocr::Engine& engine, const Ocr::EngineStats
             return Fail(kExitEngine, "the engine failed");
         }
         times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-        if (run == 0 && options.stats && stats) {
+        if (run == 0 && options.stats) {
+            const Ocr::EngineStats& stats = engine.stats;
             char line[256];
             std::snprintf(line, sizeof line,
                           "stats {\"recognitions\":%llu,\"script_recognitions\":%llu,\"classifications\":%llu,"
                           "\"turned\":%u,\"second_looks\":%u,\"flip\":%.4f}\n",
-                          (unsigned long long)stats->recognitions, (unsigned long long)stats->scriptRecognitions,
-                          (unsigned long long)stats->classifications, stats->turnedPages, stats->secondLooks,
-                          double(stats->lastFlip));
+                          (unsigned long long)stats.recognitions, (unsigned long long)stats.scriptRecognitions,
+                          (unsigned long long)stats.classifications, stats.turnedPages, stats.secondLooks,
+                          double(stats.lastFlip));
             File::WriteStandardError(line);
         }
     }
@@ -398,7 +382,7 @@ public:
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
-    // A request's pipe to tesseract, or the core, may close early: report EPIPE, do not die.
+    // The core's pipe may close early: report EPIPE, do not die.
     std::signal(SIGPIPE, SIG_IGN);
 #endif
     const std::vector<std::string> args = File::Arguments(argc, argv);
@@ -418,103 +402,85 @@ int main(int argc, char** argv) {
     OcrProtocol::Handshake handshake;
     handshake.version = RAYOPDF_VERSION;
     handshake.protocol = OcrProtocol::kProtocol;
-    std::unique_ptr<Ocr::Engine> engine;
-    const Ocr::EngineStats* ppocrStats = nullptr;
     std::unique_ptr<Ocr::Runtime> runtime, firstRuntime, orientRuntime;
     Ocr::ModelSet models, firstModels, orientModels;
     FolderScripts scripts;
-    bool orient = false;
-    if (options.engine == "tesseract") {
-        std::unique_ptr<Ocr::TesseractEngine> tesseract(new Ocr::TesseractEngine(options.tesseract, options.language));
-        std::string version;
-        if (!tesseract->Probe(version)) return Fail(kExitRuntime, "cannot run " + options.tesseract + " --version");
-        handshake.engine = "tesseract";
-        handshake.tier = options.language;
-        handshake.runtime = version;
-        handshake.scripts.push_back("latin");
-        engine = std::move(tesseract);
-    } else {
-        std::string root = options.models;
-        if (root.empty()) {
-            root = ExecutableFolder();
-            if (root.empty()) return Fail(kExitModels, "cannot find the executable's folder; give --models");
-            root += "/rayopdf-ocr-models";
-        }
-        std::string detail;
-        Ocr::ModelStatus status = Ocr::LoadModelSet(root + "/" + options.tier, models, detail);
-        if (status == Ocr::ModelStatus::Ok && firstPass) status = Ocr::LoadModelSet(root + "/tiny", firstModels, detail);
-        if (status == Ocr::ModelStatus::Ok && !models.detectConfig) status = Ocr::ModelStatus::BadConfig;
-        if (status != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(status));
-        orient = options.orient && LoadOptional(root + "/orient", Ocr::Networks::Classify, orientModels);
-        if (options.scripts) {
-            for (const char* name : kPackScripts) {
-                std::unique_ptr<FolderScripts::Entry> entry(new FolderScripts::Entry());
-                if (LoadOptional(root + "/scripts/" + name, Ocr::Networks::RecognizeOnly, entry->set) &&
-                    entry->set.script == name) {
-                    scripts.entries.push_back(std::move(entry));
-                }
-            }
-        }
-        if (options.verify) {
-            std::vector<const Ocr::ModelSet*> sets = {&models};
-            if (firstPass) sets.push_back(&firstModels);
-            if (orient) sets.push_back(&orientModels);
-            for (const std::unique_ptr<FolderScripts::Entry>& entry : scripts.entries) sets.push_back(&entry->set);
-            std::string said;
-            for (const Ocr::ModelSet* set : sets) {
-                const Ocr::ModelStatus verified = Ocr::VerifyModelSet(*set, detail);
-                if (verified != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(verified));
-                said += set->directory + ": " + std::to_string(set->files.size()) + " files verified\n";
-            }
-            File::WriteStandardOutput(said);
-            return kExitOk;
-        }
-        handshake.engine = kEngineName;
-        handshake.tier = options.tier;
-        handshake.runtime = Ocr::kRuntimeName;
-        // The files the engine reads: the tier's, then the first pass's (its recogniser alone), named
-        // "tiny/<file>".
-        if (!HandshakeModels(models, "", true, handshake, detail) ||
-            (firstPass && !HandshakeModels(firstModels, "tiny/", false, handshake, detail))) {
-            return Fail(kExitModels, detail);
-        }
-        handshake.scripts = Scripts(models.dictionary);
-        // Then the classifier's ("orient/<file>") and the script pack's ("scripts/<script>/<file>"),
-        // whose scripts join the list.
-        if (orient) HandshakeAll(orientModels, "orient/", handshake);
-        for (const std::unique_ptr<FolderScripts::Entry>& entry : scripts.entries) {
-            HandshakeAll(entry->set, "scripts/" + entry->set.script + "/", handshake);
-            if (std::find(handshake.scripts.begin(), handshake.scripts.end(), entry->set.script) == handshake.scripts.end()) {
-                handshake.scripts.push_back(entry->set.script);
-            }
-        }
-        runtime = Ocr::CreateRuntime(models, Ocr::Networks::DetectAndRecognize, detail);
-        if (!runtime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
-        Ocr::PpOcrSettings settings;
-        settings.detect = models.detect;
-        settings.detMaxSide = options.detSide;
-        settings.spaceThreshold = options.spaceThreshold;
-        std::unique_ptr<Ocr::PpOcrEngine> ppocr;
-        if (firstPass) {
-            firstRuntime = Ocr::CreateRuntime(firstModels, Ocr::Networks::RecognizeOnly, detail);
-            if (!firstRuntime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
-            ppocr.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, *firstRuntime, firstModels.dictionary,
-                                             settings));
-        } else {
-            ppocr.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, settings));
-        }
-        if (orient) {
-            orientRuntime = Ocr::CreateRuntime(orientModels, Ocr::Networks::Classify, detail);
-            if (!orientRuntime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
-            ppocr->SetOrientation(orientRuntime.get());
-        }
-        if (scripts.Count()) ppocr->SetScripts(&scripts);
-        ppocrStats = &ppocr->stats;
-        engine = std::move(ppocr);
+    std::string root = options.models;
+    if (root.empty()) {
+        root = ExecutableFolder();
+        if (root.empty()) return Fail(kExitModels, "cannot find the executable's folder; give --models");
+        root += "/rayopdf-ocr-models";
     }
-    if (options.verify) return Fail(kExitUsage, "--verify checks model files; the tesseract engine has none");
+    std::string detail;
+    Ocr::ModelStatus status = Ocr::LoadModelSet(root + "/" + options.tier, models, detail);
+    if (status == Ocr::ModelStatus::Ok && firstPass) status = Ocr::LoadModelSet(root + "/tiny", firstModels, detail);
+    if (status == Ocr::ModelStatus::Ok && !models.detectConfig) status = Ocr::ModelStatus::BadConfig;
+    if (status != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(status));
+    const bool orient = options.orient && LoadOptional(root + "/orient", Ocr::Networks::Classify, orientModels);
+    if (options.scripts) {
+        for (const char* name : kPackScripts) {
+            std::unique_ptr<FolderScripts::Entry> entry(new FolderScripts::Entry());
+            if (LoadOptional(root + "/scripts/" + name, Ocr::Networks::RecognizeOnly, entry->set) &&
+                entry->set.script == name) {
+                scripts.entries.push_back(std::move(entry));
+            }
+        }
+    }
+    if (options.verify) {
+        std::vector<const Ocr::ModelSet*> sets = {&models};
+        if (firstPass) sets.push_back(&firstModels);
+        if (orient) sets.push_back(&orientModels);
+        for (const std::unique_ptr<FolderScripts::Entry>& entry : scripts.entries) sets.push_back(&entry->set);
+        std::string said;
+        for (const Ocr::ModelSet* set : sets) {
+            const Ocr::ModelStatus verified = Ocr::VerifyModelSet(*set, detail);
+            if (verified != Ocr::ModelStatus::Ok) return Fail(kExitModels, detail + ": " + Ocr::ModelStatusText(verified));
+            said += set->directory + ": " + std::to_string(set->files.size()) + " files verified\n";
+        }
+        File::WriteStandardOutput(said);
+        return kExitOk;
+    }
+    handshake.engine = kEngineName;
+    handshake.tier = options.tier;
+    handshake.runtime = Ocr::kRuntimeName;
+    // The files the engine reads: the tier's, then the first pass's (its recogniser alone), named
+    // "tiny/<file>".
+    if (!HandshakeModels(models, "", true, handshake, detail) ||
+        (firstPass && !HandshakeModels(firstModels, "tiny/", false, handshake, detail))) {
+        return Fail(kExitModels, detail);
+    }
+    handshake.scripts = Scripts(models.dictionary);
+    // Then the classifier's ("orient/<file>") and the script pack's ("scripts/<script>/<file>"),
+    // whose scripts join the list.
+    if (orient) HandshakeAll(orientModels, "orient/", handshake);
+    for (const std::unique_ptr<FolderScripts::Entry>& entry : scripts.entries) {
+        HandshakeAll(entry->set, "scripts/" + entry->set.script + "/", handshake);
+        if (std::find(handshake.scripts.begin(), handshake.scripts.end(), entry->set.script) == handshake.scripts.end()) {
+            handshake.scripts.push_back(entry->set.script);
+        }
+    }
+    runtime = Ocr::CreateRuntime(models, Ocr::Networks::DetectAndRecognize, detail);
+    if (!runtime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
+    Ocr::PpOcrSettings settings;
+    settings.detect = models.detect;
+    settings.detMaxSide = options.detSide;
+    settings.spaceThreshold = options.spaceThreshold;
+    std::unique_ptr<Ocr::PpOcrEngine> engine;
+    if (firstPass) {
+        firstRuntime = Ocr::CreateRuntime(firstModels, Ocr::Networks::RecognizeOnly, detail);
+        if (!firstRuntime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
+        engine.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, *firstRuntime, firstModels.dictionary, settings));
+    } else {
+        engine.reset(new Ocr::PpOcrEngine(*runtime, models.dictionary, settings));
+    }
+    if (orient) {
+        orientRuntime = Ocr::CreateRuntime(orientModels, Ocr::Networks::Classify, detail);
+        if (!orientRuntime) return Fail(kExitRuntime, "cannot load the networks: " + detail);
+        engine->SetOrientation(orientRuntime.get());
+    }
+    if (scripts.Count()) engine->SetScripts(&scripts);
 
-    if (!options.image.empty()) return RunImage(options, *engine, ppocrStats);
+    if (!options.image.empty()) return RunImage(options, *engine);
 
     Ocr::ServerIo io;
     io.read = ReadInput;

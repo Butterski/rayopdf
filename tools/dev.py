@@ -21,13 +21,12 @@ rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so
 newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
 rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
 rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), and the
-OCR add-on's
-configs, which run in the rayopdf-ocr:1 image (docker/ocr.Dockerfile: inference runtimes, models,
-tesseract) unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr on
-ncnn, tests including tests/verify_ocr.py with the image's models), ocr-ort (the same on ONNX
-Runtime), ocr-windows (MinGW-w64 rayopdf-ocr.exe on ncnn, tests under Wine). --dir defaults to
-the config's name. Builds run with --network none; RAYOPDF_DOCKER_CPUS (a cpuset such as
-0-2,4-8) keeps the container off the CPUs a timing run uses.
+OCR add-on's configs, which run in the rayopdf-ocr:2 image (docker/ocr.Dockerfile: the ncnn
+runtime and the models) unless --image says otherwise: ocr (static release with the add-on
+rayopdf-ocr, tests including tests/verify_ocr.py with the image's models), ocr-windows (MinGW-w64
+rayopdf-ocr.exe, tests under Wine). --dir defaults to the config's name. Builds run with
+--network none; RAYOPDF_DOCKER_CPUS (a cpuset such as 0-2,4-8) keeps the container off the CPUs a
+timing run uses.
 """
 
 from __future__ import annotations
@@ -42,14 +41,14 @@ REPO = Path(__file__).resolve().parent.parent
 IMAGE = "rayopdf-build:2"
 IMAGE_TAG = IMAGE  # --image, or the config's image
 # Images `image --name` builds: Dockerfile under docker/ and tag.
-IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:1"),
+IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:2"),
           "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1"), "wasm": ("wasm.Dockerfile", "rayopdf-wasm:1")}
 # Configs that build in another image than the build image.
-CONFIG_IMAGES = {"ocr": "rayopdf-ocr:1", "ocr-ort": "rayopdf-ocr:1", "ocr-windows": "rayopdf-ocr:1",
+CONFIG_IMAGES = {"ocr": "rayopdf-ocr:2", "ocr-windows": "rayopdf-ocr:2",
                  "wheel": "rayopdf-wheel:1", "wasm": "rayopdf-wasm:1"}
 # Configs whose configure step runs through a wrapper (Emscripten's emcmake: its toolchain file).
 CONFIG_WRAPPERS = {"wasm": "emcmake"}
-OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:1
+OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:2
 
 # MinGW's linker writes the link time into the PE header unless told not to; without it two builds
 # of one source differ in four bytes, and so would the release archives (tools/package.py).
@@ -74,17 +73,12 @@ CONFIGS = {
     "wheel": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_SHARED=ON"],
     "wasm": ["-DCMAKE_BUILD_TYPE=Release"],
     "ocr": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
-            "-DRAYOPDF_OCR_RUNTIME=ncnn", "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux",
-            f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
-    "ocr-ort": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
-                "-DRAYOPDF_OCR_RUNTIME=onnxruntime", "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ort/linux",
-                f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
+            "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux", f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
     "ocr-windows": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Windows",
                     "-DCMAKE_SYSTEM_PROCESSOR=x86_64", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix",
                     "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix",
                     "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres", "-DCMAKE_CROSSCOMPILING_EMULATOR=wine",
-                    PE_NO_TIMESTAMP,
-                    "-DRAYOPDF_OCR_ADDON=ON", "-DRAYOPDF_OCR_RUNTIME=ncnn",
+                    PE_NO_TIMESTAMP, "-DRAYOPDF_OCR_ADDON=ON",
                     "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/windows", f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
 }
 

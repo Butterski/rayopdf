@@ -37,9 +37,9 @@ and the core archives' documents:
 
 With --ocr (or --only ocr-linux|ocr-windows), the OCR add-on's archives as well. Their folder has
 the core archive's name, so unpacking one over the other puts rayopdf-ocr beside rayopdf, where
-the core finds it; it holds the add-on (the ncnn build), rayopdf-ocr-models/<tier>/ (the default
-tier and the tiny first pass, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a
-models.txt listing just those), rayopdf-ocr-models/orient/ (the text-line orientation classifier),
+the core finds it; it holds the add-on, rayopdf-ocr-models/<tier>/ (the default tier and the tiny
+first pass, or --ocr-tiers: config.txt, dict.txt, the ncnn network files, and a models.txt listing
+just those), rayopdf-ocr-models/orient/ (the text-line orientation classifier),
 the same documents and the add-on's licences:
 
   rayopdf-ocr-VERSION-linux-x64-static.tar.gz   build/ocr/addon/rayopdf-ocr (static-pie)
@@ -57,9 +57,9 @@ Build the binaries first:
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
   python3 tools/dev.py build --config wheel                           # in rayopdf-wheel:1
   python3 tools/dev.py build --config wasm                            # in rayopdf-wasm:1
-  python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:1
+  python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:2
   python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
-  python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
+  python3 tools/dev.py --image rayopdf-ocr:2 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 
 Usage:
   python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
@@ -183,10 +183,9 @@ def check_linux(binary: Path, version: str, program: str = "rayopdf") -> None:
             raise SystemExit(f"package: {binary} --version says {out!r}, VERSION says {version}")
 
 
-# Network files of the add-on's runtime in a tier folder (besides config.txt and dict.txt). Releases
-# ship the ncnn build (docs/development/ocr-engine.md); the ONNX Runtime variant is not packaged.
+# Network files of the add-on's runtime (ncnn) in a tier folder (besides config.txt and dict.txt).
 OCR_RUNTIME_FILES = ("det.ncnn.param", "det.ncnn.bin", "rec.ncnn.param", "rec.ncnn.bin")
-# The orientation classifier's and the script pack's folders hold the ncnn files alone.
+# The orientation classifier's and the script pack's network files.
 OCR_ORIENT_FILES = ("cls.ncnn.param", "cls.ncnn.bin")
 OCR_SCRIPT_FILES = ("rec.ncnn.param", "rec.ncnn.bin")
 

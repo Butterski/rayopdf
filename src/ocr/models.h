@@ -12,7 +12,7 @@
 //                right); space_gap (InsertInkSpaces, in line heights); letters ("XXXX-YYYY",
 //                the script's code points); unknown keys are ignored
 //   dict.txt     the recogniser's character list (recognize.h), or the classifier's labels
-//   det.*, rec.*, cls.*   the networks, in each runtime's format (det.ncnn.param/.bin, det.ort, ...)
+//   det.*, rec.*, cls.*   the networks, in the runtime's format (det.ncnn.param, det.ncnn.bin, ...)
 #pragma once
 
 #include "ocr/detect.h"

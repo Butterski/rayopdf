@@ -2,7 +2,7 @@
 // Core tests of src/ocr, the OCR add-on's own code without an inference runtime (codes 1250-1299
 // and 1500-1549): the dictionary and CTC decoding, resampling, DB box detection and line order, the
 // PP-OCR engine (with and without a first pass) and the protocol server on a model-free stand-in
-// runtime (ocr_fake_runtime.h), the Tesseract TSV reader, and the model folder's text files.
+// runtime (ocr_fake_runtime.h), and the model folder's text files.
 #include "check.h"
 #include "common/ocr_protocol.h"
 #include "ocr/detect.h"
@@ -11,7 +11,6 @@
 #include "ocr/raster.h"
 #include "ocr/recognize.h"
 #include "ocr/server.h"
-#include "ocr/tesseract.h"
 #include "ocr_fake_runtime.h"
 
 #include <cmath>
@@ -502,33 +501,10 @@ void TestServer() {
                   1292);
 }
 
-void TestTesseractTsv() {
-    const std::string tsv =
-        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
-        "1\t1\t0\t0\t0\t0\t0\t0\t600\t400\t-1\t\n"
-        "4\t1\t1\t1\t1\t0\t10\t20\t200\t30\t-1\t\n"
-        "5\t1\t1\t1\t1\t1\t10\t20\t80\t30\t96.5\tHello\n"
-        "5\t1\t1\t1\t1\t2\t100\t22\t110\t28\t90.5\tw\xc3\xb6rld\n"
-        "5\t1\t1\t1\t1\t3\t220\t22\t10\t28\t95\t \n"
-        "5\t1\t1\t1\t2\t1\t10\t60\t40\t30\t50\tNext\n"
-        "5\t1\t1\t1\t2\t2\tbad\t60\t40\t30\t50\tskipped\n";
-    std::vector<OcrProtocol::Line> lines;
-    RAYOPDF_CHECK(ParseTesseractTsv(tsv, lines) && lines.size() == 2, 1293);
-    const OcrProtocol::Line& first = lines[0];
-    RAYOPDF_CHECK(first.text == "Hello w\xc3\xb6rld" && first.x0 == 10 && first.y0 == 20 && first.x1 == 210 &&
-                      first.y1 == 50 && first.conf == ToConf(0.935) && first.chars.size() == 11 &&
-                      first.chars[0].x0 == 10 && first.chars[4].x1 == 90 && first.chars[5].x0 == 90 &&
-                      first.chars[5].x1 == 100 && first.chars[10].x1 == 210,
-                  1294);
-    RAYOPDF_CHECK(lines[1].text == "Next" && lines[1].conf == 5000, 1295);
-    RAYOPDF_CHECK(!ParseTesseractTsv("not a tsv\n", lines) && ParseTesseractTsv("level\tx\n", lines) && lines.empty(),
-                  1296);
-}
-
 void TestModelFiles() {
     std::vector<ModelFile> files;
     const std::string hash(64, 'b');
-    RAYOPDF_CHECK(ParseManifest(hash + " 12 det.ort\n" + hash + " 0 dict.txt\r\n", files) && files.size() == 2 &&
+    RAYOPDF_CHECK(ParseManifest(hash + " 12 det.ncnn.bin\n" + hash + " 0 dict.txt\r\n", files) && files.size() == 2 &&
                       files[0].bytes == 12 && files[1].name == "dict.txt",
                   1297);
     RAYOPDF_CHECK(!ParseManifest("", files) && !ParseManifest(hash + " 12 ../x\n", files) &&
@@ -682,7 +658,6 @@ int main() {
     TestEngine();
     TestFirstPass();
     TestServer();
-    TestTesseractTsv();
     TestModelFiles();
     TestScripts();
     TestOrientation();

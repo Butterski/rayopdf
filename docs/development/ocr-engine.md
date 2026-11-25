@@ -13,9 +13,9 @@ never links the add-on, the inference runtime or the models. The decision to use
 - detection input: longer side 1280;
 - no second engine for accuracy: measured in Phase D, it stays far below its gate.
 
-ONNX Runtime gives identical text and runs a few percent faster on Linux. It is not the default
-because it has no MinGW-w64 build, so it cannot give the Windows add-on. The `tiny` tier alone is
-the option for size. The `medium` tier is not worth its cost.
+The `tiny` tier alone is the option for size. ONNX Runtime (identical text, a few percent faster on
+Linux, but no MinGW-w64 build), the `medium` tier (not worth its cost) and an external Tesseract
+backend were measured (History) and removed in 1.1.
 
 ## Code
 
@@ -24,12 +24,11 @@ the option for size. The `medium` tier is not worth its cost.
 |Pixels: resampling (box filter shrinking, bilinear growing), rotated crops, normalisation|`src/ocr/raster.*`|
 |Detection post-processing (DB): binarise at `det_thresh`, 8-connected components from row runs, convex hull, minimum-area rectangle, box score, unclip, line order|`src/ocr/detect.*`|
 |Recognition post-processing: dictionary, greedy CTC, space recovery, character spans, confidence|`src/ocr/recognize.*`|
-|Engines behind one interface (`Engine`): PP-OCRv6 through a `Runtime`|`src/ocr/engine.*`|
-|Optional external Tesseract backend (B4)|`src/ocr/tesseract.*`|
+|The engine (`Engine`): PP-OCRv6 through a `Runtime`|`src/ocr/engine.*`|
 |Model folder: `models.txt` (SHA-256 and sizes), `config.txt`, `dict.txt`|`src/ocr/models.*`|
 |Protocol server (frames through `src/common/ocr_protocol.*`)|`src/ocr/server.*`|
-|Executable and runtimes (only with `-DRAYOPDF_OCR_ADDON=ON`)|`src/ocr/addon/main.cpp`, `runtime_ncnn.cpp`, `runtime_onnxruntime.cpp`|
-|Build image: runtimes from pinned source, models downloaded and converted|`docker/ocr.Dockerfile`, `docker/ocr_models.py`|
+|Executable and the ncnn runtime (only with `-DRAYOPDF_OCR_ADDON=ON`)|`src/ocr/addon/main.cpp`, `runtime_ncnn.cpp`|
+|Build image: ncnn from pinned source, models downloaded and converted|`docker/ocr.Dockerfile`, `docker/ocr_models.py`|
 |Tests|`tests/test_ocr.cpp` (1250–1299), `tests/fuzz/fuzz_ocr_server.cpp`, `tests/verify_ocr.py`|
 
 `src/ocr/*.cpp` is the static library `rayopdf_ocr`. It depends on `common` and `crypt` (SHA-256
@@ -81,7 +80,7 @@ the networks.
 
 Each request runs on one thread. The same request gives the same response bytes:
 - the server keeps no state that changes results;
-- ncnn and ONNX Runtime each run with one thread;
+- ncnn runs with one thread;
 - tests check determinism (codes 1276, 1288), as do the fuzz target and `verify_ocr.py`.
 
 Limits:
@@ -95,15 +94,14 @@ Limits:
 ## Build, run, package
 
 ```
-python3 tools/dev.py image --name ocr                                   # rayopdf-ocr:1 (once; ~50 min, ONNX Runtime dominates)
+python3 tools/dev.py image --name ocr             # rayopdf-ocr:2 (once; ~6 min, ncnn's two builds dominate)
 python3 tools/dev.py test --config ocr            # static-pie build/ocr/addon/rayopdf-ocr (ncnn) + all tests + tests/verify_ocr.py
 python3 tools/dev.py test --config ocr-windows    # MinGW-w64 build/ocr-windows/addon/rayopdf-ocr.exe (ncnn), tests under Wine
-python3 tools/dev.py build --config ocr-ort       # the ONNX Runtime variant (Linux only)
-python3 tools/dev.py --image rayopdf-ocr:1 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
+python3 tools/dev.py --image rayopdf-ocr:2 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 python3 tools/package.py --only ocr-linux         # or --ocr: rayopdf-ocr-VERSION-*.tar.gz/.zip with rayopdf-ocr-models/tiny/ and small/
 ```
 
-`rayopdf-ocr --serve [--models DIR] [--tier tiny|small|medium] [--first-pass tiny|none] [--engine pp-ocrv6|tesseract]`:
+`rayopdf-ocr --serve [--models DIR] [--tier tiny|small] [--first-pass tiny|none] [--scripts on|off] [--orient on|off]`:
 - models default to `rayopdf-ocr-models/` beside the executable; the default reads `small/` and,
   for the first pass, `tiny/`;
 - `--image PAGE.pgm --repeat N` times one page;
@@ -129,19 +127,13 @@ the core looks for it.
 
 Pinned inputs (`/opt/ocr/versions.json` in the image):
 - ncnn 20261020 (source zip, SHA-256): built static, without OpenMP or Vulkan, only the layers the
-  six networks use (68 of 110 layers off);
-- ONNX Runtime 1.31.1 (tag archive, SHA-256): minimal build, the six models' operators only, no
-  exceptions or RTTI;
+  networks use (68 of 110 layers off);
 - pnnx 20261020;
 - PaddlePaddle's official PP-OCRv6 ONNX exports, by Hugging Face revision and SHA-256
-  (`third_party/licenses/pp-ocrv6.txt`). They are converted to ncnn by pnnx, and to ORT format at
-  optimisation level "extended", so no CPU-specific NCHWc layout is baked into the files;
-- Tesseract 5.3.4 with `eng` 4.1.0 (Ubuntu 24.04 packages) for the B4 measurements.
+  (`third_party/licenses/pp-ocrv6.txt`), converted to ncnn by pnnx.
 
 ## Open items
 
-- **Windows ONNX Runtime.** ONNX Runtime has no MinGW-w64 build; MSYS2 patches about 80 files for
-  1.29. ncnn covers Windows, so the ONNX Runtime variant stays Linux-only.
 - **Reading order of multi-column pages** is left to the core.
 - **Hebrew** (§ Scripts and rotated pages): a permissive model exists, its ncnn conversion does not
   work yet.
@@ -291,11 +283,11 @@ only, not used for any choice):
   tier.
 - tiny is the measured alternative where model bytes (6 MB against 31 MB) or time (0.7 s against
   2.7 s per page) matter more than 0.006 word F1. tiny also drops Japanese.
-- ONNX Runtime stays a Linux build option (`ocr-ort`). It is not packaged.
+- ONNX Runtime stays a Linux build option (`ocr-ort`). It is not packaged. *Removed in 1.1.*
 - Tesseract (`--engine tesseract`) is the optional external backend for comparison. Its recognition
   is level with small on Latin text and 3× faster, but it needs an installed program and covers only
   its installed languages. As a second engine on doubtful lines it was measured and rejected
-  (Phase D, below).
+  (Phase D, below). *Removed in 1.1.*
 
 ### Second-engine cascade (Phase D), 2026-11-08
 

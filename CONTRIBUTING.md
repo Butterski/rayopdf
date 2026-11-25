@@ -42,7 +42,7 @@ every push). Changes to threads also pass `--config tsan`; changes to files, pat
 pass `--config windows`; changes to the C ABI or the Python package (`python/`) also pass
 `--config wheel` and `--config windows`; changes to the C ABI or the npm package
 (`packaging/npm/`) also pass `--config wasm`; changes to the add-on pass `--config ocr` (image
-`rayopdf-ocr:1`).
+`rayopdf-ocr:2`).
 
 The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same image on pull
 requests and once a night when master changed: the release build without warnings, the tests in
@@ -142,16 +142,16 @@ release only, not published to PyPI or npm. Its `container` job builds the image
 `packaging/container/Dockerfile` from the Linux archive, checks that it prints its version and
 converts a one-page PDF, and pushes it as `ghcr.io/butterski/rayopdf:$V` and `:latest`.
 
-The OCR add-on's archives need the `rayopdf-ocr:1` image (inference runtimes and models; its
-build takes about 50 minutes), so they are built locally from the tagged commit and attached to
-the draft:
+The OCR add-on's archives need the `rayopdf-ocr:2` image (the ncnn runtime and the models; its
+build took 6 minutes on 2026-11-25), so they are built locally from the tagged commit and
+attached to the draft:
 
 ```sh
 git checkout v$V
-python3 tools/dev.py image --name ocr                        # rayopdf-ocr:1, once
+python3 tools/dev.py image --name ocr                        # rayopdf-ocr:2, once
 python3 tools/dev.py test --config ocr                       # the add-on and its tests
 python3 tools/dev.py build --config ocr-windows --target rayopdf-ocr
-python3 tools/dev.py --image rayopdf-ocr:1 run -- \
+python3 tools/dev.py --image rayopdf-ocr:2 run -- \
     sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 rm -rf build/dist && mkdir -p build/dist
 gh release download v$V --dir build/dist --pattern "rayopdf-$V-*" --pattern "rayopdf-$V.tgz" \
