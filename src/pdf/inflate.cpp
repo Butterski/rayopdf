@@ -15,6 +15,11 @@
 #include <cstring>
 #include <memory>
 
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+#include <sys/mman.h>
+#define RAYOPDF_INFLATE_HUGE 1
+#endif
+
 #if RAYOPDF_SSE2
 #include <emmintrin.h>
 #define RAYOPDF_INFLATE_SSE2 1
@@ -891,12 +896,32 @@ constexpr size_t kKeptBuffer = size_t(1) << 20;
 // has 32 bits (the WebAssembly module), so that `limit + 1 + kSlack` stays in range.
 constexpr size_t kMaxLimit = sizeof(size_t) >= 8 ? static_cast<size_t>(uint64_t(1) << 40) : SIZE_MAX / 2;
 
+#if RAYOPDF_INFLATE_HUGE
+// A block of at least this many bytes is a mapping of its own with transparent huge pages, in a
+// process that asked for it (UseHugePages).
+constexpr size_t kHugeOutput = size_t(1) << 20;
+constexpr size_t kHugePage = size_t(2) << 20;
+// Set before any thread converts, read after.
+bool hugePages = false;
+#endif
+
 } // namespace
 
-Output::~Output() { std::free(data_); }
+void UseHugePages(bool on) {
+#if RAYOPDF_INFLATE_HUGE
+    hugePages = on;
+#else
+    (void)on;
+#endif
+}
+
+Output::~Output() { Release(); }
 
 uint8_t* Output::Reserve(size_t capacity) {
     if (capacity > capacity_) {
+#if RAYOPDF_INFLATE_HUGE
+        if (hugePages && capacity >= kHugeOutput) return Map(capacity);
+#endif
         void* grown = std::realloc(data_, capacity);
         // As operator new[] without exceptions: no memory ends the process.
         if (!grown) std::abort();
@@ -906,13 +931,58 @@ uint8_t* Output::Reserve(size_t capacity) {
     return data_;
 }
 
+#if RAYOPDF_INFLATE_HUGE
+// The block as a 2 MiB-aligned mapping of whole 2 MiB pages, advised for transparent huge pages:
+// one fault and about a quarter of the time per 4 KiB for a large page string
+// (docs/research/speed.md § 5.3). Advice on a block of the heap would not do: a block grown in
+// place has had its first half faulted in 4 KiB pages, so no aligned 2 MiB of it is untouched; and
+// advice on part of a malloc mapping splits it, after which realloc copies instead of mremap.
+// A mapping grows with mremap, which keeps the advice; the block it leaves is copied once.
+uint8_t* Output::Map(size_t capacity) {
+    if (capacity > SIZE_MAX - kHugePage * 2) std::abort();
+    const size_t size = (capacity + kHugePage - 1) & ~(kHugePage - 1);
+    if (mapped_) {
+        void* moved = mremap(data_, capacity_, size, MREMAP_MAYMOVE);
+        if (moved == MAP_FAILED) std::abort();
+        data_ = static_cast<uint8_t*>(moved);
+        capacity_ = size;
+        return data_;
+    }
+    // One huge page more, then the unaligned ends given back.
+    void* raw = mmap(nullptr, size + kHugePage, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) std::abort();
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(raw);
+    const uintptr_t at = (begin + kHugePage - 1) & ~uintptr_t(kHugePage - 1);
+    if (at > begin) munmap(raw, at - begin);
+    if (at - begin < kHugePage) munmap(reinterpret_cast<void*>(at + size), kHugePage - (at - begin));
+    uint8_t* block = reinterpret_cast<uint8_t*>(at);
+    // Errors are ignored: the advice changes no byte.
+    (void)madvise(block, size, MADV_HUGEPAGE);
+    if (capacity_ > 0) std::memcpy(block, data_, capacity_);
+    std::free(data_);
+    data_ = block;
+    capacity_ = size;
+    mapped_ = true;
+    return data_;
+}
+#endif
+
 uint8_t* Output::Grow(size_t capacity) {
     if (capacity <= capacity_) return data_;
     return Reserve(std::max(capacity, capacity_ > SIZE_MAX / 2 ? SIZE_MAX : capacity_ * 2));
 }
 
 void Output::Release() {
+#if RAYOPDF_INFLATE_HUGE
+    if (mapped_) {
+        munmap(data_, capacity_);
+        mapped_ = false;
+    } else {
+        std::free(data_);
+    }
+#else
     std::free(data_);
+#endif
     data_ = nullptr;
     capacity_ = 0;
 }

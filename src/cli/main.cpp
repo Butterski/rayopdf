@@ -35,6 +35,7 @@
 #include "layout/convert.h"
 #include "layout/ocr_client.h"
 #include "pdf/document.h"
+#include "pdf/inflate.h"
 
 #include <algorithm>
 #include <chrono>
@@ -977,6 +978,7 @@ int main(int argc, char** argv) {
         case Mode::Inspect: return Inspect(input, document.password);
         case Mode::Convert: {
             SetOneShotAllocator();
+            Inflate::UseHugePages(true);
             Layout::ConvertOptions options = document.convert;
             options.oneShot = true;
             ChooseImageTarget(output, document, options);

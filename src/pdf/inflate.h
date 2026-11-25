@@ -25,8 +25,16 @@ enum class Result : uint8_t {
     Corrupt,   // corrupt or truncated before any output; `out` is empty
 };
 
+// For a process that converts one document and ends (the CLI's --convert): on Linux, an Output
+// block of 1 MiB or more becomes a mapping of its own with transparent huge pages (fewer, cheaper
+// page faults; its bytes leave with the process). Off by default: a process that converts many
+// documents keeps its large blocks on the heap, where the next document uses them again. Called
+// before any thread converts.
+void UseHugePages(bool on);
+
 // A growable byte buffer for Inflate's output, grown with realloc: its bytes are never zero-filled,
-// and a large block (one glibc maps on its own) moves without being copied or faulted again.
+// and a large block (one glibc maps on its own) moves without being copied or faulted again. With
+// UseHugePages, a block of 1 MiB or more is a mapping grown with mremap.
 class Output {
 public:
     Output() = default;
@@ -43,8 +51,11 @@ public:
     void Release();
 
 private:
+    uint8_t* Map(size_t capacity);  // Linux, UseHugePages: Reserve's growth to 1 MiB or more
+
     uint8_t* data_ = nullptr;
     size_t capacity_ = 0;
+    bool mapped_ = false;  // data_ is Map's mapping, not a malloc block
 };
 
 // Inflates `in` into `out` (replaced), at most `limit` bytes.
