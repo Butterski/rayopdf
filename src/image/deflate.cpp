@@ -2,6 +2,7 @@
 // Forked from RayoMD src/core/flate.cpp at ef106ca (Apache-2.0, same author).
 #include "image/deflate.h"
 
+#include "common/compiler.h"
 #include "common/cpu.h"
 #include "image/checksum_x86.h"
 
@@ -9,7 +10,7 @@
 #include <cstring>
 #include <type_traits>
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#if RAYOPDF_SSE2
 #include <emmintrin.h>
 #define RAYOPDF_DEFLATE_SSE2 1
 #endif

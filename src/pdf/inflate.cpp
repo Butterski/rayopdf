@@ -15,7 +15,7 @@
 #include <cstring>
 #include <memory>
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#if RAYOPDF_SSE2
 #include <emmintrin.h>
 #define RAYOPDF_INFLATE_SSE2 1
 #endif

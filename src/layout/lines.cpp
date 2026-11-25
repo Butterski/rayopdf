@@ -16,7 +16,7 @@
 #include <memory>
 #include <type_traits>
 
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
 #include <xmmintrin.h>
 #endif
 
@@ -457,7 +457,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     // The finiteness sums: one per field, each added from memory without a load of its own; where
     // SSE2 is, u0 u1 vb vt in one register and v and size in the low lanes of another, added lane
     // by lane in the same order.
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
     __m128 sumBox = _mm_setzero_ps(), sumRest = _mm_setzero_ps();
 #else
     float sumU0 = 0, sumU1 = 0, sumVb = 0, sumVt = 0, sumV = 0, sumSize = 0;
@@ -485,7 +485,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
                 g.flags = static_cast<uint16_t>(flags & ~(kGlyphBold | kGlyphItalic | kGlyphMonospace));
         }
         placed++;
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
         sumBox = _mm_add_ps(sumBox, _mm_loadu_ps(&g.u0));
         sumRest = _mm_add_ps(sumRest, _mm_loadl_pi(_mm_setzero_ps(), reinterpret_cast<const __m64*>(&g.v)));
 #else
@@ -541,7 +541,7 @@ bool CollectAndFold(PageData& page, std::vector<uint32_t>& vis, bool keepInvisib
     fold.base = base + kept;
     if (scratch)
         for (uint32_t e = 0; e < entryCount; ++e) bits[entries[e].word] = 0;
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
     float lanes[8];
     _mm_storeu_ps(lanes, sumBox);
     _mm_storeu_ps(lanes + 4, sumRest);
@@ -1092,7 +1092,7 @@ struct Extent {
     }
     RAYOPDF_HOT_INLINE void Write(Fragment& f) const { f.u0 = u0, f.u1 = u1, f.vb = vb, f.vt = vt; }
 };
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
 static_assert(offsetof(Glyph, u1) == offsetof(Glyph, u0) + 4 && offsetof(Glyph, vb) == offsetof(Glyph, u0) + 8 &&
                   offsetof(Glyph, vt) == offsetof(Glyph, u0) + 12 && offsetof(Fragment, u1) == offsetof(Fragment, u0) + 4 &&
                   offsetof(Fragment, vb) == offsetof(Fragment, u0) + 8 && offsetof(Fragment, vt) == offsetof(Fragment, u0) + 12,

@@ -13,10 +13,12 @@ Usage:
 
 Configs: release (GCC, -O2), debug (GCC, -O0 -g), asan (Clang, ASan + UBSan, -O1 -g),
 tsan (Clang, ThreadSanitizer, -O1 -g), static (GCC release, fully static -static-pie binary for
-the evaluation harness's `cli` tool and the linux-x64-static release), fuzz (Clang, libFuzzer
-targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for the windows-x64
-release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test` runs the
-core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in the
+the evaluation harness's `cli` tool and the linux-x64-static release), scalar (static with the
+tests and RAYOPDF_SCALAR: the scalar paths in place of the SSE2 kernels; not in CI, run in each
+release check), fuzz (Clang, libFuzzer targets of tests/fuzz), windows (MinGW-w64 GCC release,
+a static rayopdf.exe for the windows-x64 release and rayopdf.dll, the C ABI's shared library,
+for the win_amd64 wheel; `test` runs the core tests, the CLI verifier and tests/c_api_smoke.c
+under Wine), wheel (GCC release in the
 rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
 newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
 rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
@@ -61,6 +63,7 @@ CONFIGS = {
     "asan": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",
              "-DCMAKE_CXX_COMPILER=clang++", "-DRAYOPDF_SANITIZE=ON"],
     "static": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_TESTS=OFF"],
+    "scalar": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_SCALAR=ON"],
     "fuzz": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",
              "-DCMAKE_CXX_COMPILER=clang++", "-DRAYOPDF_FUZZ=ON", "-DRAYOPDF_TESTS=OFF"],
     "tsan": ["-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DCMAKE_C_COMPILER=clang",

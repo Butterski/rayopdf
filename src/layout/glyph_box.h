@@ -17,7 +17,7 @@
 #include <cstdint>
 #include <cstring>
 
-#if defined(__SSE2__)
+#if RAYOPDF_SSE2
 #include <emmintrin.h>
 #define RAYOPDF_GLYPH_BOX_SSE2 1
 #endif

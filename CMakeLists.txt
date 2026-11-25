@@ -22,6 +22,9 @@ option(RAYOPDF_FUZZ "Build the libFuzzer targets of tests/fuzz" OFF)
 # The C ABI as a shared library (librayopdf.so, rayopdf.dll) for the Python package: every target
 # position-independent, and on ELF platforms hidden symbols but the C ABI's.
 option(RAYOPDF_SHARED "Build the shared library of the C ABI" OFF)
+# The scalar paths instead of the SSE2 kernels (common/compiler.h, RAYOPDF_SSE2), as a target
+# without SSE2 runs them, built and tested on x86-64 (tools/dev.py config scalar).
+option(RAYOPDF_SCALAR "Build the scalar paths instead of the SSE2 kernels" OFF)
 
 if(RAYOPDF_FUZZ)
     if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -91,6 +94,9 @@ function(rayopdf_flags target)
         # AVX2 kernels (common/cpu.h) with aligned moves (GCC bug 54412): the assembler writes every
         # aligned vector move as an unaligned one, which is as fast on aligned addresses.
         target_compile_options(${target} PRIVATE -Wa,-muse-unaligned-vector-move)
+    endif()
+    if(RAYOPDF_SCALAR)
+        target_compile_definitions(${target} PRIVATE RAYOPDF_SCALAR=1)
     endif()
     target_compile_definitions(${target} PRIVATE RAYOPDF_VERSION="${RAYOPDF_VERSION}")
 endfunction()
