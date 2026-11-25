@@ -23,13 +23,15 @@ Usage:
 
   python3 tools/bench.py fresh --bin NAME=PATH [--bin ...] --dir DIR [--dir ...]
                                [--opt=--images=none ...] [--runs 11] [--warmup 2] [--rounds 12]
-                               [--cpu 3]
+                               [--cpu 3] [--per-doc]
       Fresh-process time. tools/bench/fresh_timer.c (posix_spawn to wait4, built in the image
       for the run) starts `rayopdf --convert DOC OUT OPTIONS` WARMUP times untimed and RUNS times
       timed per document; a round runs every binary once, and the order rotates from round to
       round. Prints the median over the rounds of the per-round median document time, its range,
       the paired change against the first binary (median of the per-round changes), p95, mean,
-      CPU time and page faults.
+      CPU time and page faults. --per-doc keeps each document's time, CPU time and faults (the
+      median over the rounds of its median of RUNS) per binary in --json, and prints the ten
+      documents slowest for the first binary.
 
   python3 tools/bench.py identical --a PATH --b PATH --input DIR [--input ...]
                                    [--set NAME=OPTIONS ...] [--jobs N] [--cpus LIST]
@@ -315,7 +317,8 @@ def inside_fresh(job: dict) -> dict:
     rounds = []
     for r in range(job["rounds"]):
         for name, path in rotated(job["bins"], r):
-            res = subprocess.run([timer, str(job["runs"]), str(job["warmup"]), f"{SCRATCH}/o.md", path] + job["opts"] +
+            res = subprocess.run([timer] + (["--per-file"] if job["per_doc"] else []) +
+                                 [str(job["runs"]), str(job["warmup"]), f"{SCRATCH}/o.md", path] + job["opts"] +
                                  ["--"] + [doc for _, doc in job["docs"]], stdout=subprocess.PIPE, text=True)
             if res.returncode != 0:
                 raise SystemExit(f"fresh_timer failed for {name}")
@@ -328,7 +331,7 @@ def inside_fresh(job: dict) -> dict:
 def cmd_fresh(args) -> int:
     bins, docs = named_files(args.bin, "--bin"), documents(args.dir)
     job = {"task": "fresh", "bins": bins, "docs": docs, "opts": args.opt, "runs": args.runs, "warmup": args.warmup,
-           "rounds": args.rounds}
+           "rounds": args.rounds, "per_doc": args.per_doc}
     result = measure_inside(job, str(args.cpu), [path for _, path in bins + docs])
     result.update({"command": "fresh", "scope": scope(), "cpu": args.cpu, "image": PERF_IMAGE, "folders": args.dir,
                    "options": args.opt, "runs": args.runs, "warmup": args.warmup, "rows": {}})
@@ -346,6 +349,11 @@ def cmd_fresh(args) -> int:
         for key, short in (("wall_ms", "ms"), ("cpu_ms", "cpu_ms"), ("minflt", "faults")):
             for figure in ("median", "p95", "mean"):
                 row[f"{short}_{figure}"] = statistics.median(over_rounds(name, key, figure))
+        if args.per_doc:
+            per_round = [r["per_file"] for r in result["rounds"] if r["binary"] == name]
+            row["docs"] = {doc: {short: statistics.median(files[i][key] for files in per_round)
+                                 for key, short in (("wall_ms", "ms"), ("cpu_ms", "cpu_ms"), ("minflt", "faults"))}
+                           for i, (_, doc) in enumerate(docs)}
         result["rows"][name] = row
         rows.append([name, f"{row['ms_median']:.3f} ({row['ms_median_least']:.3f}-{row['ms_median_most']:.3f})",
                      f"{row['paired_change'] * 100:+.1f} %" if name != bins[0][0] else "",
@@ -357,6 +365,17 @@ def cmd_fresh(args) -> int:
                     result["scope"])
     text += "\n\n" + table(["binary", "ms a document, median (range over the rounds)", f"paired against {bins[0][0]}",
                             "p95", "mean", "CPU ms median", "page faults median, p95, mean", "failed runs"], rows)
+    if args.per_doc:
+        first = result["rows"][bins[0][0]]["docs"]
+        slowest = sorted(docs, key=lambda d: -first[d[1]]["ms"])[:10]
+        header = ["document"]
+        for name, _ in bins:
+            header += [f"{name} ms", f"{name} faults"]
+        lines = [[label] + [cell for name, _ in bins
+                            for cell in (f"{result['rows'][name]['docs'][doc]['ms']:.3f}",
+                                         f"{result['rows'][name]['docs'][doc]['faults']:.0f}")]
+                 for label, doc in slowest]
+        text += f"\n\nThe ten documents slowest for {bins[0][0]} (median over the rounds):\n\n" + table(header, lines)
     finish(args, result, text)
     return 0
 
@@ -657,6 +676,8 @@ def main() -> int:
     p.add_argument("--warmup", type=int, default=2, help="untimed runs a document first (default 2)")
     p.add_argument("--rounds", type=int, default=12, help="rounds, the binaries' order rotated (default 12)")
     p.add_argument("--cpu", type=int, default=3, help="the CPU to measure on (default 3)")
+    p.add_argument("--per-doc", action="store_true",
+                   help="keep every document's figures in --json and print the ten slowest")
 
     p = add("identical", cmd_identical, "two binaries write the same output")
     p.add_argument("--a", required=True, help="one binary")

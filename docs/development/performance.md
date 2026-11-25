@@ -1978,7 +1978,7 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 |`bench.py identical`|two binaries over every PDF under folders, per option set: exit code, `--report` record without `ms`, every output file|G-bytes|
 |`bench.py instr`|instructions a conversion under callgrind, `(I(2N) - I(N)) / N`, and the change|G-warm, the steps' tables|
 |`bench.py warm`|`--bench` best of 3 per document, the binaries alternating: ms/page median, p95, mean, pages/s|release bar, warm|
-|`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults|release bar, fresh|
+|`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults; with `--per-doc` also each document's figures and the ten slowest|release bar, fresh|
 |`bench.py pages`|fresh wall time of multi-page documents per `--workers` count, summed (`tools/bench/cmdbench.c`)|Pages in parallel|
 |`bench.py tools`|every tool through its own command line as a fresh process: time, factor against RayoPDF, peak RSS|the comparison of a version record|
 
@@ -1990,7 +1990,7 @@ python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O -
     --set images= --set nostruct=--no-structure
 python3 tools/bench.py instr --bin base=BASE --bin new=NEW --opt=--images=none --doc FIXTURE.pdf --doc ...
 python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
-python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
+python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none --per-doc
 python3 tools/bench.py pages --bin NEW --list MULTIPAGE.txt --cpus 2,3,4,5
 python3 tools/bench.py tools --bin NEW --doc odl183=$O/01030000000183.pdf --doc safe348=0000348.pdf \
     --cpus 3 --cpus 2,3,4,5

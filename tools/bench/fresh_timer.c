@@ -2,7 +2,7 @@
 // Fresh-process timer of `tools/bench.py fresh`: native, so that nothing but posix_spawn and wait4
 // is in the timed path.
 //
-//   fresh_timer RUNS WARMUP OUT BIN [ARG...] -- FILE...
+//   fresh_timer [--per-file] RUNS WARMUP OUT BIN [ARG...] -- FILE...
 //
 // BIN is first written back, dropped from the page cache and read again: a binary copied a moment
 // ago lies in the page cache in other pieces than one read back, which moves a run by tens of
@@ -11,7 +11,7 @@
 // wait4, CLOCK_MONOTONIC; standard output and error to /dev/null). Per file: the median wall time,
 // the median user + system CPU time and the median minor page faults of the RUNS runs. Prints one
 // line of JSON: the median, p95 and mean of each over the files, and the number of runs that did
-// not exit with 0.
+// not exit with 0; with --per-file also "per_file", each file's three medians in input order.
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <spawn.h>
@@ -41,6 +41,21 @@ static double Median(double* v, int n) {
     return v[n / 2];
 }
 
+// `text` as a JSON string.
+static void PrintString(const char* text) {
+    putchar('"');
+    for (const unsigned char* p = (const unsigned char*)text; *p; ++p) {
+        if (*p == '"' || *p == '\\') {
+            printf("\\%c", *p);
+        } else if (*p < 0x20) {
+            printf("\\u%04x", *p);
+        } else {
+            putchar(*p);
+        }
+    }
+    putchar('"');
+}
+
 static void Recache(const char* path) {
     static char block[1 << 20];
     const int fd = open(path, O_RDONLY);
@@ -60,12 +75,17 @@ static void Stats(const char* name, double* v, int n, const char* end) {
 }
 
 int main(int argc, char** argv) {
+    const int perFile = argc > 1 && strcmp(argv[1], "--per-file") == 0;
+    if (perFile) {
+        --argc;
+        ++argv;
+    }
     int sep = 5;
     while (sep < argc && strcmp(argv[sep], "--") != 0) ++sep;
     const int runs = argc > 1 ? atoi(argv[1]) : 0, warmup = argc > 2 ? atoi(argv[2]) : -1;
     const int files = argc - sep - 1, extra = sep - 5;
     if (runs < 1 || warmup < 0 || files < 1) {
-        fprintf(stderr, "usage: fresh_timer RUNS WARMUP OUT BIN [ARG...] -- FILE...\n");
+        fprintf(stderr, "usage: fresh_timer [--per-file] RUNS WARMUP OUT BIN [ARG...] -- FILE...\n");
         return 2;
     }
     char* const out = argv[3];
@@ -83,6 +103,7 @@ int main(int argc, char** argv) {
     double* wall = calloc((size_t)files, sizeof(double));
     double* cpu = calloc((size_t)files, sizeof(double));
     double* faults = calloc((size_t)files, sizeof(double));
+    double* kept = calloc((size_t)files * 3, sizeof(double));  // per file: wall, CPU, faults
     double* w = calloc((size_t)runs, sizeof(double));
     double* c = calloc((size_t)runs, sizeof(double));
     double* f = calloc((size_t)runs, sizeof(double));
@@ -110,10 +131,21 @@ int main(int argc, char** argv) {
         wall[i] = Median(w, runs);
         cpu[i] = Median(c, runs);
         faults[i] = Median(f, runs);
+        kept[i * 3] = wall[i];
+        kept[i * 3 + 1] = cpu[i];
+        kept[i * 3 + 2] = faults[i];
     }
     printf("{\"files\":%d,\"runs\":%d,\"failures\":%d,", files, runs, failures);
     Stats("wall_ms", wall, files, ",");
     Stats("cpu_ms", cpu, files, ",");
-    Stats("minflt", faults, files, "}\n");
+    Stats("minflt", faults, files, perFile ? ",\"per_file\":[" : "}\n");
+    if (perFile) {
+        for (int i = 0; i < files; ++i) {
+            printf("%s{\"file\":", i ? "," : "");
+            PrintString(argv[sep + 1 + i]);
+            printf(",\"wall_ms\":%.4f,\"cpu_ms\":%.4f,\"minflt\":%.0f}", kept[i * 3], kept[i * 3 + 1], kept[i * 3 + 2]);
+        }
+        printf("]}\n");
+    }
     return 0;
 }
