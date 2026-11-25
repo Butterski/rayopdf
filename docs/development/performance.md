@@ -1778,6 +1778,7 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 |`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults; with `--per-doc` also each document's figures and the ten slowest|release bar, fresh|
 |`bench.py pages`|fresh wall time of multi-page documents per `--workers` count, summed (`tools/bench/cmdbench.c`)|Pages in parallel|
 |`bench.py tools`|every tool through its own command line as a fresh process: time, factor against RayoPDF, peak RSS|the comparison of a version record|
+|`bench.py wasm`|the WebAssembly module in Node.js (`tools/bench/wasm_bench.mjs`, `rayopdf-wasm:1`), best of 3 per document, the modules alternating: what `warm` prints; with `--native BIN` the exit code and output bytes against `BIN --convert`, "identical: N of M"|the wasm module's speed and identity|
 
 ```sh
 python3 tools/dev.py image && docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker   # once
@@ -1791,13 +1792,15 @@ python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--imag
 python3 tools/bench.py pages --bin NEW --list MULTIPAGE.txt --cpus 2,3,4,5
 python3 tools/bench.py tools --bin NEW --doc odl183=$O/01030000000183.pdf --doc safe348=0000348.pdf \
     --cpus 3 --cpus 2,3,4,5
+python3 tools/dev.py build --config wasm --dir wasm-new   # then copy build/wasm-new away: WASMDIR
+python3 tools/bench.py wasm --module new=WASMDIR --dir $O --opt=--images=none --native NEW
 python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/benchmark-output:ro -- \
     python3 tools/hot_sections.py --build-dir build/release --build-dir build/static   # src/hot.ld
 ```
 
 - **Binaries:** compare files kept outside `build/` (the base is the binary of the commit
   before), static builds or builds made in `rayopdf-build:2`.
-- **CPUs:** `warm` and `fresh` time on one CPU (`--cpu 3` here), `pages` and `tools` on the CPUs of
+- **CPUs:** `warm`, `fresh` and `wasm` time on one CPU (`--cpu 3` here), `pages` and `tools` on the CPUs of
   `--cpus`; a time counts only when nothing else runs on them or on their sibling threads (here
   CPU 9 is CPU 3's second thread). `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11` keeps the containers of
   `tools/dev.py`, `bench.py identical` and `bench.py instr` off both. Instruction counts and

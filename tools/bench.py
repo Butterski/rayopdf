@@ -4,7 +4,8 @@
 
 Every measurement runs in Docker, without network, on the CPUs given: RayoPDF's binaries in the
 measuring image rayopdf-perf:1 (docker/perf.Dockerfile: the build image plus valgrind and perf),
-other tools in their evaluation images rayopdf-eval-<tool>:1 (`tools/eval.py images`). Binaries
+its WebAssembly module in rayopdf-wasm:1 (docker/wasm.Dockerfile, Node.js 22), other tools in
+their evaluation images rayopdf-eval-<tool>:1 (`tools/eval.py images`). Binaries
 and documents are mounted read-only, outputs go to a RAM disk inside the container, and
 RAYOPDF_OCR names nothing, so an installed OCR add-on is never found. Give static binaries
 (`tools/dev.py build --config static`) or binaries built in rayopdf-build:2; compare binaries
@@ -61,6 +62,21 @@ Usage:
       (0: no --workers option, the default), summed over the documents, and the ratios against
       one worker. --list names a file with one PDF path a line.
 
+  python3 tools/bench.py wasm --module NAME=DIR [--module ...] --dir DIR [--dir ...]
+                              [--opt=--images=none ...] [--runs 3] [--rounds 2] [--cpu 3]
+                              [--native BIN] [--jobs N] [--cpus LIST]
+      The WebAssembly module (DIR holds rayopdf-core.mjs and rayopdf-core.wasm of
+      `tools/dev.py build --config wasm`) in process, as the npm package calls it:
+      tools/bench/wasm_bench.mjs converts every PDF under the folders (subfolders too) with
+      `--format=markdown --ocr=off OPTIONS` in one Node.js process, one untimed conversion and then
+      RUNS timed ones a document, keeping the fastest; the rounds alternate the modules and a
+      document keeps its best time per module. Prints what `warm` prints. --native also runs
+      `BIN --convert DOC OUT.md --ocr=off OPTIONS` per document in the same container and compares
+      the exit code with the module's status and, when both are 0, the output's bytes with the
+      text of the module's untimed conversion; prints "identical: N of M" a module and its first
+      five differences, and exits with 1 when anything differs. --runs 0 takes no time (one
+      round); only then may --jobs N split the documents over N processes on the CPUs of --cpus.
+
 Every command takes --json FILE (the whole result, with date, machine and parameters). The
 first line printed says what was measured, where and when; quote it with the numbers.
 
@@ -87,6 +103,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PERF_IMAGE = "rayopdf-perf:1"
+WASM_IMAGE = "rayopdf-wasm:1"  # Emscripten's Node.js, for `wasm` (docker/wasm.Dockerfile)
 SOURCES = "/opt/bench"  # tools/ in the measuring container
 SCRATCH = "/out"        # its RAM disk
 NO_OCR = "RAYOPDF_OCR=/nonexistent/rayopdf-ocr"
@@ -204,7 +221,8 @@ def require_images(images: list[str]) -> None:
                if subprocess.run(["docker", "image", "inspect", image], capture_output=True).returncode != 0]
     if missing:
         hint = ("`python3 tools/dev.py image`, then `docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker`"
-                if PERF_IMAGE in missing else "`python3 tools/eval.py images`")
+                if PERF_IMAGE in missing else "`python3 tools/dev.py image --name wasm`"
+                if WASM_IMAGE in missing else "`python3 tools/eval.py images`")
         raise SystemExit(f"bench: no image {', '.join(missing)}; build with {hint}")
 
 
@@ -221,12 +239,12 @@ def docker_run(image: str, cpus: str | None, options: list[str], command: list[s
     return subprocess.run(cmd + options + [image] + command, input=stdin, stdout=subprocess.PIPE, text=True)
 
 
-def measure_inside(job: dict, cpus: str | None, files: list[str]) -> dict:
-    """Run `job` by this script's inside half in the measuring image; its result."""
-    require_images([PERF_IMAGE])
+def measure_inside(job: dict, cpus: str | None, files: list[str], image: str = PERF_IMAGE) -> dict:
+    """Run `job` by this script's inside half in `image` (default the measuring image); its result."""
+    require_images([image])
     options = ["-e", "PYTHONDONTWRITEBYTECODE=1", "--tmpfs", f"{SCRATCH}:exec",
                "-v", f"{REPO / 'tools'}:{SOURCES}:ro"] + read_only_mounts(files)
-    proc = docker_run(PERF_IMAGE, cpus, options, ["python3", f"{SOURCES}/bench.py", "inside"], stdin=json.dumps(job))
+    proc = docker_run(image, cpus, options, ["python3", f"{SOURCES}/bench.py", "inside"], stdin=json.dumps(job))
     if proc.returncode != 0 or not proc.stdout.strip():
         raise SystemExit(f"bench: the measuring container failed (exit code {proc.returncode})")
     return json.loads(proc.stdout.splitlines()[-1])
@@ -263,20 +281,38 @@ def inside_warm(job: dict) -> dict:
                 pages[label] = int(fields["pages"])
                 best[name][label] = min(float(fields["best_ms"]), best[name].get(label, float("inf")))
         log(f"warm: round {r + 1} of {job['rounds']}")
-    rows = {}
-    for name, _ in bins:
-        done = [label for label, _ in docs if label in best[name]]
-        row = {"documents": len(done), "failed": len(failed[name])}
-        if done:
-            per_page = sorted(best[name][label] / max(1, pages[label]) for label in done)
-            total_ms = sum(best[name][label] for label in done)
-            total_pages = sum(pages[label] for label in done)
-            row.update({"pages": total_pages, "ms_page_median": statistics.median(per_page),
-                        "ms_page_p95": per_page[len(per_page) * 95 // 100], "ms_page_mean": total_ms / total_pages,
-                        "pages_per_s": total_pages / total_ms * 1000, "total_ms": total_ms,
-                        "document_ms": {label: best[name][label] for label in done}})
-        rows[name] = row
-    return {"rows": rows}
+    return {"rows": {name: speed_row([(best[name][label], pages[label]) for label, _ in docs if label in best[name]],
+                                     len(failed[name]), [label for label, _ in docs if label in best[name]])
+                     for name, _ in bins}}
+
+
+def speed_row(times: list[tuple[float, int]], failed: int, labels: list[str]) -> dict:
+    """`warm` and `wasm`'s figures of the documents' best times (ms, pages), labelled `labels`."""
+    row = {"documents": len(times), "failed": failed}
+    if times:
+        per_page = sorted(ms / max(1, pages) for ms, pages in times)
+        total_ms = sum(ms for ms, _ in times)
+        total_pages = sum(pages for _, pages in times)
+        row.update({"pages": total_pages, "ms_page_median": statistics.median(per_page),
+                    "ms_page_p95": per_page[len(per_page) * 95 // 100], "ms_page_mean": total_ms / total_pages,
+                    "pages_per_s": total_pages / total_ms * 1000, "total_ms": total_ms,
+                    "document_ms": {label: ms for label, (ms, _) in zip(labels, times)}})
+    return row
+
+
+def speed_table(what: str, rows: dict[str, dict]) -> str:
+    """The rows of speed_row as a table, the first row the base of the pages/s change."""
+    lines, first = [], next(iter(rows.values()))
+    for name, row in rows.items():
+        if not row["documents"]:
+            lines.append([name, "0", str(row["failed"]), "", "", "", "", "", ""])
+            continue
+        lines.append([name, str(row["documents"]), str(row["failed"]), str(row["pages"]),
+                      f"{row['ms_page_median']:.3f}", f"{row['ms_page_p95']:.3f}", f"{row['ms_page_mean']:.3f}",
+                      f"{row['pages_per_s']:,.0f}",
+                      percent(row["pages_per_s"], first.get("pages_per_s", 0)) if row is not first else ""])
+    return table([what, "documents", "failed", "pages", "ms/page median", "p95", "mean", "pages/s",
+                  f"pages/s against {next(iter(rows))}"], lines)
 
 
 def cmd_warm(args) -> int:
@@ -285,20 +321,9 @@ def cmd_warm(args) -> int:
     result = measure_inside(job, str(args.cpu), [path for _, path in bins + docs])
     result.update({"command": "warm", "scope": scope(), "cpu": args.cpu, "image": PERF_IMAGE,
                    "folders": args.dir, "options": args.opt, "runs": args.runs, "rounds": args.rounds})
-    rows, first = [], result["rows"][bins[0][0]]
-    for name, _ in bins:
-        row = result["rows"][name]
-        if not row["documents"]:
-            rows.append([name, "0", str(row["failed"]), "", "", "", "", "", ""])
-            continue
-        rows.append([name, str(row["documents"]), str(row["failed"]), str(row["pages"]),
-                     f"{row['ms_page_median']:.3f}", f"{row['ms_page_p95']:.3f}", f"{row['ms_page_mean']:.3f}",
-                     f"{row['pages_per_s']:,.0f}",
-                     percent(row["pages_per_s"], first.get("pages_per_s", 0)) if row is not first else ""])
     text = headline(f"warm: {len(docs)} documents, options [{' '.join(args.opt)}], --bench best of {args.runs}, "
                     f"{args.rounds} alternating rounds, CPU {args.cpu}, {PERF_IMAGE}", result["scope"])
-    text += "\n\n" + table(["binary", "documents", "failed", "pages", "ms/page median", "p95", "mean", "pages/s",
-                            f"pages/s against {bins[0][0]}"], rows)
+    text += "\n\n" + speed_table("binary", {name: result["rows"][name] for name, _ in bins})
     finish(args, result, text)
     return 0
 
@@ -629,10 +654,119 @@ def cmd_pages(args) -> int:
     return 0
 
 
+# ---- wasm ----------------------------------------------------------------------------------------
+
+def inside_wasm(job: dict) -> dict:
+    docs, jobs, native = job["docs"], job["jobs"], job["native"]
+    paths = [doc for _, doc in docs]
+    out_root = f"{SCRATCH}/wasm"
+
+    def run_module(name: str, folder: str, out: str | None) -> list[dict]:
+        """wasm_bench.mjs over every document: `jobs` Node.js processes, process j taking the
+        documents j, j + jobs, ... (its outputs under OUT/j)."""
+        procs = []
+        for j in range(min(jobs, len(paths))):
+            command = ["node", f"{SOURCES}/bench/wasm_bench.mjs", "--module", f"{folder}/rayopdf-core.mjs",
+                       "--runs", str(job["runs"])] + (["--out", f"{out}/{j}"] if out else [])
+            for opt in job["opts"]:
+                command += ["--opt", opt]
+            procs.append(subprocess.Popen(command + ["--"] + paths[j::jobs], stdout=subprocess.PIPE, text=True))
+        records: list[dict] = [{}] * len(paths)
+        for j, proc in enumerate(procs):
+            stdout, _ = proc.communicate()
+            if proc.returncode != 0 or not stdout.strip():
+                raise SystemExit(f"wasm_bench.mjs failed for {name} (exit code {proc.returncode})")
+            records[j::jobs] = json.loads(stdout.splitlines()[-1])["docs"]
+        return records
+
+    best: dict[str, list] = {name: [None] * len(docs) for name, _ in job["modules"]}
+    status: dict[str, list] = {}
+    pages = [0] * len(docs)
+    for r in range(job["rounds"]):
+        for name, folder in rotated(job["modules"], r):
+            records = run_module(name, folder, f"{out_root}/{name}" if r == 0 and native else None)
+            if r == 0:
+                status[name] = [record["status"] for record in records]
+            for i, record in enumerate(records):
+                if record["status"] == 0:
+                    pages[i] = record["pages"]
+                if record["best_ms"] is not None:
+                    best[name][i] = min(record["best_ms"], best[name][i] or float("inf"))
+            log(f"wasm: round {r + 1} of {job['rounds']}, {name}")
+    result: dict = {"rows": {}, "identity": {}}
+    if job["runs"]:
+        for name, _ in job["modules"]:
+            done = [i for i in range(len(docs)) if best[name][i] is not None]
+            result["rows"][name] = speed_row([(best[name][i], pages[i]) for i in done],
+                                             sum(1 for code in status[name] if code != 0),
+                                             [docs[i][0] for i in done])
+    if native:
+        os.makedirs(f"{out_root}/native")
+
+        def convert(i: int) -> object:
+            try:
+                return subprocess.run([native, "--convert", paths[i], f"{out_root}/native/{i:05d}.md", "--ocr=off"] +
+                                      job["opts"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      timeout=job["timeout"]).returncode
+            except subprocess.TimeoutExpired:
+                return "timeout"
+
+        with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+            codes = list(pool.map(convert, range(len(docs))))
+        for name, _ in job["modules"]:
+            differences = []
+            for i, code in enumerate(codes):
+                got = status[name][i]
+                if got != code:
+                    differences.append({"document": docs[i][0], "differs": f"status {got} against exit code {code}"})
+                elif code == 0 and not filecmp.cmp(f"{out_root}/{name}/{i % jobs}/{i // jobs:05d}.md",
+                                                   f"{out_root}/native/{i:05d}.md", shallow=False):
+                    differences.append({"document": docs[i][0], "differs": "output"})
+            result["identity"][name] = {"compared": len(docs), "identical": len(docs) - len(differences),
+                                        "differences": differences}
+    return result
+
+
+def cmd_wasm(args) -> int:
+    modules = [(name, str(Path(core).parent))
+               for name, core in named_files([f"{value}/rayopdf-core.mjs" for value in args.module], "--module")]
+    for _, folder in modules:
+        existing_file(f"{folder}/rayopdf-core.wasm")
+    native = existing_file(args.native) if args.native else None
+    if args.jobs > 1 and args.runs:
+        raise SystemExit("bench: --jobs takes --runs 0: times are taken in one process on --cpu")
+    rounds = args.rounds if args.runs else 1
+    docs = documents(args.dir, recursive=True)
+    cpus = str(args.cpu) if args.jobs == 1 else args.cpus
+    job = {"task": "wasm", "modules": modules, "docs": docs, "opts": args.opt, "runs": args.runs, "rounds": rounds,
+           "jobs": args.jobs, "native": native, "timeout": args.timeout}
+    files = [f"{folder}/rayopdf-core.mjs" for _, folder in modules] + [path for _, path in docs] + \
+        ([native] if native else [])
+    result = measure_inside(job, cpus, files, image=WASM_IMAGE)
+    result.update({"command": "wasm", "scope": scope(), "cpus": cpus, "image": WASM_IMAGE, "folders": args.dir,
+                   "modules": dict(modules), "native": native, "options": args.opt, "runs": args.runs,
+                   "rounds": rounds})
+    timing = (f"best of {args.runs} in one Node.js process, {rounds} alternating rounds" if args.runs
+              else "no timing")
+    text = headline(f"wasm: {len(docs)} documents, options [{' '.join(args.opt)}], {timing}, "
+                    f"CPU{'s' if args.jobs > 1 else ''} {cpus}, {WASM_IMAGE}", result["scope"])
+    if args.runs:
+        text += "\n\n" + speed_table("module", result["rows"])
+    differ = 0
+    for name, identity in result["identity"].items():
+        differ += len(identity["differences"])
+        text += (f"\n\n{name} against {native} --convert: identical: {identity['identical']} of "
+                 f"{identity['compared']}")
+        for difference in identity["differences"][:5]:
+            text += f"\n  {difference['document']}: {difference['differs']}"
+    finish(args, result, text)
+    return 1 if differ else 0
+
+
 # ---- command line --------------------------------------------------------------------------------
 
 INSIDE = {"warm": inside_warm, "fresh": inside_fresh, "identical": inside_identical, "instr": inside_instr,
-          "pages": inside_pages}
+          "pages": inside_pages, "wasm": inside_wasm}
 
 
 def cmd_inside(_args) -> int:
@@ -647,7 +781,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
-    sub = parser.add_subparsers(dest="command", required=True, metavar="{warm,fresh,identical,instr,tools,pages}")
+    sub = parser.add_subparsers(dest="command", required=True,
+                                metavar="{warm,fresh,identical,instr,tools,pages,wasm}")
 
     def add(name: str, func, text: str | None):
         p = sub.add_parser(name, help=text)
@@ -711,6 +846,21 @@ def main() -> int:
     p.add_argument("--cpus", default="2,3,4,5", help="cpuset of the container (default 2,3,4,5)")
     p.add_argument("--runs", type=int, default=15, help="timed runs a document and count (default 15)")
     p.add_argument("--warmup", type=int, default=2, help="untimed runs first (default 2)")
+
+    p = add("wasm", cmd_wasm, "the WebAssembly module's speed, and its output against a native binary")
+    p.add_argument("--module", action="append", required=True, metavar="NAME=DIR",
+                   help="a folder with rayopdf-core.mjs and .wasm under a name; the first is the base")
+    p.add_argument("--dir", action="append", required=True, help="a folder of PDFs, subfolders included")
+    p.add_argument("--opt", action="append", default=[], metavar="OPTION",
+                   help="an option of the conversion, as --opt=--images=none")
+    p.add_argument("--runs", type=int, default=3, help="timed conversions a document, 0 for none (default 3)")
+    p.add_argument("--rounds", type=int, default=2, help="rounds over the documents (default 2)")
+    p.add_argument("--cpu", type=int, default=3, help="the CPU to measure on (default 3)")
+    p.add_argument("--native", metavar="BIN", help="compare every output with BIN --convert's")
+    p.add_argument("--jobs", type=int, default=1,
+                   help="Node.js processes at once, on --cpus; more than 1 takes --runs 0 (default 1)")
+    p.add_argument("--cpus", default=cpus_default, help="cpuset with --jobs (default: $RAYOPDF_DOCKER_CPUS)")
+    p.add_argument("--timeout", type=int, default=300, help="seconds a native conversion may take (default 300)")
 
     sub.add_parser("inside").set_defaults(func=cmd_inside)
     args = parser.parse_args()
