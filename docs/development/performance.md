@@ -1802,6 +1802,30 @@ option sets; older than this round, causes not traced). It stays without WebAsse
   (`RAYOPDF_SSE2`, `RAYOPDF_SCALAR`) went with it: the module runs those paths again, and its test
   checks them.
 
+## 1.1.0 (2026-11-26)
+
+One round since 1.0.0 (the twenty-fifth, above). `src/hot.ld` was regenerated over the release's
+code (`5fa1f0d`; 871 sections, 860 before; output byte-identical, G-bytes 0 of 997 differ): CPU 3,
+2026-11-25 21:08-21:10 UTC, against the same code with the old list, fresh 0.901 → 0.890 ms
+(paired +0.2 %), warm 2,220 → 2,216 pages/s and, the order reversed, 2,219 → 2,221, page faults
+median 136 in both: within the noise. It names the current code's functions again.
+
+### Result (1.0.0 against 1.1.0)
+
+User instructions, as above, CPU 11: odl −0.94 %, heavy10 −1.17 %, syn6 −0.92 %, SafeDocs −1.44 %,
+`multi_column` −0.86 %, `tables` −1.67 %, `arxiv_math` −0.57 %; fresh `--convert` instructions of
+the round's 21 odl documents −1.11 %. Times on CPU 3, the 1.0.0 release binary and 1.1.0's
+interleaved, 2026-11-25 21:43-21:48 UTC, nothing of this project running: warm odl (three runs)
+2,198-2,205 → 2,220-2,230 pages/s (+1.1 %), p95 0.701-0.708 → 0.698-0.704 ms a page; fresh
+0.924 → 0.883 ms (12 rotated rounds, −5.5 % paired), p95 1.48 → 1.39 ms, mean 1.06 → 0.98 ms,
+page faults median 152 → 132, p95 245 → 207, mean 168 → 140; odl 141 18.1 → 14.9 ms and 2,030 →
+480 faults; 27 documents of 4 to 39 pages on four cores 135.7 → 131.3 ms, on one 196.9 → 190.0
+ms; JPEG 2000 pages with their images written 70.7 → 70.1 ms a page (median). The WebAssembly
+module, 1.0.0's against 1.1.0's over odl in three runs: 1,287 → 1,260, 1,258 → 1,252 and 1,221 →
+1,391 pages/s, medians 0.59-0.61 ms a page in both: the sum follows when V8 optimises odl 141's
+code. The fresh time fell five times as far as the instructions: the round's target was the
+memory a process touches, and its page faults fell by 13 % at the median.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of

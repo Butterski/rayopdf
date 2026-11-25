@@ -9,7 +9,7 @@
 **Fast, local PDF to Markdown and JSON, from one small executable.**<br>
 No GPU, no Python or Java runtime, no models to download. The reverse of [RayoMD](https://github.com/Butterski/rayomd).
 
-<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 1.0.0" src="https://img.shields.io/badge/version-1.0.0-informational?style=for-the-badge"></a>
+<a href="https://github.com/Butterski/rayopdf/releases"><img alt="Version: 1.1.0" src="https://img.shields.io/badge/version-1.1.0-informational?style=for-the-badge"></a>
 <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=for-the-badge"></a>
 
 <a href="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml/badge.svg"></a>
@@ -28,16 +28,16 @@ programs can call it in-process.
 
 ## Status
 
-Version 1.0.0, released on 2026-11-25. RayoPDF converts PDFs that have a text layer (most PDFs
+Version 1.1.0, released on 2026-11-26. RayoPDF converts PDFs that have a text layer (most PDFs
 made by software); scanned pages need the optional OCR add-on. Each release is checked for
 quality, speed, memory use and robustness: see the
-[release check of 1.0.0](docs/benchmarks/release-check-2026-11-25.md).
+[release check of 1.1.0](docs/benchmarks/release-check-2026-11-26.md).
 
 ## Highlights
 
 - **Fast:** a one-page PDF in under 1 ms, start to exit (median over opendataloader-bench's 200
   pages); over 2,000 pages a second on one core in a running process.
-- **Small:** a 1.9 MB download; no runtime, no model files; 2 to 15 MiB of memory for most
+- **Small:** a 2.1 MB download; no runtime, no model files; 2 to 15 MiB of memory for most
   documents.
 - **Structured:** headings, lists, tables, code, quotes, links, footnotes and images; tagged PDFs
   are read through their structure tree.
@@ -53,34 +53,34 @@ holds one folder with the program, its licences and this README's usage section.
 
 ```sh
 # Linux x64: one static executable, no dependencies
-curl -LO https://github.com/Butterski/rayopdf/releases/download/v1.0.0/rayopdf-1.0.0-linux-x64-static.tar.gz
-tar -xzf rayopdf-1.0.0-linux-x64-static.tar.gz
-./rayopdf-1.0.0-linux-x64-static/rayopdf --version
+curl -LO https://github.com/Butterski/rayopdf/releases/download/v1.1.0/rayopdf-1.1.0-linux-x64-static.tar.gz
+tar -xzf rayopdf-1.1.0-linux-x64-static.tar.gz
+./rayopdf-1.1.0-linux-x64-static/rayopdf --version
 ```
 
-- **Windows x64:** unpack `rayopdf-1.0.0-windows-x64.zip` and run `rayopdf.exe`.
+- **Windows x64:** unpack `rayopdf-1.1.0-windows-x64.zip` and run `rayopdf.exe`.
 - **Python 3.9 or newer** (Linux x64 with glibc 2.28 or newer, Windows x64): `pip install rayopdf`.
   See the [Python guide](docs/guide/python.md).
 - **JavaScript** (browsers and Node.js 18 or newer, WebAssembly): the npm package is attached to
-  the release and is not on the npm registry: `npm install ./rayopdf-1.0.0.tgz`. See the
+  the release and is not on the npm registry: `npm install ./rayopdf-1.1.0.tgz`. See the
   [JavaScript guide](docs/guide/javascript.md).
-- **Container image:** `docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" ghcr.io/butterski/rayopdf:1.0.0 --convert in.pdf out.md`.
+- **Container image:** `docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" ghcr.io/butterski/rayopdf:1.1.0 --convert in.pdf out.md`.
   See the [container guide](docs/guide/container.md).
 - **C and C++:** the `rayopdf-lib` archives hold a static library and its header. See the
   [C and C++ guide](docs/guide/cpp.md).
-- **OCR add-on (optional):** unpack `rayopdf-ocr-1.0.0-<platform>` into the same folder as
+- **OCR add-on (optional):** unpack `rayopdf-ocr-1.1.0-<platform>` into the same folder as
   `rayopdf`. RayoPDF then finds `rayopdf-ocr` beside itself and starts it only for pages that
   have no usable text. It reads Latin and CJK text; the optional script pack adds Cyrillic,
   Korean, Arabic, Devanagari, Tamil and Kannada. OCR takes about 2 seconds a page, not
   milliseconds. See the [OCR guide](docs/guide/ocr.md).
 
-| Release file | Size, 1.0.0 | For |
+| Release file | Size, 1.1.0 | For |
 |---|---:|---|
-| `rayopdf-<version>-linux-x64-static.tar.gz` | 1,965 KB | Linux: one static executable |
-| `rayopdf-<version>-windows-x64.zip` | 1,920 KB | Windows: `rayopdf.exe` |
-| `rayopdf-lib-<version>-<platform>` | 1,817 KB / 1,913 KB | C++ API for Linux / Windows: `librayopdf.a`, header, example |
-| `rayopdf-<version>-py3-none-<platform>.whl` | 1,612 KB / 1,889 KB | Python on Linux / Windows |
-| `rayopdf-<version>.tgz` | 1,130 KB | JavaScript (WebAssembly) |
+| `rayopdf-<version>-linux-x64-static.tar.gz` | 2,139 KB | Linux: one static executable |
+| `rayopdf-<version>-windows-x64.zip` | 2,138 KB | Windows: `rayopdf.exe` |
+| `rayopdf-lib-<version>-<platform>` | 1,949 KB / 2,042 KB | C++ API for Linux / Windows: `librayopdf.a`, header, example |
+| `rayopdf-<version>-py3-none-<platform>.whl` | 1,792 KB / 2,107 KB | Python on Linux / Windows |
+| `rayopdf-<version>.tgz` | 1,303 KB | JavaScript (WebAssembly) |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models |
 | `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: more scripts for the OCR add-on |
 
@@ -145,10 +145,10 @@ the place, for example a page without a text layer. Exit codes: 0 converted, 2 u
 
 ## Benchmarks
 
-RayoPDF 1.0.0 against other converters on public benchmarks and on a synthetic corpus with
+RayoPDF 1.1.0 against other converters on public benchmarks and on a synthetic corpus with
 exact ground truth. Higher is better. Measured by this project on an AMD Ryzen 5 PRO 4650GE,
-each tool in its own container: RayoPDF on 2026-11-24 (as 0.5.0, whose output 1.0.0 repeats
-byte for byte), docling and the text-layer tools on 2026-11-05 (the synthetic corpus on
+each tool in its own container: RayoPDF on 2026-11-25 (1.1.0's code, whose output is 1.0.0's and
+0.5.0's byte for byte), docling and the text-layer tools on 2026-11-05 (the synthetic corpus on
 2026-11-06), kordoc on 2026-11-12.
 
 | Benchmark | RayoPDF, default output | RayoPDF, benchmark's conventions | kordoc 4.24.66 (OCR off) | docling 2.147.0 (no OCR) | Best text-layer tool |
@@ -170,11 +170,11 @@ text with a similarity (NID) of 0.918, against 0.754 for docling with OCR and 0.
 Tesseract (those two measured on 2026-11-07).
 
 Time to convert, start to exit, as a fresh process on one CPU core (other tools measured on
-2026-11-09, RayoPDF on 2026-11-24 as 0.5.0, whose converter 1.0.0 is):
+2026-11-09, RayoPDF on 2026-11-25):
 
 | Tool | Version | One page | A 33-page report | Peak memory |
 |---|---|---:|---:|---:|
-| **RayoPDF** | 1.0.0 | **1.01 ms** | **10.8 ms** | **7 MiB** |
+| **RayoPDF** | 1.1.0 | **1.07 ms** | **10.7 ms** | **7 MiB** |
 | pdftotext (plain text only) | Poppler 25.03 | 17 ms | 46 ms | 18 MiB |
 | liteparse | 2.18.0 | 27 ms | 138 ms | 33 MiB |
 | edgeparse | 0.3.2 | 45 ms | 306 ms | 27 MiB |

@@ -87,7 +87,7 @@ rayopdf --convert paper.pdf paper.json --format=json
 The document as one JSON object (schema 1), on one line:
 
 ```json
-{"rayopdf":"1.0.0","schema":1,"repaired":false,
+{"rayopdf":"1.1.0","schema":1,"repaired":false,
  "metadata":{"title":"...","author":"...","created":"2021-03-04T10:20:30+01:00"},
  "pages":[{"page":1,"width":612.00,"height":792.00},{"page":2,"width":612.00,"height":792.00}],
  "blocks":[

@@ -10,7 +10,7 @@ The package is attached to each [release](https://github.com/Butterski/rayopdf/r
 as `rayopdf-VERSION.tgz`; it is not on the npm registry. Install it from the file:
 
 ```sh
-npm install ./rayopdf-1.0.0.tgz
+npm install ./rayopdf-1.1.0.tgz
 ```
 
 ## Convert
@@ -72,6 +72,9 @@ A failure rejects with a `RayoPdfError` whose `status` is the command line's exi
 
 ## Differences from the native program
 
-The WebAssembly build runs on one thread and without SIMD, so it is slower than the native
-program; its output is the same. It cannot start the OCR add-on: `ocr: "auto"` and `"force"`
-find none, and pages without a text layer keep their comment.
+The WebAssembly build runs on one thread and without SIMD. Under Node.js 22 it converts a median
+page of opendataloader-bench in 0.60 ms, where the native program in a running process takes
+0.37 ms (2026-11-25, one core of an AMD Ryzen 5 PRO 4650GE, images off). Its output is the native
+program's on all 200 pages of opendataloader-bench and on 5,867 of 5,886 test documents; the
+other 19 differ in a few places, such as the order of some glyphs. It cannot start the OCR
+add-on: `ocr: "auto"` and `"force"` find none, and pages without a text layer keep their comment.

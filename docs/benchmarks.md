@@ -1,11 +1,11 @@
 # Benchmarks
 
-Where RayoPDF 1.0.0 stands against other PDF converters, on public benchmarks and on test sets
-of this project. RayoPDF 1.0.0 converts every document exactly as 0.5.0 did (the same converter,
-byte for byte the same output), so 0.5.0's measurements below are 1.0.0's. Every number on this
-page was measured by this project on one machine, unless it is marked *claimed*. The
-[dated records](benchmarks/README.md) hold every number of every version; this page summarises
-them.
+Where RayoPDF 1.1.0 stands against other PDF converters, on public benchmarks and on test sets
+of this project. RayoPDF 1.1.0 converts every document exactly as 1.0.0 and 0.5.0 did (byte for
+byte the same output but for the version the JSON output names; its harness run gave the same
+numbers again). Every number on this page was measured by this project on one machine, unless it
+is marked *claimed*. The [dated records](benchmarks/README.md) hold every number of every version;
+this page summarises them.
 
 - [Summary](#summary)
 - [Machine and dates](#machine-and-dates)
@@ -25,9 +25,9 @@ them.
   and GitHub READMEs, on olmOCR-bench's multi-column, table and arXiv math tests, and on a
   synthetic corpus with exact ground truth. Other tools lead in some places: see
   [Where other tools lead](#where-other-tools-lead).
-- **Speed.** RayoPDF converts a one-page PDF in 1.01 ms as a fresh process, 17 times faster than
+- **Speed.** RayoPDF converts a one-page PDF in 1.07 ms as a fresh process, 16 times faster than
   pdftotext and more than 1,000 times faster than opendataloader, markitdown, PyMuPDF and
-  docling, and 2,207 pages a second on one core in a running process.
+  docling, and 2,228 pages a second on one core in a running process.
 - **Scope.** RayoPDF reads the PDF's text layer. Scanned pages need its OCR add-on. Converters
   built on large vision models were not run; on scanned pages they are expected to be stronger.
 
@@ -35,8 +35,8 @@ them.
 
 - AMD Ryzen 5 PRO 4650GE (12 logical CPUs), Docker 29.8.2. Every tool ran in its own container
   image, pinned to an exact version, without network.
-- RayoPDF 0.5.0, the converter of 1.0.0: quality and speed measured on 2026-11-24 (code
-  `a95ad7f`; [record of 1.0.0](benchmarks/v1.0.0-2026-11-25.md)).
+- RayoPDF 1.1.0: quality measured on 2026-11-25 (code `e1d9f98`), speed on 2026-11-25
+  (`5fa1f0d`; [record of 1.1.0](benchmarks/v1.1.0-2026-11-26.md)).
 - The text-layer tools and docling: 2026-11-05 ([baselines](benchmarks/baselines-2026-11-05.md));
   on the synthetic corpus again on 2026-11-06, when it grew to 199 documents
   ([record of 0.0.3](benchmarks/v0.0.3-2026-11-06.md)).
@@ -117,8 +117,8 @@ Higher is better everywhere. **Bold** marks the best value in a column.
 
 | Tool | Overall | Text (NID) | Tables (TEDS) | Headings (MHS) |
 |---|---:|---:|---:|---:|
-| RayoPDF 0.5.0, the benchmark's conventions | **0.944** | **0.954** | 0.934 | 0.927 |
-| RayoPDF 0.5.0, default output | 0.917 | 0.926 | 0.915 | 0.898 |
+| RayoPDF 1.1.0, the benchmark's conventions | **0.944** | **0.954** | 0.934 | 0.927 |
+| RayoPDF 1.1.0, default output | 0.917 | 0.926 | 0.915 | 0.898 |
 | kordoc 4.24.66, OCR off | 0.939 | 0.940 | **0.937** | **0.934** |
 | liteparse | 0.885 | 0.914 | 0.818 | 0.822 |
 | docling | 0.884 | 0.902 | 0.879 | 0.827 |
@@ -144,8 +144,8 @@ evaluator against the same ground truth: opendataloader hybrid 0.907, nutrient (
 
 | Tool | arXiv math | Headers and footers | Long tiny text | Multi-column | Tables |
 |---|---:|---:|---:|---:|---:|
-| RayoPDF 0.5.0, the benchmark's conventions | **0.860** | 0.891 | **0.525** | **0.762** | **0.653** |
-| RayoPDF 0.5.0, default output | – | 0.890 | 0.509 | 0.732 | 0.646 |
+| RayoPDF 1.1.0, the benchmark's conventions | **0.860** | 0.891 | **0.525** | **0.762** | **0.653** |
+| RayoPDF 1.1.0, default output | – | 0.890 | 0.509 | 0.732 | 0.646 |
 | docling | 0.000 | **0.898** | 0.523 | 0.695 | 0.610 |
 | liteparse | 0.538 | 0.554 | 0.240 | 0.662 | 0.559 |
 | PyMuPDF | 0.000 | 0.385 | 0.337 | 0.667 | 0.615 |
@@ -166,9 +166,9 @@ arXiv papers (150):
 
 | Tool | Text | Headings | Tables | Inline formulas | Reading order |
 |---|---:|---:|---:|---:|---:|
-| RayoPDF 0.5.0, the benchmark's conventions | **0.893** | **0.719** | **0.730** | **0.687** | 0.983 |
-| RayoPDF 0.5.0, `--math=latex` alone | 0.887 | 0.718 | 0.609 | 0.685 | 0.983 |
-| RayoPDF 0.5.0, default output | 0.803 | 0.716 | 0.604 | – | 0.982 |
+| RayoPDF 1.1.0, the benchmark's conventions | **0.893** | **0.719** | **0.730** | **0.687** | 0.983 |
+| RayoPDF 1.1.0, `--math=latex` alone | 0.887 | 0.718 | 0.609 | 0.685 | 0.983 |
+| RayoPDF 1.1.0, default output | 0.803 | 0.716 | 0.604 | – | 0.982 |
 | docling | 0.841 | 0.403 | 0.656 | 0.001 | **0.984** |
 | liteparse | 0.826 | 0.254 | 0.407 | 0.369 | 0.969 |
 | PyMuPDF | 0.754 | 0.515 | 0.685 | 0.001 | 0.976 |
@@ -178,7 +178,7 @@ GitHub READMEs (150):
 
 | Tool | Text | Headings | Reading order |
 |---|---:|---:|---:|
-| RayoPDF 0.5.0, default output | **0.936** | **0.882** | **0.997** |
+| RayoPDF 1.1.0, default output | **0.936** | **0.882** | **0.997** |
 | docling | 0.908 | 0.471 | 0.993 |
 | pdftotext | 0.874 | 0.021 | 0.956 |
 | liteparse | 0.761 | 0.778 | 0.989 |
@@ -195,7 +195,7 @@ every tool ran on:
 
 | Tool | Untagged PDFs | Tagged PDFs | Test set (WeasyPrint) |
 |---|---|---|---|
-| RayoPDF 0.5.0 | **0.960** / **0.986** / **0.942** / **0.971** | **0.972** / **0.978** / **0.933** / **0.953** | **0.935** / 0.792 / **0.853** / **0.848** |
+| RayoPDF 1.1.0 | **0.960** / **0.986** / **0.942** / **0.971** | **0.972** / **0.978** / **0.933** / **0.953** | **0.935** / 0.792 / **0.853** / **0.848** |
 | docling | 0.925 / 0.870 / 0.802 / 0.560 | 0.939 / 0.881 / 0.832 / 0.599 | 0.910 / **0.877** / 0.802 / 0.513 |
 | Best text-layer tool | 0.920 / 0.845 / 0.845 / 0.628 | 0.931 / 0.775 / 0.857 / 0.594 | 0.909 / 0.774 / 0.751 / 0.562 |
 | kordoc 4.24.66 | 0.923 / 0.852 / 0.793 / 0.468 | 0.925 / 0.577 / 0.749 / 0.498 | – |
@@ -208,7 +208,7 @@ RayoPDF scores 0.964 / 0.889 / 0.929 / 0.866.
 
 Only RayoPDF writes the block positions these scorers read, so no other tool is listed.
 
-| Benchmark | Measures | RayoPDF 0.5.0 | With the OCR add-on |
+| Benchmark | Measures | RayoPDF 1.1.0 | With the OCR add-on |
 |---|---|---|---|
 | DocLayNet, val split (6,489 pages) | text kept / page headers and footers F1 / headings F1 / lists F1 / footnotes F1 / tables F1 | 0.988 / 0.636 / 0.775 / 0.732 / 0.766 / 0.777 | – |
 | DocLayNet, test split (4,999 pages) | the same | 0.983 / 0.508 / 0.732 / 0.687 / 0.711 / 0.779 | – |
@@ -219,7 +219,7 @@ Only RayoPDF writes the block positions these scorers read, so no other tool is 
 
 | Tool | Synthetic scans (362 PDFs): NID / TEDS / MHS / constructs F1 | Synthetic scans, test set (36 PDFs) | olmOCR-bench old scans |
 |---|---|---|---|
-| RayoPDF 0.5.0 with the OCR add-on | **0.918** / **0.771** / **0.847** / **0.623** | **0.922** / **0.808** / **0.846** / **0.575** | 0.213 |
+| RayoPDF 1.1.0 with the OCR add-on | **0.918** / **0.771** / **0.847** / **0.623** | **0.922** / **0.808** / **0.846** / **0.575** | 0.213 |
 | docling with OCR | 0.754 / 0.717 / 0.670 / 0.530 | 0.700 / 0.666 / 0.671 / 0.536 | **0.251** |
 | Tesseract | 0.856 / 0.000 / 0.013 / 0.219 | 0.847 / 0.000 / 0.015 / 0.236 | 0.211 |
 
@@ -238,15 +238,15 @@ SafeDocs document 0000348 (33 pages).
 
 | Tool | Version | One page | × | 33-page report | × | Peak memory |
 |---|---|---:|---:|---:|---:|---:|
-| **RayoPDF** | 0.5.0 | **1.01 ms** | 1 | **10.8 ms** | 1 | **7 MiB** |
-| pdftotext (plain text only) | Poppler 25.03 | 17 ms | 17 | 46 ms | 4.3 | 18 MiB |
-| liteparse | 2.18.0 | 27 ms | 27 | 138 ms | 13 | 33 MiB |
-| edgeparse | 0.3.2 | 45 ms | 45 | 306 ms | 28 | 27 MiB |
+| **RayoPDF** | 1.1.0 | **1.07 ms** | 1 | **10.7 ms** | 1 | **7 MiB** |
+| pdftotext (plain text only) | Poppler 25.03 | 17 ms | 16 | 46 ms | 4.3 | 18 MiB |
+| liteparse | 2.18.0 | 27 ms | 25 | 138 ms | 13 | 33 MiB |
+| edgeparse | 0.3.2 | 45 ms | 42 | 306 ms | 29 | 27 MiB |
 | kordoc | 4.24.66 | 773 ms | – | 1,667 ms | – | 195 MiB |
-| opendataloader | 2.5.19 | 1,074 ms | 1,063 | 3,705 ms | 343 | 250 MiB |
-| markitdown | 0.1.9 | 1,236 ms | 1,224 | 3,143 ms | 291 | 104 MiB |
-| PyMuPDF | 2.1, layout on | 4,749 ms | 4,702 | 70,092 ms | 6,490 | 346 MiB |
-| docling | 2.147.0, no OCR | 9,490 ms | 9,396 | 93,052 ms | 8,616 | 1,905 MiB |
+| opendataloader | 2.5.19 | 1,074 ms | 1,004 | 3,705 ms | 345 | 250 MiB |
+| markitdown | 0.1.9 | 1,236 ms | 1,155 | 3,143 ms | 293 | 104 MiB |
+| PyMuPDF | 2.1, layout on | 4,749 ms | 4,438 | 70,092 ms | 6,532 | 346 MiB |
+| docling | 2.147.0, no OCR | 9,490 ms | 8,869 | 93,052 ms | 8,672 | 1,905 MiB |
 
 kordoc was timed on another day, while other jobs ran on the machine's other cores; its
 factors are not given. This compares the time to a finished file, not identical output: the
@@ -255,12 +255,12 @@ tools import their packages and models, opendataloader starts a Java VM. Inside 
 process the gap is smaller: edgeparse takes about 5 ms a page there, PyMuPDF and docling about
 2 s.
 
-- **Four cores:** RayoPDF reads the report's pages on threads and takes 7.3 ms; the other tools
+- **Four cores:** RayoPDF reads the report's pages on threads and takes 7.5 ms; the other tools
   take 38 ms to 42 s.
-- **In a running process** (`--batch`, `--serve --json`): 2,207 pages a second on one core over
+- **In a running process** (`--batch`, `--serve --json`): 2,228 pages a second on one core over
   opendataloader-bench's 200 pages, a median of 0.37 ms a page.
-- **Memory:** with images off, the median peak per document is 1.5 to 3.2 MiB on each corpus;
-  see the [release check](benchmarks/release-check-2026-11-24.md#e-footprint) for every corpus.
+- **Memory:** with images off, the median peak per document is 1.6 to 3.1 MiB on each corpus;
+  see the [release check](benchmarks/release-check-2026-11-26.md#e-footprint) for every corpus.
 
 ### Speed by version
 
@@ -281,6 +281,7 @@ static program takes 0.22 ms in the same timer.
 | 0.3.0 | 2,214 | 0.90 ms | output options, chunks, the layout view, the C ABI, title and page-number rules (they cost 0.5 %: 0.2.0 gave 2,225 and 0.89 ms in the same runs) |
 | 0.4.0 | 2,188 | 0.91 ms | pipe tables and ASCII quotes, a small trained model for page headers and footers, table and formula rules (they cost 1.1 %: 0.3.0 gave 2,212 and 0.90 ms in the same runs) |
 | 0.5.0 | 2,207 | 0.91 ms | figure-text, small-capitals and LaTeX-table options, LaTeX from font codes, table, heading, list and furniture rules; speed work won back their cost (0.4.0 gave 2,194 and 0.91 ms in the same runs) |
+| 1.1.0 | 2,228 | 0.88 ms | the fresh process: one-time work built in, fewer pages of memory touched, the heaviest pages' parsing; output unchanged (1.0.0 gave 2,203 and 0.92 ms in the same runs) |
 
 Every speed change is profiled and kept only if a pinned A/B measurement shows it faster, and
 it leaves the output byte for byte the same on every benchmark.
@@ -337,6 +338,6 @@ default output. Speed is measured with `tools/bench.py`
 ([performance.md](development/performance.md#rerunning)).
 
 The [benchmark records](benchmarks/README.md) list every measured version, the baselines of the
-other tools and the release checks. The numbers of 0.5.0 are in
-[its record](benchmarks/v0.5.0-2026-11-24.md) and its
-[release check](benchmarks/release-check-2026-11-24.md).
+other tools and the release checks. The numbers of 1.1.0 are in
+[its record](benchmarks/v1.1.0-2026-11-26.md) and its
+[release check](benchmarks/release-check-2026-11-26.md).

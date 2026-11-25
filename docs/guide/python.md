@@ -15,8 +15,8 @@ The wheels are also attached to each [release](https://github.com/Butterski/rayo
 `rayopdf-<version>-py3-none-win_amd64.whl` for Windows) for installing without PyPI:
 
 ```sh
-pip install rayopdf-1.0.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
-pip install rayopdf-1.0.0-py3-none-win_amd64.whl                # Windows
+pip install rayopdf-1.1.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
+pip install rayopdf-1.1.0-py3-none-win_amd64.whl                # Windows
 ```
 
 The LangChain and LlamaIndex loaders need their own packages: the extras `rayopdf[langchain]`
