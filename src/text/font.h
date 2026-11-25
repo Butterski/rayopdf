@@ -232,4 +232,8 @@ private:
 // forms; "a.sc" suffixes stripped), appended to `out` as UTF-8. False when the name means nothing.
 bool GlyphNameToUnicode(std::string_view name, std::string& out);
 
+// Unicode text a converter can use: not empty, no C0 control and no U+FFFD (a ToUnicode or
+// glyph-name result with them counts as missing, algorithms §3.6).
+bool UsableText(std::string_view text);
+
 } // namespace RayoPdf::Text

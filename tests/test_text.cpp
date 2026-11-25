@@ -870,10 +870,33 @@ void TestPixelType3() {
     RAYOPDF_CHECK(Near(plain.Get("F1").EmScale(), 1.0) && Near(plain.Get("F1").Ascent(), 0.9), 1471);
 }
 
+// The generated base-encoding texts (tools/gen_text_tables.py) are what the names give at run
+// time: for each name rule, encoding and code, whether it is named and usable, the text and its
+// place in the record's pool, which holds the named codes' texts in code order.
+void TestEncodingTexts() {
+    for (int zapf = 0; zapf < 2; ++zapf) {
+        for (int e = 0; e < Tables::kEncodingCount; ++e) {
+            const Tables::EncodingTexts& t = Tables::kEncodingTexts[zapf][e];
+            std::string pool;
+            bool same = true;
+            for (int c = 0; c < 256; ++c) {
+                const uint16_t index = Tables::kEncodings[e][c];
+                std::string text;
+                const bool named = index != Tables::kNoName && GlyphNameToUnicode(Tables::GlyphName(index), zapf == 1, text);
+                same = same && t.named[c] == named && t.usable[c] == (named && UsableText(text)) &&
+                       (named ? t.Text(c) == text && t.offset[c] == pool.size() : t.offset[c] == 0 && t.length[c] == 0);
+                if (named) pool += text;
+            }
+            RAYOPDF_CHECK(same && t.Pool() == pool, 1477);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
     TestPixelType3();
+    TestEncodingTexts();
     TestGlyphNames();
     TestToUnicode();
     TestEncodingCMap();

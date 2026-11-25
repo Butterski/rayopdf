@@ -33,6 +33,21 @@ struct StandardAlias {
     uint8_t font;          // index into kStandardFonts
 };
 
+// The text GlyphNameToUnicode gives the name of each code of a base encoding, and whether
+// UsableText accepts it: the same for every font of that encoding, so generated once. The texts
+// live in the record itself (no pointer to relocate in the static binary).
+constexpr size_t kEncodingPoolBytes = 608;
+struct EncodingTexts {
+    char pool[kEncodingPoolBytes];  // the named codes' texts, in code order
+    uint32_t poolSize;
+    uint32_t offset[256];           // code c's text: length[c] bytes, offset[c] bytes into the pool
+    uint16_t length[256];
+    bool named[256];                // the code has a name and GlyphNameToUnicode gave it text
+    bool usable[256];               // and UsableText accepts that text
+    std::string_view Pool() const { return std::string_view(pool, poolSize); }
+    std::string_view Text(int code) const { return std::string_view(pool + offset[code], length[code]); }
+};
+
 extern const uint16_t kGlyphNameCount;
 extern const char kGlyphNameBytes[];
 extern const uint16_t kGlyphNameOffsets[];
@@ -59,6 +74,8 @@ extern const uint16_t kStandardWidthValues[];
 extern const StandardFont kStandardFonts[14];
 extern const uint16_t kStandardAliasCount;
 extern const StandardAlias kStandardAliases[];
+// [zapf][encoding]: with zapf, GlyphNameToUnicode's ZapfDingbats list comes first.
+extern const EncodingTexts kEncodingTexts[2][kEncodingCount];
 
 // Standard 14 indices (kStandardFonts order).
 constexpr int kCourier = 0;

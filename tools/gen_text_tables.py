@@ -6,7 +6,9 @@ Downloads (urllib, pinned commits) the Adobe Glyph List and its ZapfDingbats lis
 (adobe-type-tools/agl-aglfn, BSD-3-Clause) and, from mozilla/pdf.js (Apache-2.0), the simple-font
 encodings, the standard 14 fonts' widths and basic metrics, the standard font name aliases, the CFF
 standard strings and charsets, the PDFDocEncoding differences and the Macintosh standard glyph order. Writes src/text/tables_data.cpp,
-whose layout src/text/tables.h declares (algorithms §3.3, §3.5, roadmap D2).
+whose layout src/text/tables.h declares (algorithms §3.3, §3.5, roadmap D2), with each base
+encoding's code texts: its names resolved as tables.cpp's GlyphNameToUnicode and checked as
+font.cpp's UsableText (glyph_name_text and usable_text below follow them rule for rule).
 
 Usage:
   python3 tools/gen_text_tables.py                 # download and write src/text/tables_data.cpp
@@ -166,7 +168,71 @@ def cstring(s):
     return "".join(out)
 
 
+def parse_hex(digits):
+    """tables.cpp ParseHex: upper- or lowercase hex digits, None when empty or not hex."""
+    if not digits or any(c not in "0123456789abcdefABCDEF" for c in digits):
+        return None
+    return int(digits, 16)
+
+
+def is_scalar(cp):
+    return cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF
+
+
+def component_code_points(name, use_zapf, agl, zapf):
+    """tables.cpp ComponentToUnicode: the code points of one name component, None for none."""
+    if not name:
+        return None
+    if use_zapf and name in zapf:
+        return zapf[name][:1]
+    if agl.get(name):
+        return agl[name]
+    if len(name) >= 7 and name.startswith("uni") and (len(name) - 3) % 4 == 0:
+        cps = [parse_hex(name[at:at + 4]) for at in range(3, len(name), 4)]
+        if all(cp is not None and is_scalar(cp) for cp in cps):
+            return cps
+    if 5 <= len(name) <= 7 and name[0] == "u":
+        cp = parse_hex(name[1:])
+        if cp is not None and is_scalar(cp):
+            return [cp]
+    return None
+
+
+def glyph_name_text(name, use_zapf, agl, zapf):
+    """tables.cpp GlyphNameToUnicode: the UTF-8 text of a glyph name, None when it means nothing."""
+    name = name.split(".", 1)[0]
+    if not name or len(name.encode()) > 256:
+        return None
+    cps = [component_code_points(part, use_zapf, agl, zapf) for part in name.split("_")]
+    if all(c is None for c in cps):
+        return None
+    return "".join(chr(cp) for c in cps if c for cp in c).encode()
+
+
+def usable_text(text):
+    """font.cpp UsableText: not empty, no C0 control, DEL or U+FFFD (one byte: printable ASCII)."""
+    if not text:
+        return False
+    if len(text) == 1:
+        return 0x20 <= text[0] < 0x7F
+    return all(ord(ch) >= 0x20 and ord(ch) != 0x7F and ord(ch) != 0xFFFD for ch in text.decode())
+
+
+def cbytes(data):
+    """`data` as the inside of a C string literal: printable ASCII as is, other bytes in octal."""
+    out = []
+    for b in data:
+        if b in b'"\\?':
+            out.append("\\" + chr(b))
+        elif 32 <= b < 127:
+            out.append(chr(b))
+        else:
+            out.append(f"\\{b:03o}")
+    return "".join(out)
+
+
 GLYPH_NAME_HASH_BITS = 14  # tables.h kGlyphNameHashBits
+ENCODING_POOL_BYTES = 608  # tables.h kEncodingPoolBytes
 
 
 def glyph_name_hash(name):
@@ -400,6 +466,51 @@ def generate(cache):
     out.append(f"const StandardAlias kStandardAliases[{len(alias_items)}] = {{")
     for alias, font in alias_items:
         out.append(f'    {{"{cstring(alias)}", {font}}},')
+    out.append("};")
+
+    # Each base encoding's code texts under both name rules (GlyphNameToUnicode without and with
+    # the ZapfDingbats list first): the texts of the named codes in code order make its pool.
+    encoding_texts = []
+    for use_zapf in (False, True):
+        tables = []
+        for js, label in ENCODINGS:
+            pool, offsets, lengths, named, usable = b"", [], [], [], []
+            for name in encodings[js]:
+                text = glyph_name_text(name, use_zapf, agl, zapf) if name else None
+                offsets.append(len(pool) if text is not None else 0)
+                lengths.append(len(text) if text is not None else 0)
+                named.append(1 if text is not None else 0)
+                usable.append(1 if text is not None and usable_text(text) else 0)
+                pool += text or b""
+            # The string literal and its terminating NUL fit the record's array.
+            if len(pool) >= ENCODING_POOL_BYTES:
+                raise SystemExit(f"gen_text_tables: {label}'s texts take {len(pool)} bytes; raise "
+                                 "tables.h kEncodingPoolBytes and ENCODING_POOL_BYTES")
+            tables.append((label, pool, offsets, lengths, named, usable))
+        encoding_texts.append(tables)
+    out.append("")
+    out.append(f"static_assert(kEncodingPoolBytes == {ENCODING_POOL_BYTES}, \"tools/gen_text_tables.py ENCODING_POOL_BYTES\");")
+    out.append("// [zapf][encoding]: GlyphNameToUnicode(name, zapf) of each code's name, and UsableText of it.")
+    out.append("const EncodingTexts kEncodingTexts[2][kEncodingCount] = {")
+    for use_zapf, tables in zip((False, True), encoding_texts):
+        out.append(f"    {{ // zapf {str(use_zapf).lower()}")
+        for label, pool, offsets, lengths, named, usable in tables:
+            out.append(f"        {{ // {label}")
+            line = ""
+            for b in pool:
+                piece = cbytes(bytes([b]))
+                if len(line) + len(piece) > 96:
+                    out.append(f'            "{line}"')
+                    line = ""
+                line += piece
+            out.append(f'            "{line}",')
+            out.append(f"            {len(pool)},")
+            for values in (offsets, lengths, named, usable):
+                out.append("            {")
+                out.append(rows(values, str, "                "))
+                out.append("            },")
+            out.append("        },")
+        out.append("    },")
     out.append("};")
     out.append("")
     out.append("} // namespace RayoPdf::Text::Tables")
