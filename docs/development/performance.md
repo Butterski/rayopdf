@@ -1713,6 +1713,93 @@ ms median; 27 documents of 4 to 39 pages on four cores 140.5 ms (0.4.0, default 
 ms (`--workers=4`). The instructions fell four to ten times as far as the times: a short page's
 fresh time is mostly the process and the file, and the warm time the memory the pages touch.
 
+## Twenty-fifth round: the fresh process (2026-11-25)
+
+Base 1.0.0 (`9b71ea2`). After twenty-four rounds of instruction work a fresh one-page conversion is
+about half process start (0.24 ms) and page faults (0.25 ms), so this round measured what a
+process does once and which memory it touches, besides the heavy pages. `tools/bench.py fresh
+--per-doc` keeps each document's figures. A callgrind script outside the repository gives each
+function's one-time cost o = I(2) − 2 × (I(3) − I(2)), I(n) being the instructions of `--bench DOC
+TMP n`, and the program totals of fresh `--convert` processes; page faults were charged to their
+RayoPDF caller with `perf record -e page-faults --call-graph dwarf` on a RelWithDebInfo build of
+the same tree.
+
+|Finding (1.0.0's code)|Number|
+|---|---|
+|odl fresh, `--images=none`, 12 rotated rounds, CPU 3|median 0.915 ms, p95 1.46, mean 1.04; page faults median 152|
+|odl 141 (a vector page, 4.17 MB of content) fresh|18.1 ms and 2,030 faults: 0.090 ms of the 1.04 ms mean|
+|fresh `--convert` instructions, 21 odl documents (fresh-time ranks 0, 10, ..., 190 and 141)|199.7 M summed|
+|one-time cost in those documents|the base-encoding texts (`MakeEncodingTexts`) 147 K in 10 of 21; no other first-use table above 20 K in 4 or more|
+|one-time cost in 8 CJK documents (olmOCR-Bench and OmniParseBench development pages)|`BmpText`'s table 6.48 M in 6 of 8|
+|anonymous faults by caller, odl 183, 192 and fresh ranks 100 and 150|592 of 790: `BuildLines` 123 (its duplicate filter, calloc'd and so cleared on the heap's 8 MiB top pad), `ShowText` 56 (the page's glyph records and text), `PdfArena` 42, the table detector 42|
+|heavy pages, self instructions|odl 141: `RunStream` 51.9 % (the content lexer's numbers), `Inflate` 39.6 %; heavy10: `RunStream` 41.1 %, `Inflate` 29.9 %, `ShowText` 3.2 %, `BuildLines` 2.0 %|
+
+### Steps
+
+Every step is output-identical: `bench.py identical` against the step before over 5,886 documents
+(synthetic corpus, odl, olmOCR-Bench, READoc dev and dev2, OmniParseBench's pages, 1,000 SafeDocs
+documents) in ten option sets (images off and written, `--math=latex`, `--format=json`,
+`--format=chunks`, `--plain`, `--tables=html`, `--tables=pipe-latex`, `--quotes=ascii`,
+`--small-caps=keep`): 58,860 comparisons a step, 0 differ. User instructions are `instr.sh`'s
+(`--batch --workers=1`, images off, `arxiv_math` with `--math=latex`; A/A within 0.006 %) against
+the step before; fresh instructions are callgrind's program totals of fresh `--convert`
+processes; page faults are `bench.py fresh`'s over odl. Counts only: the machine was shared.
+
+|Step|Change|Effect|
+|---|---|---|
+|`c9ad9f8` text: base-encoding texts generated with the tables|`tools/gen_text_tables.py` writes each base encoding's texts as a record holding them (no pointer, so no relocation at start)|fresh instructions, the 21 documents, −0.74 %; odl −0.041 %, heavy10 −0.102 %, syn6 −0.081 %|
+|`c25eb3e` text: the BMP UTF-8 table made at compile time|`BmpText`'s 65,536 entries a `constexpr` table (192 KiB of read-only data) instead of a first-use build|fresh instructions, the 8 CJK documents, −39 %; SafeDocs −0.47 %, `tables` −0.65 %|
+|`6b0a1b0` layout: a one-shot conversion frees each stage's storage for the stages after it|In `--convert`, the fonts go once the pages are read, and the line builder's, table detector's, figure finders' and order's per-thread storage once their stage is done, so the stages after them reuse those pages; the table detector's word sort and `BuildBlocks`' line facts reserved|odl page faults median 152 → 135, p95 245 → 212, mean 168 → 151; odl −0.116 %, `multi_column` −0.099 %|
+|`c7adaaf` layout: body-size votes in arrays instead of hash maps|Sizes 0-255 counted in arrays, larger ones in overflow lists; the winner as the running lines' size vote|odl −0.151 %, `tables` −0.217 %, `multi_column` −0.159 %|
+|`572abfc` layout: running keys interned in an open-addressing table|Keys copied once into a byte pool; a candidate holds its key's index|syn6 −0.113 %, SafeDocs −0.075 %|
+|`6de3c2c` json and report numbers through `std::to_chars` instead of `snprintf`|Coordinates fixed with two decimals and the report's integers|`--format=json` over 12 documents: odl 183 −5.9 %, a Chromium page with images −5.2 %, Typst −3.5 %|
+|`f6889e4` inflate: huge-page mappings for output blocks of 1 MiB or more in one-shot conversions|In `--convert` only, an inflate output of 1 MiB or more moves to a 2 MiB-aligned mapping with `MADV_HUGEPAGE`, grown by `mremap`|odl 141: page faults 2,030 → 481, peak RSS 11 → 8 MiB, CPU time −16 %; `--batch` unchanged|
+|`9acff3a` perf(lexer): an operator takes the one white-space byte after it, as a number does|The byte after an operator was a whole pass of the scan loop; an inline image's data now starts from the end of the operator before it|odl 141 −1.15 %; odl −0.423 %, heavy10 −0.912 %, SafeDocs −0.537 %, `tables` −0.482 %|
+|`ac7874b` perf(interpreter): the glyph box's run terms aligned, a non-finite advance an unlikely branch|`ShowText`'s per-run terms aligned to 16 bytes for aligned loads|odl −0.100 %, syn6 −0.151 %, `multi_column` −0.115 %|
+|`7f90f63` perf(lines): Near tests each coordinate's bits on its own|The duplicate filter's nearness test compares each coordinate in 32 bits instead of packing two floats that are not adjacent into one 64-bit word|odl −0.127 %, syn6 −0.200 %, `multi_column` −0.160 %|
+
+Against 1.0.0 (`9b71ea2`): user instructions odl −0.939 % (750.22 M), heavy10 −1.168 %, syn6
+−0.921 %, SafeDocs −1.438 %, `multi_column` −0.863 %, `tables` −1.665 %, `arxiv_math` −0.571 %
+(5,153.36 M); fresh `--convert` instructions of the 21 documents 199.68 M → 197.46 M (−1.11 %).
+The heavy-page steps meet only odl 141 and heavy10 in full: heavy10 holds 29.7 K glyphs, and its
+0.1 % would be 6.6 instructions a glyph of `ShowText`'s 213.
+
+**WebAssembly.** `bench.py wasm` times the npm package's module under Node.js and compares its
+output with a native binary's. The module is now built with WebAssembly SIMD (`-msimd128
+-msse2`: the SSE2 kernels compile to SIMD instructions). `RAYOPDF_SSE2` (`common/compiler.h`) guards
+those kernels, and the `scalar` configuration builds and tests the paths without them:
+byte-identical to the static build over G-bytes' inputs in four sets, 23,544 comparisons. Over odl
+both modules give the native binary's output, 200 of 200; over the other 5,686 documents the
+scalar module differs from native in 36 and the SIMD module in the same 36, each byte for byte
+the scalar module's output (differences between the platforms, older than SIMD, causes not
+traced). CPU time on a shared core: scalar 741, SIMD 798 pages/s (+7.7 %; +5.8 % with the order
+reversed).
+
+### Tried and rejected (2026-11-25)
+
+- **Large per-thread objects on the heap** (`DynamicTables` 26,048 B and `CutLevels` 8,232 B behind
+  a pointer once `sizeof` passes 4 KiB; `.tbss` 40,304 → 6,072 B): SafeDocs +0.037 % and `tables`
+  +0.023 % with a `unique_ptr`, +0.033 % and +0.021 % with an inline pointer; the main thread took
+  3 to 10 more faults a document, as `new T()` clears all of `DynamicTables` where its static TLS
+  was faulted only where touched. Four page threads: within the noise.
+- **Huge pages for the inflate buffer as first planned:** `madvise(MADV_HUGEPAGE)` on the heap block
+  once it reaches 4 MiB did nothing (odl 141's page buffer grows in steps of about 0.5 MB and
+  passes 4 MiB only at its last growth: 2,030 → 2,031 faults); a 2 MiB-aligned mapping from 4 MiB
+  on, −6 %. From 1 MiB on in every mode, heavy10 +0.036 %: under `--batch`'s 32 MiB heap threshold
+  the block grew in place, and the move to the mapping copies 764 KB; hence one-shot conversions
+  only. Releasing the buffer before its first growth: +4 % faults on 39 small odl documents (free
+  and malloc touch new heap pages where realloc reused them).
+- **Base-encoding texts as one shared pool with 16-bit offsets and flag bits:** two instructions
+  more for each base slot read, `arxiv_math` +0.067 %; kept as records holding their texts in the
+  old cache's layout.
+- **The running keys' lookup inlined into the edge-row feature function:** odl +0.002 % (code
+  generation: one-page documents never look a key up); out of line, as the hash map's was.
+- **`BuildLines`' calloc'd filter from fresh pages:** the filter's words are hashed, so every page
+  of it is written anyway; reusing freed stage storage (`6b0a1b0`) is what saved faults.
+- **The content lexer's byte not held in a register across the scan's paths:** odl 141 +1.23 % (GCC
+  kept the copies and spilled more). **`PlaceGlyphsGeneral` taking its placement by value:** odl
+  +0.66 %, `multi_column` +0.74 %.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
@@ -1751,6 +1838,9 @@ fresh time is mostly the process and the file, and the warm time the memory the 
   one large image holds the layout up. Overlapping them needs the decisions and the files' naming
   apart and a round that runs beside the layout's, for untagged pages without inline images (a
   gain in wall time only).
+- **Heavy pages:** after the twenty-fifth round the interpreter's `Shape` and `Ruling` vectors
+  still grow by doubling (0.29 M instructions of copies on heavy10); reserved from the content's
+  length they would copy nothing.
 - **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
   same peak RSS, but freed memory stays with the process (wall time only, not measured in round 10).
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
