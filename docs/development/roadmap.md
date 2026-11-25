@@ -462,8 +462,9 @@ LICENSE, NOTICE, VERSION and `third_party/licenses/`, with fixed times and owner
 and `example.cpp`. The Python wheels `rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl` and
 `rayopdf-VERSION-py3-none-win_amd64.whl` (`tools/build_wheel.py`, reproducible: sorted entries,
 one fixed time, RECORD with SHA-256) hold the package with the shared library and the core
-archives' documents; they are attached to the release, not published to PyPI. So is the npm
-package `rayopdf-VERSION.tgz` (npm pack's layout under `package/`, fixed times). The container
+archives' documents; they are attached to the release and uploaded to PyPI by hand once it is
+published. The npm package `rayopdf-VERSION.tgz` (npm pack's layout under `package/`, fixed
+times) is attached to the release only. The container
 image `ghcr.io/butterski/rayopdf:VERSION` (`packaging/container/Dockerfile`, built by the
 Release workflow from the Linux archive) holds the static binary alone on an empty base, run as
 user 65532 in `/w`.

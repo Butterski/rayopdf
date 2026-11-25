@@ -111,7 +111,9 @@ def fixed_time() -> int:
 
 
 def readme_excerpt(version: str, repository: str) -> bytes:
-    """The title, its lead line and README_SECTIONS of README.md, relative links made absolute."""
+    """The title, its lead line and README_SECTIONS of README.md, relative links made absolute:
+    Markdown links and HTML href attributes to the tagged file on the repository, HTML src
+    attributes (the mascot) to its raw bytes, so that the page shows them on PyPI too."""
     text = (REPO / "README.md").read_text(encoding="utf-8")
     parts = re.split(r"(?m)^(?=## )", text)
     head = parts[0]
@@ -121,15 +123,30 @@ def readme_excerpt(version: str, repository: str) -> bytes:
         raise SystemExit(f"package: README.md has no section {sorted(missing)}")
     body = head + "".join(kept)
 
+    def kept_as_is(target: str) -> bool:
+        # Web links, anchors and the files the archive holds itself stay as they are.
+        return bool(re.match(r"^[a-z][a-z0-9+.-]*:|^#", target)) or target in ("LICENSE", "NOTICE", "VERSION") or \
+            target.startswith("third_party/licenses/")
+
     def absolute(match: re.Match) -> str:
         target = match.group(2)
-        # Web links, anchors and the files the archive holds itself stay as they are.
-        if re.match(r"^[a-z][a-z0-9+.-]*:|^#", target) or target in ("LICENSE", "NOTICE", "VERSION") or \
-                target.startswith("third_party/licenses/"):
+        if kept_as_is(target):
             return match.group(0)
         return f"{match.group(1)}({repository}/blob/v{version}/{target})"
 
+    def attribute(match: re.Match) -> str:
+        name, target = match.group(1), match.group(2)
+        if kept_as_is(target):
+            return match.group(0)
+        if name == "href":
+            return f'href="{repository}/blob/v{version}/{target}"'
+        github = "https://github.com/"
+        if repository.startswith(github):
+            return f'src="https://raw.githubusercontent.com/{repository[len(github):]}/v{version}/{target}"'
+        return f'src="{repository}/raw/v{version}/{target}"'
+
     body = re.sub(r"(\]\s*)\(([^)\s]+)\)", absolute, body)
+    body = re.sub(r'\b(src|href)="([^"\s]+)"', attribute, body)
     note = f"\nThis is the README of the RayoPDF {version} release; the full one is at {repository}.\n"
     return (body.rstrip("\n") + "\n" + note).encode("utf-8")
 

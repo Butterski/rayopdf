@@ -137,8 +137,10 @@ the C++ API's `rayopdf-lib-$V-linux-x64.tar.gz` and `rayopdf-lib-$V-windows-x64.
 (`librayopdf.a`, which those builds' `rayopdf_bundle` target merges from the modules, with its
 header and example), the Python wheels `rayopdf-$V-py3-none-manylinux_2_28_x86_64.whl` and
 `rayopdf-$V-py3-none-win_amd64.whl` (`tools/build_wheel.py`: the package with `librayopdf.so` or
-`rayopdf.dll`) and the npm package `rayopdf-$V.tgz` (the WebAssembly module), attached to the
-release only, not published to PyPI or npm. Its `container` job builds the image of
+`rayopdf.dll`) and the npm package `rayopdf-$V.tgz` (the WebAssembly module). After the release
+is published, the two wheels go to PyPI by hand (`twine upload`; their description is
+`tools/package.py`'s README excerpt, whose links and images point at the tag); the npm package
+stays on the release only. The Release workflow's `container` job builds the image of
 `packaging/container/Dockerfile` from the Linux archive, checks that it prints its version and
 converts a one-page PDF, and pushes it as `ghcr.io/butterski/rayopdf:$V` and `:latest`.
 
