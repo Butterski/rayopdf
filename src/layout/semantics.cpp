@@ -2132,15 +2132,29 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     // Body size: the most common size by characters (algorithms §6.1), of prose lines: code blocks
     // set in a smaller monospace size do not define it. Table cells vote too: on a page that is
     // mostly a table, the few lines outside it are its title and labels, not the body.
-    // Document-wide styles.
-    std::unordered_map<int, uint64_t> sizeChars, proseChars;
+    // Document-wide styles. Size keys up to kCountedSizeKeys are counted in place, the rest kept
+    // as (key, characters) pairs, a key of no characters included: it weighs in a tie at 0.
+    constexpr int kCountedSizeKeys = 256;
+    uint64_t sizeChars[kCountedSizeKeys] = {}, proseChars[kCountedSizeKeys] = {};
+    std::vector<std::pair<int, uint64_t>> sizeOther, proseOther;
+    bool anyProse = false;  // a prose line or table cell counted
+    const auto vote = [&](int key, uint32_t chars, bool prose) {
+        if (key >= 0 && key < kCountedSizeKeys) {
+            sizeChars[key] += chars;
+            if (prose) proseChars[key] += chars;
+        } else {
+            sizeOther.emplace_back(key, chars);
+            if (prose) proseOther.emplace_back(key, chars);
+        }
+        anyProse = anyProse || prose;
+    };
     uint64_t totalChars = 0, monoChars = 0, boldChars = 0;
     uint64_t proseLineChars = 0;  // characters of lines in a proportional font, outside tables
     uint64_t cellChars = 0;       // characters of table cells
     for (const Info& in : infos) {
-        const int key = static_cast<int>(std::lround(in.size * 2));
-        sizeChars[key] += in.chars;
-        if (in.mono < 0.5f) proseChars[key] += in.chars, proseLineChars += in.chars;
+        const bool prose = in.mono < 0.5f;
+        vote(static_cast<int>(std::lround(in.size * 2)), in.chars, prose);
+        if (prose) proseLineChars += in.chars;
         totalChars += in.chars;
         monoChars += static_cast<uint64_t>(in.mono * float(in.chars));
         if (in.flags & kLineAllBold) boldChars += in.chars;
@@ -2148,15 +2162,28 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
     for (const PageData& page : pages)
         for (const Line& l : page.lines)
             if ((l.flags & (kLineTableCell | kLineRemoved)) == kLineTableCell && !(l.flags & kLineAllMono)) {
-                const int key = static_cast<int>(std::lround(l.size * 2));
-                sizeChars[key] += l.chars;
-                proseChars[key] += l.chars;
+                vote(static_cast<int>(std::lround(l.size * 2)), l.chars, true);
                 cellChars += l.chars;
             }
+    // The key with the most characters, the smallest of equal counts (whatever order the keys are
+    // weighed in). A key no line has weighs as one of no characters: it never wins, being no
+    // smaller than 0.
     int bodyKey = 0;
     uint64_t bodyCount = 0;
-    for (const auto& kv : proseChars.empty() ? sizeChars : proseChars)
-        if (kv.second > bodyCount || (kv.second == bodyCount && kv.first < bodyKey)) bodyKey = kv.first, bodyCount = kv.second;
+    const auto weigh = [&](int key, uint64_t chars) {
+        if (chars > bodyCount || (chars == bodyCount && key < bodyKey)) bodyKey = key, bodyCount = chars;
+    };
+    const uint64_t* counted = anyProse ? proseChars : sizeChars;
+    for (int key = 0; key < kCountedSizeKeys; ++key) weigh(key, counted[key]);
+    std::vector<std::pair<int, uint64_t>>& other = anyProse ? proseOther : sizeOther;
+    std::sort(other.begin(), other.end(),
+              [](const std::pair<int, uint64_t>& a, const std::pair<int, uint64_t>& b) { return a.first < b.first; });
+    for (size_t i = 0; i < other.size();) {
+        const int key = other[i].first;
+        uint64_t chars = 0;
+        for (; i < other.size() && other[i].first == key; ++i) chars += other[i].second;
+        weigh(key, chars);
+    }
     const float body = float(bodyKey) / 2;
     // A document typeset in a monospace font: most characters monospace and next to no lines in
     // another font (code-heavy documents keep their prose in a proportional font). Its lines make
