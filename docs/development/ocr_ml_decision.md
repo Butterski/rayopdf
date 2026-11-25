@@ -309,6 +309,8 @@ gate on 2026-11-16 and replaces it after 0.4.0.
 |Edge rows v3 (rows up to 1.6 body sizes)|the same 20,000 pages: 47,484 rows, 21,602 furniture; 23 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|see below|+0.003 % against the rules it ships with|1,740 nodes, 900 leaves|identical|pending the gate|
 |Edge rows v4 (1.1, every train page)|69,375 DocLayNet train pages: 164,939 rows, 75,220 furniture; trained on the 71,861 rows the model may take; 25 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|failed: olmOCR `headers_footers` −0.0040; doclaynet-dev and doclaynet-val furniture_f1 +0.00004 and +0.0002|+0.02 % against master|2,001 nodes, 1,035 leaves, about 32 KiB|identical|no|
 |Edge rows v4, fallback (23 features)|the same pages, rows and population; 23 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|failed: olmOCR `headers_footers` −0.0013, synthetic untagged MHS −0.0068, NID −0.0004, construct F1 −0.0008; doclaynet-dev and doclaynet-val furniture_f1 +0.0005 and +0.0010|not measured|3,387 nodes, 1,752 leaves, about 54 KiB|identical|no|
+|Table runs (1.1, borderless runs the rules refuse)|69,375 DocLayNet train pages: 32,474 candidate runs, 11,210 tables; trained on the 24,287 runs the model decides (7,515 tables); 16 features|doclaynet-dev: table F1 of runs 0.346 (rules) → 0.739 (rules and model at τ_p 0.676); 550 of the 611 runs it adds are tables|failed: odl TEDS −0.0028, overall −0.0007, NID −0.0005; READoc arxiv table TEDS and EDS −0.0035 and −0.0023 (dev), −0.0030 and −0.0027 (dev2), −0.0008 TEDS (val); OmniParseBench text −0.0003 (dev) and −0.0007 (val); doclaynet-dev and doclaynet-val table_f1 +0.0273 and +0.0192|+0.06 % against master|3,420 nodes, 1,770 leaves, about 56 KiB|identical|no|
+|Table runs, fallback (τ_p at precision 0.95)|the same trees|doclaynet-dev: 0.346 (rules) → 0.718 (rules and model at τ_p 0.802); 495 of the 521 runs it adds are tables|failed: odl TEDS −0.0028, overall −0.0004, NID −0.0001; OmniParseBench text −0.0003 (dev) and −0.0007 (val); doclaynet-dev heading_f1 −0.0002; READoc validation inline EDS −0.0001; doclaynet-dev and doclaynet-val table_f1 +0.0240 and +0.0179|+0.04 % against master|3,420 nodes, 1,770 leaves, about 56 KiB|identical|no|
 
 **Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
 rules examine in a page's outer tenth (`src/layout/features.h`); it would remove a row the rules
@@ -414,6 +416,30 @@ M9's +0.002. The fallback, the same training with v3's 23 features (117 trees, �
 precision 0.902, recall 0.539), failed too: olmOCR `headers_footers` −0.0013, synthetic untagged
 MHS −0.0068, NID −0.0004 and construct F1 −0.0008, against furniture_f1 +0.0005 (doclaynet-dev)
 and +0.0010 (doclaynet-val). v3 stays.
+
+**Table runs (1.1, not shipped).** A model for the borderless runs `Detector::Borderless` refuses:
+every candidate run of three rows and two columns at least that is not running text or a list
+(`rayopdf --features table-runs`), with 16 features of its shape, fill, numbers, alignment, row
+pitch, gaps, width and size. A run is a table when half its box lies in DocLayNet's Table boxes.
+LightGBM 4.7.0, trained, stopped early and thresholded only on the runs the model would decide
+(refused by the rules, no table already there, not a figure's text): 24,287 runs of every
+DocLayNet train page; 120 trees of 15 leaves (no early stop). On doclaynet-dev the offline ceiling
+held: table F1 of all 3,416 runs 0.346 with the rules' choice, 0.739 with the model's runs added at
+τ_p = 0.676 (precision 0.900, recall 0.682 over the 2,422 runs it decides; 550 of its 611 runs are
+tables). In the engine an accepted run takes a header row above it and becomes a table as the
+rules' runs do. The gate measured doclaynet-dev table_f1 0.7767 → 0.8041 and doclaynet-val
+0.7786 → 0.7978, olmOCR `table_tests` +0.0049 and OmniParseBench layout +0.0055 (dev) and +0.0101
+(val), but failed eleven metrics: odl TEDS 0.9336 → 0.9308 (overall −0.0007, NID −0.0005), READoc
+arxiv table TEDS and EDS on both development splits (−0.0023 to −0.0035) and validation (TEDS
+−0.0008, inline EDS −0.0003), OmniParseBench text −0.0003 (dev) and −0.0007 (val). The fallback,
+τ_p at precision 0.95 (0.802: precision 0.950, recall 0.614; 495 of 521 added runs tables), kept
+most of the gain (doclaynet-dev and doclaynet-val table_f1 +0.0240 and +0.0179) and the READoc
+table metrics, but failed seven: odl TEDS −0.0028 (overall −0.0004, NID −0.0001), OmniParseBench
+text −0.0003 and −0.0007, doclaynet-dev heading_f1 −0.0002 and READoc validation inline EDS
+−0.0001. Both times two trainings were byte-identical, release and ASan tests passed, 600 s
+fuzzing of `fuzz_layout_tables`, `fuzz_layout_document` and `fuzz_layout_pages` was clean, and odl
+instructions rose +0.06 % and +0.04 % against master. The odl TEDS loss, the same at both
+thresholds, was not traced to its documents. The rules stay as they are.
 
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
