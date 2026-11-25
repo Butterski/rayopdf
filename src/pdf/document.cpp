@@ -254,7 +254,6 @@ struct Document::Impl {
         Inherited inherited;
         bool resolved = false;
         const PdfValue* resources = nullptr;
-        PdfRect mediaBox;
         PdfRect cropBox;
         int rotate = 0;
     };
@@ -1590,7 +1589,6 @@ struct Document::Impl {
         const int rotate = inherited.rotate ? NormalizeRotate(Resolve(*inherited.rotate).Int(0)) : 0;
         Page& page = pages[index];
         page.resources = resources;
-        page.mediaBox = mediaBox;
         page.cropBox = cropBox;
         page.rotate = rotate;
         page.resolved = true;
@@ -1843,11 +1841,6 @@ int Document::PageCount() const { return static_cast<int>(impl_->pages.size()); 
 const PdfValue& Document::PageDict(int index) const {
     if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return Null();
     return *impl_->pages[static_cast<size_t>(index)].dict;
-}
-
-PdfRect Document::MediaBox(int index) const {
-    if (index < 0 || static_cast<size_t>(index) >= impl_->pages.size()) return PdfRect{0, 0, 612, 792};
-    return impl_->ResolvedPage(static_cast<size_t>(index)).mediaBox;
 }
 
 PdfRect Document::CropBox(int index) const {

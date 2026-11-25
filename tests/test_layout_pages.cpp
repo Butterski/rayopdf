@@ -6,6 +6,7 @@
 // the page threads' pool. Exit codes 1600-1649.
 #include "check.h"
 #include "pdf_builder.h"
+#include "test_files.h"
 
 #include "common/file.h"
 #include "layout/convert.h"
@@ -405,7 +406,7 @@ void TestImageWorkers() {
     for (const unsigned workers : {1u, 2u, 4u, 0u}) {
         const auto doc = OpenOk(pdf, 1638);
         std::string directory;
-        RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-pages-", directory), 1638);
+        RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-test-pages-", directory), 1638);
         Layout::ConvertOptions options;
         options.pageWorkers = workers;
         options.imageDirectory = directory + "/images";
@@ -425,7 +426,8 @@ void TestImageWorkers() {
             }
         }
         RAYOPDF_CHECK(files.size() == 2 * entries.size(), 1638);  // nothing but the images
-        for (const File::DirectoryEntry& entry : entries) File::RemoveFile(options.imageDirectory + "/" + entry.name);
+        for (const File::DirectoryEntry& entry : entries)
+            TestFiles::RemoveFile(options.imageDirectory + "/" + entry.name);
         RAYOPDF_CHECK(File::RemoveEmptyDirectory(options.imageDirectory) && File::RemoveEmptyDirectory(directory), 1638);
         if (workers == 1) {
             expected = markdown;

@@ -242,8 +242,6 @@ bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
     return SetFilePointerEx(file, zero, nullptr, FILE_END) && ok;
 }
 
-bool StagedFile::Commit() { return CommitAs(path_); }
-
 bool StagedFile::Close() {
     if (handle_ == -1) return false;
     const bool ok = CloseHandle(reinterpret_cast<HANDLE>(handle_)) != 0;
@@ -274,36 +272,6 @@ bool EnsureDirectory(const std::string& path) {
     if (GetLastError() != ERROR_ALREADY_EXISTS) return false;
     const DWORD attributes = GetFileAttributesW(wide.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-bool MakeTemporaryDirectory(std::string_view prefix, std::string& path) {
-    wchar_t base[MAX_PATH + 1];
-    const DWORD length = GetTempPathW(MAX_PATH + 1, base);
-    if (length == 0 || length > MAX_PATH) return false;
-    std::string folder = Narrow(base, length);
-    for (char& c : folder) {
-        if (c == '\\') c = '/';
-    }
-    if (folder.empty() || folder.back() != '/') folder += '/';
-    folder.append(prefix.data(), prefix.size());
-    for (int attempt = 0; attempt < 64; ++attempt) {
-        const uint32_t count = gTemporaryCount.fetch_add(1, std::memory_order_relaxed);
-        const std::string candidate =
-            folder + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(count);
-        std::wstring wide;
-        if (!Widen(candidate, wide)) return false;
-        if (CreateDirectoryW(wide.c_str(), nullptr)) {
-            path = candidate;
-            return true;
-        }
-        if (GetLastError() != ERROR_ALREADY_EXISTS) return false;
-    }
-    return false;
-}
-
-bool RemoveFile(const std::string& path) {
-    std::wstring wide;
-    return !path.empty() && Widen(path, wide) && DeleteFileW(wide.c_str());
 }
 
 bool RemoveEmptyDirectory(const std::string& path) {
@@ -632,8 +600,6 @@ bool StagedFile::WriteAt(uint64_t offset, std::string_view content) {
     return true;
 }
 
-bool StagedFile::Commit() { return CommitAs(path_); }
-
 bool StagedFile::Close() {
     if (handle_ == -1) return false;
     const bool ok = close(static_cast<int>(handle_)) == 0;
@@ -661,21 +627,6 @@ bool EnsureDirectory(const std::string& path) {
     if (errno != EEXIST) return false;
     struct stat info;
     return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
-}
-
-bool MakeTemporaryDirectory(std::string_view prefix, std::string& path) {
-    const char* base = std::getenv("TMPDIR");
-    std::string pattern = base && *base ? base : "/tmp";
-    if (pattern.back() != '/') pattern += '/';
-    pattern.append(prefix.data(), prefix.size());
-    pattern += "XXXXXX";
-    if (!mkdtemp(pattern.data())) return false;
-    path = pattern;
-    return true;
-}
-
-bool RemoveFile(const std::string& path) {
-    return !path.empty() && unlink(path.c_str()) == 0;
 }
 
 bool RemoveEmptyDirectory(const std::string& path) {

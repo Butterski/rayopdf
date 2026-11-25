@@ -239,24 +239,25 @@ void TestEngine() {
         for (uint32_t x = 0; x < 16; ++x) line[size_t(y) * 320 + x] = 0;
         for (uint32_t x = 32; x < 48; ++x) line[size_t(y) * 320 + x] = 64;
     }
-    OcrProtocol::Line result;
-    RAYOPDF_CHECK(engine.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Ok, 1277);
-    RAYOPDF_CHECK(result.text == "cb" && result.x0 == 0 && result.y0 == 0 && result.x1 == 320 && result.y1 == 48 &&
-                      result.chars.size() == 2 && result.chars[0].x0 == 0 && result.chars[1].x1 == 48,
+    std::vector<OcrProtocol::Line> reads;
+    RAYOPDF_CHECK(engine.Lines({GrayView{line.data(), 320, 48}}, reads) == EngineStatus::Ok, 1277);
+    RAYOPDF_CHECK(reads[0].text == "cb" && reads[0].x0 == 0 && reads[0].y0 == 0 && reads[0].x1 == 320 &&
+                      reads[0].y1 == 48 && reads[0].chars.size() == 2 && reads[0].chars[0].x0 == 0 &&
+                      reads[0].chars[1].x1 == 48,
                   1278);
     // Empty images and runtime failures.
     RAYOPDF_CHECK(engine.Page(GrayView{nullptr, 0, 0}, 0, lines) == EngineStatus::Ok && lines.empty() &&
-                      engine.Line(GrayView{nullptr, 0, 5}, result) == EngineStatus::Ok && result.text.empty(),
+                      engine.Lines({GrayView{nullptr, 0, 5}}, reads) == EngineStatus::Ok && reads[0].text.empty(),
                   1279);
     runtime.failDetect = true;
     RAYOPDF_CHECK(engine.Page(GrayView{page.data(), 400, 200}, 300, lines) == EngineStatus::Failed, 1280);
     runtime.failDetect = false;
     runtime.failRecognize = true;
-    RAYOPDF_CHECK(engine.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Failed, 1281);
+    RAYOPDF_CHECK(engine.Lines({GrayView{line.data(), 320, 48}}, reads) == EngineStatus::Failed, 1281);
     // A recogniser whose class count differs from the dictionary's fails instead of misreading.
     Testing::FakeRuntime wrong(dictionary.Classes() + 1);
     PpOcrEngine mismatched(wrong, dictionary, settings);
-    RAYOPDF_CHECK(mismatched.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Failed, 1282);
+    RAYOPDF_CHECK(mismatched.Lines({GrayView{line.data(), 320, 48}}, reads) == EngineStatus::Failed, 1282);
 }
 
 // Counts the recognitions a runtime runs.
@@ -338,9 +339,9 @@ void TestFirstPass() {
     for (uint32_t y = 0; y < 48; ++y) {
         for (uint32_t x = 0; x < 16; ++x) line[size_t(y) * 320 + x] = 0;
     }
-    OcrProtocol::Line result;
+    std::vector<OcrProtocol::Line> reads;
     first.recognized = recognizer.recognized = 0;
-    RAYOPDF_CHECK(doubtful.Line(GrayView{line.data(), 320, 48}, result) == EngineStatus::Ok && result.text == "y" &&
+    RAYOPDF_CHECK(doubtful.Lines({GrayView{line.data(), 320, 48}}, reads) == EngineStatus::Ok && reads[0].text == "y" &&
                       first.recognized == 0 && recognizer.recognized == 1,
                   1507);
     recognizerFake.failRecognize = true;

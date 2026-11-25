@@ -53,7 +53,6 @@ StreamStatus JoinedContent(const Document& doc, int index, std::string& out) {
 
 void PageAttributes(const Document& doc, int index) {
     doc.PageDict(index);
-    doc.MediaBox(index);
     doc.CropBox(index);
     doc.Rotate(index);
     doc.Resources(index);

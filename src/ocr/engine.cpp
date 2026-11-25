@@ -743,11 +743,4 @@ EngineStatus PpOcrEngine::Lines(const std::vector<GrayView>& images, std::vector
     return EngineStatus::Ok;
 }
 
-EngineStatus PpOcrEngine::Line(const GrayView& image, OcrProtocol::Line& line) {
-    single_.assign(1, image);
-    if (Lines(single_, lines_) != EngineStatus::Ok) return EngineStatus::Failed;
-    line = std::move(lines_[0]);
-    return EngineStatus::Ok;
-}
-
 } // namespace RayoPdf::Ocr

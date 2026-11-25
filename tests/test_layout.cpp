@@ -4,6 +4,7 @@
 // matter, page markers, JSON). Exit codes 400-499, 700-749, 1900-1949, 2400-2449 and 2585-2599.
 #include "check.h"
 #include "pdf_builder.h"
+#include "test_files.h"
 
 #include "common/file.h"
 #include "common/utf8.h"
@@ -1001,7 +1002,7 @@ void TestPdfImages() {
     ConvertOptions options;
     // A fresh temporary directory, so the test leaves nothing in the working directory.
     std::string directory;
-    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-layout-", directory), 498);
+    RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-test-layout-", directory), 498);
     options.imageDirectory = directory + "/images";
     options.imageLinkPrefix = "media/";
     std::string md;
@@ -1025,7 +1026,7 @@ void TestPdfImages() {
                           file.Bytes().substr(0, 4) == "\x89PNG",
                       489);
     }
-    for (const char* name : {"/p1-1.png", "/p2-1.png"}) File::RemoveFile(options.imageDirectory + name);
+    for (const char* name : {"/p1-1.png", "/p2-1.png"}) TestFiles::RemoveFile(options.imageDirectory + name);
     File::RemoveEmptyDirectory(options.imageDirectory);
     File::RemoveEmptyDirectory(directory);
     // No directory: no files and no references.

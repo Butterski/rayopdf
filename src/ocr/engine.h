@@ -194,8 +194,6 @@ public:
 
     EngineStatus Page(const GrayView& page, uint32_t dpi, std::vector<OcrProtocol::Line>& lines) override;
     EngineStatus Lines(const std::vector<GrayView>& images, std::vector<OcrProtocol::Line>& lines) override;
-    // Lines with one image.
-    EngineStatus Line(const GrayView& image, OcrProtocol::Line& line);
 
 private:
     // A line being read: where it is and how its crop is cut, and its reading so far.
@@ -242,9 +240,9 @@ private:
     PpOcrSettings settings_;
     ScriptPack* scripts_ = nullptr;
     Runtime* orient_ = nullptr;
-    float flip_ = -1;
-    int32_t script_ = -1;
-    int32_t scoreScript_ = -1;  // ReadingScore: the recogniser that read the first way  // the pack's recogniser that reads this page or request, -1 none yet  // PageTurn: the lying samples' mean probability of 180 degrees, -1 when none
+    float flip_ = -1;           // PageTurn: the lying samples' mean probability of 180 degrees, -1 when none
+    int32_t script_ = -1;       // the pack's recogniser that reads this page or request, -1 none yet
+    int32_t scoreScript_ = -1;  // ReadingScore: the recogniser that read the first way
     ResizeScratch resize_;
     DetectScratch detect_;
     std::vector<uint8_t> small_, crop_, turned_, line_, upright_;
@@ -254,8 +252,6 @@ private:
     std::vector<Read> reads_, firstReads_;
     std::vector<uint32_t> order_;
     CropText text_, other_;
-    std::vector<GrayView> single_;
-    std::vector<OcrProtocol::Line> lines_;
 };
 
 // True when `text` holds a CJK character (U+2E80-U+9FFF, U+F900-U+FAFF, U+FF00-U+FFEF): the

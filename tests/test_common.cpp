@@ -3,6 +3,7 @@
 // and the worker threads (codes 950-999), the batch modes' file paths (codes 1680-1699) and the
 // run-time choice of kernels (codes 1650-1679).
 #include "check.h"
+#include "test_files.h"
 #include "common/batch.h"
 #include "common/cpu.h"
 #include "common/file.h"
@@ -193,9 +194,9 @@ void TestPaths() {
 }
 
 // The file layer end to end in a temporary directory: write, list, examine, map, remove.
-void TestFiles() {
+void TestFileLayer() {
     std::string folder;
-    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-common-", folder), 994);
+    RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-test-common-", folder), 994);
     const std::string name = folder + "/d\xC3\xA9j\xC3\xA0.md";
     RAYOPDF_CHECK(File::WriteAll(name, "first") && File::WriteAll(name, "second text"), 995);
     RAYOPDF_CHECK(File::EnsureDirectory(folder + "/sub") && File::EnsureDirectory(folder + "/sub"), 996);
@@ -214,7 +215,7 @@ void TestFiles() {
                       input.Open(folder + "/missing", 1024) == File::ReadStatus::NotFound,
                   998);
     input.Open(folder + "/missing", 1024);  // unmaps the file, so Windows lets it go
-    RAYOPDF_CHECK(File::RemoveFile(name) && File::RemoveEmptyDirectory(folder + "/sub") &&
+    RAYOPDF_CHECK(TestFiles::RemoveFile(name) && File::RemoveEmptyDirectory(folder + "/sub") &&
                       File::RemoveEmptyDirectory(folder) && !File::StatusOf(folder, info),
                   999);
 }
@@ -223,7 +224,7 @@ void TestFiles() {
 // file to file; larger files mapped as before. Temporary files take the mode a new file gets.
 void TestBufferedInput() {
     std::string folder;
-    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-common-", folder), 1681);
+    RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-test-common-", folder), 1681);
     const std::string small = folder + "/small.pdf";
     const std::string smaller = folder + "/smaller.pdf";
     const std::string large = folder + "/large.pdf";
@@ -253,16 +254,18 @@ void TestBufferedInput() {
     const mode_t mask = umask(0);
     umask(mask);
     File::StagedFile staged;
-    RAYOPDF_CHECK(staged.Open(folder + "/staged.png") && staged.Write("png") && staged.Commit(), 1687);
+    RAYOPDF_CHECK(staged.Open(folder + "/staged.png") && staged.Write("png") &&
+                      staged.CommitAs(folder + "/staged.png"),
+                  1687);
     struct stat status;
     RAYOPDF_CHECK(stat(small.c_str(), &status) == 0 && (status.st_mode & 0777) == (0666 & ~mask), 1688);
     RAYOPDF_CHECK(stat((folder + "/staged.png").c_str(), &status) == 0 && (status.st_mode & 0777) == (0666 & ~mask),
                   1689);
-    RAYOPDF_CHECK(File::RemoveFile(folder + "/staged.png"), 1690);
+    RAYOPDF_CHECK(TestFiles::RemoveFile(folder + "/staged.png"), 1690);
 #endif
     std::vector<File::DirectoryEntry> entries;
     RAYOPDF_CHECK(File::ListDirectory(folder, entries) && entries.size() == 3, 1691);  // no temporary file left
-    RAYOPDF_CHECK(File::RemoveFile(small) && File::RemoveFile(smaller) && File::RemoveFile(large) &&
+    RAYOPDF_CHECK(TestFiles::RemoveFile(small) && TestFiles::RemoveFile(smaller) && TestFiles::RemoveFile(large) &&
                       File::RemoveEmptyDirectory(folder),
                   1692);
 }
@@ -271,7 +274,7 @@ void TestBufferedInput() {
 // order): Close keeps it under its temporary name, CommitAs gives it its name, Discard removes it.
 void TestStagedNames() {
     std::string folder;
-    RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-test-staged-", folder), 1693);
+    RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-test-staged-", folder), 1693);
     File::StagedFile closed;
     File::StagedFile open;
     File::StagedFile dropped;
@@ -291,8 +294,8 @@ void TestStagedNames() {
     RAYOPDF_CHECK(input.Open(folder + "/a.png", 1024) == File::ReadStatus::Ok && input.Bytes() == "open", 1698);
     input.Open(folder + "/missing", 1024);  // unmaps the file, so Windows lets it go
     std::vector<File::DirectoryEntry> named;
-    RAYOPDF_CHECK(File::ListDirectory(folder, named) && named.size() == 2 && File::RemoveFile(folder + "/a.png") &&
-                      File::RemoveFile(folder + "/b.png") && File::RemoveEmptyDirectory(folder),
+    RAYOPDF_CHECK(File::ListDirectory(folder, named) && named.size() == 2 && TestFiles::RemoveFile(folder + "/a.png") &&
+                      TestFiles::RemoveFile(folder + "/b.png") && File::RemoveEmptyDirectory(folder),
                   1699);
 }
 
@@ -306,7 +309,7 @@ int main() {
     TestWorkers();
     TestPaths();
     TestBufferedInput();
-    TestFiles();
+    TestFileLayer();
     TestStagedNames();
     std::puts("test_common: all checks passed");
     return 0;

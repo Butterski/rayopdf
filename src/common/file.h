@@ -118,9 +118,9 @@ private:
 };
 
 // A file written in pieces, bytes already written set again in place (WriteAt), that appears under
-// its name only when Commit succeeds: as WriteAll, a temporary file beside it, renamed. Without a
-// Commit (or when it fails) the temporary file is removed. A file whose name is known only later
-// (an image made on a thread, named in page order) is closed with Close and named with CommitAs.
+// its name only when CommitAs succeeds: as WriteAll, a temporary file beside it, renamed. Without a
+// CommitAs (or when it fails) the temporary file is removed. A file whose name is known only later
+// (an image made on a thread, named in page order) is closed with Close before CommitAs.
 class StagedFile {
 public:
     StagedFile() = default;
@@ -131,11 +131,10 @@ public:
     bool Open(const std::string& path);
     bool Write(std::string_view content);
     bool WriteAt(uint64_t offset, std::string_view content);
-    bool Commit();
     // Ends the writing and keeps the temporary file, closed, for CommitAs. False (and the file
     // removed) when it cannot be closed.
     bool Close();
-    // Commit under `path` instead of Open's path (in the same directory); after Close too.
+    // Names the file `path` (Open's path, or another in the same directory); after Close too.
     bool CommitAs(const std::string& path);
     // Removes the temporary file, as the destructor does.
     void Discard();

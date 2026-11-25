@@ -108,9 +108,9 @@ public:
     int PageCount() const;
     // Page `index` (0-based) as the page tree orders the leaves; null for an index out of range.
     const PdfValue& PageDict(int index) const;
-    // Inherited attributes. MediaBox defaults to US Letter; CropBox to the MediaBox, clipped to
-    // it; Rotate is normalized to 0, 90, 180 or 270; Resources is null when the page has none.
-    PdfRect MediaBox(int index) const;
+    // Inherited attributes. CropBox defaults to the MediaBox (itself US Letter by default) and is
+    // clipped to it; Rotate is normalized to 0, 90, 180 or 270; Resources is null when the page
+    // has none.
     PdfRect CropBox(int index) const;
     int Rotate(int index) const;
     const PdfValue& Resources(int index) const;

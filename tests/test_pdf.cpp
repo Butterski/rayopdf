@@ -685,7 +685,7 @@ void TestClassic() {
     const auto doc = OpenOk(SimpleDocument(), 220);
     RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Hi) Tj ET", 220);
     RAYOPDF_CHECK(doc->Version() == "1.7" && !doc->Report().repaired && doc->Report().xrefSections == 1, 220);
-    const PdfRect box = doc->MediaBox(0);
+    const PdfRect box = doc->CropBox(0);
     RAYOPDF_CHECK(box.x0 == 0 && box.y0 == 0 && box.x1 == 612 && box.y1 == 792 && doc->Rotate(0) == 0, 220);
     RAYOPDF_CHECK(doc->Get(doc->Catalog(), "Type").IsName("Catalog") && doc->Info().IsNull(), 220);
     RAYOPDF_CHECK(doc->Get(doc->Resources(0), "Font").IsDict() && doc->ObjectCount() == 5, 220);
@@ -721,7 +721,7 @@ void TestXrefStreams() {
         const std::string file = b.Build(catalog, "/Info 5 0 R", options);
         const auto doc = OpenOk(file, 221 + (variant == 2 ? 1 : 0));
         RAYOPDF_CHECK(doc->PageCount() == 1 && Content(*doc, 0) == "BT (Stream) Tj ET", 221);
-        RAYOPDF_CHECK(doc->MediaBox(0).x1 == 200 && doc->MediaBox(0).y1 == 300 && !doc->Report().repaired, 221);
+        RAYOPDF_CHECK(doc->CropBox(0).x1 == 200 && doc->CropBox(0).y1 == 300 && !doc->Report().repaired, 221);
         RAYOPDF_CHECK(doc->Get(doc->Info(), "Title").String() == "Info", 222);
         RAYOPDF_CHECK(doc->Trailer().Find("Root") != nullptr && doc->Trailer().IsDict(), 222);
     }
@@ -1070,11 +1070,11 @@ void TestPageTree() {
     b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(root) + " 0 R /Version /2.0 >>");
     const auto doc = OpenOk(b.Build(catalog), 232);
     RAYOPDF_CHECK(doc->PageCount() == 3 && doc->Report().limitHits >= 2, 233);
-    RAYOPDF_CHECK(doc->MediaBox(0).x1 == 300 && doc->Rotate(0) == 180 && doc->Get(doc->Resources(0), "Font").IsDict(),
+    RAYOPDF_CHECK(doc->CropBox(0).x1 == 300 && doc->Rotate(0) == 180 && doc->Get(doc->Resources(0), "Font").IsDict(),
                   232);
     const PdfRect crop = doc->CropBox(1);
     RAYOPDF_CHECK(doc->Rotate(1) == 270 && crop.x0 == 0 && crop.y0 == 0 && crop.x1 == 100 && crop.y1 == 400, 232);
-    RAYOPDF_CHECK(doc->MediaBox(2).x1 == 612 && doc->MediaBox(2).y1 == 792 && doc->Rotate(2) == 0, 232);
+    RAYOPDF_CHECK(doc->CropBox(2).x1 == 612 && doc->CropBox(2).y1 == 792 && doc->Rotate(2) == 0, 232);
     RAYOPDF_CHECK(doc->CropBox(2).x1 == 612 && doc->Get(doc->Resources(2), "Own").Bool(), 232);
     RAYOPDF_CHECK(doc->PageDict(1).Find("Rotate") != nullptr && doc->Version() == "2.0", 234);
 
@@ -1087,7 +1087,7 @@ void TestPageTree() {
     broken.Add("<< /Type /Page /Parent " + std::to_string(parent) + " 0 R /MediaBox [0 0 70 80] >>");
     broken.Set(c2, "<< /Type /Catalog /Pages 99 0 R >>");
     const auto fallback = OpenOk(broken.Build(c2), 235);
-    RAYOPDF_CHECK(fallback->PageCount() == 2 && fallback->MediaBox(0).x1 == 50 && fallback->MediaBox(1).x1 == 70 &&
+    RAYOPDF_CHECK(fallback->PageCount() == 2 && fallback->CropBox(0).x1 == 50 && fallback->CropBox(1).x1 == 70 &&
                       fallback->Report().repaired,
                   235);
 }

@@ -8,6 +8,7 @@
 // several threads at once.
 #include "check.h"
 #include "pdf_builder.h"
+#include "test_files.h"
 
 #include "common/file.h"
 #include "common/ocr_protocol.h"
@@ -1116,11 +1117,11 @@ void TestWorkers() {
 // A fresh folder for image files, removed with what was written into it.
 struct ImageFolder {
     std::string path;
-    ImageFolder() { RAYOPDF_CHECK(File::MakeTemporaryDirectory("rayopdf-ocr-test-", path), 1246); }
+    ImageFolder() { RAYOPDF_CHECK(TestFiles::MakeTemporaryDirectory("rayopdf-ocr-test-", path), 1246); }
     ~ImageFolder() {
         std::vector<File::DirectoryEntry> entries;
         if (File::ListDirectory(path, entries))
-            for (const File::DirectoryEntry& e : entries) File::RemoveFile(path + "/" + e.name);
+            for (const File::DirectoryEntry& e : entries) TestFiles::RemoveFile(path + "/" + e.name);
         File::RemoveEmptyDirectory(path);
     }
 };
