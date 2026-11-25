@@ -307,6 +307,8 @@ gate on 2026-11-16 and replaces it after 0.4.0.
 |Table gaps (borderless columns)|2,400 generated tables (400 fixtures, 6 producers): 3,884 candidate gaps|1,109 gaps, all boundaries|not run|–|–|identical|no|
 |Edge rows v2 (after 0.4.0)|the same 20,000 pages: 46,817 rows, 21,425 furniture; 23 features|doclaynet-dev: 0.863 (rules) → 0.880 (rules and model at τ_p)|passed: doclaynet-dev and doclaynet-val furniture_f1 +0.0033 and +0.0097, olmOCR `headers_footers` +0.0027|−0.07 % against master (with 0.4.0's model)|1,740 nodes, 900 leaves, about 35.7 KB|identical|after 0.4.0|
 |Edge rows v3 (rows up to 1.6 body sizes)|the same 20,000 pages: 47,484 rows, 21,602 furniture; 23 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|see below|+0.003 % against the rules it ships with|1,740 nodes, 900 leaves|identical|pending the gate|
+|Edge rows v4 (1.1, every train page)|69,375 DocLayNet train pages: 164,939 rows, 75,220 furniture; trained on the 71,861 rows the model may take; 25 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|failed: olmOCR `headers_footers` −0.0040; doclaynet-dev and doclaynet-val furniture_f1 +0.00004 and +0.0002|+0.02 % against master|2,001 nodes, 1,035 leaves, about 32 KiB|identical|no|
+|Edge rows v4, fallback (23 features)|the same pages, rows and population; 23 features|doclaynet-dev: 0.874 (rules) → 0.894 (rules and model at τ_p)|failed: olmOCR `headers_footers` −0.0013, synthetic untagged MHS −0.0068, NID −0.0004, construct F1 −0.0008; doclaynet-dev and doclaynet-val furniture_f1 +0.0005 and +0.0010|not measured|3,387 nodes, 1,752 leaves, about 54 KiB|identical|no|
 
 **Edge rows.** LightGBM 4.7.0, 60 trees of 15 leaves over the 16 features of a row the furniture
 rules examine in a page's outer tenth (`src/layout/features.h`); it would remove a row the rules
@@ -397,6 +399,21 @@ the declared profiles: doclaynet-dev furniture_f1 0.61622 → 0.61754 (+0.0013),
 0.75788 → 0.75796; doclaynet-val furniture_f1 0.50529 → 0.50772 (+0.0024), heading_f1 0.70940 →
 0.70950; omni-dev and omni-val equal; odl and synthetic byte-identical. odl instructions +0.003 %
 against the rules alone.
+
+**Edge rows v4 (1.1, not shipped).** Trained on every DocLayNet train page (69,375; 164,939 rows,
+75,220 furniture), and both trained and stopped early only on the rows the engine lets the model
+take (kept by the rules, at most 1.6 body sizes, not ending a sentence: 71,861 train rows), with up
+to 120 trees; τ and τ_p chosen over the same doclaynet-dev rows as v3. Two features more than v3:
+the distance of the row's outer edge to the page edge / page height, and the row's lines. 69 trees;
+τ_p 0.765 (precision 0.907, recall 0.533 over the dev rows the model may take); doclaynet-dev
+furniture F1 of rows 0.874 (rules) → 0.894. Two trainings byte-identical, release and ASan tests
+pass, 600 s fuzzing of `fuzz_layout_document` and `fuzz_layout_pages` clean, odl instructions
++0.02 % against master. The strict gate failed: olmOCR `headers_footers` 0.8911 → 0.8871
+(−0.0040); doclaynet-dev and doclaynet-val furniture_f1 rose only +0.00004 and +0.0002, short of
+M9's +0.002. The fallback, the same training with v3's 23 features (117 trees, τ_p 0.706,
+precision 0.902, recall 0.539), failed too: olmOCR `headers_footers` −0.0013, synthetic untagged
+MHS −0.0068, NID −0.0004 and construct F1 −0.0008, against furniture_f1 +0.0005 (doclaynet-dev)
+and +0.0010 (doclaynet-val). v3 stays.
 
 **Table gaps.** 400 GFM tables (3-8 columns, 4-20 rows, unique cell texts) rendered by xelatex,
 typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Every labelled
