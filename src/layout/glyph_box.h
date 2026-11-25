@@ -25,8 +25,9 @@
 namespace RayoPdf::Layout {
 
 // What every glyph of a run shares. Lane 0 is x, lane 1 is y. With GlyphRun's terms (xa: x·a,
-// xb: x·b of the box's left and right edges, yc: y·c, yd: y·d of its bottom and top):
-struct BoxTerms {
+// xb: x·b of the box's left and right edges, yc: y·c, yd: y·d of its bottom and top). Aligned to
+// 16 bytes, so that BoxSse2's arithmetic takes each pair from memory without a load of its own.
+struct alignas(16) BoxTerms {
     double r[2];            // Trm's a and b: the glyph's width times these are its right edge's terms
     double s0[2];           // xa0 + yc0, xb0 + yd0: the bottom-left corner less Trm's translation
     double s1[2];           // xa0 + yc1, xb0 + yd1: the top-left corner less Trm's translation
@@ -82,11 +83,11 @@ static_assert(offsetof(Glyph, u1) == offsetof(Glyph, u0) + 4 && offsetof(Glyph, 
 // and negating a float flips its sign as negating the double did.
 inline bool BoxSse2(const BoxTerms& t, double width, double e, double f, uint8_t dir, Glyph& g) {
     const __m128d ef = _mm_set_pd(f, e);
-    const __m128d edge = _mm_mul_pd(_mm_set1_pd(width), _mm_loadu_pd(t.r));
-    const __m128d c0 = _mm_add_pd(_mm_loadu_pd(t.s0), ef);
-    const __m128d c1 = _mm_add_pd(_mm_add_pd(edge, _mm_loadu_pd(t.y0)), ef);
-    const __m128d c2 = _mm_add_pd(_mm_loadu_pd(t.s1), ef);
-    const __m128d c3 = _mm_add_pd(_mm_add_pd(edge, _mm_loadu_pd(t.y1)), ef);
+    const __m128d edge = _mm_mul_pd(_mm_set1_pd(width), _mm_load_pd(t.r));
+    const __m128d c0 = _mm_add_pd(_mm_load_pd(t.s0), ef);
+    const __m128d c1 = _mm_add_pd(_mm_add_pd(edge, _mm_load_pd(t.y0)), ef);
+    const __m128d c2 = _mm_add_pd(_mm_load_pd(t.s1), ef);
+    const __m128d c3 = _mm_add_pd(_mm_add_pd(edge, _mm_load_pd(t.y1)), ef);
     const __m128d lo = _mm_min_pd(_mm_min_pd(_mm_min_pd(c0, c1), c2), c3);
     const __m128d hi = _mm_max_pd(_mm_max_pd(_mm_max_pd(c0, c1), c2), c3);
     // The frame's (u0 u1 vb vt): for direction 0 the page box (x0 x1 y0 y1).
@@ -106,7 +107,7 @@ inline bool BoxSse2(const BoxTerms& t, double width, double e, double f, uint8_t
     _mm_storeu_ps(&g.u0, frame);
     // The centre against the clip: (lo + hi) / 2 (halving is exact as a product by 0.5).
     const __m128d mid = _mm_mul_pd(_mm_add_pd(lo, hi), _mm_set1_pd(0.5));
-    const __m128d out = _mm_or_pd(_mm_cmplt_pd(mid, _mm_loadu_pd(t.clipLo)), _mm_cmpgt_pd(mid, _mm_loadu_pd(t.clipHi)));
+    const __m128d out = _mm_or_pd(_mm_cmplt_pd(mid, _mm_load_pd(t.clipLo)), _mm_cmpgt_pd(mid, _mm_load_pd(t.clipHi)));
     return _mm_movemask_pd(out) != 0 || t.clipEmpty;
 }
 #endif

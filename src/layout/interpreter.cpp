@@ -1645,7 +1645,7 @@ RAYOPDF_HOT_INLINE bool Interpreter::PlaceGlyphs(std::string_view bytes, const P
                 p.uses->push_back(use);
             }
         }
-        if (!std::isfinite(advance)) advance = 0;
+        if (RAYOPDF_UNLIKELY(!std::isfinite(advance))) advance = 0;
         if (vertical) {
             tme += advance * p.tmc;
             tmf += advance * p.tmd;
