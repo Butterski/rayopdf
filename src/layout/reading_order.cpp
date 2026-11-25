@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/reading_order.h"
 
+#include "common/compiler.h"
 #include "common/minmax.h"
 #include "common/per_thread.h"
 #include "layout/features.h"
@@ -12,7 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <vector>
 
 namespace RayoPdf::Layout {
 namespace {
@@ -234,6 +235,66 @@ struct KeyCount {
     int odd = 0;
     int even = 0;
     int lastPage = -1;
+};
+
+// The running keys of a document's band lines with their counts: a key is its side ('T' top, 'B'
+// bottom) and its text, whose bytes are copied once into a pool. Open addressing over the keys'
+// hashes, at most half the slots full.
+class RunningKeys {
+public:
+    // The index of the key, made on its first sight.
+    uint32_t Add(char side, std::string_view key) {
+        if ((entries_.size() + 1) * 2 > slots_.size()) Grow();
+        const size_t hash = Hash(side, key);
+        size_t slot = hash & (slots_.size() - 1);
+        for (; slots_[slot] != 0; slot = (slot + 1) & (slots_.size() - 1)) {
+            const uint32_t index = slots_[slot] - 1;
+            if (Equal(entries_[index], hash, side, key)) return index;
+        }
+        const auto index = static_cast<uint32_t>(entries_.size());
+        entries_.push_back(Entry{hash, static_cast<uint32_t>(pool_.size()), static_cast<uint32_t>(key.size()), side, {}});
+        pool_.append(key);
+        slots_[slot] = index + 1;
+        return index;
+    }
+    // The key's count, or null for a key never added. Out of line: the edge-row features look a
+    // key up only on documents of two pages or more.
+    RAYOPDF_NOINLINE const KeyCount* Find(char side, std::string_view key) const {
+        if (slots_.empty()) return nullptr;
+        const size_t hash = Hash(side, key);
+        for (size_t slot = hash & (slots_.size() - 1); slots_[slot] != 0; slot = (slot + 1) & (slots_.size() - 1)) {
+            const Entry& entry = entries_[slots_[slot] - 1];
+            if (Equal(entry, hash, side, key)) return &entry.count;
+        }
+        return nullptr;
+    }
+    KeyCount& Count(uint32_t index) { return entries_[index].count; }
+
+private:
+    struct Entry {
+        size_t hash;
+        uint32_t at, length;  // the key's bytes in pool_
+        char side;
+        KeyCount count;
+    };
+    static size_t Hash(char side, std::string_view key) {
+        return std::hash<std::string_view>{}(key) * 31 + static_cast<unsigned char>(side);
+    }
+    bool Equal(const Entry& entry, size_t hash, char side, std::string_view key) const {
+        return entry.hash == hash && entry.side == side && std::string_view(pool_.data() + entry.at, entry.length) == key;
+    }
+    void Grow() {
+        slots_.assign(slots_.empty() ? 64 : slots_.size() * 2, 0);
+        const size_t mask = slots_.size() - 1;
+        for (uint32_t index = 0; index < entries_.size(); ++index) {
+            size_t slot = entries_[index].hash & mask;
+            while (slots_[slot] != 0) slot = (slot + 1) & mask;
+            slots_[slot] = index + 1;
+        }
+    }
+    std::string pool_;
+    std::vector<Entry> entries_;
+    std::vector<uint32_t> slots_;  // entry index + 1; 0 is a free slot
 };
 
 // A horizontal rule of the page: a thin filled rectangle or a stroked horizontal line.
@@ -1056,11 +1117,10 @@ bool IsRuleLine(const PageData& page, const Line& line) {
 
 struct EdgeRows {
     const FeatureSink* sink = nullptr;  // null: no features reported
-    const std::unordered_map<std::string, KeyCount>* counts = nullptr;
+    const RunningKeys* counts = nullptr;
     int pages = 0;
     std::vector<EdgeRow> rows;  // the page's, reused from page to page
     std::string texts;          // the rows' texts and keys
-    std::string lookup;         // a band-prefixed running key
 };
 
 // An edge row in the outer kWideGapBand lies in kNumberBand, where the rules build its text and key.
@@ -1490,12 +1550,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
         bool endsInDigit = false;
         TextShares(text, digitShare, capitalShare, endsInDigit);
         float holding = 0;
-        if (edges.pages > 1 && !key.empty()) {
-            edges.lookup.assign(row.side == 0 ? "T" : "B");
-            edges.lookup += key;
-            const auto found = edges.counts->find(edges.lookup);
-            if (found != edges.counts->end()) holding = float(found->second.total) / float(edges.pages - 1);
-        }
+        if (edges.pages > 1 && !key.empty())
+            if (const KeyCount* found = edges.counts->Find(row.side == 0 ? 'T' : 'B', key))
+                holding = float(found->total) / float(edges.pages - 1);
         f[0] = row.wideCenter / h;
         f[1] = float(row.side);
         f[2] = row.gap / body;
@@ -1713,13 +1770,13 @@ int RemoveCountedPageNumbers(std::vector<PageData>& pages) {
 
 int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
     const int n = static_cast<int>(pages.size());
-    std::unordered_map<std::string, KeyCount> counts;
+    RunningKeys counts;
     std::string text, key;
     // Keys of the band lines, per page, to apply the decision afterwards.
     struct Candidate {
         uint32_t page;
         uint32_t line;
-        std::string key;
+        uint32_t key;  // in counts
         bool pageNumber;
         bool artifact;
     };
@@ -1746,21 +1803,21 @@ int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
             RunningKey(text, key);
             if (key.empty()) continue;
             const bool outermost = top ? highest - center <= 1.5f * line.size : center - lowest <= 1.5f * line.size;
-            Candidate c{static_cast<uint32_t>(p), li, (top ? "T" : "B") + key, outermost && IsPageNumberKey(key),
+            Candidate c{static_cast<uint32_t>(p), li, counts.Add(top ? 'T' : 'B', key), outermost && IsPageNumberKey(key),
                         (line.flags & kLineArtifact) != 0};
-            KeyCount& kc = counts[c.key];
+            KeyCount& kc = counts.Count(c.key);
             if (kc.lastPage != p) {
                 kc.lastPage = p;
                 kc.total++;
                 (p % 2 == 0 ? kc.odd : kc.even)++;
             }
-            candidates.push_back(std::move(c));
+            candidates.push_back(c);
         }
     }
     const int odd = (n + 1) / 2, even = n / 2;
     int removed = 0;
     for (const Candidate& c : candidates) {
-        const KeyCount& kc = counts[c.key];
+        const KeyCount& kc = counts.Count(c.key);
         // A single page gives no evidence that a number or an artifact at its edge is a running
         // header, footer or page number.
         bool running = (c.pageNumber || c.artifact) && n >= 2;
