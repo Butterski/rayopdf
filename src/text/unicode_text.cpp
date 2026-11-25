@@ -2,31 +2,42 @@
 
 #include "text/unicode_text.h"
 
-#include "common/utf8.h"
-
-#include <cstring>
-#include <string>
-
 namespace RayoPdf::Text {
+namespace {
+
+// The UTF-8 of every BMP code point, three bytes apart (the longest BMP form), made by the
+// compiler: a constant table costs no time at start-up and is paged in from the binary only where
+// read (built at run time it cost 6.5 M instructions and 64 page faults in every process reading
+// CJK text through a character collection).
+struct BmpTable {
+    char bytes[0x10000 * 3];
+};
+
+constexpr BmpTable MakeBmpTable() {
+    BmpTable table{};
+    for (uint32_t cp = 0; cp < 0x10000; ++cp) {
+        const uint32_t at = cp * 3;
+        if (cp < 0x80) {
+            table.bytes[at] = static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            table.bytes[at] = static_cast<char>(0xC0 | (cp >> 6));
+            table.bytes[at + 1] = static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            table.bytes[at] = static_cast<char>(0xE0 | (cp >> 12));
+            table.bytes[at + 1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            table.bytes[at + 2] = static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    return table;
+}
+
+constexpr BmpTable kBmp = MakeBmpTable();
+
+} // namespace
 
 std::string_view BmpText(uint32_t cp) {
-    // Three bytes per code point (the longest BMP UTF-8 form) and each one's length.
-    struct Table {
-        char bytes[0x10000 * 3];
-        uint8_t lengths[0x10000];
-        Table() {
-            std::string one;
-            for (uint32_t c = 0; c < 0x10000; ++c) {
-                one.clear();
-                Utf8::Append(one, c);
-                std::memcpy(bytes + c * 3, one.data(), one.size());
-                lengths[c] = static_cast<uint8_t>(one.size());
-            }
-        }
-    };
-    static const Table* const table = new Table();
     if (cp >= 0x10000 || (cp >= 0xD800 && cp <= 0xDFFF)) return {};
-    return std::string_view(table->bytes + cp * 3, table->lengths[cp]);
+    return std::string_view(kBmp.bytes + cp * 3, cp < 0x80 ? 1 : cp < 0x800 ? 2 : 3);
 }
 
 namespace {

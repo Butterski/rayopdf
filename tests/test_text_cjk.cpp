@@ -6,6 +6,7 @@
 #include "check.h"
 #include "pdf_builder.h"
 
+#include "common/utf8.h"
 #include "pdf/document.h"
 #include "text/cjk.h"
 #include "text/cmap.h"
@@ -241,6 +242,14 @@ void TestFonts() {
     RAYOPDF_CHECK(Near(codes[0].width, 2.0) && Near(codes[1].width, 1.0), 689);
     RAYOPDF_CHECK(CodePointText(0x20B9F) == "\xF0\xA0\xAE\x9F" && CodePointText(0x30000).empty() &&
                       CodePointText(0xD800).empty() && CodePointText('A') == "A", 699);
+    // The compile-time BMP table: each code point's UTF-8 as the encoder writes it.
+    bool encoded = true;
+    for (uint32_t cp = 0; cp < 0x10000; ++cp) {
+        std::string utf8;
+        if (cp < 0xD800 || cp > 0xDFFF) Utf8::Append(utf8, cp);
+        encoded = encoded && BmpText(cp) == utf8;
+    }
+    RAYOPDF_CHECK(encoded, 1478);
 
     // Adobe-Identity without ToUnicode or program stays unmapped.
     codes = Codes(l.Get("F11"), "\x03\x4B"sv);
