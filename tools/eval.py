@@ -9,9 +9,9 @@ Usage:
   python3 tools/eval.py all [--resume]
   python3 tools/eval.py images [--only producers,scorer,olmocr,readoc,omni,pdftotext,...]
   python3 tools/eval.py fetch [--only odl,olmocr,readoc,readoc-dev,readoc-val,readoc-dev2,safedocs,doclaynet,omni]
-  python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript|gentables] [--producers a,b] [--only ids] [--jobs 6]
-  python3 tools/eval.py train-data --kind edge-rows|table-gaps --bin-dir DIR [--jobs 6]
-  python3 tools/eval.py train --kind edge-rows|table-gaps [--out DIR]
+  python3 tools/eval.py corpus [--suite synthetic|scanned|multiscript] [--producers a,b] [--only ids] [--jobs 6]
+  python3 tools/eval.py train-data --kind edge-rows --bin-dir DIR [--jobs 6]
+  python3 tools/eval.py train --kind edge-rows [--out DIR]
   python3 tools/eval.py convert --tool T --suite S [--cmd TEMPLATE | --profile default|declared] [--bin-dir DIR]
   python3 tools/eval.py score --selftest
   python3 tools/eval.py score --suite S [--tools a,b]
@@ -102,8 +102,6 @@ CLI_SUITES = ["olmocr-math", "doclaynet-dev", "doclaynet-val", "omni-dev", "omni
 SCAN_SUITES = ["scanned", "olmocr-scans", "multiscript"]
 SUITES = TEXT_SUITES + SCAN_SUITES
 IMAGES = ["producers", "scorer", "olmocr", "readoc", "omni", "train"] + [t for t in TOOLS if t not in TOOL_IMAGE]
-# The producers of the table-gap model's rendered tables (corpus --suite gentables).
-GENTABLES_PRODUCERS = "xelatex,typst,rayomd,rayomd-tech,chromium-untagged,context"
 DATASETS = ["odl", "olmocr", "readoc", "readoc-dev", "readoc-val", "readoc-dev2", "safedocs",
             "doclaynet", "omni"]
 # Each benchmark's declared profile: the cli options it is measured with (roadmap D6).
@@ -891,8 +889,6 @@ def cmd_fetch(args) -> int:
 def cmd_corpus(args) -> int:
     if args.suite == "scanned":
         return corpus_scanned(args)
-    if args.suite == "gentables":
-        return corpus_gentables(args)
     if args.suite == "multiscript":
         return corpus_multiscript(args)
     out = args.root / "corpus"
@@ -911,29 +907,6 @@ def cmd_corpus(args) -> int:
     return 0
 
 
-def corpus_gentables(args) -> int:
-    """The table-gap model's tables (plan 5.4): eval/fixtures/gen_tables.py writes 400 Markdown
-    tables with their cells into gentables/md/ (never committed), render.py renders them with
-    GENTABLES_PRODUCERS (or --producers) into gentables/<producer>/<id>.pdf. Both in the producers
-    image, the repository's producers and fixtures folders mounted over the image's."""
-    out = args.root / "gentables"
-    md = out / "md"
-    md.mkdir(parents=True, exist_ok=True)
-    run(docker_cmd(tag("producers"), ["python3", "/opt/eval/fixtures/gen_tables.py", "--out", "/md"],
-                   mounts=[(REPO / "eval" / "fixtures", "/opt/eval/fixtures", True), (md, "/md", False)]))
-    argv = ["python3", "/opt/eval/producers/render.py", "--fixtures", "/fixtures", "--out", "/out",
-            "--jobs", str(args.jobs), "--producers", args.producers or GENTABLES_PRODUCERS]
-    if args.only:
-        argv += ["--only", args.only]
-    run(docker_cmd(tag("producers"), argv,
-                   mounts=[(REPO / "eval" / "producers", "/opt/eval/producers", True), (md, "/fixtures", True),
-                           (out, "/out", False)]))
-    items = read_json(out / "corpus.json", {"items": []}).get("items", [])
-    valid = sum(1 for i in items if i.get("valid"))
-    log(f"gentables: {valid}/{len(items)} valid")
-    return 0
-
-
 # `command` run by `sh -c` for every PDF of /in, `jobs` at a time, with $f the PDF and $b its stem.
 def each_pdf(command: str, jobs: int) -> list[str]:
     return ["sh", "-c", "find /in -maxdepth 1 -name '*.pdf' -print0 | sort -z | "
@@ -943,16 +916,10 @@ def each_pdf(command: str, jobs: int) -> list[str]:
 def cmd_train_data(args) -> int:
     """`rayopdf --features KIND` (the --bin-dir binary, in the cli image without network) over the
     training pages, one train/<kind>/<split>/<stem>.jsonl a PDF: edge rows over
-    data/doclaynet/train and dev (never val: the holdout), table gaps over gentables/<producer>/,
-    there with each PDF's words beside it (<stem>.words.html, pdftotext -bbox in the producers
-    image) for table_gaps.py's labels."""
-    if args.kind == "edge-rows":
-        sources = {split: args.root / "data" / "doclaynet" / split for split in ("train", "dev")}
-    else:
-        base = args.root / "gentables"
-        sources = {p.name: p for p in sorted(base.iterdir()) if p.is_dir() and p.name != "md"} if base.is_dir() else {}
-    if not sources or not all(p.is_dir() for p in sources.values()):
-        raise SystemExit(f"train-data: no pages for {args.kind} (fetch doclaynet, or corpus --suite gentables)")
+    data/doclaynet/train and dev (never val: the holdout)."""
+    sources = {split: args.root / "data" / "doclaynet" / split for split in ("train", "dev")}
+    if not all(p.is_dir() for p in sources.values()):
+        raise SystemExit(f"train-data: no pages for {args.kind} (fetch doclaynet)")
     bin_dir = Path(args.bin_dir).resolve()
     for split, folder in sources.items():
         out = args.root / "train" / args.kind / split
@@ -960,29 +927,19 @@ def cmd_train_data(args) -> int:
         command = f'/opt/tool/rayopdf --features {args.kind} "$f" "/out/$b.jsonl" >/dev/null 2>&1 || true'
         run(docker_cmd(tool_tag("cli"), each_pdf(command, args.jobs),
                        mounts=[(folder, "/in", True), (out, "/out", False), (bin_dir, "/opt/tool", True)]))
-        if args.kind == "table-gaps":
-            command = 'pdftotext -bbox "$f" "/out/$b.words.html" >/dev/null 2>&1 || true'
-            run(docker_cmd(tag("producers"), each_pdf(command, args.jobs),
-                           mounts=[(folder, "/in", True), (out, "/out", False)]))
         log(f"train-data {args.kind} {split}: {sum(1 for _ in out.glob('*.jsonl'))} files")
     return 0
 
 
 def cmd_train(args) -> int:
-    """eval/train/edge_rows.py or table_gaps.py in the train image (--network none, one thread,
-    seed 0) over train-data's files; the model and its .meta.json go to --out (default
-    <root>/models)."""
+    """eval/train/edge_rows.py in the train image (--network none, one thread, seed 0) over
+    train-data's files; the model and its .meta.json go to --out (default <root>/models)."""
     out = args.out or args.root / "models"
     out.mkdir(parents=True, exist_ok=True)
     features = args.root / "train" / args.kind
-    mounts = [(REPO / "eval" / "train", "/opt/eval/train", True), (features, "/features", True), (out, "/out", False)]
-    if args.kind == "edge-rows":
-        argv = ["python3", "/opt/eval/train/edge_rows.py", "--data", "/data", "--features", "/features", "--out", "/out"]
-        mounts.append((args.root / "data" / "doclaynet", "/data", True))
-    else:
-        argv = ["python3", "/opt/eval/train/table_gaps.py", "--fixtures", "/fixtures", "--features", "/features",
-                "--out", "/out"]
-        mounts.append((args.root / "gentables" / "md", "/fixtures", True))
+    argv = ["python3", "/opt/eval/train/edge_rows.py", "--data", "/data", "--features", "/features", "--out", "/out"]
+    mounts = [(REPO / "eval" / "train", "/opt/eval/train", True), (features, "/features", True), (out, "/out", False),
+              (args.root / "data" / "doclaynet", "/data", True)]
     run(docker_cmd(tag("train"), argv, mounts=mounts))
     return 0
 
@@ -2155,17 +2112,17 @@ def main() -> int:
     p = add("fetch", cmd_fetch, "download the public benchmarks (network)")
     p.add_argument("--only", help=f"comma-separated subset of: {', '.join(DATASETS)}")
     p = add("corpus", cmd_corpus, "render the synthetic corpus, or build the scanned suite from it")
-    p.add_argument("--suite", choices=["synthetic", "scanned", "multiscript", "gentables"], default="synthetic")
-    p.add_argument("--producers", help="synthetic and gentables: comma-separated producer ids")
+    p.add_argument("--suite", choices=["synthetic", "scanned", "multiscript"], default="synthetic")
+    p.add_argument("--producers", help="synthetic: comma-separated producer ids")
     p.add_argument("--only", help="comma-separated fixture ids (synthetic) or source item ids "
                                   "<producer>/<fixture> (scanned)")
     p.add_argument("--jobs", type=int, default=6)
     p = add("train-data", cmd_train_data, "rayopdf --features over the training pages (small models)")
-    p.add_argument("--kind", required=True, choices=["edge-rows", "table-gaps"])
+    p.add_argument("--kind", required=True, choices=["edge-rows"])
     p.add_argument("--bin-dir", required=True, help="host directory holding the rayopdf binary (static)")
     p.add_argument("--jobs", type=int, default=6)
     p = add("train", cmd_train, "train a small model in the train image (eval/train/)")
-    p.add_argument("--kind", required=True, choices=["edge-rows", "table-gaps"])
+    p.add_argument("--kind", required=True, choices=["edge-rows"])
     p.add_argument("--out", type=Path, help="folder for the model files (default <root>/models)")
     p = add("convert", cmd_convert, "convert one suite with one tool")
     p.add_argument("--tool", required=True, choices=TOOLS)

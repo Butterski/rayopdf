@@ -20,7 +20,6 @@
 // the table's box takes their place there (page.h kLineTableAnchor).
 #pragma once
 
-#include "layout/features.h"
 #include "layout/page.h"
 #include "layout/semantics.h"
 
@@ -59,8 +58,7 @@ struct TableContinuation {
 // lie in a table return to the text (kLineRemoved cleared); the result is how many. Runs after
 // BuildLines and RemoveRunningLines, before OrderLines. `continuation` (upright tables only) comes
 // from the previous page and is replaced for the next.
-// `features` (upright text) gets Borderless's candidate column gaps (layout/features.h).
-int DetectTables(PageData& page, TableContinuation& continuation, const FeatureSink* features = nullptr);
+int DetectTables(PageData& page, TableContinuation& continuation);
 
 // What DetectTables changes on a page, to undo it (pages detected on several threads at once,
 // layout/pipeline.cpp): it only appends to page.lines, page.lineGlyphs, page.tableCells and

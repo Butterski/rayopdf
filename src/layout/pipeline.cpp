@@ -176,7 +176,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         if (tree) {
             tagged.LayOut(pages, static_cast<uint32_t>(p));
         } else if (!parallel) {
-            report.headerFooterLines -= DetectTables(page, continuation, features);
+            report.headerFooterLines -= DetectTables(page, continuation);
             MarkFigureText(page);
             OrderLines(page);
             SplitRunInHeadings(page);

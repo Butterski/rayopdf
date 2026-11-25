@@ -618,10 +618,10 @@ These are AGENTS.md rules 4–8:
 
 ## Training data of the small models
 
-The small models of plan M9 (edge rows as page furniture, borderless table column gaps) learn
-from the converter's own decisions, written by its developer mode `rayopdf --features
-edge-rows|table-gaps IN.pdf OUT.jsonl` (roadmap D7, `src/layout/features.h`). The training data
-lives under the harness root and is never committed. A model that ships (AGENTS.md rule 1) is
+The small model of roadmap M9 (edge rows as page furniture) learns from the converter's own
+decisions, written by its developer mode `rayopdf --features edge-rows IN.pdf OUT.jsonl` (roadmap
+D7, `src/layout/features.h`). The training data lives under the harness root and is never
+committed. A model that ships (AGENTS.md rule 1) is
 copied from `<root>/models/` into `eval/models/` (the edge-row model, `edge_rows.json` and
 `edge_rows.meta.json`), and `python3 tools/gen_model_tables.py` compiles it into
 `src/layout/model_data.cpp` (roadmap M9).
@@ -630,32 +630,22 @@ copied from `<root>/models/` into `eval/models/` (the edge-row model, `edge_rows
 python3 tools/eval.py images --only train                     # rayopdf-eval-train:1 (LightGBM, NumPy)
 python3 tools/eval.py train-data --kind edge-rows --bin-dir B  # train/edge-rows/{train,dev}/<stem>.jsonl
 python3 tools/eval.py train --kind edge-rows                   # models/edge_rows.json, .meta.json
-python3 tools/eval.py corpus --suite gentables                 # gentables/md/ (400 tables), gentables/<producer>/
-python3 tools/eval.py train-data --kind table-gaps --bin-dir B # train/table-gaps/<producer>/<id>.jsonl, .words.html
-python3 tools/eval.py train --kind table-gaps                  # models/table_gaps.json, .meta.json
 ```
 
 - `train-data` runs the static binary of `--bin-dir` in the `cli` image without network. Edge
   rows come from DocLayNet's train selection (training) and doclaynet-dev (early stopping and the
-  thresholds τ and τ_p only); the holdout doclaynet-val is never read. Table gaps come from
-  `gentables`: `eval/fixtures/gen_tables.py` (stdlib, seed 0) writes 400 GFM tables of 3-8
-  columns and 4-20 rows with unique cell texts and a `<id>.cells.json` each, rendered by
-  xelatex, typst, rayomd, rayomd-tech, chromium-untagged and context; `pdftotext -bbox` (producers
-  image) gives each page's words for the labels.
-- `train` runs `eval/train/edge_rows.py` or `table_gaps.py` in the `train` image
-  (`eval/docker/train.Dockerfile`: python 3.13-slim by digest, lightgbm 4.7.0, numpy 2.5.4) with
+  thresholds τ and τ_p only); the holdout doclaynet-val is never read.
+- `train` runs `eval/train/edge_rows.py` in the `train` image (`eval/docker/train.Dockerfile`:
+  python 3.13-slim by digest, lightgbm 4.7.0, numpy 2.5.4) with
   `--network none`: LightGBM binary, 15 leaves, depth 5, rate 0.1, up to 60 trees with early
   stopping after 10, at least 50 rows a leaf, no bagging or feature sampling, deterministic, one
   thread, seed 0, so two runs write the same bytes. Edge-row labels: furniture when half the row's
   box lies in Page-header or Page-footer boxes (the doclaynet scorer's COCO-to-PDF mapping).
-  Table-gap labels: a boundary when the nearest words on both sides (matched to cells by exact
-  text) are in different columns in at least 80 % of the rows crossing it; validation is the 20 %
-  of fixtures whose SHA-256 of id is 0 modulo 5. Each `.meta.json` holds the data's SHA-256, the
-  parameters, the image's versions, metrics, 64 check vectors with their raw scores and the
-  thresholds (edge rows, over the doclaynet-dev rows the model may take: kept by the rules, at
-  most 1.35 body sizes and not ending a sentence (feature 16): τ maximising furniture F1, and τ_p,
-  the smallest threshold in steps of 0.001 whose precision over those rows reaches 0.90, with its
-  precision, recall and F1; the engine uses τ_p; table gaps: τ_hi and τ_lo at precision 0.98).
+  Each `.meta.json` holds the data's SHA-256, the parameters, the image's versions, metrics, 64
+  check vectors with their raw scores and the thresholds (over the doclaynet-dev rows the model
+  may take: kept by the rules, at most 1.35 body sizes and not ending a sentence (feature 16): τ
+  maximising furniture F1, and τ_p, the smallest threshold in steps of 0.001 whose precision over
+  those rows reaches 0.90, with its precision, recall and F1; the engine uses τ_p).
   The edge-row model's 23 features (`src/layout/features.h`) are those of 0.4.0's 16 plus the
   row's words, their share starting in lower case, whether it ends a sentence, the size of the
   line inside it, its pitch to that line against the text's, its rank from the edge and its

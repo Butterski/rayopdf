@@ -48,7 +48,7 @@ struct OutputSettings {
     SmallCaps smallCaps = SmallCaps::Lower;      // Keep: small-capital headings as printed (WriteSettings::smallCaps)
     FigureText figureText = FigureText::Keep;    // Drop: a figure's own text left out (BuildBlocks)
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
-    const FeatureSink* features = nullptr;       // developer mode: edge-row and table-gap features
+    const FeatureSink* features = nullptr;       // developer mode: edge-row features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
 };
 

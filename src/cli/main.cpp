@@ -13,7 +13,7 @@
 //   rayopdf --serve --json [--workers=N] [--images=none] [--password=PW] ...
 //   rayopdf --inspect IN.pdf [--password=PW]
 //   rayopdf --bench IN.pdf TMPDIR N [--images=none] [--no-structure] [--workers=N] ...   (developer option)
-//   rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]          (developer option)
+//   rayopdf --features edge-rows IN.pdf OUT.jsonl [options]                    (developer option)
 //   rayopdf --version | --help
 //
 // OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
@@ -108,10 +108,10 @@ void PrintUsage(std::FILE* out) {
         "                                               this process into TMPDIR/out.md (images in\n"
         "                                               TMPDIR/out-images/); prints the fastest and\n"
         "                                               median milliseconds of the N timed runs\n"
-        "  rayopdf --features edge-rows|table-gaps IN.pdf OUT.jsonl [options]\n"
-        "                                               write the features of the edge rows or the\n"
-        "                                               borderless table gaps the rules examine, one\n"
-        "                                               JSON object a line (eval/train/)\n"
+        "  rayopdf --features edge-rows IN.pdf OUT.jsonl [options]\n"
+        "                                               write the features of the edge rows the\n"
+        "                                               rules examine, one JSON object a line\n"
+        "                                               (eval/train/)\n"
         "\n"
         "Options:\n"
         "  --password=PW      user or owner password of an encrypted PDF\n"
@@ -475,28 +475,19 @@ void AppendFeatureLine(std::string& out, uint32_t page, const float* box, int bo
 }
 
 // --features: converts IN.pdf with the flags given, on one page thread, and writes the feature
-// lines of `kind` (edge-rows or table-gaps; layout/features.h) to OUT.jsonl.
+// lines of `kind` (edge-rows; layout/features.h) to OUT.jsonl.
 int WriteFeatures(std::string_view kind, const std::string& input, const std::string& output,
                   const DocumentOptions& document) {
-    const bool edges = kind == "edge-rows";
-    if (!edges && kind != "table-gaps") return Usage("--features takes edge-rows or table-gaps: ", kind);
+    if (kind != "edge-rows") return Usage("--features takes edge-rows: ", kind);
     std::string lines;
     Layout::FeatureSink sink;
     sink.context = &lines;
-    if (edges) {
-        sink.edgeRow = [](void* context, uint32_t page, const float* f, float x0, float y0, float x1, float y1,
-                          std::string_view text, bool removed) {
-            const float box[4] = {x0, y0, x1, y1};
-            AppendFeatureLine(*static_cast<std::string*>(context), page, box, 4, &text, f, Layout::kEdgeRowFeatures,
-                              removed);
-        };
-    } else {
-        sink.tableGap = [](void* context, uint32_t page, const float* f, float x0, float x1, bool chosen) {
-            const float box[2] = {x0, x1};
-            AppendFeatureLine(*static_cast<std::string*>(context), page, box, 2, nullptr, f,
-                              Layout::kTableGapFeatures, chosen);
-        };
-    }
+    sink.edgeRow = [](void* context, uint32_t page, const float* f, float x0, float y0, float x1, float y1,
+                      std::string_view text, bool removed) {
+        const float box[4] = {x0, y0, x1, y1};
+        AppendFeatureLine(*static_cast<std::string*>(context), page, box, 4, &text, f, Layout::kEdgeRowFeatures,
+                          removed);
+    };
     Layout::ConvertOptions options = document.convert;
     options.imageDirectory.clear();
     options.imageLinkPrefix.clear();
@@ -934,7 +925,7 @@ int main(int argc, char** argv) {
             input = args[++i];
         } else if (arg == "--features") {
             if (mode != Mode::None) return Usage(kModes);
-            if (i + 3 >= args.size()) return Usage("--features needs edge-rows or table-gaps, IN.pdf and OUT.jsonl");
+            if (i + 3 >= args.size()) return Usage("--features needs edge-rows, IN.pdf and OUT.jsonl");
             mode = Mode::Features;
             featureKind = args[++i];
             input = args[++i];

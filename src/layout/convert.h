@@ -104,8 +104,8 @@ struct ConvertOptions {
     // it ended (its pages, fonts and structure, and its page threads, left waiting) is not freed
     // or joined, which the end of the process does at once.
     bool oneShot = false;
-    // Developer mode (`rayopdf --features`): the edge rows and table gaps the rules examine, with
-    // their features (layout/features.h). Table gaps need pageWorkers 1.
+    // Developer mode (`rayopdf --features`): the edge rows the rules examine, with their features
+    // (layout/features.h).
     const FeatureSink* features = nullptr;
 };
 

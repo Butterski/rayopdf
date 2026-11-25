@@ -7,8 +7,8 @@
 // inspector (--format=inspect), one HTML file without a script; Markdown with the output options
 // --plain, --tables=html, --tables=pipe or --tables=pipe-latex (by the size again),
 // --furniture=keep, --quotes=ascii, --small-caps=keep and --figure-text=drop;
-// or Markdown with a feature sink (`rayopdf --features`) counting the edge rows and table gaps,
-// which must be the same Markdown.
+// or Markdown with a feature sink (`rayopdf --features`) counting the edge rows, which must be
+// the same Markdown.
 // Seeds: `python3 tools/fuzz.py seeds` (real PDFs).
 
 #include "layout/convert.h"
@@ -68,7 +68,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         sink.edgeRow = [](void* context, uint32_t, const float*, float, float, float, float, std::string_view, bool) {
             ++*static_cast<size_t*>(context);
         };
-        sink.tableGap = [](void* context, uint32_t, const float*, float, float, bool) { ++*static_cast<size_t*>(context); };
         options.features = &sink;
         std::string again;
         RayoPdf::Layout::Convert(*document, options, again, report);

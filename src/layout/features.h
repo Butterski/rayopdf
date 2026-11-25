@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// Feature vectors of the decisions small models may learn (plan M9: edge rows as page furniture,
-// borderless table column gaps), reported to a sink as the rules make those decisions; the
-// developer mode `rayopdf --features` writes them as JSON Lines for eval/train/. The edge-row
-// features also feed the edge-row model (layout/model.h) of every conversion that drops furniture;
-// table-gap features are computed for a sink only.
+// Feature vectors of the decisions small models may learn (roadmap M9: edge rows as page
+// furniture), reported to a sink as the rules make those decisions; the developer mode
+// `rayopdf --features` writes them as JSON Lines for eval/train/. The edge-row features also feed
+// the edge-row model (layout/model.h) of every conversion that drops furniture.
 #pragma once
 
 #include <cstdint>
 #include <string_view>
-#include <vector>
 
 namespace RayoPdf::Layout {
 
@@ -39,33 +37,13 @@ namespace RayoPdf::Layout {
 //  22 offset of its left edge from the text's left edge / text width
 constexpr int kEdgeRowFeatures = 23;
 
-// Table-gap features, in this order:
-//   0 gap width / em
-//   1 share of the run's rows with ink in the gap
-//   2 MAD of the right edges of the words left of the gap / em
-//   3 MAD of the left edges of the words right of the gap / em
-//   4 numeric share of the cells left of the gap
-//   5 numeric share of the cells right of the gap
-//   6 fill of the two adjoining columns (filled cells / 2 rows)
-//   7 the gap's rank among the run's gaps by width (0: the widest)
-//   8 rows in the run
-//   9 run size / body size
-//  10 second pass (closer gaps: 0 or 1)
-//  11 chosen by the rules (the run became a table: 0 or 1)
-constexpr int kTableGapFeatures = 12;
-
 // Receives feature vectors. Edge rows: every row RemoveEdgeRows examines in the outer
 // kWideGapBand (10 %) of a page's height, with whether the rules removed it; boxes in PDF points.
-// Table gaps: every column gap of a candidate run of Detector::Borderless (three rows and two
-// columns at least), with whether the rules made the run a table; x0, x1 bound the gap. Table gaps
-// are reported by conversions on one page thread only (pages detected again on several threads
-// would report twice). Calls come from the converting thread, in page order.
+// Calls come from the converting thread, in page order.
 struct FeatureSink {
     void* context = nullptr;
     void (*edgeRow)(void* context, uint32_t page, const float* features, float x0, float y0, float x1, float y1,
                     std::string_view text, bool removedByRules) = nullptr;
-    void (*tableGap)(void* context, uint32_t page, const float* features, float x0, float x1,
-                     bool chosenByRules) = nullptr;
 };
 
 // Text features of a row: the share of digits among its non-space bytes, of capitals among its
@@ -75,8 +53,5 @@ void TextShares(std::string_view text, float& digitShare, float& capitalShare, b
 // Word features of a row: its words (runs of non-space bytes), the share of those starting with an
 // ASCII letter that start with a lower-case one, and whether it ends a sentence (features 16-18).
 void TextWords(std::string_view text, float& words, float& lowerShare, bool& endsSentence);
-
-// The median absolute deviation from the median of `values` (reordered); 0 for none.
-float MedianDeviation(std::vector<float>& values);
 
 } // namespace RayoPdf::Layout

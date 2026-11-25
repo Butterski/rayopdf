@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "layout/features.h"
 
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
 
 namespace RayoPdf::Layout {
@@ -48,16 +46,6 @@ void TextWords(std::string_view text, float& words, float& lowerShare, bool& end
     words = float(count);
     lowerShare = lettered ? float(lower) / float(lettered) : 0;
     endsSentence = (last == '.' || last == '?' || last == '!') && letters >= 1 && letters + digits >= 2;
-}
-
-float MedianDeviation(std::vector<float>& values) {
-    if (values.empty()) return 0;
-    const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-    std::nth_element(values.begin(), middle, values.end());
-    const float median = *middle;
-    for (float& v : values) v = std::fabs(v - median);
-    std::nth_element(values.begin(), middle, values.end());
-    return *middle;
 }
 
 } // namespace RayoPdf::Layout

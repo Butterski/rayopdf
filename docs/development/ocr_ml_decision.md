@@ -403,7 +403,7 @@ typst, rayomd, rayomd-tech, chromium-untagged and context, all 2,400 valid. Ever
 candidate gap was a column boundary (3,884 of 3,884 in training, 1,109 of 1,109 in validation):
 `--features table-gaps` reports the gaps the column finder already accepts, so there is nothing
 to tell apart and LightGBM stops after one tree. A useful model needs candidates below the
-minimum gap as negatives.
+minimum gap as negatives. Removed in 1.1.
 
 **Tier B, outside the core.** PP-DocLayout-S for page regions and SLANet_plus with PP-LCNet for
 table structure (Apache-2.0) remain candidates for the OCR add-on. The trigger is a measured gap

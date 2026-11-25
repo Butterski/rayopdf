@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of the feature sink of layout/features.h (`rayopdf --features`; small models
-// 2250-2299): the edge rows RemoveRunningLines examines and the gaps Detector::Borderless tries.
+// 2250-2299): the edge rows RemoveRunningLines examines.
 #include "check.h"
 
 #include "common/utf8.h"
@@ -56,15 +56,8 @@ struct EdgeRecord {
     bool removed;
 };
 
-struct GapRecord {
-    uint32_t page;
-    std::vector<float> features;
-    bool chosen;
-};
-
 struct Records {
     std::vector<EdgeRecord> edges;
-    std::vector<GapRecord> gaps;
 };
 
 // The records of converting `pages` with a sink.
@@ -76,9 +69,6 @@ Records Collect(std::vector<PageData> pages) {
                       bool removed) {
         static_cast<Records*>(context)->edges.push_back(
             EdgeRecord{page, std::vector<float>(f, f + kEdgeRowFeatures), std::string(text), removed});
-    };
-    sink.tableGap = [](void* context, uint32_t page, const float* f, float, float, bool chosen) {
-        static_cast<Records*>(context)->gaps.push_back(GapRecord{page, std::vector<float>(f, f + kTableGapFeatures), chosen});
     };
     OutputSettings output;
     output.features = &sink;
@@ -102,25 +92,6 @@ void TestEdgeRow() {
                       records.edges[0].text == "Page 3 of 9" && records.edges[0].features[8] == 1 &&
                       records.edges[0].features[1] == 1 && records.edges[0].features[0] < 0.1f,
                   2250);
-}
-
-// A borderless table of three columns: its two gaps, chosen by the rules.
-void TestTableGaps() {
-    std::vector<PageData> pages{NewPage(1)};
-    PageData& page = pages[0];
-    AddText(page, "The stock at the end of the quarter was counted in every store.", 72, 740, 10);
-    const char* const rows[6][3] = {{"Item", "Count", "Price"},  {"Apples", "12", "3.50"}, {"Pears", "7", "4.25"},
-                                    {"Plums", "31", "2.10"},     {"Figs", "5", "8.00"},    {"Limes", "64", "0.75"}};
-    for (int r = 0; r < 6; ++r) {
-        AddText(page, rows[r][0], 72, 700 - 14.0f * r, 10);
-        AddText(page, rows[r][1], 250, 700 - 14.0f * r, 10);
-        AddText(page, rows[r][2], 400, 700 - 14.0f * r, 10);
-    }
-    AddText(page, "Prices are per kilogram and include the tax of the region.", 72, 600, 10);
-    const Records records = Collect(pages);
-    int chosen = 0;
-    for (const GapRecord& g : records.gaps) chosen += g.chosen && g.features[11] == 1;
-    RAYOPDF_CHECK(!records.gaps.empty() && chosen == 2, 2251);
 }
 
 // The word features of a row (16-18): a sentence ends in '.', '?' or '!' after a word of two
@@ -147,7 +118,6 @@ void TestTextWords() {
 
 int main() {
     TestEdgeRow();
-    TestTableGaps();
     TestTextWords();
     return 0;
 }
