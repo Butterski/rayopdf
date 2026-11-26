@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # A tag v<VERSION> builds the core archives (tools/package.py: the binaries, the C++ API's library
 # archives, the Python wheels and the npm package) and makes a draft release with them and
-# SHA256SUMS, and builds the container image from the Linux archive, checks it and pushes it to
-# ghcr.io. Run by hand (`gh workflow run release.yml`) it is a dry run: the same archives as
-# workflow artifacts and the image checked, no release and no push. The OCR add-on's archives
-# need the rayopdf-ocr:2 image and are built and attached locally: CONTRIBUTING.md § Versions and
-# releases.
+# SHA256SUMS, and builds the container image from the Linux x64 archive, checks it and pushes it to
+# ghcr.io. One job a platform builds its binaries and uploads them: Linux x64 and Windows x64, the
+# wheel's library, the WebAssembly module and the Linux arm64 cross build on ubuntu-latest; the
+# manylinux_2_28_aarch64 library natively on ubuntu-24.04-arm; macOS arm64 and x64 on macos-15 and
+# macos-15-intel. One packaging job then packages all of them twice and compares the bytes. Run by
+# hand (`gh workflow run release.yml`) it is a dry run: the same archives as workflow artifacts and
+# the image checked, no release and no push. The OCR add-on's archives (x64 only) need the
+# rayopdf-ocr:2 image and are built and attached locally: CONTRIBUTING.md § Versions and releases.
 name: Release
 
 on:
@@ -25,8 +28,8 @@ defaults:
     shell: bash
 
 jobs:
-  archives:
-    name: Core archives
+  linux:
+    name: Linux x64 and arm64, Windows x64, wheel library, WebAssembly
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -47,7 +50,7 @@ jobs:
         run: python3 tools/dev.py build --config static
       - name: Build rayopdf.exe and rayopdf.dll (windows-x64)
         run: python3 tools/dev.py build --config windows
-      - name: Build librayopdf.so (manylinux_2_28, in rayopdf-wheel:1)
+      - name: Build librayopdf.so (manylinux_2_28_x86_64, in rayopdf-wheel:1)
         run: |
           python3 tools/dev.py image --name wheel
           python3 tools/dev.py build --config wheel --target rayopdf_c
@@ -55,8 +58,109 @@ jobs:
         run: |
           python3 tools/dev.py image --name wasm
           python3 tools/dev.py build --config wasm --target rayopdf_wasm
+      - name: Build rayopdf and librayopdf.a (linux-arm64-static, in rayopdf-cross:1)
+        run: |
+          python3 tools/dev.py image --name cross
+          python3 tools/dev.py build --config arm64 --target rayopdf rayopdf_bundle
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-linux
+          path: |
+            build/static/rayopdf
+            build/static/librayopdf.a
+            build/windows/rayopdf.exe
+            build/windows/rayopdf.dll
+            build/windows/librayopdf.a
+            build/wheel/librayopdf.so
+            build/wasm/rayopdf-core.mjs
+            build/wasm/rayopdf-core.wasm
+            build/arm64/rayopdf
+            build/arm64/librayopdf.a
+          if-no-files-found: error
+          retention-days: 1
+
+  linux-arm64:
+    name: Linux arm64 wheel library
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build librayopdf.so (manylinux_2_28_aarch64, in rayopdf-wheel:1)
+        run: |
+          python3 tools/dev.py image --name wheel
+          python3 tools/dev.py build --config wheel --dir wheel-arm64 --target rayopdf_c
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-linux-arm64
+          path: build/wheel-arm64/librayopdf.so
+          if-no-files-found: error
+          retention-days: 1
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: CMake 3.31.6 and Ninja 1.13.2
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install --disable-pip-version-check --quiet cmake==3.31.6 ninja==1.13.2
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+      - name: Build rayopdf, librayopdf.a and librayopdf.dylib
+        run: |
+          python3 tools/dev.py build --config macos --dir macos-${{ matrix.arch }} --target rayopdf rayopdf_bundle
+          python3 tools/dev.py build --config macos-lib --dir macos-${{ matrix.arch }}-lib --target rayopdf_c
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-macos-${{ matrix.arch }}
+          path: |
+            build/macos-${{ matrix.arch }}/rayopdf
+            build/macos-${{ matrix.arch }}/librayopdf.a
+            build/macos-${{ matrix.arch }}-lib/librayopdf.dylib
+          if-no-files-found: error
+          retention-days: 1
+
+  archives:
+    name: Core archives
+    needs: [linux, linux-arm64, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-linux
+          path: build
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-linux-arm64
+          path: build/wheel-arm64
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-macos-arm64
+          path: build
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-macos-x64
+          path: build
       - name: Package, twice with the same bytes
         run: |
+          # Artifacts keep no file modes: package.py runs the Linux x64 binary's --version.
+          chmod +x build/static/rayopdf
           python3 tools/package.py --out build/dist
           python3 tools/package.py --out build/dist-again > /dev/null
           diff -r build/dist build/dist-again
