@@ -1660,6 +1660,79 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
         }
         return false;
     };
+    std::string wordText;
+    // The words of line r's first cell, left to right: its first and its last (null when the cell
+    // is empty).
+    const auto firstCell = [&](size_t r, const TWord*& head, const TWord*& tail) {
+        head = tail = nullptr;
+        for (uint32_t k = rows[r].first; k < rows[r].first + rows[r].count && columns[k - base] == 0; ++k) {
+            const TWord& w = words_[rowWords[k]];
+            if (!head) head = &w;
+            tail = &w;
+        }
+    };
+    const auto hyphenEnd = [&](const TWord& w) {
+        const std::string_view t = WordText(w, wordText);
+        return (!t.empty() && t.back() == '-') || (t.size() >= 2 && t.substr(t.size() - 2) == "\xC2\xAD");
+    };
+    // Whether a first cell's line reaching x runs to the right part of its column (wrapped text).
+    const auto firstReaches = [&](float x) { return x >= colLeft[0] + 0.7f * (colRight[0] - colLeft[0]); };
+    // Line r, filling the first cell alone, is set as that cell's wrapped text, not as a row of
+    // its own: indented under the text of the line before by half an em or more (a hanging indent),
+    // or closer to it than the row it would join (lines from top) is to the line before that row
+    // (a cell's lines set tighter than the rows). A label broken by hand into rows (LaTeX's "with
+    // validation data" under "Fraction of responses") stands on the row pitch, and a line closer
+    // than a line pitch is a script or a cell set to the middle.
+    const auto wrappedLine = [&](size_t r, size_t top, const TWord& head, const TWord& upHead) {
+        if (offset(r)) return false;
+        if (head.x0 >= upHead.x0 + 0.5f * rows[r].size) return true;
+        if (top - rowBegin <= headerRows || (ruled && (*ruled)[top])) return false;
+        const size_t p = lineBefore(r), t = lineBefore(top);
+        return rows[p].base - rows[r].base < 0.9f * (rows[t].base - rows[top].base);
+    };
+    // Line r fills the first cell alone and goes on with the first cell of the line before (in
+    // the row from line top): the line before ends with a hyphen; or, set as wrapped text
+    // (wrappedLine), it is a unit in parentheses ("(dB)" under "Air-bone gap") or starts with a word
+    // in lower case without digits under a line that runs to the right part of the column (wrapped
+    // prose, not a row label such as "topic1(t-6)" under "topic1(t-7)").
+    const auto continuesFirstCell = [&](size_t r, size_t top) {
+        if (mask[r - rowBegin] != 1) return false;
+        const TWord *head, *tail, *upHead, *upTail;
+        firstCell(r, head, tail);
+        firstCell(lineBefore(r), upHead, upTail);
+        if (!head || !upTail) return false;
+        if (hyphenEnd(*upTail)) return true;
+        const unsigned char h = FirstByte(*head);
+        if (h >= 'a' && h <= 'z') {
+            if (!firstReaches(upTail->x1)) return false;
+            const std::string_view t = WordText(*head, wordText);
+            return std::none_of(t.begin(), t.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
+                   wrappedLine(r, top, *head, *upHead);
+        }
+        if (h != '(') return false;
+        const std::string_view t = WordText(*tail, wordText);
+        return !t.empty() && t.back() == ')' && wrappedLine(r, top, *head, *upHead);
+    };
+    // Line q (before line b) fills the first cell alone and names a section of the rows under it
+    // ("Prior therapies, n (%)" over "Abiraterone", "Enzalutamide"): it starts in upper case, falls
+    // short of the right part of its column (no text wrapped on to the next line), and so does the
+    // first cell of the line before it, which ends without a hyphen; the next line is a full one
+    // (its first cell and another) in its own line pitch, not starting in lower case, and indented
+    // under it by half an em or more (the section's rows; a wrapped name such as "Mueller, 1922"
+    // under "S. lehmanni" starts where the next row's label does).
+    const auto sectionLine = [&](size_t q, size_t b) {
+        if (mask[q - rowBegin] != 1 || q + 1 >= b || offset(q) || offset(q + 1)) return false;
+        const uint64_t next = mask[q + 1 - rowBegin];
+        if (!(next & 1) || !(next & ~uint64_t(1))) return false;
+        const TWord *head, *tail, *upHead, *upTail, *nextHead, *nextTail;
+        firstCell(q, head, tail);
+        firstCell(lineBefore(q), upHead, upTail);
+        firstCell(q + 1, nextHead, nextTail);
+        if (!head || !nextHead || nextHead->x0 < head->x0 + 0.5f * rows[q].size) return false;
+        const unsigned char h = FirstByte(*head), n = FirstByte(*nextHead);
+        if (!(h >= 'A' && h <= 'Z') || (n >= 'a' && n <= 'z') || firstReaches(tail->x1)) return false;
+        return !upTail || (!firstReaches(upTail->x1) && !hyphenEnd(*upTail));
+    };
     // Lines [s, e) as one row of cells set to the middle (HTML's default vertical-align): every
     // filled column one cell (its lines at most 1.6 em apart), one cell of several lines and one
     // of a single line at least, and the middles of all of them (their first and last baselines')
@@ -1670,7 +1743,6 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
     // different heights (set to the top) are no such row.
     std::vector<MiddleCell>& cells = scratch_.middleCells;  // per column (read only where lines > 0)
     cells.resize(static_cast<size_t>(cols));
-    std::string wordText;
     // The end e of the longest such run [s, e) of 2 to 16 lines ending at b at most, 0 if none. The
     // cells are read one line at a time and every run from s is judged as it grows, so each line is
     // read once for each s; a line too far below its cell's line above ends every longer run too.
@@ -1784,16 +1856,22 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 }
                 // A full line (its first cell and another) on the line grid, clear of the line above,
                 // under a line that fills the first cell too, starts a row: sections of one-line rows.
-                // A line filling only the first cell is that cell's wrapped text.
+                // A line filling only the first cell is that cell's wrapped text, unless it names a
+                // section (sectionLine): then it is a row of its own, and the line after it starts one.
+                size_t after = 0;  // a line that starts a row after a section's name
                 for (size_t q = band + 1; q < bandEnd; ++q) {
                     const size_t p = lineBefore(q);
                     const uint64_t qm = mask[q - rowBegin], pm = mask[p - rowBegin];
                     // A line filling fewer of the cells the line above fills, none with a number:
                     // the wrapped text of those cells.
                     const bool subset = (qm & pm) == qm && qm != pm && !numericCell(q);
-                    if (!centred[q - rowBegin] && (qm & 1) && (qm & ~uint64_t(1)) && (pm & 1) && !subset && !offset(q) &&
-                        (q + 1 >= b || !offset(q + 1)) && rows[p].bottom >= rows[q].top)
+                    if (q == after || (!centred[q - rowBegin] && (qm & 1) && (qm & ~uint64_t(1)) && (pm & 1) && !subset &&
+                                       !offset(q) && (q + 1 >= b || !offset(q + 1)) && rows[p].bottom >= rows[q].top)) {
                         starts.push_back(q);
+                    } else if (!centred[q - rowBegin] && sectionLine(q, b)) {
+                        starts.push_back(q);
+                        after = q + 1;
+                    }
                 }
             };
             for (size_t r = a + 1; r < b; ++r) {
@@ -1817,6 +1895,9 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                         (!(above[c] >= colLeft[c] + 0.7f * (colRight[c] - colLeft[c])) ||
                          (values && hereFirst[c] && above[c] > -INFINITY && aboveLast[c])))
                         wrapped = false;
+                // A line filling the first cell alone that goes on with that cell's text above: in
+                // lower case, after a hyphen, or a unit in parentheses ("(dB)" under "Air-bone gap").
+                if (!wrapped && r - rowBegin > headerRows && continuesFirstCell(r, starts.back())) wrapped = true;
                 // A header line less than a line below the first line of its row: a cell set to the
                 // middle of a header of two lines ("Model" beside "Test" over "clean other").
                 const size_t top = starts.back();

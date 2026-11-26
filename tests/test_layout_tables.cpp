@@ -933,6 +933,83 @@ void TestLoneSectionLabels() {
                   1722);
 }
 
+// Booktabs whose rows part by wider space than a cell's lines: a first-cell line in upper case
+// after a row's wrapped stub, under a short line and over a full row indented under it, names a
+// section of the rows under it: a row of its own. The wrapped stub's lower-case line stays in its
+// cell, and so does a short line in upper case starting where the next row's label does (an
+// authority "Sanofi, 2004" under "Docetaxel").
+void TestSectionLinesInBands() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 740, 2);
+    HLine(page, 72, 400, 712, 0.8f);
+    HLine(page, 72, 400, 694, 0.5f);
+    HLine(page, 72, 400, 580, 0.8f);
+    AddText(page, "Variable", 76, 700, 8);
+    AddText(page, "Group A", 300, 700, 8);
+    AddText(page, "Group B", 350, 700, 8);
+    AddText(page, "Median time from first diagnosis to", 76, 682, 8);
+    AddText(page, "3 (1, 49)", 300, 682, 8);
+    AddText(page, "10 (4, 54)", 350, 682, 8);
+    AddText(page, "treatment, months", 76, 673, 8);
+    AddText(page, "Prior therapies, n (%)", 76, 664, 8);
+    const char* const names[] = {"Abiraterone", "Enzalutamide", "Docetaxel", "Cabazitaxel"};
+    for (int r = 0; r < 4; ++r) {
+        const float y = r < 3 ? 650 - 14.0f * float(r) : 604;  // the last two rows one band with "Sanofi, 2004"
+        AddText(page, names[r], 82, y, 8);
+        AddText(page, std::to_string(12 + r) + " (" + std::to_string(31 + r) + ")", 300, y, 8);
+        AddText(page, std::to_string(24 + r) + " (" + std::to_string(25 + r) + ")", 350, y, 8);
+    }
+    AddText(page, "Sanofi, 2004", 82, 613, 8);
+    AddProse(page, 72, 400, 550, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("section lines in bands", md);
+    RAYOPDF_CHECK(report.tables == 1, 2802);
+    RAYOPDF_CHECK(Contains(md, "| Median time from first diagnosis to treatment, months | 3 (1, 49) | 10 (4, 54) |\n"
+                               "| Prior therapies, n (%) |  |  |\n| Abiraterone | 12 (31) | 24 (25) |"),
+                  2803);
+    RAYOPDF_CHECK(Contains(md, "| Docetaxel Sanofi, 2004 | 14 (33) | 26 (27) |\n| Cabazitaxel | 15 (34) | 27 (28) |"), 2808);
+}
+
+// A ruled table of one-line rows: a line filling the first cell alone that goes on with the cell
+// above (a unit in parentheses, a word in lower case under a line running across the column), set
+// closer to it than the rows are to each other, is that cell's text, not a row of its own; a line
+// in upper case over the rows it names stays a row, and so does a row label in lower case with
+// digits ("follow-up(t-2)" under "follow-up(t-1)") and a label broken by hand into a row of its own
+// on the row pitch ("with validation data" under "Fraction of responses").
+void TestFirstCellContinued() {
+    std::vector<PageData> pages{NewPage()};
+    PageData& page = pages[0];
+    AddProse(page, 72, 400, 740, 2);
+    HLine(page, 72, 400, 712, 0.8f);
+    HLine(page, 72, 400, 694, 0.5f);
+    HLine(page, 72, 400, 554, 0.8f);
+    AddText(page, "Measure", 76, 700);
+    AddText(page, "Median", 260, 700);
+    AddText(page, "Mean", 330, 700);
+    const char* const lines[][3] = {{"Hearing level", nullptr, nullptr},  {"500 Hz", "35", "32"},   {"1000 Hz", "34", "31"},
+                                    {"Air-bone gap", "25", "24"},         {"(dB)", nullptr, nullptr}, {"Follow-up of all", "16", "16"},
+                                    {"patients", nullptr, nullptr},       {"follow-up(t-1)", "18", "17"},
+                                    {"follow-up(t-2)", nullptr, nullptr}, {"Fraction of responses", "81", "79"},
+                                    {"with validation data", nullptr, nullptr}};
+    float y = 682;
+    for (int r = 0; r < 11; ++r) {
+        if (r > 0) y -= r == 4 || r == 6 ? 10.5f : 12.0f;
+        AddText(page, lines[r][0], 76, y);
+        if (lines[r][1]) AddText(page, lines[r][1], 260, y);
+        if (lines[r][2]) AddText(page, lines[r][2], 330, y);
+    }
+    AddProse(page, 72, 400, 524, 2);
+    ConvertReport report;
+    const std::string md = Run(pages, &report);
+    Show("first cell continued", md);
+    RAYOPDF_CHECK(report.tables == 1 && Contains(md, "| Hearing level |  |  |\n| 500 Hz | 35 | 32 |"), 2804);
+    RAYOPDF_CHECK(Contains(md, "| Air-bone gap (dB) | 25 | 24 |\n| Follow-up of all patients | 16 | 16 |"), 2805);
+    RAYOPDF_CHECK(Contains(md, "| follow-up(t-1) | 18 | 17 |\n| follow-up(t-2) |  |  |"), 2806);
+    RAYOPDF_CHECK(Contains(md, "| Fraction of responses | 81 | 79 |\n| with validation data |  |  |"), 2809);
+}
+
 // A ruled table with a rule around each group of rows: in a group, a line of numbers under a line
 // of numbers is a row of its own (its first cell empty), while a line in smaller type right under
 // a value (a standard error) is that value's second line and keeps the rule stack one table.
@@ -3500,6 +3577,8 @@ int main(int argc, char** argv) {
     TestAlgorithmBox();
     TestRuledSectionLabels();
     TestLoneSectionLabels();
+    TestSectionLinesInBands();
+    TestFirstCellContinued();
     TestRuledRowGroups();
     TestCentredRowLabels();
     TestBlankLineInBody();
