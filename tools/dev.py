@@ -6,7 +6,7 @@ Nothing is installed on the host: the compilers, CMake and Ninja live in the ima
 repository is mounted at /src, and builds go to build/<name>/ (git-ignored).
 
 Usage:
-  python3 tools/dev.py [--image TAG] image [--name build|ocr|wheel|wasm]  # build an image (default: build)
+  python3 tools/dev.py [--image TAG] image [--name build|cross|ocr|wheel|wasm]  # build an image (default: build)
   python3 tools/dev.py [--image TAG] build [--config CONFIG] [--dir NAME] [--target T ...]
   python3 tools/dev.py [--image TAG] test [--config CONFIG] [--dir NAME] [-- CTEST ARGS]
   python3 tools/dev.py [--image TAG] run [--mount HOST:CTR] -- COMMAND ...
@@ -20,11 +20,16 @@ core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC rel
 rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
 newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
 rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
-rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), and the
-OCR add-on's configs, which run in the rayopdf-ocr:2 image (docker/ocr.Dockerfile: the ncnn
-runtime and the models) unless --image says otherwise: ocr (static release with the add-on
-rayopdf-ocr, tests including tests/verify_ocr.py with the image's models), ocr-windows (MinGW-w64
-rayopdf-ocr.exe, tests under Wine). --dir defaults to the config's name. Builds run with
+rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), arm64
+(GCC 13.3 for Linux aarch64 in the rayopdf-cross:1 image, docker/cross.Dockerfile: the fully
+static -static-pie binary of the linux-arm64-static release and librayopdf.a of its lib archive;
+`test` runs the core tests and the CLI verifier under qemu-aarch64-static, except the two tests
+that start the stand-in OCR add-on, layout_ocr and layout_glyph: a process under qemu-user can
+start no aarch64 program; they run natively on an aarch64 machine), and the OCR add-on's configs,
+which run in the rayopdf-ocr:2 image (docker/ocr.Dockerfile: the ncnn runtime and the models)
+unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr, tests including
+tests/verify_ocr.py with the image's models), ocr-windows (MinGW-w64 rayopdf-ocr.exe, tests under
+Wine). --dir defaults to the config's name. Builds run with
 --network none; RAYOPDF_DOCKER_CPUS (a cpuset such as 0-2,4-8) keeps the container off the CPUs a
 timing run uses.
 """
@@ -41,13 +46,16 @@ REPO = Path(__file__).resolve().parent.parent
 IMAGE = "rayopdf-build:2"
 IMAGE_TAG = IMAGE  # --image, or the config's image
 # Images `image --name` builds: Dockerfile under docker/ and tag.
-IMAGES = {"build": ("build.Dockerfile", IMAGE), "ocr": ("ocr.Dockerfile", "rayopdf-ocr:2"),
-          "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1"), "wasm": ("wasm.Dockerfile", "rayopdf-wasm:1")}
+IMAGES = {"build": ("build.Dockerfile", IMAGE), "cross": ("cross.Dockerfile", "rayopdf-cross:1"),
+          "ocr": ("ocr.Dockerfile", "rayopdf-ocr:2"), "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1"),
+          "wasm": ("wasm.Dockerfile", "rayopdf-wasm:1")}
 # Configs that build in another image than the build image.
-CONFIG_IMAGES = {"ocr": "rayopdf-ocr:2", "ocr-windows": "rayopdf-ocr:2",
+CONFIG_IMAGES = {"arm64": "rayopdf-cross:1", "ocr": "rayopdf-ocr:2", "ocr-windows": "rayopdf-ocr:2",
                  "wheel": "rayopdf-wheel:1", "wasm": "rayopdf-wasm:1"}
 # Configs whose configure step runs through a wrapper (Emscripten's emcmake: its toolchain file).
 CONFIG_WRAPPERS = {"wasm": "emcmake"}
+# ctest arguments of a config's `test`: under qemu-user the tests that start an add-on are left out.
+CONFIG_CTEST = {"arm64": ["-E", "^layout_(ocr|glyph)$"]}
 OCR_MODELS = "/opt/ocr/models"  # in rayopdf-ocr:2
 
 # MinGW's linker writes the link time into the PE header unless told not to; without it two builds
@@ -72,6 +80,9 @@ CONFIGS = {
                 PE_NO_TIMESTAMP, PE_DLL_NO_TIMESTAMP, "-DRAYOPDF_SHARED=ON"],
     "wheel": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_SHARED=ON"],
     "wasm": ["-DCMAKE_BUILD_TYPE=Release"],
+    "arm64": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Linux", "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
+              "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc-13", "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++-13",
+              "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64-static", "-DRAYOPDF_STATIC=ON"],
     "ocr": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_STATIC=ON", "-DRAYOPDF_OCR_ADDON=ON",
             "-DRAYOPDF_OCR_RUNTIME_DIR=/opt/ocr/ncnn/linux", f"-DRAYOPDF_OCR_MODELS={OCR_MODELS}"],
     "ocr-windows": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Windows",
@@ -131,7 +142,7 @@ def cmd_test(args) -> int:
     code = configure_and_build(args)
     if code:
         return code
-    extra = " ".join(shlex.quote(a) for a in args.ctest) if args.ctest else ""
+    extra = " ".join(shlex.quote(a) for a in CONFIG_CTEST.get(args.config, []) + (args.ctest or []))
     return docker(["sh", "-ec", f"ctest --test-dir {build_dir(args)} --output-on-failure {extra}"],
                   tsan=args.config == "tsan")
 

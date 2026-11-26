@@ -223,8 +223,12 @@ if(TARGET rayopdf_api AND NOT EMSCRIPTEN)
             message(FATAL_ERROR "RAYOPDF_STATIC is for Linux.")
         endif()
         # Relative relocations packed (DT_RELR): 53 KB less to read and apply at start. The static
-        # binary carries its own start code, so this needs no newer glibc where it runs.
-        target_link_options(rayopdf PRIVATE -static-pie $<$<CONFIG:Release>:-Wl,-z,pack-relative-relocs>)
+        # binary carries its own start code, so this needs no newer glibc where it runs. x86-64
+        # only: binutils 2.42's ld ignores the option for aarch64, with a warning.
+        target_link_options(rayopdf PRIVATE -static-pie)
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+            target_link_options(rayopdf PRIVATE $<$<CONFIG:Release>:-Wl,-z,pack-relative-relocs>)
+        endif()
         # glibc start-up work the static binary has no use for (static_start.cpp).
         target_sources(rayopdf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/cli/static_start.cpp)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)

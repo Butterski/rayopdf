@@ -32,6 +32,8 @@ python3 tools/dev.py image --name wheel       # rayopdf-wheel:1 (manylinux_2_28)
 python3 tools/dev.py test --config wheel      # librayopdf.so and the Python package (tests/verify_python.py)
 python3 tools/dev.py image --name wasm        # rayopdf-wasm:1 (Emscripten), once
 python3 tools/dev.py test --config wasm       # the WebAssembly module and the npm package (tests/verify_wasm.mjs)
+python3 tools/dev.py image --name cross       # rayopdf-cross:1 (GCC for aarch64, qemu-user, Clang + libc++), once
+python3 tools/dev.py test --config arm64      # the Linux arm64 build, its tests under qemu-aarch64-static
 python3 tools/fuzz.py replay                  # every fuzz target over the committed regressions
 python3 tools/check_repo.py                   # the repository's rules that need no build
 ```
@@ -42,7 +44,7 @@ every push). Changes to threads also pass `--config tsan`; changes to files, pat
 pass `--config windows`; changes to the C ABI or the Python package (`python/`) also pass
 `--config wheel` and `--config windows`; changes to the C ABI or the npm package
 (`packaging/npm/`) also pass `--config wasm`; changes to the add-on pass `--config ocr` (image
-`rayopdf-ocr:2`).
+`rayopdf-ocr:2`); changes to CMake or to code under a platform's `#if` also pass `--config arm64`.
 
 The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same image on pull
 requests and once a night when master changed: the release build without warnings, the tests in

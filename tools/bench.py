@@ -36,7 +36,7 @@ Usage:
 
   python3 tools/bench.py identical --a PATH --b PATH --input DIR [--input ...]
                                    [--set NAME=OPTIONS ...] [--a-opt=OPTION ...] [--b-opt=OPTION ...]
-                                   [--jobs N] [--cpus LIST]
+                                   [--jobs N] [--cpus LIST] [--b-emulator PROGRAM] [--image TAG]
       Output identity. Every PDF under the inputs (subfolders too) is converted by both binaries
       with each option set (`--convert DOC out.md --report OPTIONS`; default sets:
       none=--images=none and images=, which writes the image files); the exit code, the --report
@@ -45,6 +45,9 @@ Usage:
       example serial against page threads (--a-opt=--workers=1 --b-opt=--workers=4). Prints the
       counts and the first differences; exit code 1 when anything differs or a conversion ran into
       --timeout.
+      --b-emulator runs B through that program in the container, --image names the container's
+      image (default rayopdf-perf:1): a static Linux arm64 binary against the x64 one with
+      `--b-emulator qemu-aarch64-static --image rayopdf-cross:1` (`tools/dev.py image --name cross`).
 
   python3 tools/bench.py instr --bin NAME=PATH [--bin ...] --doc PDF [--doc ...]
                                [--opt=--images=none ...] [--n 5] [--cpus LIST]
@@ -243,7 +246,8 @@ def require_images(images: list[str]) -> None:
     if missing:
         hint = ("`python3 tools/dev.py image`, then `docker build -f docker/perf.Dockerfile -t rayopdf-perf:1 docker`"
                 if PERF_IMAGE in missing else "`python3 tools/dev.py image --name wasm`"
-                if WASM_IMAGE in missing else "`python3 tools/eval.py images`")
+                if WASM_IMAGE in missing else "`python3 tools/dev.py image --name cross`"
+                if "rayopdf-cross:1" in missing else "`python3 tools/eval.py images`")
         raise SystemExit(f"bench: no image {', '.join(missing)}; build with {hint}")
 
 
@@ -433,10 +437,10 @@ def tree(folder: str) -> list[str]:
 
 
 def inside_identical(job: dict) -> dict:
-    def convert(binary: str, doc: str, opts: list[str], folder: str) -> tuple[object, bytes]:
+    def convert(binary: str, doc: str, opts: list[str], folder: str, emulator: list[str]) -> tuple[object, bytes]:
         os.makedirs(folder)
         try:
-            res = subprocess.run([binary, "--convert", doc, "out.md", "--report"] + opts, cwd=folder,
+            res = subprocess.run(emulator + [binary, "--convert", doc, "out.md", "--report"] + opts, cwd=folder,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=job["timeout"])
         except subprocess.TimeoutExpired:
             return "timeout", b""
@@ -444,7 +448,9 @@ def inside_identical(job: dict) -> dict:
 
     def compare(index: int, doc: str, opts: list[str]) -> list[str]:
         folder = f"{SCRATCH}/identical/{index}"
-        a, b = (convert(job[side], doc, opts + job[f"{side}_opts"], f"{folder}/{side}") for side in ("a", "b"))
+        a, b = (convert(job[side], doc, opts + job[f"{side}_opts"], f"{folder}/{side}",
+                        job.get(f"{side}_emulator", []))
+                for side in ("a", "b"))
         what = []
         if "timeout" in (a[0], b[0]):
             what.append("timeout")
@@ -484,16 +490,18 @@ def cmd_identical(args) -> int:
             raise SystemExit(f"bench: --set takes NAME=OPTIONS, got {value!r}")
         sets.append((name, shlex.split(options)))
     job = {"task": "identical", "a": a, "b": b, "a_opts": args.a_opt, "b_opts": args.b_opt, "docs": docs,
-           "sets": sets, "jobs": args.jobs, "timeout": args.timeout}
-    result = measure_inside(job, args.cpus, [a, b] + [path for _, path in docs])
+           "sets": sets, "jobs": args.jobs, "timeout": args.timeout,
+           "b_emulator": [args.b_emulator] if args.b_emulator else []}
+    result = measure_inside(job, args.cpus, [a, b] + [path for _, path in docs], args.image)
     result.update({"command": "identical", "scope": scope(), "a": a, "b": b, "a_opts": args.a_opt,
                    "b_opts": args.b_opt, "inputs": args.input,
                    "sets": {name: options for name, options in sets}, "documents": len(docs)})
     sides = "".join(f", {side} adds {' '.join(opts)}" for side, opts in (("A", args.a_opt), ("B", args.b_opt))
                     if opts)
     text = (f"identical: {result['comparisons']} comparisons ({len(docs)} documents, option sets "
-            f"{', '.join(name for name, _ in sets)}{sides}) of exit code, --report record and output files: "
-            f"{result['differ']} differ")
+            f"{', '.join(name for name, _ in sets)}{sides}"
+            f"{f'; B through {args.b_emulator} in {args.image}' if args.b_emulator else ''}) of exit code, --report "
+            f"record and output files: {result['differ']} differ")
     for difference in result["differences"][:args.show]:
         text += f"\n  {difference['set']} {difference['document']}: {'; '.join(difference['differs'][:6])}"
     if result["differ"] > args.show:
@@ -1009,6 +1017,8 @@ def main() -> int:
     p.add_argument("--cpus", default=cpus_default, help="cpuset of the container (default: $RAYOPDF_DOCKER_CPUS)")
     p.add_argument("--timeout", type=int, default=300, help="seconds a conversion may take (default 300)")
     p.add_argument("--show", type=int, default=20, help="differences to print (default 20)")
+    p.add_argument("--b-emulator", metavar="PROGRAM", help="run B through this program (qemu-aarch64-static)")
+    p.add_argument("--image", default=PERF_IMAGE, help=f"the container's image (default {PERF_IMAGE})")
 
     p = add("instr", cmd_instr, "instructions a conversion under callgrind")
     binaries_and_options(p)

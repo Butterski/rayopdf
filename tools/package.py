@@ -13,13 +13,15 @@ Every entry has the same fixed time (SOURCE_DATE_EPOCH, else the time of the HEA
 SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
 
   rayopdf-VERSION-linux-x64-static.tar.gz   build/static/rayopdf (fully static, -static-pie)
+  rayopdf-VERSION-linux-arm64-static.tar.gz build/arm64/rayopdf (the same for aarch64, cross-built)
   rayopdf-VERSION-windows-x64.zip           build/windows/rayopdf.exe (MinGW-w64, static)
 
-The C++ API's archives (--only lib-linux|lib-windows) hold, in a folder of the archive's name,
+The C++ API's archives (--only lib-linux|lib-linux-arm64|lib-windows) hold, in a folder of the archive's name,
 include/rayopdf/rayopdf.h, lib/librayopdf.a (every module the command line links, merged by the
 build's rayopdf_bundle target), example.cpp and the core archives' documents and licences:
 
   rayopdf-lib-VERSION-linux-x64.tar.gz      build/static/librayopdf.a (GCC, x86-64 Linux)
+  rayopdf-lib-VERSION-linux-arm64.tar.gz    build/arm64/librayopdf.a (GCC, aarch64 Linux)
   rayopdf-lib-VERSION-windows-x64.zip       build/windows/librayopdf.a (MinGW-w64)
 
 The Python package's wheels (--only wheel-linux|wheel-windows; tools/build_wheel.py writes them):
@@ -54,6 +56,7 @@ the same folder again, so that it unpacks over the add-on; the add-on loads them
 
 Build the binaries first:
   python3 tools/dev.py build --config static
+  python3 tools/dev.py build --config arm64                           # in rayopdf-cross:1
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
   python3 tools/dev.py build --config wheel                           # in rayopdf-wheel:1
   python3 tools/dev.py build --config wasm                            # in rayopdf-wasm:1
@@ -62,12 +65,14 @@ Build the binaries first:
   python3 tools/dev.py --image rayopdf-ocr:2 run -- sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 
 Usage:
-  python3 tools/package.py [--linux build/static/rayopdf] [--windows build/windows/rayopdf.exe]
-                           [--lib-linux build/static/librayopdf.a] [--lib-windows build/windows/librayopdf.a]
+  python3 tools/package.py [--linux build/static/rayopdf] [--linux-arm64 build/arm64/rayopdf]
+                           [--windows build/windows/rayopdf.exe]
+                           [--lib-linux build/static/librayopdf.a] [--lib-linux-arm64 build/arm64/librayopdf.a]
+                           [--lib-windows build/windows/librayopdf.a]
                            [--wheel-linux build/wheel/librayopdf.so] [--wheel-windows build/windows/rayopdf.dll]
                            [--npm build/wasm/rayopdf-core.mjs] [--out build/dist]
-                           [--only linux|windows|lib-linux|lib-windows|wheel-linux|wheel-windows|npm|
-                                   ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
+                           [--only linux|linux-arm64|windows|lib-linux|lib-linux-arm64|lib-windows|wheel-linux|
+                                   wheel-windows|npm|ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
                            [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
@@ -178,22 +183,27 @@ def documents(version: str, repository: str, part: str) -> list[tuple[str, bytes
     return files
 
 
-def check_linux(binary: Path, version: str, program: str = "rayopdf") -> None:
+# ELF e_machine of the Linux archives: (name, `uname -m` of a host that runs it, the config that builds it).
+ELF_MACHINES = {62: ("x86-64", "x86_64", "static"), 183: ("aarch64", "aarch64", "arm64")}
+
+
+def check_linux(binary: Path, version: str, program: str = "rayopdf", machine: int = 62) -> None:
+    name, host, config = ELF_MACHINES[machine]
     data = binary.read_bytes()
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         raise SystemExit(f"package: {binary} is not a 64-bit little-endian ELF file")
     e_type, e_machine = struct.unpack_from("<HH", data, 16)
     e_phoff = struct.unpack_from("<Q", data, 32)[0]
     e_phentsize, e_phnum = struct.unpack_from("<HH", data, 54)
-    if e_machine != 62:
-        raise SystemExit(f"package: {binary} is not an x86-64 binary")
+    if e_machine != machine:
+        raise SystemExit(f"package: {binary} is not an {name} binary")
     # A static-pie binary keeps PT_DYNAMIC for its own relocations, but has no PT_INTERP.
     for i in range(e_phnum):
         if struct.unpack_from("<I", data, e_phoff + i * e_phentsize)[0] == 3:  # PT_INTERP
-            raise SystemExit(f"package: {binary} has an interpreter: build it with --config static")
+            raise SystemExit(f"package: {binary} has an interpreter: build it with --config {config}")
     if e_type != 3:
         raise SystemExit(f"package: {binary} is not position-independent (-static-pie)")
-    if sys.platform.startswith("linux") and os.uname().machine == "x86_64":
+    if sys.platform.startswith("linux") and os.uname().machine == host:
         out = subprocess.run([str(binary), "--version"], capture_output=True, text=True).stdout.strip()
         # rayopdf-ocr appends its engine in parentheses: "rayopdf-ocr 0.0.9 (pp-ocrv6 small, ...)".
         if out.split(" (")[0] != f"{program} {version}":
@@ -280,8 +290,8 @@ def check_shared_linux(library: Path) -> None:
             raise SystemExit(f"package: {library} needs {name.decode()}: build it with --config wheel")
 
 
-def check_library(library: Path, windows: bool) -> None:
-    """A static library whose objects are x86-64 ELF (Linux) or x86-64 COFF (MinGW-w64)."""
+def check_library(library: Path, windows: bool, machine: int = 62) -> None:
+    """A static library whose objects are ELF of `machine` (Linux) or x86-64 COFF (MinGW-w64)."""
     data = library.read_bytes()
     if data[:8] != b"!<arch>\n":
         raise SystemExit(f"package: {library} is not a static library (ar archive)")
@@ -294,11 +304,12 @@ def check_library(library: Path, windows: bool) -> None:
             if windows:
                 ok = member[:2] == b"\x64\x86"
             else:
-                ok = member[:4] == b"\x7fELF" and struct.unpack_from("<H", member, 18)[0] == 62
+                ok = member[:4] == b"\x7fELF" and struct.unpack_from("<H", member, 18)[0] == machine
             if not ok:
-                platform = "an x86-64 COFF" if windows else "an x86-64 ELF"
+                platform = "an x86-64 COFF" if windows else f"an {ELF_MACHINES[machine][0]} ELF"
+                config = "windows" if windows else ELF_MACHINES[machine][2]
                 raise SystemExit(f"package: {library} holds {name.decode(errors='replace')}, not {platform} object: "
-                                 f"build it with --config {'windows' if windows else 'static'}")
+                                 f"build it with --config {config}")
             return
         at += 60 + size + (size & 1)
     raise SystemExit(f"package: {library} holds no object")
@@ -394,13 +405,16 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
     parser.add_argument("--linux", default="build/static/rayopdf", help="the linux-x64-static binary")
+    parser.add_argument("--linux-arm64", default="build/arm64/rayopdf", help="the linux-arm64-static binary")
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
-    parser.add_argument("--only", choices=("linux", "windows", "lib-linux", "lib-windows", "wheel-linux",
-                                           "wheel-windows", "npm", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
-                                           "ocr-scripts-windows"),
+    parser.add_argument("--only", choices=("linux", "linux-arm64", "windows", "lib-linux", "lib-linux-arm64",
+                                           "lib-windows", "wheel-linux", "wheel-windows", "npm", "ocr-linux",
+                                           "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"),
                         help="package one archive")
     parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
+    parser.add_argument("--lib-linux-arm64", default="build/arm64/librayopdf.a",
+                        help="the linux-arm64 C++ API library")
     parser.add_argument("--lib-windows", default="build/windows/librayopdf.a", help="the windows-x64 C++ API library")
     parser.add_argument("--wheel-linux", default="build/wheel/librayopdf.so",
                         help="the manylinux_2_28 wheel's shared library (--config wheel)")
@@ -422,24 +436,27 @@ def main() -> int:
     out = (REPO / args.out) if not Path(args.out).is_absolute() else Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     made = []
-    if args.only in (None, "linux"):
-        binary = REPO / args.linux if not Path(args.linux).is_absolute() else Path(args.linux)
-        check_linux(binary, version)
-        name = f"rayopdf-{version}-linux-x64-static"
-        tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs["core"], mtime)
-        made.append(out / f"{name}.tar.gz")
+    for part, arch, given, machine in (("linux", "x64", args.linux, 62), ("linux-arm64", "arm64", args.linux_arm64, 183)):
+        if args.only in (None, part):
+            binary = REPO / given if not Path(given).is_absolute() else Path(given)
+            check_linux(binary, version, machine=machine)
+            name = f"rayopdf-{version}-linux-{arch}-static"
+            tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs["core"], mtime)
+            made.append(out / f"{name}.tar.gz")
     if args.only in (None, "windows"):
         binary = REPO / args.windows if not Path(args.windows).is_absolute() else Path(args.windows)
         check_windows(binary)
         name = f"rayopdf-{version}-windows-x64"
         zip_archive(out / f"{name}.zip", name, [("rayopdf.exe", binary.read_bytes(), 0o755)] + docs["core"], mtime)
         made.append(out / f"{name}.zip")
-    if args.only in (None, "lib-linux"):
-        library = REPO / args.lib_linux if not Path(args.lib_linux).is_absolute() else Path(args.lib_linux)
-        check_library(library, False)
-        name = f"rayopdf-lib-{version}-linux-x64"
-        tar_gz(out / f"{name}.tar.gz", name, lib_entries(library, docs["core"]), mtime)
-        made.append(out / f"{name}.tar.gz")
+    for part, arch, given, machine in (("lib-linux", "x64", args.lib_linux, 62),
+                                       ("lib-linux-arm64", "arm64", args.lib_linux_arm64, 183)):
+        if args.only in (None, part):
+            library = REPO / given if not Path(given).is_absolute() else Path(given)
+            check_library(library, False, machine)
+            name = f"rayopdf-lib-{version}-linux-{arch}"
+            tar_gz(out / f"{name}.tar.gz", name, lib_entries(library, docs["core"]), mtime)
+            made.append(out / f"{name}.tar.gz")
     if args.only in (None, "lib-windows"):
         library = REPO / args.lib_windows if not Path(args.lib_windows).is_absolute() else Path(args.lib_windows)
         check_library(library, True)
