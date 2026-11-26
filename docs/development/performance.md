@@ -1888,7 +1888,7 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 
 |Command|Measures|In this document|
 |---|---|---|
-|`bench.py identical`|two binaries over every PDF under folders, per option set: exit code, `--report` record without `ms`, every output file|G-bytes|
+|`bench.py identical`|two binaries over every PDF under folders, per option set: exit code, `--report` record without `ms`, every output file; `--a-opt`/`--b-opt` add options to one side, so one binary is compared with itself (`--a-opt=--workers=1 --b-opt=--workers=4`: serial against page threads, which `--batch --workers` never runs)|G-bytes, page threads|
 |`bench.py instr`|instructions a conversion under callgrind, `(I(2N) - I(N)) / N`, and the change|G-warm, the steps' tables|
 |`bench.py warm`|`--bench` best of 3 per document, the binaries alternating: ms/page median, p95, mean, pages/s|release bar, warm|
 |`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults; with `--per-doc` also each document's figures and the ten slowest|release bar, fresh|
@@ -1902,6 +1902,8 @@ python3 tools/dev.py build --config static --dir perf-static   # then copy build
 E=benchmark-output/eval; O=$E/data/odl-bench/pdfs
 python3 tools/bench.py identical --a BASE --b NEW --input $E/corpus --input $O --set none=--images=none \
     --set images= --set nostruct=--no-structure
+python3 tools/bench.py identical --a NEW --b NEW --a-opt=--workers=1 --b-opt=--workers=4 \
+    --input MULTIPAGE-PDFS --set none=--images=none --set images=
 python3 tools/bench.py instr --bin base=BASE --bin new=NEW --opt=--images=none --doc FIXTURE.pdf --doc ...
 python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
 python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none --per-doc

@@ -35,12 +35,16 @@ Usage:
       documents slowest for the first binary.
 
   python3 tools/bench.py identical --a PATH --b PATH --input DIR [--input ...]
-                                   [--set NAME=OPTIONS ...] [--jobs N] [--cpus LIST]
+                                   [--set NAME=OPTIONS ...] [--a-opt=OPTION ...] [--b-opt=OPTION ...]
+                                   [--jobs N] [--cpus LIST]
       Output identity. Every PDF under the inputs (subfolders too) is converted by both binaries
       with each option set (`--convert DOC out.md --report OPTIONS`; default sets:
       none=--images=none and images=, which writes the image files); the exit code, the --report
-      record without its "ms" and every file written are compared. Prints the counts and the
-      first differences; exit code 1 when anything differs or a conversion ran into --timeout.
+      record without its "ms" and every file written are compared. --a-opt and --b-opt add options
+      to one side only, after the set's, so that one binary can be compared with itself, for
+      example serial against page threads (--a-opt=--workers=1 --b-opt=--workers=4). Prints the
+      counts and the first differences; exit code 1 when anything differs or a conversion ran into
+      --timeout.
 
   python3 tools/bench.py instr --bin NAME=PATH [--bin ...] --doc PDF [--doc ...]
                                [--opt=--images=none ...] [--n 5] [--cpus LIST]
@@ -423,7 +427,7 @@ def inside_identical(job: dict) -> dict:
 
     def compare(index: int, doc: str, opts: list[str]) -> list[str]:
         folder = f"{SCRATCH}/identical/{index}"
-        a, b = (convert(job[side], doc, opts, f"{folder}/{side}") for side in ("a", "b"))
+        a, b = (convert(job[side], doc, opts + job[f"{side}_opts"], f"{folder}/{side}") for side in ("a", "b"))
         what = []
         if "timeout" in (a[0], b[0]):
             what.append("timeout")
@@ -462,13 +466,16 @@ def cmd_identical(args) -> int:
         if not sep or not name:
             raise SystemExit(f"bench: --set takes NAME=OPTIONS, got {value!r}")
         sets.append((name, shlex.split(options)))
-    job = {"task": "identical", "a": a, "b": b, "docs": docs, "sets": sets, "jobs": args.jobs,
-           "timeout": args.timeout}
+    job = {"task": "identical", "a": a, "b": b, "a_opts": args.a_opt, "b_opts": args.b_opt, "docs": docs,
+           "sets": sets, "jobs": args.jobs, "timeout": args.timeout}
     result = measure_inside(job, args.cpus, [a, b] + [path for _, path in docs])
-    result.update({"command": "identical", "scope": scope(), "a": a, "b": b, "inputs": args.input,
+    result.update({"command": "identical", "scope": scope(), "a": a, "b": b, "a_opts": args.a_opt,
+                   "b_opts": args.b_opt, "inputs": args.input,
                    "sets": {name: options for name, options in sets}, "documents": len(docs)})
+    sides = "".join(f", {side} adds {' '.join(opts)}" for side, opts in (("A", args.a_opt), ("B", args.b_opt))
+                    if opts)
     text = (f"identical: {result['comparisons']} comparisons ({len(docs)} documents, option sets "
-            f"{', '.join(name for name, _ in sets)}) of exit code, --report record and output files: "
+            f"{', '.join(name for name, _ in sets)}{sides}) of exit code, --report record and output files: "
             f"{result['differ']} differ")
     for difference in result["differences"][:args.show]:
         text += f"\n  {difference['set']} {difference['document']}: {'; '.join(difference['differs'][:6])}"
@@ -820,6 +827,10 @@ def main() -> int:
     p.add_argument("--input", action="append", required=True, help="a folder of PDFs, subfolders included")
     p.add_argument("--set", action="append", metavar="NAME=OPTIONS",
                    help="an option set under a name (default: none=--images=none and images=)")
+    p.add_argument("--a-opt", action="append", default=[], metavar="OPTION",
+                   help="an option for --a only, after the set's (repeat for more; write --a-opt=--workers=1)")
+    p.add_argument("--b-opt", action="append", default=[], metavar="OPTION",
+                   help="an option for --b only, after the set's (repeat for more)")
     p.add_argument("--jobs", type=int, default=0, help="comparisons at once (default: one a CPU)")
     p.add_argument("--cpus", default=cpus_default, help="cpuset of the container (default: $RAYOPDF_DOCKER_CPUS)")
     p.add_argument("--timeout", type=int, default=300, help="seconds a conversion may take (default 300)")
