@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Core tests of src/common: the --serve --json request reader, the line reader, the batch record
-// and the worker threads (codes 950-999), the batch modes' file paths (codes 1680-1699) and the
-// run-time choice of kernels (codes 1650-1679).
+// and the worker threads (codes 950-999), the batch modes' file paths (codes 1680-1699), the
+// run-time choice of kernels (codes 1650-1679) and JSON strings against their byte-by-byte
+// definition (codes 2050-2059).
 #include "check.h"
 #include "test_files.h"
 #include "common/batch.h"
 #include "common/cpu.h"
 #include "common/file.h"
 #include "common/serve.h"
+#include "common/utf8.h"
 
 #include <atomic>
 #include <cstring>
@@ -153,6 +155,101 @@ void TestRecords() {
     out.clear();
     Batch::AppendRecord(out, answer);
     RAYOPDF_CHECK(out.size() > 20 && out.compare(out.size() - 21, 21, ",\"markdown\":\"# T\\n\"}\n") == 0, 986);
+}
+
+// AppendJsonString's definition, one byte at a time: what the run-copying version must write.
+void JsonStringByBytes(std::string& out, std::string_view text) {
+    static const char kHex[] = "0123456789abcdef";
+    out.push_back('"');
+    size_t at = 0;
+    while (at < text.size()) {
+        const unsigned char byte = static_cast<unsigned char>(text[at]);
+        if (byte >= 0x80) {
+            uint32_t codePoint = 0;
+            size_t length = 0;
+            Utf8::Decode(text, at, codePoint, length);
+            if (length == 1) {
+                out += "\\ufffd";
+            } else {
+                out.append(text.data() + at, length);
+            }
+            at += length;
+            continue;
+        }
+        switch (byte) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (byte < 0x20 || byte == 0x7F) {
+                    out += "\\u00";
+                    out.push_back(kHex[byte >> 4]);
+                    out.push_back(kHex[byte & 15]);
+                } else {
+                    out.push_back(static_cast<char>(byte));
+                }
+        }
+        ++at;
+    }
+    out.push_back('"');
+}
+
+bool SameJsonString(std::string_view text) {
+    std::string fast = "x";
+    std::string slow = "x";
+    Batch::AppendJsonString(fast, text);
+    JsonStringByBytes(slow, text);
+    return fast == slow;
+}
+
+// Every byte value and every pair of them, alone and between plain text; truncated, overlong,
+// surrogate and too large sequences at the end and inside; long random texts.
+void TestJsonStrings() {
+    bool same = SameJsonString("");
+    for (unsigned a = 0; a < 256; ++a) {
+        const char one[] = {static_cast<char>(a)};
+        const char inside[] = {'a', static_cast<char>(a), 'z'};
+        same = same && SameJsonString(std::string_view(one, 1)) && SameJsonString(std::string_view(inside, 3));
+    }
+    RAYOPDF_CHECK(same, 2050);
+    for (unsigned a = 0; a < 256 && same; ++a) {
+        for (unsigned b = 0; b < 256 && same; ++b) {
+            const char pair[] = {'q', static_cast<char>(a), static_cast<char>(b), 'r'};
+            same = SameJsonString(std::string_view(pair + 1, 2)) && SameJsonString(std::string_view(pair, 4)) &&
+                   SameJsonString(std::string_view(pair, 3)) && SameJsonString(std::string_view(pair + 1, 3));
+        }
+    }
+    RAYOPDF_CHECK(same, 2051);
+    static const char* const kSequences[] = {
+        "\xC3\xA9",         "\xE2\x82\xAC",     "\xF0\x9F\x98\x80", "\xF4\x8F\xBF\xBF",  // well formed
+        "\xC0\x80",         "\xC1\xBF",         "\xE0\x80\x80",     "\xE0\x9F\xBF",      // overlong
+        "\xF0\x80\x80\x80", "\xF0\x8F\xBF\xBF",                                          // overlong
+        "\xED\xA0\x80",     "\xED\xBF\xBF",     "\xED\x9F\xBF",                           // surrogates, edge
+        "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\xF8\x88\x80\x80\x80", "\xFF\xFE",       // too large, invalid
+        "\xE2\x82",         "\xF0\x9F\x98",     "\xF0\x9F",         "\xC3",               // truncated
+        "\xE2\x28\xA1",     "\xC3\x28",         "\xF0\x9F\x28\x80", "\x80\x80\xBF",       // broken
+    };
+    for (const char* sequence : kSequences) {
+        const std::string text(sequence);
+        same = same && SameJsonString(text) && SameJsonString("ab" + text) && SameJsonString(text + "\"cd") &&
+               SameJsonString(text + text) && SameJsonString("\n" + text + "\\");
+    }
+    RAYOPDF_CHECK(same, 2052);
+    uint32_t state = 12345;
+    const auto next = [&] { return state = state * 1664525u + 1013904223u; };
+    for (int round = 0; round < 3000 && same; ++round) {
+        std::string text(next() % 300, '\0');
+        for (char& c : text) {
+            const uint32_t value = next() >> 8;
+            // Mostly plain text, with escapes, continuation bytes and leading bytes mixed in.
+            static const char kMix[] = {'"', '\\', '\n', '\x01', '\x7F', '\x80', '\xBF', '\xC3', '\xE2', '\xF0'};
+            c = (value & 3) == 0 ? kMix[(value >> 2) % sizeof kMix] : static_cast<char>((value >> 2) & 0xFF);
+        }
+        same = SameJsonString(text);
+    }
+    RAYOPDF_CHECK(same, 2053);
 }
 
 void TestWorkers() {
@@ -306,6 +403,7 @@ int main() {
     TestRequests();
     TestLineReader();
     TestRecords();
+    TestJsonStrings();
     TestWorkers();
     TestPaths();
     TestBufferedInput();

@@ -41,22 +41,27 @@ void AppendNumber(std::string& out, const char* key, uint64_t value) {
 void AppendJsonString(std::string& out, std::string_view text) {
     static const char kHex[] = "0123456789abcdef";
     out.push_back('"');
+    // Bytes that need no escape (printable ASCII other than quote and backslash, and whole UTF-8
+    // sequences) are copied a run at a time, from `run` up to the byte that needs one.
+    size_t run = 0;
     size_t at = 0;
     while (at < text.size()) {
         const unsigned char byte = static_cast<unsigned char>(text[at]);
+        if (byte >= 0x20 && byte < 0x7F && byte != '"' && byte != '\\') {
+            ++at;
+            continue;
+        }
         if (byte >= 0x80) {
             uint32_t codePoint = 0;
             size_t length = 0;
             Utf8::Decode(text, at, codePoint, length);
             // Decode reads a malformed byte as U+FFFD of length 1; U+FFFD itself is 3 bytes long.
-            if (length == 1) {
-                out += "\\ufffd";
-            } else {
-                out.append(text.data() + at, length);
+            if (length > 1) {
+                at += length;
+                continue;
             }
-            at += length;
-            continue;
         }
+        out.append(text.data() + run, at - run);
         switch (byte) {
             case '"': out += "\\\""; break;
             case '\\': out += "\\\\"; break;
@@ -64,16 +69,17 @@ void AppendJsonString(std::string& out, std::string_view text) {
             case '\r': out += "\\r"; break;
             case '\t': out += "\\t"; break;
             default:
-                if (byte < 0x20 || byte == 0x7F) {
+                if (byte >= 0x80) {
+                    out += "\\ufffd";
+                } else {
                     out += "\\u00";
                     out.push_back(kHex[byte >> 4]);
                     out.push_back(kHex[byte & 15]);
-                } else {
-                    out.push_back(static_cast<char>(byte));
                 }
         }
-        ++at;
+        run = ++at;
     }
+    out.append(text.data() + run, at - run);
     out.push_back('"');
 }
 

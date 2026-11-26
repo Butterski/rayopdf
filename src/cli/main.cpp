@@ -333,8 +333,8 @@ double MillisecondsSince(Clock::time_point start) {
 // glibc otherwise makes writable a few pages at a time (one mprotect each), is writable from the
 // start (a 54-page document at the automatic thread count: 151 -> 8 mprotect calls, 25 -> 6 brk;
 // the 27 documents of the pages measurement: 3.7 % fewer page faults, 1 % more on one thread).
-// Pages nothing writes to are never resident. --batch and --bench have settings of their own
-// (SetBatchAllocator); --serve and --inspect have the C library's.
+// Pages nothing writes to are never resident. --batch, --bench and --serve have settings of their
+// own (SetBatchAllocator); --inspect has the C library's.
 void SetOneShotAllocator() {
 #if defined(__GLIBC__)
     mallopt(M_MMAP_THRESHOLD, 1 << 20);
@@ -606,13 +606,14 @@ void BatchDocument(BatchJob& job, const DocumentOptions& document, const BatchOp
     record.milliseconds = MillisecondsSince(start);
 }
 
-// glibc's allocator for a run of documents (--batch, and --bench, which measures what a batch
-// worker does): blocks of up to 32 MiB from the heap rather than each from a mapping of its own,
-// and freed memory at the heap's top kept up to 256 MiB rather than given back to the kernel
+// glibc's allocator for a run of documents (--batch, --serve, and --bench, which measures what a
+// batch worker does): blocks of up to 32 MiB from the heap rather than each from a mapping of its
+// own, and freed memory at the heap's top kept up to 256 MiB rather than given back to the kernel
 // after each document, so that the next document does not map and fault the same pages in again
 // (odl: 30 % fewer page faults; scanned pages with images written: 71 % less system time). Peak
-// memory stays that of the largest document. Not for --serve: over 1,000 documents its time was
-// the same within noise and the process held 705 MiB rather than 525 MiB at the end.
+// memory stays that of the largest document. A --serve session over the 5,886 test documents
+// ends holding 566.2 MiB against 566.1 with the C library's settings, peak 579.7 MiB both, with
+// 29.4 page faults a request against 32.6 (2026-11-26).
 void SetBatchAllocator() {
 #if defined(__GLIBC__)
     mallopt(M_MMAP_THRESHOLD, 32 << 20);
@@ -711,7 +712,8 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
 }
 
 // One serve request into `record`: the session's flags with the request's `args` over them. `ocr`
-// is the worker's add-on, used unless the request names another one.
+// is the worker's add-on, used unless the request names another one. The Markdown or HTML of an
+// answer moves from `markdown` into the record (ServeAnswer moves it back).
 void ServeRequest(const Serve::Request& request, const DocumentOptions& session, std::string& markdown,
                   Batch::Record& record, Layout::OcrSession& ocr) {
     const Clock::time_point start = Clock::now();
@@ -749,13 +751,27 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
             record.chunks.push_back(']');
         } else if (options.format == Layout::OutputFormat::Inspect) {
             record.hasHtml = true;
-            record.html = markdown;
+            record.html.swap(markdown);
         } else {
             record.hasMarkdown = true;
-            record.markdown = markdown;
+            record.markdown.swap(markdown);
         }
     }
     record.milliseconds = MillisecondsSince(start);
+}
+
+// The answer line of one serve request; `markdown`, the worker's buffer, gets its storage back
+// from the record once the line is made.
+std::string ServeAnswer(const Serve::Request& request, const DocumentOptions& session, std::string& markdown,
+                        Layout::OcrSession& ocr) {
+    Batch::Record record;
+    record.id = request.id;
+    ServeRequest(request, session, markdown, record, ocr);
+    std::string line;
+    Batch::AppendRecord(line, record);
+    if (record.hasMarkdown) markdown.swap(record.markdown);
+    if (record.hasHtml) markdown.swap(record.html);
+    return line;
 }
 
 std::string ServeError(const std::string& id, const std::string& error) {
@@ -811,12 +827,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
                 queue.tasks.pop_front();
             }
             queue.changed.notify_all();
-            Batch::Record record;
-            record.id = task.request.id;
-            ServeRequest(task.request, session, markdown, record, ocr);
-            std::string line;
-            Batch::AppendRecord(line, record);
-            answers.Put(task.index, std::move(line));
+            answers.Put(task.index, ServeAnswer(task.request, session, markdown, ocr));
         }
     };
     if (workers > 1) {
@@ -851,12 +862,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
             continue;
         }
         if (workers <= 1) {
-            Batch::Record record;
-            record.id = request.id;
-            ServeRequest(request, session, markdown, record, ocr);
-            std::string answer;
-            Batch::AppendRecord(answer, record);
-            answers.Put(index++, std::move(answer));
+            answers.Put(index++, ServeAnswer(request, session, markdown, ocr));
             continue;
         }
         {
@@ -997,6 +1003,7 @@ int main(int argc, char** argv) {
         case Mode::Serve:
             if (!json) return Usage("--serve needs --json");
             if (report) return Usage("--serve --json takes no --report: its answers are the records");
+            SetBatchAllocator();
             return RunServe(document, batch.workersGiven ? batch.workers : 1);
         case Mode::Features: return WriteFeatures(featureKind, input, output, document);
         case Mode::Bench:
