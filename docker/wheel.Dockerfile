@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Wheel image of RayoPDF: manylinux_2_28 (AlmaLinux 8, glibc 2.28) with its GCC toolset (GCC 14),
 # CMake, Python and objdump, plus Ninja. Libraries built here need no glibc newer than 2.28, which
-# the manylinux_2_28_x86_64 wheel promises (tests/verify_python.py checks it). tools/dev.py builds
-# it (`image --name wheel`, tag rayopdf-wheel:1) and runs the `wheel` config in it.
-FROM quay.io/pypa/manylinux_2_28_x86_64@sha256:9555ba6c479fa69a2aa80ad1dc57154a60d562b19df159361d9379a02beb1e36
+# the manylinux_2_28 wheels promise (tests/verify_python.py checks it). The base is the image of
+# the machine that builds it (BuildKit's TARGETARCH): x86_64 for the manylinux_2_28_x86_64 wheel,
+# aarch64 (on an arm64 machine, the CI's ubuntu-24.04-arm) for manylinux_2_28_aarch64; both are
+# pinned by digest to the release 2026.11.07-1. tools/dev.py builds it (`image --name wheel`, tag
+# rayopdf-wheel:1) and runs the `wheel` config in it.
+FROM quay.io/pypa/manylinux_2_28_x86_64@sha256:9555ba6c479fa69a2aa80ad1dc57154a60d562b19df159361d9379a02beb1e36 AS base-amd64
+FROM quay.io/pypa/manylinux_2_28_aarch64@sha256:cb37f0d66c8a75abb93cf6085cad1f1427cd7208f0c0fc48359bb1eea9924f21 AS base-arm64
+FROM base-${TARGETARCH}
 
 RUN /opt/python/cp312-cp312/bin/python -m pip install --no-cache-dir ninja==1.13.2 \
  && ln -s /opt/python/cp312-cp312/bin/ninja /usr/local/bin/ninja \

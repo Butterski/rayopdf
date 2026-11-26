@@ -8,18 +8,20 @@ langchain and llama-index), WHEEL, RECORD (SHA-256 of every file), LICENSE, NOTI
 archives' third_party/licenses/. Entries are sorted and carry one fixed time (SOURCE_DATE_EPOCH,
 else the time of the HEAD commit), so the same library gives the same bytes.
 
-  rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl   build/wheel/librayopdf.so
-  rayopdf-VERSION-py3-none-win_amd64.whl               build/windows/rayopdf.dll
+  rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl    build/wheel/librayopdf.so
+  rayopdf-VERSION-py3-none-manylinux_2_28_aarch64.whl   build/wheel-arm64/librayopdf.so
+  rayopdf-VERSION-py3-none-win_amd64.whl                build/windows/rayopdf.dll
 
 Build the libraries first:
   python3 tools/dev.py build --config wheel      # in rayopdf-wheel:1 (manylinux_2_28)
+  python3 tools/dev.py build --config wheel --dir wheel-arm64   # the same on an arm64 machine
   python3 tools/dev.py build --config windows
 
-tools/package.py builds the same wheels (parts wheel-linux and wheel-windows) beside the release
-archives and lists them in SHA256SUMS.
+tools/package.py builds the same wheels (parts wheel-linux, wheel-linux-arm64 and wheel-windows)
+beside the release archives and lists them in SHA256SUMS.
 
 Usage:
-  python3 tools/build_wheel.py --platform linux|windows [--library PATH] [--out build/dist]
+  python3 tools/build_wheel.py --platform linux|linux-arm64|windows [--library PATH] [--out build/dist]
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ REPO = Path(__file__).resolve().parent.parent
 # Platform: (wheel platform tag, library file name in rayopdf/_lib/, default library path).
 PLATFORMS = {
     "linux": ("manylinux_2_28_x86_64", "librayopdf.so", "build/wheel/librayopdf.so"),
+    "linux-arm64": ("manylinux_2_28_aarch64", "librayopdf.so", "build/wheel-arm64/librayopdf.so"),
     "windows": ("win_amd64", "rayopdf.dll", "build/windows/rayopdf.dll"),
 }
 SUMMARY = "PDF to Markdown, JSON and chunks for retrieval, in process: RayoPDF's converter"
@@ -113,6 +116,8 @@ def main() -> int:
     library = library if library.is_absolute() else REPO / library
     if args.platform == "linux":
         package.check_shared_linux(library)
+    elif args.platform == "linux-arm64":
+        package.check_shared_linux(library, 183)
     else:
         package.check_windows(library, dll=True)
     version = (REPO / "VERSION").read_text(encoding="utf-8").strip()

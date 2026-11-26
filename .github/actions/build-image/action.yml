@@ -2,9 +2,9 @@
 name: Build image
 description: >-
   Build docker/build.Dockerfile as rayopdf-build:2, the image tools/dev.py runs every build in,
-  and load it into the runner's Docker. Its layers are kept in the GitHub Actions cache (scope
-  rayopdf-build): a run on the default branch fills it, every other run reads it, and a changed
-  Dockerfile rebuilds.
+  for the runner's architecture, and load it into the runner's Docker. Its layers are kept in the
+  GitHub Actions cache (scope rayopdf-build on x64, rayopdf-build-arm64 on arm64): a run on the
+  default branch fills it, every other run reads it, and a changed Dockerfile rebuilds.
 
 runs:
   using: composite
@@ -20,5 +20,5 @@ runs:
         tags: rayopdf-build:2
         load: true
         provenance: false
-        cache-from: type=gha,scope=rayopdf-build
-        cache-to: type=gha,scope=rayopdf-build,mode=max
+        cache-from: type=gha,scope=rayopdf-build${{ runner.arch == 'ARM64' && '-arm64' || '' }}
+        cache-to: type=gha,scope=rayopdf-build${{ runner.arch == 'ARM64' && '-arm64' || '' }},mode=max

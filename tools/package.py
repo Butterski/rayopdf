@@ -24,12 +24,14 @@ build's rayopdf_bundle target), example.cpp and the core archives' documents and
   rayopdf-lib-VERSION-linux-arm64.tar.gz    build/arm64/librayopdf.a (GCC, aarch64 Linux)
   rayopdf-lib-VERSION-windows-x64.zip       build/windows/librayopdf.a (MinGW-w64)
 
-The Python package's wheels (--only wheel-linux|wheel-windows; tools/build_wheel.py writes them):
+The Python package's wheels (--only wheel-linux|wheel-linux-arm64|wheel-windows; tools/build_wheel.py writes them):
 python/rayopdf with the C ABI's shared library in rayopdf/_lib/, the core archives' documents
 in the .dist-info folder:
 
-  rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl   build/wheel/librayopdf.so (glibc <= 2.28)
-  rayopdf-VERSION-py3-none-win_amd64.whl               build/windows/rayopdf.dll (MinGW-w64)
+  rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl    build/wheel/librayopdf.so (glibc <= 2.28)
+  rayopdf-VERSION-py3-none-manylinux_2_28_aarch64.whl   build/wheel-arm64/librayopdf.so (the same, built
+                                                        natively on an arm64 machine)
+  rayopdf-VERSION-py3-none-win_amd64.whl                build/windows/rayopdf.dll (MinGW-w64)
 
 The npm package (--only npm), in npm pack's layout (one folder package/): packaging/npm's
 package.json (its version set from VERSION), rayopdf.js and rayopdf.d.ts, the WebAssembly module
@@ -69,10 +71,12 @@ Usage:
                            [--windows build/windows/rayopdf.exe]
                            [--lib-linux build/static/librayopdf.a] [--lib-linux-arm64 build/arm64/librayopdf.a]
                            [--lib-windows build/windows/librayopdf.a]
-                           [--wheel-linux build/wheel/librayopdf.so] [--wheel-windows build/windows/rayopdf.dll]
+                           [--wheel-linux build/wheel/librayopdf.so] [--wheel-linux-arm64 build/wheel-arm64/librayopdf.so]
+                           [--wheel-windows build/windows/rayopdf.dll]
                            [--npm build/wasm/rayopdf-core.mjs] [--out build/dist]
                            [--only linux|linux-arm64|windows|lib-linux|lib-linux-arm64|lib-windows|wheel-linux|
-                                   wheel-windows|npm|ocr-linux|ocr-windows|ocr-scripts-linux|ocr-scripts-windows]
+                                   wheel-linux-arm64|wheel-windows|npm|ocr-linux|ocr-windows|ocr-scripts-linux|
+                                   ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
                            [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
@@ -273,15 +277,15 @@ def check_windows(binary: Path, dll: bool = False) -> None:
 MAX_GLIBC = (2, 28)
 
 
-def check_shared_linux(library: Path) -> None:
-    """librayopdf.so: an x86-64 ELF shared object needing no glibc newer than MAX_GLIBC and no
+def check_shared_linux(library: Path, machine: int = 62) -> None:
+    """librayopdf.so: an ELF shared object of `machine` needing no glibc newer than MAX_GLIBC and no
     libstdc++ or libgcc_s (both linked in)."""
     data = library.read_bytes()
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
         raise SystemExit(f"package: {library} is not a 64-bit little-endian ELF file")
     e_type, e_machine = struct.unpack_from("<HH", data, 16)
-    if e_type != 3 or e_machine != 62:
-        raise SystemExit(f"package: {library} is not an x86-64 shared object")
+    if e_type != 3 or e_machine != machine:
+        raise SystemExit(f"package: {library} is not an {ELF_MACHINES[machine][0]} shared object")
     versions = {(int(a), int(b)) for a, b in re.findall(rb"GLIBC_(\d+)\.(\d+)", data)}
     if not versions or max(versions) > MAX_GLIBC:
         raise SystemExit(f"package: {library} needs glibc {max(versions, default=None)}: build it with --config wheel")
@@ -409,8 +413,8 @@ def main() -> int:
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
     parser.add_argument("--only", choices=("linux", "linux-arm64", "windows", "lib-linux", "lib-linux-arm64",
-                                           "lib-windows", "wheel-linux", "wheel-windows", "npm", "ocr-linux",
-                                           "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"),
+                                           "lib-windows", "wheel-linux", "wheel-linux-arm64", "wheel-windows", "npm",
+                                           "ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"),
                         help="package one archive")
     parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
     parser.add_argument("--lib-linux-arm64", default="build/arm64/librayopdf.a",
@@ -418,6 +422,8 @@ def main() -> int:
     parser.add_argument("--lib-windows", default="build/windows/librayopdf.a", help="the windows-x64 C++ API library")
     parser.add_argument("--wheel-linux", default="build/wheel/librayopdf.so",
                         help="the manylinux_2_28 wheel's shared library (--config wheel)")
+    parser.add_argument("--wheel-linux-arm64", default="build/wheel-arm64/librayopdf.so",
+                        help="the manylinux_2_28_aarch64 wheel's shared library (--config wheel on arm64)")
     parser.add_argument("--wheel-windows", default="build/windows/rayopdf.dll", help="the win_amd64 wheel's DLL")
     parser.add_argument("--npm", default="build/wasm/rayopdf-core.mjs",
                         help="the npm package's WebAssembly module (rayopdf-core.wasm beside it; --config wasm)")
@@ -464,11 +470,14 @@ def main() -> int:
         zip_archive(out / f"{name}.zip", name, lib_entries(library, docs["core"]), mtime)
         made.append(out / f"{name}.zip")
     for part, platform, given in (("wheel-linux", "linux", args.wheel_linux),
+                                  ("wheel-linux-arm64", "linux-arm64", args.wheel_linux_arm64),
                                   ("wheel-windows", "windows", args.wheel_windows)):
         if args.only in (None, part):
             library = REPO / given if not Path(given).is_absolute() else Path(given)
             if platform == "linux":
                 check_shared_linux(library)
+            elif platform == "linux-arm64":
+                check_shared_linux(library, 183)
             else:
                 check_windows(library, dll=True)
             made.append(build_wheel.build(library, platform, version, out, docs["core"], mtime,

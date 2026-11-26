@@ -78,3 +78,36 @@ jobs:
         run: |
           python3 tools/dev.py image --name wasm
           python3 tools/dev.py test --config wasm
+
+  arm64:
+    # Linux arm64 natively: the build image built for arm64, the release build, the tests in release
+    # (with the two that start the stand-in OCR add-on, which qemu cannot run) and ASan + UBSan, the
+    # fuzz regressions, and the manylinux_2_28_aarch64 shared library with the Python package. On
+    # tags and manual runs only.
+    name: Linux arm64, release, ASan + UBSan, fuzz regressions, wheel
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Image rayopdf-build:2
+        uses: ./.github/actions/build-image
+      - name: Release build without compiler warnings
+        run: |
+          python3 tools/dev.py build --config release 2>&1 | tee build-release.log
+          if grep -n 'warning:' build-release.log; then
+            echo "::error::the release build has compiler warnings"
+            exit 1
+          fi
+      - name: Tests, release
+        run: python3 tools/dev.py test --config release
+      - name: Tests, ASan + UBSan
+        run: python3 tools/dev.py test --config asan
+      - name: Fuzz targets over the committed regressions
+        run: python3 tools/fuzz.py replay
+      - name: Tests, shared library and Python package (manylinux_2_28_aarch64)
+        run: |
+          python3 tools/dev.py image --name wheel
+          python3 tools/dev.py test --config wheel

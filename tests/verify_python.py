@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Checks of the Python package (python/rayopdf) over a built librayopdf.so: Markdown, the JSON
-document, chunks, the error classes, and the library's ABI (with `objdump -T`: no glibc symbol
-version above 2.28, the manylinux_2_28 wheel's promise, and only rayopdf_* functions exported).
+document, chunks, the error classes, and the library's ABI (an ELF shared object of this machine's
+architecture, x86-64 or aarch64; with `objdump -T`: no glibc symbol version above 2.28, the
+manylinux_2_28 wheels' promise, and only rayopdf_* functions exported).
 The package is copied with the library into a temporary folder and imported from there; the PDF
 is built by the script.
 
@@ -13,8 +14,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -23,6 +26,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MAX_GLIBC = (2, 28)
+# ELF e_machine of the architectures the wheels are built for, by platform.machine().
+ELF_MACHINES = {"x86_64": 62, "aarch64": 183}
 
 
 def one_page_pdf(text: str) -> bytes:
@@ -62,6 +67,10 @@ def main() -> int:
             failures.append(what)
             print(f"FAIL {what}", file=sys.stderr)
 
+    header = Path(args.library).read_bytes()[:20]
+    check(header[:4] == b"\x7fELF" and len(header) == 20 and
+          struct.unpack_from("<H", header, 18)[0] == ELF_MACHINES.get(platform.machine()),
+          f"an ELF library of this machine ({platform.machine()})")
     symbols = subprocess.run([args.objdump, "-T", args.library], capture_output=True, text=True, check=True).stdout
     versions = {tuple(int(n) for n in m) for m in re.findall(r"GLIBC_(\d+)\.(\d+)", symbols)}
     check(bool(versions) and max(versions) <= MAX_GLIBC,

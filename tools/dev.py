@@ -17,8 +17,9 @@ the evaluation harness's `cli` tool and the linux-x64-static release), fuzz (Cla
 targets of tests/fuzz), windows (MinGW-w64 GCC release, a static rayopdf.exe for the windows-x64
 release and rayopdf.dll, the C ABI's shared library, for the win_amd64 wheel; `test` runs the
 core tests, the CLI verifier and tests/c_api_smoke.c under Wine), wheel (GCC release in the
-rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28, so librayopdf.so needs no glibc
-newer than 2.28; tests including tests/verify_python.py), wasm (Emscripten release in the
+rayopdf-wheel:1 image, docker/wheel.Dockerfile: manylinux_2_28 of the machine's architecture,
+x86_64 or aarch64, so librayopdf.so needs no glibc newer than 2.28; tests including
+tests/verify_python.py), wasm (Emscripten release in the
 rayopdf-wasm:1 image, docker/wasm.Dockerfile, configured through emcmake: rayopdf-core.mjs and
 rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under Node.js), arm64
 (GCC 13.3 for Linux aarch64 in the rayopdf-cross:1 image, docker/cross.Dockerfile: the fully

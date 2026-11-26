@@ -49,7 +49,9 @@ pass `--config windows`; changes to the C ABI or the Python package (`python/`) 
 The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same image on pull
 requests and once a night when master changed: the release build without warnings, the tests in
 release and ASan + UBSan, and the fuzz regressions; on a tag `v*` and by hand
-(`gh workflow run ci.yml`) also ThreadSanitizer, Windows, the wheel config and the wasm config.
+(`gh workflow run ci.yml`) also ThreadSanitizer, Windows, the wheel config and the wasm config,
+and on GitHub's arm64 runner (`ubuntu-24.04-arm`) the release build, the tests in release and
+ASan + UBSan, the fuzz regressions and the wheel config natively for Linux arm64.
 It does not run on pushes to master.
 
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range
