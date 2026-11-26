@@ -51,6 +51,7 @@ console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
 | `smallCaps` | `"lower"` (default), `"keep"` |
 | `figureText` | `"keep"` (default), `"drop"` |
 | `chunkChars` | 256 to 1,000,000 bytes a chunk (default 4,000) |
+| `jsonDetail` | `"blocks"` (default), `"lines"`, `"words"`: with `format: "json"`, each block's lines, or lines and words, too |
 | `structure`, `annotations`, `exact` | `true` (default); `false` is `--no-structure`, `--no-annotations`, `--no-exact` |
 
 The [command-line guide](cli.md#options) explains each option, and

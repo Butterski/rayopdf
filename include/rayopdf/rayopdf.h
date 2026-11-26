@@ -37,6 +37,9 @@ enum class SmallCaps : uint8_t { Lower, Keep };
 // A figure's own text (tick labels, legends, the labels of a diagram) kept as paragraphs, as
 // printed, or left out (captions and sentences near a figure stay).
 enum class FigureText : uint8_t { Keep, Drop };
+// What the JSON document gives besides each block's boxes: nothing, each block's lines (page, box,
+// text), or each block's lines with their words (box, text).
+enum class JsonDetail : uint8_t { Blocks, Lines, Words };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -67,6 +70,7 @@ struct Options {
     SmallCaps smallCaps = SmallCaps::Lower;  // Keep: small-capitals headings as printed, in capitals
     FigureText figureText = FigureText::Keep;  // Drop: a figure's own text left out
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
+    JsonDetail jsonDetail = JsonDetail::Blocks;  // Json: each block's lines, or lines and words, too
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic
 };

@@ -64,6 +64,7 @@ The same file and the same options always give the same bytes.
 |---|---|
 | `--format=markdown` | GitHub Flavored Markdown (the default). |
 | `--format=json` | One JSON object: the metadata, the pages' sizes and every block with its type, page, position and Markdown. |
+| `--json-detail=lines` | With JSON: each block also lists its lines, each with its page, box and text. `--json-detail=words` adds each line's words with their boxes; `blocks` (the default) gives neither. |
 | `--format=chunks` | JSON Lines: one chunk for retrieval-augmented generation a line, with its heading path, pages, positions and Markdown. |
 | `--chunk-chars=N` | With chunks: at most N bytes of Markdown a chunk, 256 to 1,000,000 (default 4,000). A longer block is split. |
 | `--format=inspect` | One HTML file that draws each page: its lines, its blocks numbered in reading order, removed headers and footers struck through, table cells and images. Open it in a browser. |

@@ -5,6 +5,7 @@
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect] [--chunk-chars=N]
+//                                   [--json-detail=blocks|lines|words]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
 //                                   [--tables=auto|html|pipe|pipe-latex]
 //                                   [--quotes=keep|ascii] [--small-caps=lower|keep] [--figure-text=keep|drop]
@@ -133,6 +134,8 @@ void PrintUsage(std::FILE* out) {
         "                     each page's lines, blocks in reading order, cells and images\n"
         "  --chunk-chars=N    chunks: at most N bytes of Markdown a chunk (256 to 1000000,\n"
         "                     default 4000; a longer block is split)\n"
+        "  --json-detail=WHAT json: blocks (default); lines: each block's lines too (page, box,\n"
+        "                     text); words: the lines with their words (box, text)\n"
         "  --page-markers     <!-- page N --> before the Markdown of each page\n"
         "  --front-matter     YAML front matter from the document's information (title, author,\n"
         "                     dates, pages) before the Markdown\n"

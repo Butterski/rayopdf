@@ -50,6 +50,13 @@ Then by type:
 Any block may also have `quote` (the block-quote depth, when above 0) and, on the first block
 of an alert, `alert` (`note`, `tip`, `important`, `warning` or `caution`).
 
+With `--json-detail=lines` (or `words`) every block also has `lines`, just before `markdown`:
+one `{"page","box":[x0,y0,x1,y1],"text"}` a line in reading order (a table: its cells' lines,
+cell by cell; an image or a comment: `[]`). `text` is the line as printed: words joined by one
+space, no markup, no list marker, no inline image; a hyphen at a line's end stays.
+`--json-detail=words` adds `"words":[{"box","text"}...]` to each line. The default
+(`--json-detail=blocks`) writes no `lines`.
+
 Last, every block has `markdown`: exactly the bytes `--format=markdown` writes for it. The
 blocks' `markdown` values occur in the Markdown output in the same order, so a consumer can
 locate each block in the Markdown. A `comment` block is one of the converter's

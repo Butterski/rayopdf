@@ -89,6 +89,7 @@ Options go after the output path, in any order:
 | Images elsewhere / none | `--images=DIR` / `--images=none` |
 | Formulas as LaTeX (`$...$`, `$$...$$`) | `--math=latex` (default `unicode`: Unicode text, `<sup>`/`<sub>` where needed) |
 | Structured JSON instead of Markdown | `--format=json` (schema: [references/json.md](references/json.md)) |
+| Each block's lines (page, box, text), or lines and words, in the JSON | `--json-detail=lines` / `--json-detail=words` (default `blocks`) |
 | Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000) |
 | See what the layout analysis decided | `--format=inspect` (one HTML file, no script: each page's lines, blocks numbered in reading order, removed furniture struck through, table cells, images) |
 | A comment before each page's text | `--page-markers` (`<!-- page N -->`; a list or quote across a page break is split there) |
@@ -103,9 +104,9 @@ Options go after the output path, in any order:
 | Re-read a PDF RayoMD made from Markdown | `--no-exact` (by default its embedded, verified Markdown source is written as it is) |
 | OCR | `--ocr=auto` (default), `off`, `force`; `--ocr-addon=PATH` (section 4) |
 
-`--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0, and
+`--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0,
 `--plain`, `--tables`, `--furniture`, `--format=chunks` and `--format=inspect` not before
-0.3.0: check `rayopdf --help` lists them.
+0.3.0, and `--json-detail` not before 1.2.0: check `rayopdf --help` lists them.
 `--front-matter` and `--page-markers` have no effect with `--format=json`, whose `metadata` and
 per-block `page` carry the same information.
 

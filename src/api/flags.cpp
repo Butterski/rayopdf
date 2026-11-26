@@ -118,6 +118,18 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             return FlagStatus::Invalid;
         }
         options.convert.chunkChars = chars;
+    } else if (StartsWith(arg, "--json-detail=")) {
+        const std::string_view detail = arg.substr(14);
+        if (detail == "blocks") {
+            options.convert.jsonDetail = Layout::JsonDetail::Blocks;
+        } else if (detail == "lines") {
+            options.convert.jsonDetail = Layout::JsonDetail::Lines;
+        } else if (detail == "words") {
+            options.convert.jsonDetail = Layout::JsonDetail::Words;
+        } else {
+            error = "--json-detail takes blocks, lines or words: " + std::string(detail);
+            return FlagStatus::Invalid;
+        }
     } else if (arg == "--page-markers") {
         options.convert.pageMarkers = true;
     } else if (arg == "--front-matter") {

@@ -70,13 +70,15 @@ struct WrittenBlock {
 // cells empty); PipeLatex as Pipe, its cells' `%`, `#` and `&` outside math as the text `\%`,
 // `\#`, `\&` (WriteGfmTable `latexCells`). `smallCaps`: Keep writes a heading set in small
 // capitals (Block::smallCaps) as printed, every letter a capital, not in the source's case.
-// `chunkChars`: WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars].
+// `chunkChars`: WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars]. `jsonDetail`:
+// WriteJson only, each block's lines (Lines) or lines and words (Words).
 struct WriteSettings {
     bool pageMarkers = false;
     bool plain = false;
     TableFormat tables = TableFormat::Auto;
     SmallCaps smallCaps = SmallCaps::Lower;
     uint32_t chunkChars = kDefaultChunkChars;
+    JsonDetail jsonDetail = JsonDetail::Blocks;
 };
 
 // A block's box on one page (`page` an index into the pages), on the upright page, in points with
@@ -109,7 +111,12 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, 
 // "width","height"}...],"blocks":[{"type","page","boxes":[{"page","bbox":[x0,y0,x1,y1]}...],
 // ...,"markdown"}...]}. Boxes are in page points, origin at the lower left; `metadata` null
 // writes an empty object. `counts` as WriteMarkdown counts; each block's Markdown as WriteMarkdown
-// writes it with `settings` (page markers aside).
+// writes it with `settings` (page markers aside). With `settings.jsonDetail` Lines or Words every
+// block also has "lines":[{"page","box":[x0,y0,x1,y1],"text"}...] before "markdown": its lines in
+// order (a table's: its cells' lines, cell by cell; an image or a comment: none), each line's box
+// on the upright page and its text as the page shows it (words joined by one space, a list item's
+// marker and inline images left out); with Words each line also has "words":[{"box","text"}...],
+// split at the line's word breaks.
 void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
                const DocumentMetadata* metadata, std::string& out, WriteCounts& counts,
                MathMode math = MathMode::Unicode, const WriteSettings& settings = {});

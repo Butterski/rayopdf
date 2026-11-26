@@ -119,7 +119,7 @@ Options go after the paths, in any order. The most used:
 | `--images=DIR` / `--images=none` | Write image files to DIR, or write none. Default: `OUT-images/` beside `OUT.md` (none with `-`). |
 | `--pages=A-B` | Convert pages A to B only (1-based; `3`, `3-` and `-7` work too). |
 | `--password=PW` | Open an encrypted PDF. |
-| `--format=json` | One JSON object: the document's metadata and its blocks, each with its type, page, position and Markdown. |
+| `--format=json` | One JSON object: the document's metadata and its blocks, each with its type, page, position and Markdown. `--json-detail=lines` or `words` adds each block's lines, or lines and words, with their positions. |
 | `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes). |
 | `--format=inspect` | One HTML file that draws each page's lines and blocks in reading order, to see what the layout analysis decided. |
 | `--math=latex` | Formulas as LaTeX (`$…$`, `$$…$$`) instead of Unicode text. |

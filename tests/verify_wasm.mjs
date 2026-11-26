@@ -82,6 +82,10 @@ try {
     typeof result.report.glyphs === "number" && result.images.size === 0, "Markdown");
   result = await rayopdf.convert(pdf, { format: "json" });
   check(result.text.startsWith('{"rayopdf":') && result.data.schema === 1, "format json");
+  result = await rayopdf.convert(pdf, { format: "json", jsonDetail: "words" });
+  check(result.data.blocks.some((block) => (block.lines ?? []).some((line) =>
+    line.text === "Hello from WebAssembly" && line.words.map((word) => word.text).join(" ") === line.text)),
+    "format json with jsonDetail words");
   result = await rayopdf.convert(pdf, { format: "chunks", chunkChars: 256, plain: true, quotes: "ascii",
     smallCaps: "keep", figureText: "drop", tables: "pipe-latex", pages: [1, null] });
   check(Array.isArray(result.data) && result.data.length === 1 &&

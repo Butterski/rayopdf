@@ -338,7 +338,8 @@ def check_page_workers(c: Checker, work: Path) -> None:
 
 def check_output_features(c: Checker, work: Path, hello: str) -> None:
     """--format=json (one object, schema 1, every block's Markdown in the Markdown output in order;
-    --batch writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page),
+    --json-detail=lines|words adds each block's lines and words and changes nothing else; --batch
+    writes NAME.json, a serve answer carries "json"), --page-markers (one marker a page),
     --front-matter (YAML first, with the page count) and --furniture, --plain, --tables, --quotes,
     --small-caps and --figure-text (taken by --convert and in serve requests; a bad value is a usage error)."""
     pages = str(work / "pages.pdf")
@@ -357,6 +358,20 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
         ordered = ordered and found >= 0
         at = found + len(block.get("markdown", "")) if found >= 0 else at
     c.check("json blocks' Markdown in the Markdown's order", bool(blocks) and ordered)
+    r = c.run("--convert", pages, "-", "--format=json", "--json-detail=words")
+    try:
+        detailed = json.loads(r.stdout).get("blocks") or []
+    except ValueError:
+        detailed = []
+    texts = [b for b in detailed if b.get("type") not in ("comment", "image")]
+    c.check("json detail: lines and words", r.returncode == 0 and bool(texts) and all(
+        b.get("lines") and all(line.get("page") and len(line.get("box", [])) == 4 and line.get("text") and
+                               line.get("words") for line in b["lines"]) for b in texts) and
+        [{k: v for k, v in b.items() if k != "lines"} for b in detailed] == blocks, repr(detailed)[:300])
+    r = c.run("--convert", pages, "-", "--format=json", "--json-detail=lines")
+    c.check("json detail: lines without words", r.returncode == 0 and b'"lines":[{' in r.stdout and
+            b'"words"' not in r.stdout)
+    c.check("bad json detail", c.run("--convert", pages, "-", "--format=json", "--json-detail=glyphs").returncode == 2)
     c.check("bad format", c.run("--convert", pages, "-", "--format=html").returncode == 2)
     r = c.run("--convert", pages, "-", "--page-markers")
     marked = r.stdout.decode("utf-8")

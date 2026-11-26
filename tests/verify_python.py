@@ -89,6 +89,10 @@ def main() -> int:
         result = rayopdf.convert(pdf_path.read_bytes(), format="json", workers=2)
         check(isinstance(result.data, dict) and result.data.get("schema") == 1 and result.text.startswith('{"rayopdf":'),
               "format=json parses, schema 1")
+        result = rayopdf.convert(pdf_path, format="json", json_detail="words")
+        lines = [line for block in result.data["blocks"] for line in block.get("lines", [])]
+        check(any(line["text"] == "Hello from Python" and [w["text"] for w in line["words"]] == ["Hello", "from", "Python"]
+                  for line in lines), "json_detail=words gives the lines and their words")
         result = rayopdf.convert(pdf_path, format="chunks", chunk_chars=256, plain=True, quotes="ascii",
                                  small_caps="keep", figure_text="drop", tables="pipe-latex", pages=(1, None))
         check(isinstance(result.data, list) and len(result.data) == 1 and

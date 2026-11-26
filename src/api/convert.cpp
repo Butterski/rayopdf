@@ -37,6 +37,9 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
         case Format::Inspect: out.format = Layout::OutputFormat::Inspect; break;
     }
     out.chunkChars = options.chunkChars;
+    out.jsonDetail = options.jsonDetail == JsonDetail::Words   ? Layout::JsonDetail::Words
+                     : options.jsonDetail == JsonDetail::Lines ? Layout::JsonDetail::Lines
+                                                               : Layout::JsonDetail::Blocks;
     out.pageMarkers = options.pageMarkers;
     out.frontMatter = options.frontMatter;
     out.furniture = options.furniture == Furniture::Keep ? Layout::Furniture::Keep : Layout::Furniture::Drop;

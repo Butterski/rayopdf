@@ -8,9 +8,9 @@
 // 1250-1299 and 1500-1549, exact recovery 1300-1349, glyph-shape recovery 1350-1399, OCR text
 // structure 1400-1449, text fonts 1450-1479, LaTeX math 1550-1599, pages on several threads
 // 1600-1649, OCR image tables 1750-1799, headings 1800-1849, C++ API and C ABI 1950-1999, output
-// formats 2000-2049, robust statistics 2100-2149, statistical layout 2150-2199, LaTeX math
-// structure 2200-2249, small models 2250-2299, tables 2300-2349, LaTeX math fonts 2350-2399,
-// footnotes 2400-2449, headings 2500-2549, dehyphenation and line joins 2585-2599).
+// formats 2000-2049 and 2650-2699, robust statistics 2100-2149, statistical layout 2150-2199,
+// LaTeX math structure 2200-2249, small models 2250-2299, tables 2300-2349, LaTeX math fonts
+// 2350-2399, footnotes 2400-2449, headings 2500-2549, dehyphenation and line joins 2585-2599).
 // An exit status has 8 bits, so codes past 255 leave the process as code % 256, and as 1 when that
 // would be 0.
 #pragma once

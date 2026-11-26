@@ -24,6 +24,8 @@ export interface ConvertOptions {
   pages?: number | string | [number | null, number | null];
   /** Chunks: at most this many bytes of Markdown a chunk, 256 to 1,000,000 (default 4000). */
   chunkChars?: number;
+  /** JSON: each block's boxes only (default), its lines too (page, box, text), or its lines with their words. */
+  jsonDetail?: "blocks" | "lines" | "words";
   /** Write the images: true (linked as images/NAME) or the folder name the Markdown links them under. */
   images?: boolean | string;
   /** <!-- page N --> before each page's Markdown. */
@@ -40,20 +42,82 @@ export interface ConvertOptions {
   exact?: boolean;
 }
 
+/** x0, y0, x1, y1 in points, origin at the bottom left of the page. */
+export type Rect = [number, number, number, number];
+
+export interface Box {
+  page: number;
+  bbox: Rect;
+}
+
 export interface Chunk {
   chunk: number;
   heading_path: string[];
   pages: [number, number];
-  boxes: { page: number; bbox: [number, number, number, number] }[];
+  boxes: Box[];
   blocks: number[];
   markdown: string;
+}
+
+/** A word of a line (jsonDetail "words"). */
+export interface JsonWord {
+  box: Rect;
+  text: string;
+}
+
+/** A line of a block (jsonDetail "lines" or "words"). */
+export interface JsonLine {
+  page: number;
+  box: Rect;
+  text: string;
+  words?: JsonWord[];
+}
+
+export interface JsonCell {
+  row: number;
+  col: number;
+  row_span: number;
+  col_span: number;
+  text: string;
+}
+
+/** A block of the JSON document (schema 1); `markdown` is its last field. */
+export interface JsonBlock {
+  type: "heading" | "paragraph" | "list_item" | "code" | "table" | "image" | "footnote" | "comment";
+  page: number;
+  boxes: Box[];
+  level?: number;
+  depth?: number;
+  ordered?: boolean;
+  number?: number;
+  task?: "open" | "done";
+  rows?: number;
+  cols?: number;
+  header_rows?: number;
+  cells?: JsonCell[];
+  file?: string | null;
+  alt?: string;
+  quote?: number;
+  alert?: "note" | "tip" | "important" | "warning" | "caution";
+  lines?: JsonLine[];
+  markdown: string;
+}
+
+/** The JSON document of format "json" (schema 1). */
+export interface JsonDocument {
+  rayopdf: string;
+  schema: 1;
+  repaired: boolean;
+  metadata: Record<string, string>;
+  pages: { page: number; width: number; height: number }[];
+  blocks: JsonBlock[];
 }
 
 export interface ConvertResult {
   /** The Markdown, or the JSON, JSON Lines or HTML of `format`. */
   text: string;
   /** The JSON document for format "json", the chunks for "chunks", else null. */
-  data: Record<string, unknown> | Chunk[] | null;
+  data: JsonDocument | Chunk[] | null;
   /** The --report counters. */
   report: Record<string, unknown>;
   /** Pages converted. */

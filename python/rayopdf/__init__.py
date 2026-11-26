@@ -149,17 +149,19 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
             images: Union[None, str, os.PathLike] = None, format: str = "markdown", math: str = "unicode",
             page_markers: bool = False, front_matter: bool = False, furniture: str = "drop", plain: bool = False,
             tables: str = "auto", quotes: str = "keep", small_caps: str = "lower", figure_text: str = "keep",
-            chunk_chars: Optional[int] = None, structure: bool = True, annotations: bool = True, exact: bool = True, ocr: str = "off",
+            chunk_chars: Optional[int] = None, json_detail: str = "blocks", structure: bool = True,
+            annotations: bool = True, exact: bool = True, ocr: str = "off",
             ocr_addon: Union[None, str, os.PathLike] = None, workers: int = 1) -> Result:
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
     format: markdown, json, chunks or inspect; math: unicode or latex; furniture: drop or keep;
     tables: auto, html, pipe or pipe-latex; quotes: keep or ascii; small_caps: lower or keep (headings in small
     capitals in the source's case or as printed); figure_text: keep or drop (a figure's own text, its
-    tick labels and legends, as paragraphs or left out); ocr: off, auto or force (the rayopdf-ocr add-on,
-    found as the command line finds it, or `ocr_addon`); images: a folder the image files are
-    written to, linked as FOLDER/NAME (default: no images); pages: 3, "2-5", (2, None); workers:
-    page threads, 1 to 64.
+    tick labels and legends, as paragraphs or left out); json_detail: blocks, lines or words (with
+    format json: each block's lines, or its lines and their words, besides its boxes); ocr: off,
+    auto or force (the rayopdf-ocr add-on, found as the command line finds it, or `ocr_addon`);
+    images: a folder the image files are written to, linked as FOLDER/NAME (default: no images);
+    pages: 3, "2-5", (2, None); workers: page threads, 1 to 64.
     Raises a RayoPdfError subclass when the conversion fails.
     """
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -168,8 +170,8 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
         with open(os.fspath(source), "rb") as file:
             pdf = file.read()
     args = [f"--format={format}", f"--math={math}", f"--furniture={furniture}", f"--tables={tables}",
-            f"--quotes={quotes}", f"--small-caps={small_caps}", f"--figure-text={figure_text}", f"--ocr={ocr}",
-            f"--workers={int(workers)}"]
+            f"--quotes={quotes}", f"--small-caps={small_caps}", f"--figure-text={figure_text}",
+            f"--json-detail={json_detail}", f"--ocr={ocr}", f"--workers={int(workers)}"]
     if password is not None:
         args.append(f"--password={password}")
     if pages is not None:

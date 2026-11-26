@@ -273,6 +273,15 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `important`, `warning`, `caution`, on an alert's first block); last `markdown`, the bytes the
   Markdown output writes for the block, so that the blocks' `markdown` occur in that output in
   order. `--page-markers` and `--front-matter` have no effect on it (the metadata is always there).
+  Additions within schema 1 (1.2) are optional keys that change no other key and never add a
+  `type` value (the omni and DocLayNet scorers read `type`, `boxes`, `pages` and `markdown`), and
+  `markdown` stays a block's last key. `--json-detail=lines|words` (2026-11-26; default `blocks`,
+  no change) gives every block `lines` before `markdown`: `[{"page", "box": [x0, y0, x1, y1],
+  "text"}...]`, its lines in order (a table's cells' lines cell by cell; `[]` for an image or a
+  comment), each box its line's frame box turned upright, the text its glyphs' texts with one
+  space at each word break, without a list item's marker glyphs or inline images (raw text, not
+  Markdown: hyphens at line ends stay); with `words` each line also has `"words": [{"box",
+  "text"}...]`, split at the line's word breaks (`kGlyphSpaceBefore`). Chunks do not carry lines.
 - Output options for conventions on which benchmarks' ground truths contradict each other
   (decided 2026-11-13; off by default, the default output byte-identical): `--plain` writes no
   inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts
@@ -345,7 +354,8 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
-        [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--page-markers] [--front-matter]
+        [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--json-detail=blocks|lines|words]
+        [--page-markers] [--front-matter]
         [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe|pipe-latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
         [--workers=N]
@@ -372,7 +382,8 @@ protocol-1 record: `{"id"?, "input", "output", "status": "ok"|"skipped"|"error",
 JSON object a line;
 `code` is the exit code the document alone would give.
 
-- **`--format=json`**, **`--format=chunks`** (with **`--chunk-chars=N`**, 256 to 1,000,000,
+- **`--format=json`** (with **`--json-detail=lines|words`**), **`--format=chunks`** (with
+  **`--chunk-chars=N`**, 256 to 1,000,000,
   else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
   **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--tables=pipe-latex`**,
   **`--furniture=keep`**, **`--quotes=ascii`**, **`--small-caps=keep`** and

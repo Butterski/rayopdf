@@ -60,6 +60,10 @@ enum class SmallCaps : uint8_t { Lower, Keep };
 // holds a figure's inner text; opendataloader-bench's gold does.
 enum class FigureText : uint8_t { Keep, Drop };
 
+// What the JSON output gives besides each block's boxes: nothing (the default), each block's lines
+// (their page, box and text), or each block's lines with their words (box and text).
+enum class JsonDetail : uint8_t { Blocks, Lines, Words };
+
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
@@ -92,6 +96,8 @@ struct ConvertOptions {
     FigureText figureText = FigureText::Keep;
     // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
     uint32_t chunkChars = kDefaultChunkChars;
+    // JSON only: the blocks' lines, or their lines and words, besides their boxes.
+    JsonDetail jsonDetail = JsonDetail::Blocks;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are
     // interpreted, and their lines built, on up to this many threads; 0 is one per CPU the process
     // may run on, at most kDefaultPageWorkers, each started only once the pages read so far are

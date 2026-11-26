@@ -34,6 +34,7 @@ function flags(options, imageFolder) {
     `--quotes=${options.quotes ?? "keep"}`,
     `--small-caps=${options.smallCaps ?? "lower"}`,
     `--figure-text=${options.figureText ?? "keep"}`,
+    `--json-detail=${options.jsonDetail ?? "blocks"}`,
     `--ocr=${options.ocr ?? "off"}`,
   ];
   if (options.password != null) out.push(`--password=${options.password}`);

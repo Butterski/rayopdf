@@ -130,6 +130,21 @@ Then, by type:
 Any block may also have `quote` (its block-quote depth, when above 0) and, on the first block of
 an alert, `alert` (`note`, `tip`, `important`, `warning` or `caution`).
 
+With `--json-detail=lines` or `--json-detail=words`, every block also has `lines`, just before
+`markdown`:
+
+```json
+{"type":"heading","page":1,"boxes":[...],"level":1,
+ "lines":[{"page":1,"box":[72.00,700.10,310.45,718.30],"text":"Results",
+           "words":[{"box":[72.00,700.10,310.45,718.30],"text":"Results"}]}],"markdown":"# Results"}
+```
+
+| Field | Value |
+|---|---|
+| `lines` | The block's lines in reading order: `page`, `box` (`[x0,y0,x1,y1]`, as in `boxes`) and `text`. A table lists the lines of its cells, cell by cell; an image and a comment have `[]`. |
+| `text` | The line's text as the page shows it: words joined by one space, without markup, without a list item's marker or inline images. A word hyphenated at the end of a line keeps its hyphen here. |
+| `words` | `--json-detail=words` only: the line's words, each with its `box` and `text`. |
+
 Last, every block has `markdown`: exactly the bytes the Markdown output writes for it. The
 blocks' `markdown` values occur in the Markdown output in the same order, so a program can find
 each block in the Markdown. A `comment` block is one of the `<!-- rayopdf: ... -->` comments.

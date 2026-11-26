@@ -215,6 +215,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.smallCaps = options.smallCaps;
     output.figureText = options.figureText;
     output.chunkChars = options.chunkChars;
+    output.jsonDetail = options.jsonDetail;
     output.features = options.features;
     output.metadata = &metadata;
     output.oneShot = options.oneShot;

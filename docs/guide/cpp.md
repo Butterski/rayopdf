@@ -41,9 +41,9 @@ g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread -o example
 - `Options` has the options of `--convert`: `password`, `firstPage` and `lastPage`, `format`
   (`Markdown`, `Json`, `Chunks`, `Inspect`), `math`, `ocr` and `ocrAddon`, `annotations`,
   `structure`, `exact`, `pageMarkers`, `frontMatter`, `furniture`, `plain`, `tables`, `quotes`,
-  `smallCaps`, `figureText`, `chunkChars`, `imageDirectory` and `imageLinkPrefix` (no images when
-  the directory is empty) and `workers` (page threads; 0 is automatic). The header documents
-  each one.
+  `smallCaps`, `figureText`, `chunkChars`, `jsonDetail` (`Blocks`, `Lines`, `Words`),
+  `imageDirectory` and `imageLinkPrefix` (no images when the directory is empty) and `workers`
+  (page threads; 0 is automatic). The header documents each one.
 - `Result` holds the `status` (the command line's exit code), the `error`, the `pages` converted
   and the `report`: the counters of `--report` as one JSON object
   ([report record](formats.md#the-report-record)).

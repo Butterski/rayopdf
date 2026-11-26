@@ -2407,6 +2407,106 @@ void AddBox(std::vector<PageBox>& boxes, uint32_t page, uint8_t dir, float x0, f
     boxes.push_back(PageBox{page, x0, y0, x1, y1});
 }
 
+// `"box":[x0,y0,x1,y1]` of a box of the frame of `dir`, on the upright page.
+void AppendFrameBox(std::string& out, uint8_t dir, float x0, float y0, float x1, float y1) {
+    RectFromFrame(dir, x0, y0, x1, y1);
+    out += "\"box\":[";
+    AppendCoordinate(out, x0);
+    out.push_back(',');
+    AppendCoordinate(out, y0);
+    out.push_back(',');
+    AppendCoordinate(out, x1);
+    out.push_back(',');
+    AppendCoordinate(out, y1);
+    out.push_back(']');
+}
+
+// Glyphs [k0, k1) of `line` as JSON's "lines" give a line: {"page","box","text"}, with `words`
+// also "words":[{"box","text"}...]. The text joins the glyphs' texts with one space at each word
+// break; inline images (kGlyphImage) are left out, and a word of nothing else too. `text` is
+// scratch.
+void AppendDetailLine(std::string& out, const PageData& page, const Line& line, uint32_t k0, uint32_t k1, bool words,
+                      std::string& text) {
+    const auto glyph = [&](uint32_t k) -> const Glyph& { return page.glyphs[page.lineGlyphs[line.first + k]]; };
+    text.clear();
+    bool space = false;
+    for (uint32_t k = k0; k < k1; ++k) {
+        const Glyph& g = glyph(k);
+        space = space || (k > k0 && (g.flags & kGlyphSpaceBefore));
+        if (g.flags & kGlyphImage) continue;
+        if (space && !text.empty()) text.push_back(' ');
+        space = false;
+        text += page.GlyphText(g);
+    }
+    out += "{\"page\":";
+    out += std::to_string(page.number);
+    out.push_back(',');
+    AppendFrameBox(out, line.dir, line.u0, line.vb, line.u1, line.vt);
+    AppendKey(out, "text");
+    Batch::AppendJsonString(out, text);
+    if (words) {
+        out += ",\"words\":[";
+        bool first = true;
+        for (uint32_t k = k0; k < k1;) {
+            float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            bool any = false;
+            text.clear();
+            do {
+                const Glyph& g = glyph(k);
+                if (!(g.flags & kGlyphImage)) {
+                    x0 = Fmin(x0, g.u0), y0 = Fmin(y0, g.vb), x1 = Fmax(x1, g.u1), y1 = Fmax(y1, g.vt);
+                    text += page.GlyphText(g);
+                    any = true;
+                }
+            } while (++k < k1 && !(glyph(k).flags & kGlyphSpaceBefore));
+            if (!any) continue;
+            out += first ? "{" : ",{";
+            first = false;
+            AppendFrameBox(out, line.dir, x0, y0, x1, y1);
+            AppendKey(out, "text");
+            Batch::AppendJsonString(out, text);
+            out.push_back('}');
+        }
+        out.push_back(']');
+    }
+    out.push_back('}');
+}
+
+// `,"lines":[...]` of `block` (WriteJson with JsonDetail Lines or Words): its lines in order, a
+// table's cells' lines cell by cell, none for an image or a comment.
+void AppendBlockLines(std::string& out, const std::vector<PageData>& pages, const BlockList& list, const Block& block,
+                      bool words, std::string& text) {
+    out += ",\"lines\":[";
+    const size_t start = out.size();
+    const auto add = [&](const PageData& page, const Line& line, uint32_t k0, uint32_t k1) {
+        if (k0 >= k1) return;
+        if (out.size() > start) out.push_back(',');
+        AppendDetailLine(out, page, line, k0, k1, words, text);
+    };
+    if (block.kind != BlockKind::Comment && block.kind != BlockKind::Image) {
+        for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+            const BlockLine& ref = list.lines[bl];
+            const PageData& page = pages[ref.page];
+            const Line& line = page.lines[ref.line];
+            if (block.kind == BlockKind::Table) {
+                if (!(line.flags & kLineTableAnchor)) continue;
+                const Table& table = page.tables[line.first];
+                for (uint32_t c = table.firstCell; c < table.firstCell + table.cellCount; ++c) {
+                    const TableCell& cell = page.tableCells[c];
+                    for (uint32_t l = cell.first; l < cell.first + cell.count; ++l)
+                        add(page, page.lines[l], 0, page.lines[l].count);
+                }
+                continue;
+            }
+            // A heading run in with its paragraph is the first `number` glyphs of its line.
+            const uint32_t end =
+                block.kind == BlockKind::Heading && block.number != 0 ? std::min(block.number, line.count) : line.count;
+            add(page, line, ref.skip, end);
+        }
+    }
+    out.push_back(']');
+}
+
 } // namespace
 
 const char* BlockTypeName(BlockKind kind) {
@@ -2503,6 +2603,7 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
     }
     out += "],\"blocks\":[";
     std::vector<PageBox> boxes;
+    std::string text;
     for (size_t w = 0; w < written.size(); ++w) {
         const WrittenBlock& entry = written[w];
         const Block& block = list.blocks[entry.block];
@@ -2570,6 +2671,8 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
             AppendKey(out, "alert");
             out += kAlerts[std::min<int>(block.alert, 5) - 1];
         }
+        if (settings.jsonDetail != JsonDetail::Blocks)
+            AppendBlockLines(out, pages, list, block, settings.jsonDetail == JsonDetail::Words, text);
         AppendKey(out, "markdown");
         Batch::AppendJsonString(out, std::string_view(markdown).substr(entry.begin, entry.end - entry.begin));
         out.push_back('}');

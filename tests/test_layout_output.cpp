@@ -2,8 +2,9 @@
 // Core tests of the output options (layout/convert.h, layout/markdown_writer.h WriteSettings):
 // plain text without inline markup, emphasis delimiters a CommonMark reader takes as such, every
 // table as HTML or as a pipe table, page furniture kept, ASCII quotes, small-capitals headings as
-// printed, the exact recovery they turn off, chunks for retrieval (WriteChunks) and the layout
-// inspector (WriteInspect). Exit codes 2000-2049.
+// printed, the exact recovery they turn off, chunks for retrieval (WriteChunks), the layout
+// inspector (WriteInspect) and the JSON output's lines and words. Exit codes 2000-2049 and
+// 2650-2699.
 #include "check.h"
 #include "exact_builder.h"
 
@@ -810,6 +811,57 @@ void TestInspect() {
                   2033);
 }
 
+// Two bullet items.
+std::vector<PageData> BulletPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    float x = AddText(pages[0], "\xE2\x80\xA2", 72, 700, 10);
+    AddText(pages[0], "first item", x + 8, 700, 10);
+    x = AddText(pages[0], "\xE2\x80\xA2", 72, 686, 10);
+    AddText(pages[0], "second item", x + 8, 686, 10);
+    return pages;
+}
+
+OutputSettings JsonSettings(JsonDetail detail) {
+    OutputSettings settings;
+    settings.format = OutputFormat::Json;
+    settings.jsonDetail = detail;
+    return settings;
+}
+
+void TestJsonDetail() {
+    // Blocks (the default): no lines; each detail keeps the blocks' Markdown.
+    const std::string blocks = Run(HeadingPage, JsonSettings(JsonDetail::Blocks));
+    const std::string lines = Run(HeadingPage, JsonSettings(JsonDetail::Lines));
+    const std::string words = Run(HeadingPage, JsonSettings(JsonDetail::Words));
+    Show("json lines", lines);
+    Show("json words", words);
+    RAYOPDF_CHECK(!Contains(blocks, "\"lines\"") && Count(lines, "\"lines\":[") == 2 && !Contains(lines, "\"words\"") &&
+                      Count(words, "\"words\":[") == 2 && Strings(blocks, "markdown") == Strings(lines, "markdown") &&
+                      Strings(blocks, "markdown") == Strings(words, "markdown"),
+                  2650);
+    // A line's page, box (the heading at 24 points from x 72 on baseline 740) and text, before
+    // the block's Markdown.
+    const std::vector<std::string> lineTexts{"Annual Review", "The year brought steady growth across every region."};
+    RAYOPDF_CHECK(Contains(lines, "\"lines\":[{\"page\":1,\"box\":[72.00,735.20,228.00,759.20],"
+                                  "\"text\":\"Annual Review\"}],\"markdown\":\"# Annual Review\"") &&
+                      Strings(lines, "text") == lineTexts,
+                  2651);
+    // Words: split at the word breaks, each with its box.
+    const std::vector<std::string> texts = Strings(words, "text");
+    RAYOPDF_CHECK(texts.size() == 12 && texts[0] == "Annual Review" && texts[1] == "Annual" && texts[2] == "Review" &&
+                      texts[4] == "The" && texts[11] == "region." &&
+                      Contains(words, "\"words\":[{\"box\":[72.00,735.20,144.00,759.20],\"text\":\"Annual\"},"
+                                      "{\"box\":[156.00,735.20,228.00,759.20],\"text\":\"Review\"}]"),
+                  2652);
+    // A table's lines are its cells' lines, cell by cell.
+    const std::vector<std::string> table = Strings(Run(TablePage, JsonSettings(JsonDetail::Lines)), "text");
+    const std::vector<std::string> cells{"Name", "Value", "Alpha", "12", "Beta", "34"};
+    RAYOPDF_CHECK(table.size() == 14 && std::vector<std::string>(table.begin() + 7, table.begin() + 13) == cells, 2653);
+    // A list item's line without its marker.
+    const std::vector<std::string> items{"first item", "second item"};
+    RAYOPDF_CHECK(Strings(Run(BulletPage, JsonSettings(JsonDetail::Lines)), "text") == items, 2654);
+}
+
 } // namespace
 
 int main() {
@@ -827,6 +879,7 @@ int main() {
     TestExactFormat();
     TestChunks();
     TestInspect();
+    TestJsonDetail();
     std::puts("layout output tests passed");
     return 0;
 }

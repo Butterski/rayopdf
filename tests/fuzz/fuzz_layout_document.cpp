@@ -2,8 +2,9 @@
 // libFuzzer target of the whole conversion: the input as a PDF file through Document::Open and
 // Layout::Convert (fonts, content, layout, semantics and the writer, as `rayopdf --convert` runs
 // them, without image files), then once more in one other output, chosen by the input's size so
-// that each input costs two conversions: JSON (--format=json), which must be one object and a line
-// break; chunks (--format=chunks with the smallest chunk size), every line one object; the
+// that each input costs two conversions: JSON (--format=json, with --json-detail=blocks, lines or
+// words by the size again), which must be one object and a line break; chunks (--format=chunks
+// with the smallest chunk size), every line one object; the
 // inspector (--format=inspect), one HTML file without a script; Markdown with the output options
 // --plain, --tables=html, --tables=pipe or --tables=pipe-latex (by the size again),
 // --furniture=keep, --quotes=ascii, --small-caps=keep and --figure-text=drop;
@@ -32,6 +33,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     switch (size % 5) {
     case 0:
         options.format = RayoPdf::Layout::OutputFormat::Json;
+        options.jsonDetail = size % 15 == 0   ? RayoPdf::Layout::JsonDetail::Blocks
+                             : size % 15 == 5 ? RayoPdf::Layout::JsonDetail::Lines
+                                              : RayoPdf::Layout::JsonDetail::Words;
         RayoPdf::Layout::Convert(*document, options, out, report);
         if (out.size() < 3 || out.front() != '{' || out.compare(out.size() - 2, 2, "}\n") != 0) __builtin_trap();
         break;
