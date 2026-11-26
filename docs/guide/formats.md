@@ -25,7 +25,9 @@ RayoPDF writes [GitHub Flavored Markdown](https://github.github.com/gfm/):
   box (☐, ☑, ☒) before an item makes a task item, `- [ ]` or `- [x]`.
 - **Code blocks**, block quotes and GitHub alerts (`> [!NOTE]`).
 - **Tables** as pipe tables. A table where a cell with text spans rows, or spans columns below a
-  header of several rows, or holds several paragraphs, is written as an HTML `<table>`.
+  header of several rows, or holds several paragraphs, is written as an HTML `<table>`. A title
+  or a section's name set across a table found from its text is one cell spanning every column
+  in HTML and JSON, and is written once, in the first column, in a pipe table.
   `--tables` changes this ([command-line guide](cli.md#options-for-a-readers-conventions)).
 - **Footnotes** as `[^n]`. A note's definition follows the block that references it; notes
   printed on the last page (the notes of a one-page document, endnotes) stay at the end.

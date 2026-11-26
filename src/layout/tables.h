@@ -103,7 +103,8 @@ struct TablePart {
 };
 
 // D6: a table is written as HTML when a body cell with text spans rows, or spans columns under a
-// header of several rows; any other as a GFM pipe table.
+// header of several rows (a label row's cell, TableCell::label, aside); any other as a GFM pipe
+// table.
 bool TableNeedsHtml(const PageData& page, const Table& table);
 
 // How many leading rows of `part` repeat the header of `head` (a header repeated on each page):
@@ -113,10 +114,11 @@ uint16_t RepeatedHeader(const TablePart& head, const TablePart& part);
 // A GFM pipe table: the first row of the first part is the header row (header rows after it are
 // written as body rows); header rows of a later part that repeat the first part's are dropped.
 // `|` in cells is escaped; a cell spanning rows is written in its first row (the rows below it
-// empty), a cell spanning columns in each of them with `repeatColumnSpans`, else in its first
-// column (the columns after it empty). `latexCells` (TableFormat::PipeLatex): `%`, `#` and `&` of
-// the cells outside `$…$` math and code spans are written as the text `\%`, `\#`, `\&` (Markdown
-// `\\%`, ...), so that a reader taking the cells through LaTeX (READoc's evaluator) reads them.
+// empty), a cell spanning columns in each of them with `repeatColumnSpans`, else (and a label
+// row's cell always) in its first column (the columns after it empty). `latexCells`
+// (TableFormat::PipeLatex): `%`, `#` and `&` of the cells outside `$…$` math and code spans are
+// written as the text `\%`, `\#`, `\&` (Markdown `\\%`, ...), so that a reader taking the cells
+// through LaTeX (READoc's evaluator) reads them.
 void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool repeatColumnSpans, bool latexCells);
 
 // An HTML <table> with <th> header rows, colspan and rowspan, and HTML-escaped plain cell text

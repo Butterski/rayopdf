@@ -4993,6 +4993,20 @@ void Detector::Commit() {
             SplitColumnsByText(g);
             if (g.Cols() != before) g.cells.clear();
         }
+        // A label row (a section's name, a title band) is one cell across the table; a row whose
+        // cells this joins is marked 2 (TableCell::label), one that spanned already stays 1.
+        if (!g.labelRow.empty()) {
+            const int cols = g.Cols();
+            const int rows = std::min(g.Rows(), static_cast<int>(g.labelRow.size()));
+            for (int r = 0; r < rows; ++r) {
+                uint8_t& label = g.labelRow[static_cast<size_t>(r)];
+                if (!label) continue;
+                for (int k = 1; k < cols; ++k) {
+                    uint8_t& b = g.vb[static_cast<size_t>(r * (cols + 1) + k)];
+                    if (b) b = 0, label = 2, g.cells.clear();
+                }
+            }
+        }
         if (g.cells.empty()) ComputeSpans(g);
         if (SplitSpanLines(g)) ComputeSpans(g);
     }
@@ -5113,6 +5127,7 @@ void Detector::Commit() {
         for (uint32_t ci = 0; ci < g.cells.size(); ++ci) {
             TableCell cell;
             cell.row = g.cells[ci].r, cell.col = g.cells[ci].c, cell.rowSpan = g.cells[ci].rs, cell.colSpan = g.cells[ci].cs;
+            cell.label = cell.colSpan > 1 && cell.row < g.labelRow.size() && g.labelRow[cell.row] == 2;
             cell.first = static_cast<uint32_t>(page_.lines.size());
             while (at < pieces.size() && pieces[at].grid == gi && pieces[at].cell == ci) {
                 const Piece& p = pieces[at++];
@@ -5334,14 +5349,15 @@ bool TableNeedsHtml(const PageData& page, const Table& table) {
     // spanning down beside the sub-labels under its neighbours, which stands in the first header
     // row with the cell below it empty; and a cell of a body row spanning columns (a section's
     // name across the table) under a header of one row. A cell without text spans nothing a
-    // reader would miss. HTML keeps what a pipe table would lose: a body cell spanning rows (the
-    // label's grouping of the rows) and a body cell spanning columns under a header of several
-    // rows (the header's levels go too).
+    // reader would miss, and a label row's cell (TableCell::label) is written once, as the row's
+    // first cell. HTML keeps what a pipe table would lose: a body cell spanning rows (the label's
+    // grouping of the rows) and a body cell spanning columns under a header of several rows (the
+    // header's levels go too).
     const uint16_t header = std::max<uint16_t>(1, table.headerRows);
     bool bodySpan = false;
     for (uint32_t i = 0; i < table.cellCount; ++i) {
         const TableCell& c = page.tableCells[table.firstCell + i];
-        if (c.count == 0) continue;
+        if (c.count == 0 || c.label) continue;
         if (c.rowSpan > 1 && c.row >= header) return true;
         bodySpan = bodySpan || (c.colSpan > 1 && c.row >= header);
     }
@@ -5463,7 +5479,8 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
                     const std::string_view text = written(i);
                     if (write) put(text);
                     const uint16_t span = part.page->tableCells[table.firstCell + i].colSpan;
-                    spanned = text, spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;
+                    spanned = part.page->tableCells[table.firstCell + i].label ? std::string_view() : text;
+                    spanLeft = span > 1 ? static_cast<uint16_t>(span - 1) : 0;
                     ++i;
                 } else if (spanLeft > 0) {
                     if (write && repeatColumnSpans) put(spanned);

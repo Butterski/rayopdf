@@ -208,6 +208,9 @@ struct TableCell {
     uint16_t row = 0, col = 0;
     uint16_t rowSpan = 1, colSpan = 1;
     uint32_t first = 0, count = 0;  // its lines: PageData::lines[first, first + count)
+    // A label row's text across the table (a section's name, a title band found from the text):
+    // HTML and JSON span every column; a pipe table writes it once, and it needs no HTML.
+    bool label = false;
 };
 
 struct Table {

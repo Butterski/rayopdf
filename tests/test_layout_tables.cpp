@@ -2250,7 +2250,8 @@ void TestHeaderAtColumns() {
                   1703);
 }
 
-// A title set between the top rules of a table, over rows of two columns: its first row.
+// A title set between the top rules of a table, over rows of two columns: its first row, one cell
+// across the table (HTML and JSON span both columns; a pipe table writes it once, as before).
 void TestTitleBand() {
     std::vector<PageData> pages{NewPage()};
     PageData& page = pages[0];
@@ -2265,6 +2266,11 @@ void TestTitleBand() {
     const std::string md = Run(pages);
     Show("title band", md);
     RAYOPDF_CHECK(Contains(md, "| Fish species on IUCN Red List |  |\n| --- | --- |\n| Potosi Pupfish | Cyprinodon alvarezi |"), 1704);
+    const Table& table = pages[0].tables[0];
+    const TableCell& title = pages[0].tableCells[table.firstCell];
+    RAYOPDF_CHECK(table.cols == 2 && title.row == 0 && title.col == 0 && title.colSpan == 2 && title.rowSpan == 1 &&
+                      title.label && pages[0].tableCells[table.firstCell + 1].row == 1,
+                  2801);
 }
 
 // Dots drawn by the tens of thousands (a plot's points) are no rulings: the rule of a table drawn
