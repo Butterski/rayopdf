@@ -22,6 +22,8 @@ namespace {
 
 // The most glyphs (and text bytes) reserved for a page from its content's length (Run).
 constexpr size_t kGlyphReserveMax = size_t(1) << 16;
+// Content from which a page's shapes and rulings are reserved from its length (Run): a heavy page.
+constexpr size_t kShapeReserveFrom = size_t(256) << 10;
 
 // An affine matrix in PDF's row-vector convention: [x y 1] × M (ISO 32000-1 §8.3.4).
 struct Matrix {
@@ -535,6 +537,16 @@ void Interpreter::Run(int index, bool withLinks) {
     const size_t expected = content.size() / 2 < kGlyphReserveMax ? content.size() / 2 : kGlyphReserveMax;
     page_.glyphs.reserve(expected);
     page_.text.reserve(expected);
+    // The same for the painted shapes and the rulings of a heavy page (odl 141's 5.6 MB of content
+    // grew them to 193 of its 480 page faults): a shape takes a path and a paint, at least about
+    // 12 bytes (`0 0 1 1 re f`), and a stroked rectangle four rulings, so a shape for 16 bytes and
+    // a ruling for 8 cover such pages. Not on lighter pages, with a few shapes in blocks that
+    // grow among the page's other memory: their reserve, mostly never written, took pages of its
+    // own (about 1.5 page faults more a fresh conversion over odl).
+    if (content.size() >= kShapeReserveFrom) {
+        page_.shapes.reserve(std::min<size_t>(content.size() / 16, kMaxShapesPerPage));
+        page_.rulings.reserve(std::min<size_t>(content.size() / 8, kMaxRulingsPerPage));
+    }
     if (!content.empty()) RunStream(content, doc_.Resources(index), 0);
     // Marked content left open at the end still applies its ActualText.
     while (!marked_.empty()) EndMarked();
