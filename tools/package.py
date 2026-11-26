@@ -14,23 +14,31 @@ SHA256SUMS lists the archives' SHA-256 in `sha256sum -c` form.
 
   rayopdf-VERSION-linux-x64-static.tar.gz   build/static/rayopdf (fully static, -static-pie)
   rayopdf-VERSION-linux-arm64-static.tar.gz build/arm64/rayopdf (the same for aarch64, cross-built)
+  rayopdf-VERSION-macos-arm64.tar.gz        build/macos-arm64/rayopdf (Apple Clang, macOS 11.0 or newer)
+  rayopdf-VERSION-macos-x64.tar.gz          build/macos-x64/rayopdf (Apple Clang, macOS 10.15 or newer)
   rayopdf-VERSION-windows-x64.zip           build/windows/rayopdf.exe (MinGW-w64, static)
 
-The C++ API's archives (--only lib-linux|lib-linux-arm64|lib-windows) hold, in a folder of the archive's name,
+The C++ API's archives (--only lib-linux|lib-linux-arm64|lib-macos-arm64|lib-macos-x64|lib-windows) hold,
+in a folder of the archive's name,
 include/rayopdf/rayopdf.h, lib/librayopdf.a (every module the command line links, merged by the
 build's rayopdf_bundle target), example.cpp and the core archives' documents and licences:
 
   rayopdf-lib-VERSION-linux-x64.tar.gz      build/static/librayopdf.a (GCC, x86-64 Linux)
   rayopdf-lib-VERSION-linux-arm64.tar.gz    build/arm64/librayopdf.a (GCC, aarch64 Linux)
+  rayopdf-lib-VERSION-macos-arm64.tar.gz    build/macos-arm64/librayopdf.a (libtool -static)
+  rayopdf-lib-VERSION-macos-x64.tar.gz      build/macos-x64/librayopdf.a
   rayopdf-lib-VERSION-windows-x64.zip       build/windows/librayopdf.a (MinGW-w64)
 
-The Python package's wheels (--only wheel-linux|wheel-linux-arm64|wheel-windows; tools/build_wheel.py writes them):
+The Python package's wheels (--only wheel-linux|wheel-linux-arm64|wheel-macos-arm64|wheel-macos-x64|
+wheel-windows; tools/build_wheel.py writes them):
 python/rayopdf with the C ABI's shared library in rayopdf/_lib/, the core archives' documents
 in the .dist-info folder:
 
   rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl    build/wheel/librayopdf.so (glibc <= 2.28)
   rayopdf-VERSION-py3-none-manylinux_2_28_aarch64.whl   build/wheel-arm64/librayopdf.so (the same, built
                                                         natively on an arm64 machine)
+  rayopdf-VERSION-py3-none-macosx_11_0_arm64.whl       build/macos-arm64-lib/librayopdf.dylib
+  rayopdf-VERSION-py3-none-macosx_10_15_x86_64.whl     build/macos-x64-lib/librayopdf.dylib
   rayopdf-VERSION-py3-none-win_amd64.whl                build/windows/rayopdf.dll (MinGW-w64)
 
 The npm package (--only npm), in npm pack's layout (one folder package/): packaging/npm's
@@ -60,6 +68,8 @@ Build the binaries first:
   python3 tools/dev.py build --config static
   python3 tools/dev.py build --config arm64                           # in rayopdf-cross:1
   python3 tools/dev.py --image rayopdf-build:2 build --config windows
+  python3 tools/dev.py build --config macos --dir macos-arm64         # on an arm64 Mac (macos-x64 on an Intel Mac)
+  python3 tools/dev.py build --config macos-lib --dir macos-arm64-lib --target rayopdf_c
   python3 tools/dev.py build --config wheel                           # in rayopdf-wheel:1
   python3 tools/dev.py build --config wasm                            # in rayopdf-wasm:1
   python3 tools/dev.py build --config ocr --target rayopdf-ocr        # in rayopdf-ocr:2
@@ -73,10 +83,14 @@ Usage:
                            [--lib-windows build/windows/librayopdf.a]
                            [--wheel-linux build/wheel/librayopdf.so] [--wheel-linux-arm64 build/wheel-arm64/librayopdf.so]
                            [--wheel-windows build/windows/rayopdf.dll]
+                           [--macos-arm64 build/macos-arm64] [--macos-x64 build/macos-x64]
+                           [--wheel-macos-arm64 build/macos-arm64-lib/librayopdf.dylib]
+                           [--wheel-macos-x64 build/macos-x64-lib/librayopdf.dylib]
                            [--npm build/wasm/rayopdf-core.mjs] [--out build/dist]
-                           [--only linux|linux-arm64|windows|lib-linux|lib-linux-arm64|lib-windows|wheel-linux|
-                                   wheel-linux-arm64|wheel-windows|npm|ocr-linux|ocr-windows|ocr-scripts-linux|
-                                   ocr-scripts-windows]
+                           [--only linux|linux-arm64|macos-arm64|macos-x64|windows|lib-linux|lib-linux-arm64|
+                                   lib-macos-arm64|lib-macos-x64|lib-windows|wheel-linux|wheel-linux-arm64|
+                                   wheel-macos-arm64|wheel-macos-x64|wheel-windows|npm|ocr-linux|ocr-windows|
+                                   ocr-scripts-linux|ocr-scripts-windows]
                            [--ocr] [--ocr-linux build/ocr/addon/rayopdf-ocr]
                            [--ocr-windows build/ocr-windows/addon/rayopdf-ocr.exe]
                            [--ocr-models build/ocr-models] [--ocr-tiers tiny,small]
@@ -294,8 +308,51 @@ def check_shared_linux(library: Path, machine: int = 62) -> None:
             raise SystemExit(f"package: {library} needs {name.decode()}: build it with --config wheel")
 
 
-def check_library(library: Path, windows: bool, machine: int = 62) -> None:
-    """A static library whose objects are ELF of `machine` (Linux) or x86-64 COFF (MinGW-w64)."""
+# The macOS archives by architecture: Mach-O CPU type, `uname -m` of a Mac that runs them, the
+# oldest macOS they start on (LC_BUILD_VERSION's minos; tools/dev.py MACOS_TARGETS).
+MACHO_CPUS = {"arm64": (0x0100000C, "arm64", (11, 0)), "x64": (0x01000007, "x86_64", (10, 15))}
+# The only libraries a macOS binary may load: the system's C++ runtime and libSystem.
+MACHO_DYLIBS = (b"/usr/lib/libc++.1.dylib", b"/usr/lib/libSystem.B.dylib")
+
+
+def check_macho(path: Path, arch: str, dylib: bool, version: str | None = None) -> None:
+    """A 64-bit Mach-O executable (or with `dylib` a shared library) of `arch`, for the archive's
+    oldest macOS, loading only MACHO_DYLIBS; on a Mac of that architecture `--version` is checked."""
+    cpu, host, minimum = MACHO_CPUS[arch]
+    data = path.read_bytes()
+    if data[:4] != b"\xcf\xfa\xed\xfe":
+        raise SystemExit(f"package: {path} is not a 64-bit Mach-O file: build it with --config macos on a Mac")
+    cputype, _, filetype, ncmds = struct.unpack_from("<IIII", data, 4)
+    if cputype != cpu:
+        raise SystemExit(f"package: {path} is not a macOS {arch} binary")
+    if filetype != (6 if dylib else 2):  # MH_DYLIB, MH_EXECUTE
+        raise SystemExit(f"package: {path} is not a {'shared library' if dylib else 'program'}")
+    at, minos, loads = 32, None, []
+    for _ in range(ncmds):
+        command, size = struct.unpack_from("<II", data, at)
+        if command == 0x32:  # LC_BUILD_VERSION: platform, minos, sdk, ntools
+            minos = struct.unpack_from("<I", data, at + 12)[0]
+        elif command == 0x24:  # LC_VERSION_MIN_MACOSX: version, sdk
+            minos = struct.unpack_from("<I", data, at + 8)[0]
+        elif command in (0xC, 0x80000018, 0x8000001F):  # LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB
+            offset = struct.unpack_from("<I", data, at + 8)[0]
+            loads.append(data[at + offset:at + size].split(b"\0")[0])
+        at += size
+    if minos is None or (minos >> 16, (minos >> 8) & 0xFF) != minimum:
+        found = "none" if minos is None else f"{minos >> 16}.{(minos >> 8) & 0xFF}"
+        raise SystemExit(f"package: {path} is for macOS {found}, not {minimum[0]}.{minimum[1]}")
+    for name in loads:
+        if name not in MACHO_DYLIBS:
+            raise SystemExit(f"package: {path} loads {name.decode(errors='replace')}")
+    if version and sys.platform == "darwin" and os.uname().machine == host:
+        out = subprocess.run([str(path), "--version"], capture_output=True, text=True).stdout.strip()
+        if out != f"rayopdf {version}":
+            raise SystemExit(f"package: {path} --version says {out!r}, VERSION says {version}")
+
+
+def check_library(library: Path, windows: bool, machine: int = 62, macho: str | None = None) -> None:
+    """A static library whose objects are ELF of `machine` (Linux), x86-64 COFF (MinGW-w64) or, with
+    `macho` (an architecture of MACHO_CPUS), Mach-O of that architecture."""
     data = library.read_bytes()
     if data[:8] != b"!<arch>\n":
         raise SystemExit(f"package: {library} is not a static library (ar archive)")
@@ -304,14 +361,20 @@ def check_library(library: Path, windows: bool, machine: int = 62) -> None:
         name = data[at:at + 16].rstrip()
         size = int(data[at + 48:at + 58])
         member = data[at + 60:at + 60 + size]
-        if name not in (b"/", b"//", b"/SYM64/"):  # symbol and long-name tables
-            if windows:
+        if name.startswith(b"#1/"):  # a BSD long name: its bytes open the member
+            length = int(name[3:])
+            name, member = member[:length].rstrip(b"\0"), member[length:]
+        if name not in (b"/", b"//", b"/SYM64/") and not name.startswith(b"__.SYMDEF"):  # symbol and name tables
+            if macho:
+                ok = member[:4] == b"\xcf\xfa\xed\xfe" and struct.unpack_from("<I", member, 4)[0] == MACHO_CPUS[macho][0]
+                platform, config = f"a macOS {macho} Mach-O", "macos"
+            elif windows:
                 ok = member[:2] == b"\x64\x86"
+                platform, config = "an x86-64 COFF", "windows"
             else:
                 ok = member[:4] == b"\x7fELF" and struct.unpack_from("<H", member, 18)[0] == machine
+                platform, config = f"an {ELF_MACHINES[machine][0]} ELF", ELF_MACHINES[machine][2]
             if not ok:
-                platform = "an x86-64 COFF" if windows else f"an {ELF_MACHINES[machine][0]} ELF"
-                config = "windows" if windows else ELF_MACHINES[machine][2]
                 raise SystemExit(f"package: {library} holds {name.decode(errors='replace')}, not {platform} object: "
                                  f"build it with --config {config}")
             return
@@ -412,9 +475,11 @@ def main() -> int:
     parser.add_argument("--linux-arm64", default="build/arm64/rayopdf", help="the linux-arm64-static binary")
     parser.add_argument("--windows", default="build/windows/rayopdf.exe", help="the windows-x64 binary")
     parser.add_argument("--out", default="build/dist", help="folder for the archives and SHA256SUMS")
-    parser.add_argument("--only", choices=("linux", "linux-arm64", "windows", "lib-linux", "lib-linux-arm64",
-                                           "lib-windows", "wheel-linux", "wheel-linux-arm64", "wheel-windows", "npm",
-                                           "ocr-linux", "ocr-windows", "ocr-scripts-linux", "ocr-scripts-windows"),
+    parser.add_argument("--only", choices=("linux", "linux-arm64", "macos-arm64", "macos-x64", "windows", "lib-linux",
+                                           "lib-linux-arm64", "lib-macos-arm64", "lib-macos-x64", "lib-windows",
+                                           "wheel-linux", "wheel-linux-arm64", "wheel-macos-arm64", "wheel-macos-x64",
+                                           "wheel-windows", "npm", "ocr-linux", "ocr-windows", "ocr-scripts-linux",
+                                           "ocr-scripts-windows"),
                         help="package one archive")
     parser.add_argument("--lib-linux", default="build/static/librayopdf.a", help="the linux-x64 C++ API library")
     parser.add_argument("--lib-linux-arm64", default="build/arm64/librayopdf.a",
@@ -425,6 +490,11 @@ def main() -> int:
     parser.add_argument("--wheel-linux-arm64", default="build/wheel-arm64/librayopdf.so",
                         help="the manylinux_2_28_aarch64 wheel's shared library (--config wheel on arm64)")
     parser.add_argument("--wheel-windows", default="build/windows/rayopdf.dll", help="the win_amd64 wheel's DLL")
+    for arch in MACHO_CPUS:
+        parser.add_argument(f"--macos-{arch}", default=f"build/macos-{arch}",
+                            help=f"the macos-{arch} build folder (rayopdf, librayopdf.a; --config macos)")
+        parser.add_argument(f"--wheel-macos-{arch}", default=f"build/macos-{arch}-lib/librayopdf.dylib",
+                            help=f"the macos-{arch} wheel's shared library (--config macos-lib)")
     parser.add_argument("--npm", default="build/wasm/rayopdf-core.mjs",
                         help="the npm package's WebAssembly module (rayopdf-core.wasm beside it; --config wasm)")
     parser.add_argument("--ocr", action="store_true", help="also package the OCR add-on's archives and script pack")
@@ -449,6 +519,14 @@ def main() -> int:
             name = f"rayopdf-{version}-linux-{arch}-static"
             tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs["core"], mtime)
             made.append(out / f"{name}.tar.gz")
+    for arch in MACHO_CPUS:
+        if args.only in (None, f"macos-{arch}"):
+            folder = Path(getattr(args, f"macos_{arch}"))
+            binary = (folder if folder.is_absolute() else REPO / folder) / "rayopdf"
+            check_macho(binary, arch, False, version)
+            name = f"rayopdf-{version}-macos-{arch}"
+            tar_gz(out / f"{name}.tar.gz", name, [("rayopdf", binary.read_bytes(), 0o755)] + docs["core"], mtime)
+            made.append(out / f"{name}.tar.gz")
     if args.only in (None, "windows"):
         binary = REPO / args.windows if not Path(args.windows).is_absolute() else Path(args.windows)
         check_windows(binary)
@@ -463,6 +541,14 @@ def main() -> int:
             name = f"rayopdf-lib-{version}-linux-{arch}"
             tar_gz(out / f"{name}.tar.gz", name, lib_entries(library, docs["core"]), mtime)
             made.append(out / f"{name}.tar.gz")
+    for arch in MACHO_CPUS:
+        if args.only in (None, f"lib-macos-{arch}"):
+            folder = Path(getattr(args, f"macos_{arch}"))
+            library = (folder if folder.is_absolute() else REPO / folder) / "librayopdf.a"
+            check_library(library, False, macho=arch)
+            name = f"rayopdf-lib-{version}-macos-{arch}"
+            tar_gz(out / f"{name}.tar.gz", name, lib_entries(library, docs["core"]), mtime)
+            made.append(out / f"{name}.tar.gz")
     if args.only in (None, "lib-windows"):
         library = REPO / args.lib_windows if not Path(args.lib_windows).is_absolute() else Path(args.lib_windows)
         check_library(library, True)
@@ -471,6 +557,8 @@ def main() -> int:
         made.append(out / f"{name}.zip")
     for part, platform, given in (("wheel-linux", "linux", args.wheel_linux),
                                   ("wheel-linux-arm64", "linux-arm64", args.wheel_linux_arm64),
+                                  ("wheel-macos-arm64", "macos-arm64", args.wheel_macos_arm64),
+                                  ("wheel-macos-x64", "macos-x64", args.wheel_macos_x64),
                                   ("wheel-windows", "windows", args.wheel_windows)):
         if args.only in (None, part):
             library = REPO / given if not Path(given).is_absolute() else Path(given)
@@ -478,6 +566,8 @@ def main() -> int:
                 check_shared_linux(library)
             elif platform == "linux-arm64":
                 check_shared_linux(library, 183)
+            elif platform.startswith("macos-"):
+                check_macho(library, platform.removeprefix("macos-"), True)
             else:
                 check_windows(library, dll=True)
             made.append(build_wheel.build(library, platform, version, out, docs["core"], mtime,

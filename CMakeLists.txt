@@ -19,8 +19,8 @@ option(RAYOPDF_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSaniti
 option(RAYOPDF_TSAN "Build with ThreadSanitizer" OFF)
 # libFuzzer targets of tests/fuzz (Clang only; implies the sanitizers).
 option(RAYOPDF_FUZZ "Build the libFuzzer targets of tests/fuzz" OFF)
-# The C ABI as a shared library (librayopdf.so, rayopdf.dll) for the Python package: every target
-# position-independent, and on ELF platforms hidden symbols but the C ABI's.
+# The C ABI as a shared library (librayopdf.so, librayopdf.dylib, rayopdf.dll) for the Python
+# package: every target position-independent, and outside Windows hidden symbols but the C ABI's.
 option(RAYOPDF_SHARED "Build the shared library of the C ABI" OFF)
 
 if(RAYOPDF_FUZZ)
@@ -49,6 +49,12 @@ if(EMSCRIPTEN)
 else()
     # Threads for the batch modes' workers (--batch, --serve --json --workers=N).
     find_package(Threads REQUIRED)
+endif()
+
+# Apple's ld (Xcode 15 on) warns of a static library named twice on a link line, which CMake writes
+# for a test that links a module and an object library depending on it; GNU ld says nothing.
+if(APPLE)
+    add_link_options(LINKER:-no_warn_duplicate_libraries)
 endif()
 
 # Flags of all own code: no exceptions and no RTTI anywhere (roadmap D1), warnings on. The same
@@ -263,25 +269,39 @@ if(TARGET rayopdf_api AND NOT EMSCRIPTEN)
 endif()
 
 # The C++ API as one library for the release's lib archives (tools/package.py): librayopdf.a in the
-# build directory, every module the command line links merged by an `ar -M` script. Built by the
-# static and Windows builds, whose objects need no shared runtime.
-if(TARGET rayopdf_api AND (RAYOPDF_STATIC OR WIN32))
+# build directory, every module the command line links merged by an `ar -M` script, on macOS by
+# Apple's `libtool -static` (whose ar has no scripts; ZERO_AR_DATE keeps the member times at 0 so
+# that two builds give the same bytes). Built by the static, Windows and macOS builds, whose
+# objects need no shared runtime of their own.
+if(TARGET rayopdf_api AND (RAYOPDF_STATIC OR WIN32 OR (APPLE AND NOT RAYOPDF_SHARED)))
     set(bundle "${CMAKE_BINARY_DIR}/librayopdf.a")
     set(bundle_script "${CMAKE_BINARY_DIR}/librayopdf.mri")
     set(bundle_libraries)
+    set(bundle_files)
     set(content "CREATE ${bundle}\n")
     foreach(module api layout text image pdf raster crypt common)
         string(APPEND content "ADDLIB $<TARGET_FILE:rayopdf_${module}>\n")
         list(APPEND bundle_libraries rayopdf_${module})
+        list(APPEND bundle_files $<TARGET_FILE:rayopdf_${module}>)
     endforeach()
-    string(APPEND content "SAVE\nEND\n")
-    file(GENERATE OUTPUT "${bundle_script}" CONTENT "${content}")
-    add_custom_command(OUTPUT "${bundle}"
-        COMMAND ${CMAKE_COMMAND} -E remove -f "${bundle}"
-        COMMAND sh -c "\"${CMAKE_AR}\" -M < \"${bundle_script}\""
-        DEPENDS ${bundle_libraries} "${bundle_script}"
-        COMMENT "Merging the modules into librayopdf.a"
-        VERBATIM)
+    if(APPLE)
+        add_custom_command(OUTPUT "${bundle}"
+            COMMAND ${CMAKE_COMMAND} -E remove -f "${bundle}"
+            COMMAND ${CMAKE_COMMAND} -E env ZERO_AR_DATE=1 libtool -static -no_warning_for_no_symbols
+                    -o "${bundle}" ${bundle_files}
+            DEPENDS ${bundle_libraries}
+            COMMENT "Merging the modules into librayopdf.a"
+            VERBATIM)
+    else()
+        string(APPEND content "SAVE\nEND\n")
+        file(GENERATE OUTPUT "${bundle_script}" CONTENT "${content}")
+        add_custom_command(OUTPUT "${bundle}"
+            COMMAND ${CMAKE_COMMAND} -E remove -f "${bundle}"
+            COMMAND sh -c "\"${CMAKE_AR}\" -M < \"${bundle_script}\""
+            DEPENDS ${bundle_libraries} "${bundle_script}"
+            COMMENT "Merging the modules into librayopdf.a"
+            VERBATIM)
+    endif()
     add_custom_target(rayopdf_bundle ALL DEPENDS "${bundle}")
 endif()
 
@@ -397,10 +417,15 @@ elseif(RAYOPDF_TESTS)
                 --binary $<TARGET_FILE:rayopdf-ocr> --models "${RAYOPDF_OCR_MODELS}" ${rayopdf_emulator})
         endif()
     endif()
-    # The Python package over librayopdf.so (tests/verify_python.py; the wheel config).
+    # The Python package over librayopdf.so or librayopdf.dylib (tests/verify_python.py; the wheel
+    # and macos-lib configs). ELF libraries are read with the toolchain's objdump, Mach-O with nm.
     if(Python3_Interpreter_FOUND AND TARGET rayopdf_c AND NOT WIN32)
+        set(rayopdf_objdump)
+        if(NOT APPLE)
+            set(rayopdf_objdump --objdump "${CMAKE_OBJDUMP}")
+        endif()
         add_test(NAME python COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_python.py"
-            --library $<TARGET_FILE:rayopdf_c> --objdump "${CMAKE_OBJDUMP}")
+            --library $<TARGET_FILE:rayopdf_c> ${rayopdf_objdump})
         set_tests_properties(python PROPERTIES ENVIRONMENT "${rayopdf_test_environment}")
     endif()
 endif()

@@ -61,7 +61,11 @@ guides in `docs/guide/`, the benchmark summary and records, research and roadmap
 9. Engine code follows `docs/development/roadmap.md` § Engineering conventions.
 
 10. Build and test only through `tools/dev.py`, which runs the compilers in the
-    `rayopdf-build:2` image. Every change keeps `python3 tools/dev.py test --config asan` passing
+    `rayopdf-build:2` image (or the config's image); the one exception is macOS, which has no
+    container of its own system: its configs `macos` and `macos-lib` run on a Mac with the host's
+    toolchain, pinned by `tools/dev.py` (Xcode through `DEVELOPER_DIR`, CMake and Ninja by
+    version), and `tools/dev.py` refuses them elsewhere. Every change keeps
+    `python3 tools/dev.py test --config asan` passing
     and a fresh build free of compiler warnings. Core tests live in
     `tests/test_<module>[_<part>].cpp`, every check with its own code in the range `tests/check.h`
     lists; `tests/verify_cli.py` checks the built binary. Every parser of untrusted input has a
@@ -97,5 +101,7 @@ guides in `docs/guide/`, the benchmark summary and records, research and roadmap
     build image on pull requests, tags `v*`, once a night and by hand, never on pushes to master;
     keep it so, with `concurrency` that cancels superseded runs and `timeout-minutes` on every
     job. A workflow runs the same `tools/` commands a developer runs, in the image built from
-    `docker/build.Dockerfile` (`.github/actions/build-image`), or for the `wheel` and `wasm`
-    configs the one `tools/dev.py image --name wheel|wasm` builds, not its own build steps.
+    `docker/build.Dockerfile` (`.github/actions/build-image`), or for the `wheel`, `wasm` and
+    `arm64` configs the one `tools/dev.py image --name wheel|wasm|cross` builds, or on the macOS
+    runners (which have no Docker) `tools/dev.py`'s `macos` configs with the pinned host tools,
+    not its own build steps.

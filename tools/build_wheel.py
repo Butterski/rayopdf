@@ -10,18 +10,22 @@ else the time of the HEAD commit), so the same library gives the same bytes.
 
   rayopdf-VERSION-py3-none-manylinux_2_28_x86_64.whl    build/wheel/librayopdf.so
   rayopdf-VERSION-py3-none-manylinux_2_28_aarch64.whl   build/wheel-arm64/librayopdf.so
+  rayopdf-VERSION-py3-none-macosx_11_0_arm64.whl        build/macos-arm64-lib/librayopdf.dylib
+  rayopdf-VERSION-py3-none-macosx_10_15_x86_64.whl      build/macos-x64-lib/librayopdf.dylib
   rayopdf-VERSION-py3-none-win_amd64.whl                build/windows/rayopdf.dll
 
 Build the libraries first:
   python3 tools/dev.py build --config wheel      # in rayopdf-wheel:1 (manylinux_2_28)
   python3 tools/dev.py build --config wheel --dir wheel-arm64   # the same on an arm64 machine
+  python3 tools/dev.py build --config macos-lib --dir macos-arm64-lib --target rayopdf_c   # on an arm64 Mac
   python3 tools/dev.py build --config windows
 
-tools/package.py builds the same wheels (parts wheel-linux, wheel-linux-arm64 and wheel-windows)
-beside the release archives and lists them in SHA256SUMS.
+tools/package.py builds the same wheels (parts wheel-linux, wheel-linux-arm64, wheel-macos-arm64,
+wheel-macos-x64 and wheel-windows) beside the release archives and lists them in SHA256SUMS.
 
 Usage:
-  python3 tools/build_wheel.py --platform linux|linux-arm64|windows [--library PATH] [--out build/dist]
+  python3 tools/build_wheel.py --platform linux|linux-arm64|macos-arm64|macos-x64|windows [--library PATH]
+                               [--out build/dist]
 """
 
 from __future__ import annotations
@@ -38,6 +42,8 @@ REPO = Path(__file__).resolve().parent.parent
 PLATFORMS = {
     "linux": ("manylinux_2_28_x86_64", "librayopdf.so", "build/wheel/librayopdf.so"),
     "linux-arm64": ("manylinux_2_28_aarch64", "librayopdf.so", "build/wheel-arm64/librayopdf.so"),
+    "macos-arm64": ("macosx_11_0_arm64", "librayopdf.dylib", "build/macos-arm64-lib/librayopdf.dylib"),
+    "macos-x64": ("macosx_10_15_x86_64", "librayopdf.dylib", "build/macos-x64-lib/librayopdf.dylib"),
     "windows": ("win_amd64", "rayopdf.dll", "build/windows/rayopdf.dll"),
 }
 SUMMARY = "PDF to Markdown, JSON and chunks for retrieval, in process: RayoPDF's converter"
@@ -118,6 +124,8 @@ def main() -> int:
         package.check_shared_linux(library)
     elif args.platform == "linux-arm64":
         package.check_shared_linux(library, 183)
+    elif args.platform.startswith("macos-"):
+        package.check_macho(library, args.platform.removeprefix("macos-"), True)
     else:
         package.check_windows(library, dll=True)
     version = (REPO / "VERSION").read_text(encoding="utf-8").strip()

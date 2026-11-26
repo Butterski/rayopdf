@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Checks of the Python package (python/rayopdf) over a built librayopdf.so: Markdown, the JSON
-document, chunks, the error classes, and the library's ABI (an ELF shared object of this machine's
-architecture, x86-64 or aarch64; with `objdump -T`: no glibc symbol version above 2.28, the
-manylinux_2_28 wheels' promise, and only rayopdf_* functions exported).
+"""Checks of the Python package (python/rayopdf) over a built librayopdf.so or librayopdf.dylib:
+Markdown, the JSON document, chunks, the error classes, and the library's ABI: a library of this
+machine's architecture (ELF x86-64 or aarch64, Mach-O arm64 or x86_64) exporting only the rayopdf_*
+functions; an ELF one (read with `objdump -T`) with no glibc symbol version above 2.28, the
+manylinux_2_28 wheels' promise.
 The package is copied with the library into a temporary folder and imported from there; the PDF
 is built by the script.
 
 Usage:
   python3 tests/verify_python.py --library build/wheel/librayopdf.so [--objdump objdump]
+  python3 tests/verify_python.py --library build/macos-lib/librayopdf.dylib   # macOS: Mach-O, read with nm
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ REPO = Path(__file__).resolve().parent.parent
 MAX_GLIBC = (2, 28)
 # ELF e_machine of the architectures the wheels are built for, by platform.machine().
 ELF_MACHINES = {"x86_64": 62, "aarch64": 183}
+# Mach-O CPU types by platform.machine() (macOS).
+MACHO_CPUS = {"arm64": 0x0100000C, "x86_64": 0x01000007}
 
 
 def one_page_pdf(text: str) -> bytes:
@@ -57,8 +61,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
-    parser.add_argument("--library", required=True, help="the built librayopdf.so")
-    parser.add_argument("--objdump", default="objdump", help="objdump of the toolchain")
+    parser.add_argument("--library", required=True, help="the built librayopdf.so or librayopdf.dylib")
+    parser.add_argument("--objdump", default="objdump", help="objdump of the toolchain (ELF libraries)")
     args = parser.parse_args()
     failures: list[str] = []
 
@@ -67,16 +71,24 @@ def main() -> int:
             failures.append(what)
             print(f"FAIL {what}", file=sys.stderr)
 
-    header = Path(args.library).read_bytes()[:20]
-    check(header[:4] == b"\x7fELF" and len(header) == 20 and
-          struct.unpack_from("<H", header, 18)[0] == ELF_MACHINES.get(platform.machine()),
-          f"an ELF library of this machine ({platform.machine()})")
-    symbols = subprocess.run([args.objdump, "-T", args.library], capture_output=True, text=True, check=True).stdout
-    versions = {tuple(int(n) for n in m) for m in re.findall(r"GLIBC_(\d+)\.(\d+)", symbols)}
-    check(bool(versions) and max(versions) <= MAX_GLIBC,
-          f"glibc symbol versions at most {MAX_GLIBC}: {sorted(versions)[-1:] if versions else 'none'}")
-    exported = sorted(line.split()[-1] for line in symbols.splitlines()
-                      if " DF " in line and "*UND*" not in line)
+    data = Path(args.library).read_bytes()
+    if data[:4] == b"\xcf\xfa\xed\xfe":  # Mach-O, 64-bit little-endian: librayopdf.dylib
+        name = "librayopdf.dylib"
+        check(struct.unpack_from("<I", data, 4)[0] == MACHO_CPUS.get(platform.machine()),
+              f"a Mach-O library of this machine ({platform.machine()})")
+        symbols = subprocess.run(["nm", "-gU", args.library], capture_output=True, text=True, check=True).stdout
+        exported = sorted(line.split()[-1].removeprefix("_") for line in symbols.splitlines() if line.strip())
+    else:
+        name = "librayopdf.so"
+        check(data[:4] == b"\x7fELF" and len(data) >= 20 and
+              struct.unpack_from("<H", data, 18)[0] == ELF_MACHINES.get(platform.machine()),
+              f"an ELF library of this machine ({platform.machine()})")
+        symbols = subprocess.run([args.objdump, "-T", args.library], capture_output=True, text=True, check=True).stdout
+        versions = {tuple(int(n) for n in m) for m in re.findall(r"GLIBC_(\d+)\.(\d+)", symbols)}
+        check(bool(versions) and max(versions) <= MAX_GLIBC,
+              f"glibc symbol versions at most {MAX_GLIBC}: {sorted(versions)[-1:] if versions else 'none'}")
+        exported = sorted(line.split()[-1] for line in symbols.splitlines()
+                          if " DF " in line and "*UND*" not in line)
     check(exported == ["rayopdf_convert", "rayopdf_output_free", "rayopdf_version"],
           f"exports exactly the C ABI: {exported}")
 
@@ -84,7 +96,7 @@ def main() -> int:
         package = Path(work) / "rayopdf"
         shutil.copytree(REPO / "python" / "rayopdf", package)
         (package / "_lib").mkdir()
-        shutil.copy(args.library, package / "_lib" / "librayopdf.so")
+        shutil.copy(args.library, package / "_lib" / name)
         sys.path.insert(0, work)
         import rayopdf
 

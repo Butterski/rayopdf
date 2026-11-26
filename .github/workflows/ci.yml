@@ -111,3 +111,52 @@ jobs:
         run: |
           python3 tools/dev.py image --name wheel
           python3 tools/dev.py test --config wheel
+
+  macos:
+    # macOS on arm64 (macos-15) and x64 (macos-15-intel): no Docker there, so tools/dev.py builds
+    # its macos configs with the runner's Xcode 16.4 and the pinned CMake and Ninja. On tags and
+    # manual runs only.
+    name: macOS ${{ matrix.arch }}, tests, Python package, fuzz regressions through the CLI
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: CMake 3.31.6 and Ninja 1.13.2
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/python" -m pip install --disable-pip-version-check --quiet cmake==3.31.6 ninja==1.13.2
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+      - name: Build without compiler warnings
+        run: |
+          python3 tools/dev.py build --config macos 2>&1 | tee build-macos.log
+          if grep -n 'warning:' build-macos.log; then
+            echo "::error::the macOS build has compiler warnings"
+            exit 1
+          fi
+      - name: Tests
+        run: python3 tools/dev.py test --config macos
+      - name: Tests, shared library and Python package
+        run: python3 tools/dev.py test --config macos-lib
+      - name: The CLI over the fuzz regressions, four page threads
+        run: |
+          # Any exit code of the converter is an answer; a signal (code 128 or above) is a crash.
+          for input in $(find tests/fuzz/regressions -type f | sort); do
+            code=0
+            build/macos/rayopdf --convert "$input" "$RUNNER_TEMP/out.md" --workers=4 --images=none > /dev/null 2>&1 || code=$?
+            echo "$input: exit code $code"
+            if [ "$code" -ge 128 ]; then
+              echo "::error::$input: rayopdf ended by signal $((code - 128))"
+              exit 1
+            fi
+          done

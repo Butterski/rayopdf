@@ -38,6 +38,18 @@ python3 tools/fuzz.py replay                  # every fuzz target over the commi
 python3 tools/check_repo.py                   # the repository's rules that need no build
 ```
 
+On a Mac the configs `macos` (the CLI, `librayopdf.a`, the core tests and the CLI verifier) and
+`macos-lib` (`librayopdf.dylib` and the Python package) run with the host's toolchain instead,
+which `tools/dev.py` pins: Xcode 16.4 (`DEVELOPER_DIR`, by default
+`/Applications/Xcode_16.4.app/Contents/Developer`), CMake 3.31.6 and Ninja 1.13.2
+(`python3 -m pip install cmake==3.31.6 ninja==1.13.2`, in a virtual environment). Elsewhere it
+refuses them; nobody needs a Mac for a change, since CI runs them (below).
+
+```sh
+python3 tools/dev.py test --config macos      # build/macos/rayopdf for this Mac's architecture
+python3 tools/dev.py test --config macos-lib  # librayopdf.dylib and tests/verify_python.py
+```
+
 Before a change is proposed: `test --config asan` passes, a fresh build has no compiler
 warning and `tools/check_repo.py` finds nothing (the Repository Hygiene workflow runs it on
 every push). Changes to threads also pass `--config tsan`; changes to files, paths or processes also
@@ -50,9 +62,10 @@ The CI workflow (`.github/workflows/ci.yml`) runs the same commands in the same 
 requests and once a night when master changed: the release build without warnings, the tests in
 release and ASan + UBSan, and the fuzz regressions; on a tag `v*` and by hand
 (`gh workflow run ci.yml`) also ThreadSanitizer, Windows, the wheel config and the wasm config,
-and on GitHub's arm64 runner (`ubuntu-24.04-arm`) the release build, the tests in release and
-ASan + UBSan, the fuzz regressions and the wheel config natively for Linux arm64.
-It does not run on pushes to master.
+on GitHub's arm64 runner (`ubuntu-24.04-arm`) the release build, the tests in release and
+ASan + UBSan, the fuzz regressions and the wheel config natively for Linux arm64, and on the
+`macos-15` (arm64) and `macos-15-intel` (x64) runners the `macos` and `macos-lib` configs and the
+CLI over the fuzz regressions with four page threads. It does not run on pushes to master.
 
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range
 `tests/check.h` lists, and build the PDFs they read in memory. `tests/verify_cli.py` checks the

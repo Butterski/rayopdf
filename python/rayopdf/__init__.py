@@ -2,7 +2,8 @@
 """RayoPDF: PDF to Markdown in the calling process.
 
 The package wraps the converter's C ABI (include/rayopdf/rayopdf_c.h) with ctypes; the library,
-librayopdf.so or rayopdf.dll, lies in the package's _lib folder and needs nothing else installed.
+librayopdf.so, librayopdf.dylib or rayopdf.dll, lies in the package's _lib folder and needs nothing
+else installed.
 
     import rayopdf
 
@@ -113,7 +114,8 @@ def _lib() -> ctypes.CDLL:
     global _library
     with _library_lock:
         if _library is None:
-            name = "rayopdf.dll" if sys.platform == "win32" else "librayopdf.so"
+            name = ("rayopdf.dll" if sys.platform == "win32" else
+                    "librayopdf.dylib" if sys.platform == "darwin" else "librayopdf.so")
             library = ctypes.CDLL(str(Path(__file__).resolve().parent / "_lib" / name))
             library.rayopdf_convert.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_char_p),
                                                 ctypes.c_size_t, ctypes.POINTER(_Output)]
