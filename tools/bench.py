@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Measure RayoPDF's speed the way docs/development/performance.md and the version records do.
 
-Every measurement runs in Docker, without network, on the CPUs given: RayoPDF's binaries in the
-measuring image rayopdf-perf:1 (docker/perf.Dockerfile: the build image plus valgrind and perf),
+Every measurement but `hashes` runs in Docker, without network, on the CPUs given: RayoPDF's
+binaries in the measuring image rayopdf-perf:1 (docker/perf.Dockerfile: the build image plus
+valgrind and perf),
 its WebAssembly module in rayopdf-wasm:1 (docker/wasm.Dockerfile, Node.js 22), other tools in
 their evaluation images rayopdf-eval-<tool>:1 (`tools/eval.py images`). Binaries
 and documents are mounted read-only, outputs go to a RAM disk inside the container, and
@@ -48,6 +49,15 @@ Usage:
       --b-emulator runs B through that program in the container, --image names the container's
       image (default rayopdf-perf:1): a static Linux arm64 binary against the x64 one with
       `--b-emulator qemu-aarch64-static --image rayopdf-cross:1` (`tools/dev.py image --name cross`).
+
+  python3 tools/bench.py hashes --bin PATH --dir DIR [--dir ...] [--set NAME=OPTIONS ...] [--jobs N]
+                                --json FILE
+  python3 tools/bench.py hashes --compare A.json B.json [--show 20]
+      Output identity across machines. On this host, without Docker (macOS runners have none):
+      every PDF under the folders converted by the binary with each option set, as `identical`
+      does, and the exit code, the SHA-256 of the --report record without "ms" and of every file
+      written kept in --json; --compare prints the outputs that differ between the files of two
+      platforms and exits with 1 when any does.
 
   python3 tools/bench.py instr --bin NAME=PATH [--bin ...] --doc PDF [--doc ...]
                                [--opt=--images=none ...] [--n 5] [--cpus LIST]
@@ -480,15 +490,21 @@ def inside_identical(job: dict) -> dict:
     return {"comparisons": len(work), "differ": len(differences), "differences": differences}
 
 
-def cmd_identical(args) -> int:
-    a, b = existing_file(args.a), existing_file(args.b)
-    docs = documents(args.input, recursive=True)
+def option_sets(values: list[str] | None) -> list[tuple[str, list[str]]]:
+    """--set NAME=OPTIONS arguments as (name, options); default none=--images=none and images=."""
     sets = []
-    for value in args.set or ["none=--images=none", "images="]:
+    for value in values or ["none=--images=none", "images="]:
         name, sep, options = value.partition("=")
         if not sep or not name:
             raise SystemExit(f"bench: --set takes NAME=OPTIONS, got {value!r}")
         sets.append((name, shlex.split(options)))
+    return sets
+
+
+def cmd_identical(args) -> int:
+    a, b = existing_file(args.a), existing_file(args.b)
+    docs = documents(args.input, recursive=True)
+    sets = option_sets(args.set)
     job = {"task": "identical", "a": a, "b": b, "a_opts": args.a_opt, "b_opts": args.b_opt, "docs": docs,
            "sets": sets, "jobs": args.jobs, "timeout": args.timeout,
            "b_emulator": [args.b_emulator] if args.b_emulator else []}
@@ -508,6 +524,70 @@ def cmd_identical(args) -> int:
         text += f"\n  ... and {result['differ'] - args.show} more (--json FILE has all)"
     finish(args, result, text)
     return 1 if result["differ"] else 0
+
+
+# ---- hashes --------------------------------------------------------------------------------------
+
+def output_hashes(binary: str, doc: str, opts: list[str], folder: Path, timeout: int) -> dict:
+    """Exit code, SHA-256 of the --report record without "ms" and of every file one conversion writes."""
+    folder.mkdir(parents=True)
+    env = dict(os.environ, RAYOPDF_OCR=NO_OCR.split("=", 1)[1])
+    try:
+        res = subprocess.run([binary, "--convert", doc, "out.md", "--report"] + opts, cwd=folder, env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
+        code, report = res.returncode, REPORT_MS.sub(b"", res.stdout)
+    except subprocess.TimeoutExpired:
+        code, report = "timeout", b""
+    files = {name: hashlib.sha256((folder / name).read_bytes()).hexdigest() for name in tree(str(folder))}
+    shutil.rmtree(folder)
+    return {"exit": code, "report": hashlib.sha256(report).hexdigest(), "files": files}
+
+
+def compare_hashes(paths: list[str], show: int) -> int:
+    """The documents whose outputs differ between the hashes files of two platforms."""
+    a, b = (json.loads(Path(path).read_text(encoding="utf-8")) for path in paths)
+    lines, differ, compared = [], 0, 0
+    for name in a["hashes"]:
+        left, right = a["hashes"][name], b["hashes"].get(name, {})
+        for label in sorted(set(left) | set(right)):
+            compared += 1
+            if left.get(label) != right.get(label):
+                differ += 1
+                what = ("only in one" if label not in left or label not in right else
+                        "; ".join(k for k in ("exit", "report") if left[label][k] != right[label][k]) or
+                        ", ".join(sorted(f for f in set(left[label]["files"]) | set(right[label]["files"])
+                                         if left[label]["files"].get(f) != right[label]["files"].get(f))))
+                if differ <= show:
+                    lines.append(f"  {name} {label}: {what}")
+    print(f"hashes: {paths[0]} ({a['platform']}) against {paths[1]} ({b['platform']}): {compared} outputs "
+          f"compared, {differ} differ" + "".join("\n" + line for line in lines) +
+          (f"\n  ... and {differ - show} more" if differ > show else ""))
+    return 1 if differ else 0
+
+
+def cmd_hashes(args) -> int:
+    if args.compare:
+        return compare_hashes(args.compare, args.show)
+    if not args.bin or not args.dir or not args.json:
+        raise SystemExit("bench: hashes needs --bin, --dir and --json (or --compare A B)")
+    binary = existing_file(args.bin)
+    docs = documents(args.dir, recursive=True)
+    sets = option_sets(args.set)
+    work = [(name, opts, label, doc) for name, opts in sets for label, doc in docs]
+    with tempfile.TemporaryDirectory() as scratch, \
+            concurrent.futures.ThreadPoolExecutor(args.jobs or os.cpu_count() or 1) as pool:
+        futures = [pool.submit(output_hashes, binary, doc, opts, Path(scratch) / str(i), args.timeout)
+                   for i, (_, opts, _, doc) in enumerate(work)]
+        hashes: dict[str, dict] = {name: {} for name, _ in sets}
+        for (name, _, label, _), future in zip(work, futures):
+            hashes[name][label] = future.result()
+    failed = sum(1 for entries in hashes.values() for entry in entries.values() if entry["exit"] == "timeout")
+    result = {"command": "hashes", "scope": scope(), "platform": f"{platform.system()} {platform.machine()}",
+              "bin": binary, "inputs": args.dir, "sets": {name: opts for name, opts in sets},
+              "documents": len(docs), "timeouts": failed, "hashes": hashes}
+    finish(args, result, f"hashes: {len(work)} outputs of {binary} ({result['platform']}; {len(docs)} documents, "
+                         f"option sets {', '.join(name for name, _ in sets)}), {failed} timed out")
+    return 1 if failed else 0
 
 
 # ---- instr ---------------------------------------------------------------------------------------
@@ -971,7 +1051,7 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
     sub = parser.add_subparsers(dest="command", required=True,
-                                metavar="{warm,fresh,identical,instr,tools,pages,serve,wasm}")
+                                metavar="{warm,fresh,identical,hashes,instr,tools,pages,serve,wasm}")
 
     def add(name: str, func, text: str | None):
         p = sub.add_parser(name, help=text)
@@ -1019,6 +1099,17 @@ def main() -> int:
     p.add_argument("--show", type=int, default=20, help="differences to print (default 20)")
     p.add_argument("--b-emulator", metavar="PROGRAM", help="run B through this program (qemu-aarch64-static)")
     p.add_argument("--image", default=PERF_IMAGE, help=f"the container's image (default {PERF_IMAGE})")
+
+    p = add("hashes", cmd_hashes, "SHA-256 of every output of one binary, on this host (no Docker)")
+    p.add_argument("--bin", help="the binary")
+    p.add_argument("--dir", action="append", help="a folder of PDFs, subfolders included")
+    p.add_argument("--set", action="append", metavar="NAME=OPTIONS",
+                   help="an option set under a name (default: none=--images=none and images=)")
+    p.add_argument("--jobs", type=int, default=0, help="conversions at once (default: one a CPU)")
+    p.add_argument("--timeout", type=int, default=300, help="seconds a conversion may take (default 300)")
+    p.add_argument("--compare", nargs=2, metavar=("A.json", "B.json"),
+                   help="compare the --json files of two runs instead (exit 1 when an output differs)")
+    p.add_argument("--show", type=int, default=20, help="differences to print with --compare (default 20)")
 
     p = add("instr", cmd_instr, "instructions a conversion under callgrind")
     binaries_and_options(p)

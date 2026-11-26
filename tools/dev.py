@@ -30,7 +30,9 @@ rayopdf-core.wasm for the npm package; `test` runs tests/verify_wasm.mjs under N
 static -static-pie binary of the linux-arm64-static release and librayopdf.a of its lib archive;
 `test` runs the core tests and the CLI verifier under qemu-aarch64-static, except the two tests
 that start the stand-in OCR add-on, layout_ocr and layout_glyph: a process under qemu-user can
-start no aarch64 program; they run natively on an aarch64 machine), and the OCR add-on's configs,
+start no aarch64 program; they run natively on an aarch64 machine), libcxx (Clang 18 with libc++,
+static, in the rayopdf-cross:1 image: the output against libstdc++'s, for the macOS builds' standard
+library), and the OCR add-on's configs,
 which run in the rayopdf-ocr:2 image (docker/ocr.Dockerfile: the ncnn runtime and the models)
 unless --image says otherwise: ocr (static release with the add-on rayopdf-ocr, tests including
 tests/verify_ocr.py with the image's models), ocr-windows (MinGW-w64 rayopdf-ocr.exe, tests under
@@ -60,8 +62,8 @@ IMAGES = {"build": ("build.Dockerfile", IMAGE), "cross": ("cross.Dockerfile", "r
           "ocr": ("ocr.Dockerfile", "rayopdf-ocr:2"), "wheel": ("wheel.Dockerfile", "rayopdf-wheel:1"),
           "wasm": ("wasm.Dockerfile", "rayopdf-wasm:1")}
 # Configs that build in another image than the build image.
-CONFIG_IMAGES = {"arm64": "rayopdf-cross:1", "ocr": "rayopdf-ocr:2", "ocr-windows": "rayopdf-ocr:2",
-                 "wheel": "rayopdf-wheel:1", "wasm": "rayopdf-wasm:1"}
+CONFIG_IMAGES = {"arm64": "rayopdf-cross:1", "libcxx": "rayopdf-cross:1", "ocr": "rayopdf-ocr:2",
+                 "ocr-windows": "rayopdf-ocr:2", "wheel": "rayopdf-wheel:1", "wasm": "rayopdf-wasm:1"}
 # Configs whose configure step runs through a wrapper (Emscripten's emcmake: its toolchain file).
 CONFIG_WRAPPERS = {"wasm": "emcmake"}
 # ctest arguments of a config's `test`: under qemu-user the tests that start an add-on are left out.
@@ -90,6 +92,8 @@ CONFIGS = {
                 PE_NO_TIMESTAMP, PE_DLL_NO_TIMESTAMP, "-DRAYOPDF_SHARED=ON"],
     "wheel": ["-DCMAKE_BUILD_TYPE=Release", "-DRAYOPDF_SHARED=ON"],
     "wasm": ["-DCMAKE_BUILD_TYPE=Release"],
+    "libcxx": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=clang-18", "-DCMAKE_CXX_COMPILER=clang++-18",
+               "-DCMAKE_CXX_FLAGS=-stdlib=libc++", "-DCMAKE_EXE_LINKER_FLAGS=-stdlib=libc++", "-DRAYOPDF_STATIC=ON"],
     "arm64": ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Linux", "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
               "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc-13", "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++-13",
               "-DCMAKE_CROSSCOMPILING_EMULATOR=qemu-aarch64-static", "-DRAYOPDF_STATIC=ON"],
