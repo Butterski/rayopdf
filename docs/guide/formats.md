@@ -107,6 +107,7 @@ Top level:
 | `repaired` | `true` when the file was damaged and repaired (text may be missing). |
 | `metadata` | The document information fields that are not empty: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`. Dates are `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the PDF gives an offset; a date that does not parse stays as the PDF wrote it. |
 | `pages` | One object a converted page: `page` (its number in the file, from 1), `width` and `height` in points. |
+| `outline` | Only when the PDF has an outline (bookmarks): one `{"level","title","page"}` an entry, depth first, `level` 1 for the top level, `page` the page its destination leads to (`null` when it leads to none). Entries outside `--pages` are listed too. |
 | `blocks` | The content, in reading order. |
 
 Every block has, in this order:

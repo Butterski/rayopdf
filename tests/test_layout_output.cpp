@@ -7,6 +7,7 @@
 // 2650-2699.
 #include "check.h"
 #include "exact_builder.h"
+#include "pdf_builder.h"
 
 #include "common/utf8.h"
 #include "layout/convert.h"
@@ -862,6 +863,72 @@ void TestJsonDetail() {
     RAYOPDF_CHECK(Strings(Run(BulletPage, JsonSettings(JsonDetail::Lines)), "text") == items, 2654);
 }
 
+// A PDF of `count` pages (at most 6), each with a sentence of its own in the middle of the page
+// (page 1: "Alpha is the first page."): the catalog is object 1, the page tree 2, page N object
+// N + 2; `extra` bodies follow as objects 2 * count + 3 on. `catalog` adds entries to the catalog,
+// `trailer` to the trailer.
+std::string PagesPdf(int count, const std::string& catalog, const std::vector<std::string>& extra = {},
+                     const std::string& trailer = "") {
+    static const char* const kWords[] = {"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"};
+    static const char* const kOrdinals[] = {"first", "second", "third", "fourth", "fifth", "sixth"};
+    Test::PdfBuilder b;
+    const int root = b.Reserve();
+    const int tree = b.Reserve();
+    std::string kids;
+    for (int n = 1; n <= count; ++n) kids += std::to_string(b.Reserve()) + " 0 R ";
+    for (int n = 1; n <= count; ++n) {
+        const int content = b.AddFlateStream("", std::string("BT /F1 12 Tf 72 ") + std::to_string(500 - 40 * n) + " Td (" +
+                                                     kWords[n - 1] + " is the " + kOrdinals[n - 1] + " page.) Tj ET");
+        b.Set(n + 2, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font "
+                     "/Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents " + std::to_string(content) + " 0 R >>");
+    }
+    for (const std::string& body : extra) b.Add(body);
+    b.Set(root, "<< /Type /Catalog /Pages 2 0 R " + catalog + " >>");
+    b.Set(tree, "<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(count) + " >>");
+    return b.Build(root, trailer);
+}
+
+std::string ConvertPdf(const std::string& pdf, const ConvertOptions& options) {
+    std::unique_ptr<Document> document;
+    RAYOPDF_CHECK(Document::Open(pdf, "", document) == OpenStatus::Ok, 2659);
+    std::string out;
+    ConvertReport report;
+    Convert(*document, options, out, report);
+    return out;
+}
+
+// The outline with each item's page: an explicit destination, a GoTo action to a string in the
+// /Names /Dests name tree (two kids with /Limits; one value a dictionary with /D), a name in the
+// catalog's /Dests, and a destination that leads nowhere.
+void TestOutlineTargets() {
+    // Pages 3, 4, 5; outline items 9-12, the outline root 13, the name tree 14-16.
+    const std::vector<std::string> extra = {
+        "<< /Title (Intro) /Parent 13 0 R /Next 10 0 R /Dest [3 0 R /Fit] >>",
+        "<< /Title (Methods) /Parent 13 0 R /Prev 9 0 R /Next 12 0 R /First 11 0 R /Last 11 0 R /Count 1 "
+        "/A << /S /GoTo /D (sec2) >> >>",
+        "<< /Title (Results) /Parent 10 0 R /Dest /results >>",
+        "<< /Title (Nowhere) /Parent 13 0 R /Prev 10 0 R /Dest (missing) >>",
+        "<< /Type /Outlines /First 9 0 R /Last 12 0 R /Count 4 >>",
+        "<< /Kids [15 0 R 16 0 R] >>",
+        "<< /Limits [(intro) (intro)] /Names [(intro) [3 0 R /Fit]] >>",
+        "<< /Limits [(sec2) (sec3)] /Names [(sec2) << /D [4 0 R /XYZ 0 792 0] >> (sec3) [5 0 R /Fit]] >>",
+    };
+    const std::string pdf =
+        PagesPdf(3, "/Outlines 13 0 R /Names << /Dests 14 0 R >> /Dests << /results [5 0 R /FitH 700] >>", extra);
+    ConvertOptions options;
+    options.ocr.mode = OcrMode::Off;
+    options.format = OutputFormat::Json;
+    const std::string json = ConvertPdf(pdf, options);
+    Show("outline", json);
+    RAYOPDF_CHECK(Contains(json, "}],\"outline\":[{\"level\":1,\"title\":\"Intro\",\"page\":1},"
+                                 "{\"level\":1,\"title\":\"Methods\",\"page\":2},"
+                                 "{\"level\":2,\"title\":\"Results\",\"page\":3},"
+                                 "{\"level\":1,\"title\":\"Nowhere\",\"page\":null}],\"blocks\":["),
+                  2656);
+    // A document without an outline has no "outline" key.
+    RAYOPDF_CHECK(!Contains(ConvertPdf(PagesPdf(1, ""), options), "\"outline\""), 2657);
+}
+
 } // namespace
 
 int main() {
@@ -880,6 +947,7 @@ int main() {
     TestChunks();
     TestInspect();
     TestJsonDetail();
+    TestOutlineTargets();
     std::puts("layout output tests passed");
     return 0;
 }

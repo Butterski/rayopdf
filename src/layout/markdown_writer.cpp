@@ -2574,8 +2574,8 @@ void AppendBoxes(std::string& out, const std::vector<PageData>& pages, const Pag
 }
 
 void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool repaired,
-               const DocumentMetadata* metadata, std::string& out, WriteCounts& counts, MathMode math,
-               const WriteSettings& settings) {
+               const DocumentMetadata* metadata, const std::vector<OutlineEntry>* outline, std::string& out,
+               WriteCounts& counts, MathMode math, const WriteSettings& settings) {
     std::string markdown;
     std::vector<WrittenBlock> written;
     WriteSettings blocks = settings;
@@ -2607,7 +2607,22 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         AppendCoordinate(out, pages[p].height);
         out.push_back('}');
     }
-    out += "],\"blocks\":[";
+    out.push_back(']');
+    if (outline && !outline->empty()) {
+        out += ",\"outline\":[";
+        for (size_t i = 0; i < outline->size(); ++i) {
+            const OutlineEntry& entry = (*outline)[i];
+            out += i > 0 ? ",{\"level\":" : "{\"level\":";
+            out += std::to_string(entry.level);
+            AppendKey(out, "title");
+            Batch::AppendJsonString(out, entry.title);
+            AppendKey(out, "page");
+            out += entry.page > 0 ? std::to_string(entry.page) : "null";
+            out.push_back('}');
+        }
+        out.push_back(']');
+    }
+    out += ",\"blocks\":[";
     std::vector<PageBox> boxes;
     std::string text;
     for (size_t w = 0; w < written.size(); ++w) {

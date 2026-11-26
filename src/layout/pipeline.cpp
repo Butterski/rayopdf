@@ -219,7 +219,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.jsonDetail = output->jsonDetail;
     }
     if (output && output->format == OutputFormat::Json) {
-        WriteJson(pages, blocks, repaired, output->metadata, markdown, counts, math, settings);
+        WriteJson(pages, blocks, repaired, output->metadata, &outline, markdown, counts, math, settings);
     } else if (output && output->format == OutputFormat::Chunks) {
         WriteChunks(pages, blocks, markdown, counts, math, settings);
     } else if (output && output->format == OutputFormat::Inspect) {

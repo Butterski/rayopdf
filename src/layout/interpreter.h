@@ -63,9 +63,11 @@ struct PageStats {
 void InterpretPage(const Document& document, Text::FontCache& fonts, int index, bool withLinks, PageData& page,
                    PageStats& stats);
 
-// The document outline (§12.3.3), depth-first, at most kMaxOutlineEntries entries.
+// The document outline (§12.3.3), depth-first, at most kMaxOutlineEntries entries. `targets` also
+// resolves each item's destination (its /Dest, or the /D of a GoTo action: an explicit
+// destination, or one named in the catalog's /Dests or /Names /Dests; pdf/trees.h) to its page.
 constexpr int kMaxOutlineEntries = 20000;
-void ReadOutline(const Document& document, std::vector<OutlineEntry>& out);
+void ReadOutline(const Document& document, std::vector<OutlineEntry>& out, bool targets = false);
 
 // A PDF text string (§7.9.2.2: UTF-16BE or UTF-8 with a byte order mark, else PDFDocEncoding)
 // appended to `out` as UTF-8.

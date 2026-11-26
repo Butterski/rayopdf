@@ -282,6 +282,12 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   space at each word break, without a list item's marker glyphs or inline images (raw text, not
   Markdown: hyphens at line ends stay); with `words` each line also has `"words": [{"box",
   "text"}...]`, split at the line's word breaks (`kGlyphSpaceBefore`). Chunks do not carry lines.
+  `outline` (2026-11-26), after `pages` and only when the document has an outline: `[{"level",
+  "title", "page"}...]` depth first, `page` the 1-based page of the item's destination (`/Dest`,
+  else the `/D` of a GoTo action; explicit, named in the catalog's `/Dests`, or a string of the
+  `/Names /Dests` name tree, a named one possibly a dictionary with `/D`), `null` when none; the
+  destinations are resolved only for JSON (`src/pdf/trees.h`: name and number trees at most 32
+  levels deep and 2^20 nodes and pairs, read once and searched by key).
 - Output options for conventions on which benchmarks' ground truths contradict each other
   (decided 2026-11-13; off by default, the default output byte-identical): `--plain` writes no
   inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts

@@ -132,8 +132,8 @@ void Finish(std::unique_ptr<Conversion>& conversion, const ConvertOptions& optio
     if (options.oneShot) (void)conversion.release();
 }
 
-// The document's outline and structure tree for pages `first` to `last` (0-based), read while the
-// pages' lines are built (DocumentRead, layout/pipeline.h).
+// The document's outline (with its targets for JSON) and structure tree for pages `first` to
+// `last` (0-based), read while the pages' lines are built (DocumentRead, layout/pipeline.h).
 struct DocumentParts {
     const Document* document;
     Conversion* conversion;
@@ -144,7 +144,7 @@ struct DocumentParts {
 
     static bool Read(void* context) {
         const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
-        ReadOutline(*parts.document, parts.conversion->outline);
+        ReadOutline(*parts.document, parts.conversion->outline, parts.metadata != nullptr);
         if (parts.structure && parts.first <= parts.last)
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
         if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);

@@ -25,6 +25,7 @@ JSON object on one line, ending in a line break:
 | `repaired` | `true` when the file was damaged and repaired (text may be missing) |
 | `metadata` | the document information that is not empty: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified` (dates as `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the PDF gives an offset; a date that does not parse stays as the PDF wrote it) |
 | `pages` | one object a converted page: `page` (1-based number in the file), `width`, `height` (points) |
+| `outline` | only when the PDF has bookmarks: `{"level","title","page"}` an entry, depth first (`level` 1 at the top; `page` the page it leads to, `null` when none; entries outside `--pages` too) |
 | `blocks` | the content in reading order |
 
 ## A block

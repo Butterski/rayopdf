@@ -7,6 +7,7 @@
 #include "layout/math.h"
 #include "layout/path_box.h"
 #include "pdf/content_lexer.h"
+#include "pdf/trees.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1782,7 +1783,7 @@ void InterpretPage(const Document& document, Text::FontCache& fonts, int index, 
     interpreter.Run(index, withLinks);
 }
 
-void ReadOutline(const Document& document, std::vector<OutlineEntry>& out) {
+void ReadOutline(const Document& document, std::vector<OutlineEntry>& out, bool targets) {
     out.clear();
     const PdfValue& outlines = document.Get(document.Catalog(), "Outlines");
     if (!outlines.IsDict()) return;
@@ -1794,6 +1795,7 @@ void ReadOutline(const Document& document, std::vector<OutlineEntry>& out) {
     // visited once, so a cyclic /Next or /First chain ends.
     std::vector<Pending> work;
     std::unordered_set<uint32_t> seen;
+    std::vector<const PdfValue*> nodes;  // with targets: each entry's item
     if (const PdfValue* first = outlines.Find("First")) work.push_back({first, 1});
     int visits = 0;
     while (!work.empty() && static_cast<int>(out.size()) < kMaxOutlineEntries && visits++ < 4 * kMaxOutlineEntries) {
@@ -1806,10 +1808,15 @@ void ReadOutline(const Document& document, std::vector<OutlineEntry>& out) {
         entry.level = p.level;
         AppendTextString(document.Get(node, "Title").String(), entry.title);
         out.push_back(std::move(entry));
+        if (targets) nodes.push_back(&node);
         if (const PdfValue* next = node.Find("Next")) work.push_back({next, p.level});
         if (p.level < 64)
             if (const PdfValue* child = node.Find("First")) work.push_back({child, p.level + 1});
     }
+    if (!targets) return;
+    Destinations destinations(document);
+    for (size_t i = 0; i < out.size(); ++i)
+        if (const PdfValue* target = destinations.TargetOf(*nodes[i])) out[i].page = destinations.PageOf(*target) + 1;
 }
 
 } // namespace RayoPdf::Layout

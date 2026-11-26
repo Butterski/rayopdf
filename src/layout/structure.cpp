@@ -6,6 +6,7 @@
 #include "layout/lines.h"
 #include "layout/math.h"
 #include "layout/tables.h"
+#include "pdf/trees.h"
 
 #include <algorithm>
 #include <cmath>
@@ -376,41 +377,17 @@ void Reader::ResolvePending() {
     // (element object number, mcid) -> page, from the ParentTree arrays of those pages.
     std::unordered_map<uint64_t, uint32_t> owners;
     size_t budget = kMaxStructureItems;
-    struct Level {
-        const PdfValue* node;
-        uint32_t depth;
-    };
-    std::vector<Level> todo{{&parentTree, 0}};
-    while (!todo.empty() && budget > 0) {
-        const Level level = todo.back();
-        todo.pop_back();
-        const PdfValue& nums = doc_.Get(*level.node, "Nums");
-        if (nums.IsArray()) {
-            const PdfSpan<PdfValue> entries = nums.Array();
-            for (size_t i = 0; i + 1 < entries.size() && budget > 0; i += 2) {
-                const PdfValue& key = doc_.Resolve(entries[i]);
-                if (key.type != PdfValue::Type::Int) continue;
-                const auto page = keys.find(key.integer);
-                if (page == keys.end()) continue;
-                const PdfValue& array = doc_.Resolve(entries[i + 1]);
-                const PdfSpan<PdfValue> elements = array.Array();
-                for (size_t m = 0; m < elements.size() && budget > 0; ++m, --budget) {
-                    if (!elements[m].IsRef()) continue;
-                    owners.emplace((static_cast<uint64_t>(elements[m].refNum) << 32) | m, page->second);
-                }
-            }
-        }
-        const PdfValue& kids = doc_.Get(*level.node, "Kids");
-        if (level.depth < kMaxNumberTreeDepth) {
-            for (const PdfValue& kid : kids.Array()) {
-                const PdfValue& child = doc_.Resolve(kid);
-                if (child.IsDict() && budget > 0) {
-                    budget--;
-                    todo.push_back(Level{&child, level.depth + 1});
-                }
-            }
-        }
-    }
+    WalkTree(doc_, parentTree, TreeKind::Number, kMaxNumberTreeDepth, budget,
+             [&](const PdfValue& key, const PdfValue& value) {
+                 if (key.type != PdfValue::Type::Int) return;
+                 const auto page = keys.find(key.integer);
+                 if (page == keys.end()) return;
+                 const PdfSpan<PdfValue> elements = doc_.Resolve(value).Array();
+                 for (size_t m = 0; m < elements.size() && budget > 0; ++m, --budget) {
+                     if (!elements[m].IsRef()) continue;
+                     owners.emplace((static_cast<uint64_t>(elements[m].refNum) << 32) | m, page->second);
+                 }
+             });
     for (const Pending& p : pending_) {
         const uint32_t object = nodeObject_[p.node];
         if (object == 0) continue;

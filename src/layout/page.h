@@ -342,10 +342,13 @@ struct PageData {
     }
 };
 
-// A bookmark of the document outline (§12.3.3): its title as UTF-8 and its depth (1 = top level).
+// A bookmark of the document outline (§12.3.3): its title as UTF-8, its depth (1 = top level) and,
+// when read with its target (ReadOutline `targets`), the 1-based page its destination leads to (0:
+// none, or not read).
 struct OutlineEntry {
     std::string title;
     int level = 1;
+    int page = 0;
 };
 
 // A point of the frame of baseline direction `dir` (interpreter.cpp ToFrame) back on the upright
