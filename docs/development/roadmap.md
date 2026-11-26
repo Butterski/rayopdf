@@ -354,6 +354,13 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   piece closed with `</table>`; code at line ends, each piece within its fence and info string. A
   row or code line longer than N stays whole. Comments are ordinary blocks; page markers and front
   matter are not written; the repair comment is not a block and is left out.
+  `--chunk-by=page` (2026-11-26) also closes the open chunk before a block whose first page is
+  not the page of the block before it. `--chunk-overlap=M` (2026-11-26; 0 to 500,000, taken as
+  at most N / 2) begins each chunk but the first with the end of the one before: its last bytes,
+  at most M from a word start, then what stood between them (a blank line, or
+  the space a text cut left out); a later piece of a table or code block takes none (it reopens
+  its frame). The new key `"overlap"` (before `"markdown"`, only with the option) gives that
+  length, so the chunks without it are the chunks without overlap.
 - Plain text (`--format=text`, decided 2026-11-26; `WriteText` in
   `src/layout/markdown_writer.h`): the Markdown's blocks without markup or escapes (headings and
   paragraphs as text, links as their text, script tags left out, inline images and image blocks
@@ -398,7 +405,8 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
         [--no-exact] [--annotations=all|links|none] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
-        [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N] [--json-detail=blocks|lines|words]
+        [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N] [--chunk-overlap=N]
+        [--chunk-by=size|page] [--json-detail=blocks|lines|words]
         [--page-markers] [--front-matter]
         [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe|pipe-latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
@@ -427,7 +435,8 @@ JSON object a line;
 `code` is the exit code the document alone would give.
 
 - **`--format=json`** (with **`--json-detail=lines|words`**), **`--format=chunks`** (with
-  **`--chunk-chars=N`**, 256 to 1,000,000,
+  **`--chunk-chars=N`**, 256 to 1,000,000, **`--chunk-overlap=N`**, 0 to 500,000, and
+  **`--chunk-by=size|page`**,
   else a usage error), **`--format=inspect`**, **`--format=text`**, **`--format=html`**, **`--page-markers`**, **`--front-matter`**,
   **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--tables=pipe-latex`**,
   **`--furniture=keep`**, **`--quotes=ascii`**, **`--small-caps=keep`** and

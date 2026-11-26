@@ -43,6 +43,8 @@ function flags(options, imageFolder) {
     out.push(`--pages=${Array.isArray(pages) ? `${pages[0] ?? ""}-${pages[1] ?? ""}` : pages}`);
   }
   if (options.chunkChars != null) out.push(`--chunk-chars=${options.chunkChars}`);
+  if (options.chunkOverlap != null) out.push(`--chunk-overlap=${options.chunkOverlap}`);
+  if (options.chunkBy != null) out.push(`--chunk-by=${options.chunkBy}`);
   if (imageFolder !== null) out.push(`--images=${imageFolder}`);
   if (options.pageMarkers) out.push("--page-markers");
   if (options.frontMatter) out.push("--front-matter");

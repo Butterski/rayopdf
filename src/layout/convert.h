@@ -31,6 +31,11 @@ enum class OutputFormat : uint8_t { Markdown, Json, Chunks, Inspect, Text, Html 
 constexpr uint32_t kDefaultChunkChars = 4000;
 constexpr uint32_t kMinChunkChars = 256;
 constexpr uint32_t kMaxChunkChars = 1000000;
+// ConvertOptions::chunkOverlap: the most a caller passes (Convert takes at most half the chunk size).
+constexpr uint32_t kMaxChunkOverlap = kMaxChunkChars / 2;
+
+// Chunks closed by size only (the default), or also at every page.
+enum class ChunkBy : uint8_t { Size, Page };
 
 // Page furniture (running headers, footers, page numbers and margin lines; layout/reading_order.h):
 // left out (the default), or kept as text where it stands. A structure tree that is used still
@@ -100,6 +105,11 @@ struct ConvertOptions {
     FigureText figureText = FigureText::Keep;
     // Chunks only: the most Markdown bytes a chunk takes (a block longer than this alone is split).
     uint32_t chunkChars = kDefaultChunkChars;
+    // Chunks only: each chunk but the first begins with the end of the chunk before it, at most
+    // this many bytes from a word start (at most half of chunkChars), and the key "overlap".
+    uint32_t chunkOverlap = 0;
+    // Chunks only: Page also closes a chunk at every page.
+    ChunkBy chunkBy = ChunkBy::Size;
     // JSON only: the blocks' lines, or their lines and words, besides their boxes.
     JsonDetail jsonDetail = JsonDetail::Blocks;
     // Threads for the page-local stages of a document of several pages (roadmap D4): the pages are

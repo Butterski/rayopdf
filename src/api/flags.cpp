@@ -134,6 +134,29 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             return FlagStatus::Invalid;
         }
         options.convert.chunkChars = chars;
+    } else if (StartsWith(arg, "--chunk-overlap=")) {
+        const std::string_view value = arg.substr(16);
+        uint32_t bytes = 0;
+        bool valid = !value.empty() && value.size() <= 6;
+        for (const char c : value) {
+            valid = valid && c >= '0' && c <= '9';
+            if (valid) bytes = bytes * 10 + static_cast<uint32_t>(c - '0');
+        }
+        if (!valid || bytes > Layout::kMaxChunkOverlap) {
+            error = "--chunk-overlap takes 0 to 500000: " + std::string(value);
+            return FlagStatus::Invalid;
+        }
+        options.convert.chunkOverlap = bytes;
+    } else if (StartsWith(arg, "--chunk-by=")) {
+        const std::string_view by = arg.substr(11);
+        if (by == "size") {
+            options.convert.chunkBy = Layout::ChunkBy::Size;
+        } else if (by == "page") {
+            options.convert.chunkBy = Layout::ChunkBy::Page;
+        } else {
+            error = "--chunk-by takes size or page: " + std::string(by);
+            return FlagStatus::Invalid;
+        }
     } else if (StartsWith(arg, "--json-detail=")) {
         const std::string_view detail = arg.substr(14);
         if (detail == "blocks") {

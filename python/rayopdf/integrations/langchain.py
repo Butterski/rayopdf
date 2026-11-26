@@ -27,9 +27,10 @@ __all__ = ["RayoPdfLoader"]
 
 class RayoPdfLoader(BaseLoader):
     """Loads a PDF as one Document per chunk (`mode="chunks"`, the default: `--format=chunks`, with
-    metadata source, chunk, pages [first, last] and heading_path) or as one Document holding the
-    whole Markdown (`mode="single"`, metadata source). Other keyword arguments are
-    rayopdf.convert's options (chunk_chars, pages, password, math, plain, ...), not `format`."""
+    metadata source, chunk, pages [first, last] and heading_path, and overlap with chunk_overlap) or
+    as one Document holding the whole Markdown (`mode="single"`, metadata source). Other keyword
+    arguments are rayopdf.convert's options (chunk_chars, chunk_overlap, chunk_by, pages, password,
+    math, plain, ...), not `format`."""
 
     def __init__(self, file_path: Union[str, os.PathLike], *, mode: str = "chunks", **options: Any) -> None:
         if mode not in ("chunks", "single"):
@@ -48,6 +49,8 @@ class RayoPdfLoader(BaseLoader):
             return
         result = convert(self.file_path, format="chunks", **self.options)
         for chunk in result.data:
-            yield Document(page_content=chunk["markdown"],
-                           metadata={"source": source, "chunk": chunk["chunk"], "pages": chunk["pages"],
-                                     "heading_path": chunk["heading_path"]})
+            metadata = {"source": source, "chunk": chunk["chunk"], "pages": chunk["pages"],
+                        "heading_path": chunk["heading_path"]}
+            if "overlap" in chunk:
+                metadata["overlap"] = chunk["overlap"]
+            yield Document(page_content=chunk["markdown"], metadata=metadata)

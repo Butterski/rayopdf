@@ -182,6 +182,7 @@ Chunks for retrieval-augmented generation, as JSON Lines: one JSON object a line
 | `heading_path` | The headings that enclose it, outermost first, as plain text. |
 | `pages` | The first and last page it covers. |
 | `boxes`, `blocks` | The boxes of its blocks and their indices in the `blocks` of `--format=json`. |
+| `overlap` | With `--chunk-overlap`: how many bytes at the start of `markdown` come from the chunk before. |
 | `markdown` | The blocks' Markdown, joined by a blank line. |
 
 How chunks are cut:
@@ -192,6 +193,14 @@ How chunks are cut:
 - A block longer than N becomes several chunks of its own: text is split at sentence ends (else
   at the last space), a table by rows with its header rows repeated in each piece, code by lines
   with its fence reopened. A single table row or code line longer than N stays whole.
+- With `--chunk-by=page` a chunk also ends where a block starts on another page than the block
+  before it (long pages still split by size).
+- With `--chunk-overlap=N` (0 to 500,000 bytes, at most half of `--chunk-chars`) each chunk but
+  the first begins with the end of the chunk before it: at most its last N bytes, starting at a
+  word, then what stood between the two (a blank line, or the space where a long text was split).
+  `overlap` gives that length: the chunks' `markdown` without their first `overlap` bytes is what
+  `--format=chunks` writes without overlap. A later piece of a split table or code block begins
+  with its reopened header or fence instead, with `overlap` 0.
 - Page markers and front matter are not written into chunks.
 
 ## Plain text: `--format=text`

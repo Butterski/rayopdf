@@ -90,6 +90,9 @@ try {
     smallCaps: "keep", figureText: "drop", tables: "pipe-latex", pages: [1, null] });
   check(Array.isArray(result.data) && result.data.length === 1 &&
     result.data[0].markdown.includes("Hello from WebAssembly") && result.data[0].pages[1] === 1, "format chunks");
+  result = await rayopdf.convert(pdf, { format: "chunks", chunkOverlap: 20, chunkBy: "page" });
+  check(result.data.length === 1 && result.data[0].overlap === 0 &&
+    result.data[0].markdown.includes("Hello from WebAssembly"), "format chunks with chunkOverlap and chunkBy");
   result = await rayopdf.convert(pdf, { format: "text" });
   check(result.text === "Hello from WebAssembly\n" && result.data === null, "format text");
   result = await rayopdf.convert(pdf, { format: "html" });

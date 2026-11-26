@@ -220,6 +220,8 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.tables = output->tables;
         settings.smallCaps = output->smallCaps;
         settings.chunkChars = output->chunkChars;
+        settings.chunkOverlap = output->chunkOverlap;
+        settings.chunkBy = output->chunkBy;
         settings.jsonDetail = output->jsonDetail;
     }
     if (output && output->format == OutputFormat::Json) {

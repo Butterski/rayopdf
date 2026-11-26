@@ -4,7 +4,8 @@
 // them, without image files), then once more in one other output, chosen by the input's size so
 // that each input costs two conversions: JSON (--format=json, with --json-detail=blocks, lines or
 // words by the size again), which must be one object and a line break; chunks (--format=chunks
-// with the smallest chunk size), every line one object; the
+// with the smallest chunk size, and by the size again --chunk-overlap at its largest and
+// --chunk-by=page), every line one object; the
 // inspector (--format=inspect) or HTML (--format=html, by the size again), one HTML file without a
 // script, or plain text (--format=text), empty or ending in a line break or a form feed; Markdown
 // with the output options
@@ -44,6 +45,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     case 1:
         options.format = RayoPdf::Layout::OutputFormat::Chunks;
         options.chunkChars = RayoPdf::Layout::kMinChunkChars;
+        if (size % 15 != 1) options.chunkOverlap = RayoPdf::Layout::kMinChunkChars / 2;
+        if (size % 15 == 11) options.chunkBy = RayoPdf::Layout::ChunkBy::Page;
         RayoPdf::Layout::Convert(*document, options, out, report);
         for (size_t at = 0; at < out.size();) {
             const size_t end = out.find('\n', at);

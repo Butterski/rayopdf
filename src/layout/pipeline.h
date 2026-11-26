@@ -37,8 +37,8 @@ struct DocumentRead {
 };
 
 // What the writer writes when it is not plain Markdown (ConvertOptions::format, pageMarkers,
-// furniture, plain, tables, quotes, smallCaps, figureText, chunkChars, jsonDetail), and how the
-// conversion runs (oneShot).
+// furniture, plain, tables, quotes, smallCaps, figureText, chunkChars, chunkOverlap, chunkBy,
+// jsonDetail), and how the conversion runs (oneShot).
 struct OutputSettings {
     OutputFormat format = OutputFormat::Markdown;
     bool pageMarkers = false;                    // Markdown only (WriteMarkdown)
@@ -49,6 +49,8 @@ struct OutputSettings {
     SmallCaps smallCaps = SmallCaps::Lower;      // Keep: small-capital headings as printed (WriteSettings::smallCaps)
     FigureText figureText = FigureText::Keep;    // Drop: a figure's own text left out (BuildBlocks)
     uint32_t chunkChars = kDefaultChunkChars;    // Chunks only (WriteSettings::chunkChars)
+    uint32_t chunkOverlap = 0;                   // Chunks only (WriteSettings::chunkOverlap)
+    ChunkBy chunkBy = ChunkBy::Size;             // Chunks only (WriteSettings::chunkBy)
     JsonDetail jsonDetail = JsonDetail::Blocks;  // JSON only (WriteSettings::jsonDetail)
     const FeatureSink* features = nullptr;       // developer mode: edge-row features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it

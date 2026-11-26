@@ -28,8 +28,9 @@ __all__ = ["RayoPdfReader"]
 
 class RayoPdfReader(BaseReader):
     """Reads a PDF as one Document per chunk (`--format=chunks`), with metadata source, chunk,
-    pages [first, last] and heading_path over `extra_info`. Keyword arguments are rayopdf.convert's
-    options (chunk_chars, password, math, plain, ...), not `format`."""
+    pages [first, last] and heading_path (and overlap with chunk_overlap) over `extra_info`. Keyword
+    arguments are rayopdf.convert's options (chunk_chars, chunk_overlap, chunk_by, password, math,
+    plain, ...), not `format`."""
 
     def __init__(self, **options: Any) -> None:
         super().__init__()
@@ -42,5 +43,6 @@ class RayoPdfReader(BaseReader):
         result = convert(file, format="chunks", **self._options)
         return [Document(text=chunk["markdown"],
                          metadata={**(extra_info or {}), "source": source, "chunk": chunk["chunk"],
-                                   "pages": chunk["pages"], "heading_path": chunk["heading_path"]})
+                                   "pages": chunk["pages"], "heading_path": chunk["heading_path"],
+                                   **({"overlap": chunk["overlap"]} if "overlap" in chunk else {})})
                 for chunk in result.data]

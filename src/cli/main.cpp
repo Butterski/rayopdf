@@ -5,7 +5,7 @@
 //                                   [--no-exact] [--annotations=all|links|none] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N]
-//                                   [--json-detail=blocks|lines|words]
+//                                   [--chunk-overlap=N] [--chunk-by=size|page] [--json-detail=blocks|lines|words]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
 //                                   [--tables=auto|html|pipe|pipe-latex]
 //                                   [--quotes=keep|ascii] [--small-caps=lower|keep] [--figure-text=keep|drop]
@@ -139,6 +139,10 @@ void PrintUsage(std::FILE* out) {
         "                     html: the document as one HTML5 file\n"
         "  --chunk-chars=N    chunks: at most N bytes of Markdown a chunk (256 to 1000000,\n"
         "                     default 4000; a longer block is split)\n"
+        "  --chunk-overlap=N  chunks: each chunk begins with up to N bytes of the one before,\n"
+        "                     from a word start (0 to 500000, at most half of --chunk-chars;\n"
+        "                     default 0), and \"overlap\" gives how many\n"
+        "  --chunk-by=WHAT    chunks: size (default); page: a chunk also ends at every page\n"
         "  --json-detail=WHAT json: blocks (default); lines: each block's lines too (page, box,\n"
         "                     text); words: the lines with their words (box, text)\n"
         "  --page-markers     <!-- page N --> before the Markdown of each page\n"

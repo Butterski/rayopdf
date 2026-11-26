@@ -90,7 +90,7 @@ Options go after the output path, in any order:
 | Formulas as LaTeX (`$...$`, `$$...$$`) | `--math=latex` (default `unicode`: Unicode text, `<sup>`/`<sub>` where needed) |
 | Structured JSON instead of Markdown | `--format=json` (schema: [references/json.md](references/json.md)) |
 | Each block's lines (page, box, text), or lines and words, in the JSON | `--json-detail=lines` / `--json-detail=words` (default `blocks`) |
-| Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000) |
+| Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000); `--chunk-overlap=N` each chunk begins with up to N bytes of the one before (its `overlap` says how many); `--chunk-by=page` a chunk also ends at every page |
 | See what the layout analysis decided | `--format=inspect` (one HTML file, no script: each page's lines, blocks numbered in reading order, removed furniture struck through, table cells, images) |
 | Plain text without any markup | `--format=text` (headings and paragraphs as text, list markers kept, tables a row a line with tab-separated cells, footnotes `[n] text` at the end, pages separated by form feeds) |
 | The document as an HTML page | `--format=html` (one HTML5 file: `<h1>`-`<h6>`, `<p>` with `<strong>`/`<em>`/`<code>`/`<a href>`, nested lists, `<pre><code>`, tables, `<img>`, footnotes last; `lang` and `<title>` from the PDF; `--math=latex` writes `\(…\)`/`\[…\]`) |
@@ -108,7 +108,7 @@ Options go after the output path, in any order:
 
 `--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0,
 `--plain`, `--tables`, `--furniture`, `--format=chunks` and `--format=inspect` not before
-0.3.0, and `--json-detail`, `--format=text` and `--format=html` not before 1.2.0: check `rayopdf --help` lists them.
+0.3.0, and `--json-detail`, `--format=text`, `--format=html`, `--chunk-overlap` and `--chunk-by` not before 1.2.0: check `rayopdf --help` lists them.
 `--front-matter` and `--page-markers` have no effect with `--format=json`, whose `metadata` and
 per-block `page` carry the same information.
 

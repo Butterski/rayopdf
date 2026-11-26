@@ -42,6 +42,8 @@ enum class FigureText : uint8_t { Keep, Drop };
 // What the JSON document gives besides each block's boxes: nothing, each block's lines (page, box,
 // text), or each block's lines with their words (box, text).
 enum class JsonDetail : uint8_t { Blocks, Lines, Words };
+// Chunks closed by size only, or also at every page.
+enum class ChunkBy : uint8_t { Size, Page };
 
 // The command line's exit code for the same outcome.
 enum class Status : int {
@@ -76,6 +78,8 @@ struct Options {
     SmallCaps smallCaps = SmallCaps::Lower;  // Keep: small-capitals headings as printed, in capitals
     FigureText figureText = FigureText::Keep;  // Drop: a figure's own text left out
     uint32_t chunkChars = 4000;              // Chunks: Markdown bytes a chunk, 256 to 1,000,000 (clamped)
+    uint32_t chunkOverlap = 0;               // Chunks: bytes of the chunk before each begins with (at most chunkChars / 2)
+    ChunkBy chunkBy = ChunkBy::Size;         // Chunks: Page also closes a chunk at every page
     JsonDetail jsonDetail = JsonDetail::Blocks;  // Json: each block's lines, or lines and words, too
     std::string imageDirectory, imageLinkPrefix;  // empty directory: no images
     unsigned workers = 1;                    // page threads, 0: automatic

@@ -67,6 +67,8 @@ The same file and the same options always give the same bytes.
 | `--json-detail=lines` | With JSON: each block also lists its lines, each with its page, box and text. `--json-detail=words` adds each line's words with their boxes; `blocks` (the default) gives neither. |
 | `--format=chunks` | JSON Lines: one chunk for retrieval-augmented generation a line, with its heading path, pages, positions and Markdown. |
 | `--chunk-chars=N` | With chunks: at most N bytes of Markdown a chunk, 256 to 1,000,000 (default 4,000). A longer block is split. |
+| `--chunk-overlap=N` | With chunks: each chunk begins with up to N bytes of the chunk before it, from a word start, and its `overlap` says how many (0 to 500,000, at most half of `--chunk-chars`; default 0). |
+| `--chunk-by=page` | With chunks: a chunk also ends at every page (default `size`: by size and headings only). |
 | `--format=inspect` | One HTML file that draws each page: its lines, its blocks numbered in reading order, removed headers and footers struck through, table cells and images. Open it in a browser. |
 | `--format=text` | Plain text without markup: headings and paragraphs as their text, list markers kept, code without fences, a table one row a line with its cells separated by tabs, footnotes `[n] text` at the end. Pages are separated by form feeds. |
 | `--format=html` | The document as one HTML5 page: headings, paragraphs with their emphasis, code and links, nested lists, code blocks, block quotes, tables, images and footnotes; `lang` and `<title>` from the PDF's metadata. |

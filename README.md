@@ -120,7 +120,7 @@ Options go after the paths, in any order. The most used:
 | `--pages=A-B` | Convert pages A to B only (1-based; `3`, `3-` and `-7` work too). |
 | `--password=PW` | Open an encrypted PDF. |
 | `--format=json` | One JSON object: the document's metadata and its blocks, each with its type, page, position and Markdown. `--json-detail=lines` or `words` adds each block's lines, or lines and words, with their positions. |
-| `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes). |
+| `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes), `--chunk-overlap=N` repeats up to N bytes of the chunk before, `--chunk-by=page` also ends a chunk at every page. |
 | `--format=inspect` | One HTML file that draws each page's lines and blocks in reading order, to see what the layout analysis decided. |
 | `--format=text` | Plain text without markup; pages separated by form feeds. |
 | `--format=html` | The document as one HTML5 page, with `lang` and `<title>` from the PDF. |

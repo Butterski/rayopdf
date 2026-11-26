@@ -41,6 +41,8 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
         case Format::Html: out.format = Layout::OutputFormat::Html; break;
     }
     out.chunkChars = options.chunkChars;
+    out.chunkOverlap = options.chunkOverlap;
+    out.chunkBy = options.chunkBy == ChunkBy::Page ? Layout::ChunkBy::Page : Layout::ChunkBy::Size;
     out.jsonDetail = options.jsonDetail == JsonDetail::Words   ? Layout::JsonDetail::Words
                      : options.jsonDetail == JsonDetail::Lines ? Layout::JsonDetail::Lines
                                                                : Layout::JsonDetail::Blocks;

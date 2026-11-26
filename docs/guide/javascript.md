@@ -51,6 +51,8 @@ console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
 | `smallCaps` | `"lower"` (default), `"keep"` |
 | `figureText` | `"keep"` (default), `"drop"` |
 | `chunkChars` | 256 to 1,000,000 bytes a chunk (default 4,000) |
+| `chunkOverlap` | bytes of the chunk before each chunk begins with, at most half of `chunkChars` (default 0) |
+| `chunkBy` | `"size"` (default), `"page"`: a chunk also ends at every page |
 | `jsonDetail` | `"blocks"` (default), `"lines"`, `"words"`: with `format: "json"`, each block's lines, or lines and words, too |
 | `structure`, `exact` | `true` (default); `false` is `--no-structure`, `--no-exact` |
 | `annotations` | `true` or `"all"` (default), `"links"`, `false` or `"none"`: `--annotations` (form fields and FreeText annotations as text, links only, none) |

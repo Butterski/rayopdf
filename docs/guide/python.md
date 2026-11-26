@@ -53,6 +53,8 @@ latex = rayopdf.convert("paper.pdf", math="latex", pages="1-3").text
 | `small_caps` | `"lower"` | `"lower"`, `"keep"` |
 | `figure_text` | `"keep"` | `"keep"`, `"drop"` |
 | `chunk_chars` | 4,000 | 256 to 1,000,000 bytes a chunk |
+| `chunk_overlap` | 0 | bytes of the chunk before each chunk begins with (at most half of `chunk_chars`) |
+| `chunk_by` | `"size"` | `"size"`, `"page"`: with `format="chunks"`, a chunk also ends at every page |
 | `json_detail` | `"blocks"` | `"blocks"`, `"lines"`, `"words"`: with `format="json"`, each block's lines, or lines and words, too |
 | `structure`, `exact` | `True` | `False` is `--no-structure`, `--no-exact` |
 | `annotations` | `True` | `True` or `"all"`, `"links"`, `False` or `"none"`: `--annotations` (form fields and FreeText annotations as text, links only, none) |
@@ -106,8 +108,9 @@ whole = RayoPdfLoader("paper.pdf", mode="single").load()  # one Document, all th
 ```
 
 In the default `mode="chunks"`, each `Document` is one chunk of `format="chunks"`, with the
-metadata `source`, `chunk`, `pages` (first and last) and `heading_path`. Other keyword arguments
-are `convert`'s options (`chunk_chars`, `pages`, `password`, `math`, `plain`, …). Importing the
+metadata `source`, `chunk`, `pages` (first and last), `heading_path` and, with `chunk_overlap`,
+`overlap`. Other keyword arguments are `convert`'s options (`chunk_chars`, `chunk_overlap`,
+`chunk_by`, `pages`, `password`, `math`, `plain`, …). Importing the
 loader without `langchain-core` installed raises an `ImportError` that names the package.
 
 ## LlamaIndex

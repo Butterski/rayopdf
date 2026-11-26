@@ -73,14 +73,17 @@ struct WrittenBlock {
 // cells empty); PipeLatex as Pipe, its cells' `%`, `#` and `&` outside math as the text `\%`,
 // `\#`, `\&` (WriteGfmTable `latexCells`). `smallCaps`: Keep writes a heading set in small
 // capitals (Block::smallCaps) as printed, every letter a capital, not in the source's case.
-// `chunkChars`: WriteChunks only, clamped to [kMinChunkChars, kMaxChunkChars]. `jsonDetail`:
-// WriteJson only, each block's lines (Lines) or lines and words (Words).
+// `chunkChars`, `chunkOverlap` and `chunkBy`: WriteChunks only, chunkChars clamped to
+// [kMinChunkChars, kMaxChunkChars]. `jsonDetail`: WriteJson only, each block's lines (Lines) or
+// lines and words (Words).
 struct WriteSettings {
     bool pageMarkers = false;
     bool plain = false;
     TableFormat tables = TableFormat::Auto;
     SmallCaps smallCaps = SmallCaps::Lower;
     uint32_t chunkChars = kDefaultChunkChars;
+    uint32_t chunkOverlap = 0;
+    ChunkBy chunkBy = ChunkBy::Size;
     JsonDetail jsonDetail = JsonDetail::Blocks;
 };
 
@@ -167,6 +170,14 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool
 // chunks of its own: text at sentence ends (". ", "? ", "! " before a capital or digit), else at
 // the last space, else at a character; a table by rows with its header rows repeated in each; code
 // at line ends with its fence reopened. A row or code line longer than the limit stays whole.
+// `settings.chunkBy` Page also closes the open chunk before a block whose first page (a comment's
+// number) is not the page of the block before it. `settings.chunkOverlap` N > 0 (taken as at
+// most half the limit) writes "overlap":K before "markdown" and begins each chunk's Markdown with
+// K bytes from the chunk before: its last bytes, at most N from a word start (after a space or a
+// line break; none when no word starts there), then what stood between the two in the Markdown
+// (a blank line, or the space or nothing where a text block was cut); a later piece of a table or
+// code block begins with its reopened frame instead (K = 0). The first chunk has K = 0. Without
+// their first K bytes the chunks are those written without overlap.
 void WriteChunks(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts,
                  MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
 

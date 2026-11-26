@@ -443,7 +443,26 @@ def check_chunks(c: Checker, work: Path, hello: str) -> None:
     c.check("chunk size taken", r.returncode == 0 and all(
         len(json.loads(line)["markdown"].encode()) <= 256 for line in r.stdout.decode("utf-8").splitlines()),
         repr(r.stdout[:300]))
-    for flag in ("--chunk-chars=10", "--chunk-chars=1000001", "--chunk-chars=", "--chunk-chars=4k"):
+    r = c.run("--convert", pages, "-", "--format=chunks", "--chunk-chars=256", "--chunk-overlap=40")
+    try:
+        overlapped = [json.loads(line) for line in r.stdout.decode("utf-8").splitlines()]
+    except ValueError:
+        overlapped = []
+    r2 = c.run("--convert", pages, "-", "--format=chunks", "--chunk-chars=256")
+    plain = [json.loads(line) for line in r2.stdout.decode("utf-8").splitlines()] if r2.returncode == 0 else []
+    c.check("chunk overlap: without it the chunks are the same", r.returncode == 0 and len(overlapped) == len(plain) > 1 and
+            overlapped[0].get("overlap") == 0 and any(chunk.get("overlap", 0) > 0 for chunk in overlapped) and
+            all(chunk["markdown"].encode()[chunk["overlap"]:] == other["markdown"].encode()
+                for chunk, other in zip(overlapped, plain)), repr(overlapped[:2])[:300])
+    r = c.run("--convert", pages, "-", "--format=chunks", "--chunk-by=page")
+    try:
+        paged = [json.loads(line) for line in r.stdout.decode("utf-8").splitlines()]
+    except ValueError:
+        paged = []
+    c.check("chunks by page", r.returncode == 0 and len(paged) >= 7 and "overlap" not in paged[0] and
+            all(chunk["pages"][0] == chunk["pages"][1] for chunk in paged), repr(paged[:2])[:300])
+    for flag in ("--chunk-chars=10", "--chunk-chars=1000001", "--chunk-chars=", "--chunk-chars=4k",
+                 "--chunk-overlap=-1", "--chunk-overlap=500001", "--chunk-overlap=", "--chunk-by=line"):
         c.check(f"bad {flag}", c.run("--convert", pages, "-", "--format=chunks", flag).returncode == 2)
     source = work / "chunks-in"
     source.mkdir()

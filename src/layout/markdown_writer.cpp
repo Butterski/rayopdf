@@ -3222,10 +3222,12 @@ void TextCut(std::string_view text, size_t limit, size_t& cut, size_t& next) {
     next = cut;
 }
 
-// The open chunk of WriteChunks and the heading path, written as JSON Lines to `out`.
+// The open chunk of WriteChunks and the heading path, written as JSON Lines to `out`; with
+// `overlap` > 0 each chunk with the end of the one before (WriteSettings::chunkOverlap).
 class ChunkWriter {
 public:
-    ChunkWriter(const std::vector<PageData>& pages, std::string& out) : pages_(pages), out_(out) {}
+    ChunkWriter(const std::vector<PageData>& pages, std::string& out, size_t overlap)
+        : pages_(pages), out_(out), overlap_(overlap) {}
 
     bool Empty() const { return blocks_.empty(); }
     bool OnlyHeadings() const { return onlyHeadings_; }
@@ -3252,13 +3254,16 @@ public:
     // Writes the open chunk, if any.
     void Flush() {
         if (blocks_.empty()) return;
-        Write(markdown_);
+        Write(markdown_, "\n\n", true);
     }
 
     // Writes `md`, a piece of block `index`, as a chunk of its own (the open chunk must be empty).
-    void Piece(uint32_t index, std::string_view md, const std::vector<PageBox>& boxes, int page) {
+    // `joint`: what stood before it in the block's Markdown (the first piece: a blank line);
+    // `lead`: false for a piece that reopens its block's frame, which takes no overlap.
+    void Piece(uint32_t index, std::string_view md, const std::vector<PageBox>& boxes, int page, std::string_view joint,
+               bool lead) {
         Take(index, boxes, page);
-        Write(md);
+        Write(md, joint, lead);
     }
 
 private:
@@ -3274,7 +3279,7 @@ private:
         }
     }
 
-    void Write(std::string_view md) {
+    void Write(std::string_view md, std::string_view joint, bool lead) {
         out_ += "{\"chunk\":";
         out_ += std::to_string(number_++);
         out_ += ",\"heading_path\":[";
@@ -3293,8 +3298,28 @@ private:
             if (b > 0) out_.push_back(',');
             out_ += std::to_string(blocks_[b]);
         }
-        out_ += "],\"markdown\":";
-        Batch::AppendJsonString(out_, md);
+        if (overlap_ == 0) {
+            out_ += "],\"markdown\":";
+            Batch::AppendJsonString(out_, md);
+        } else {
+            // The chunk before's last bytes from a word start, and what stood between the two.
+            joined_.clear();
+            if (lead && number_ > 1) {
+                size_t from = previous_.size() > overlap_ ? previous_.size() - overlap_ : 0;
+                while (from > 0 && from < previous_.size() && previous_[from - 1] != ' ' && previous_[from - 1] != '\n')
+                    ++from;
+                if (from < previous_.size()) {
+                    joined_.assign(previous_, from, std::string::npos);
+                    joined_.append(joint.data(), joint.size());
+                }
+            }
+            out_ += "],\"overlap\":";
+            out_ += std::to_string(joined_.size());
+            out_ += ",\"markdown\":";
+            joined_.append(md.data(), md.size());
+            Batch::AppendJsonString(out_, joined_);
+            previous_.assign(md.data(), md.size());
+        }
         out_ += "}\n";
         markdown_.clear();
         blocks_.clear();
@@ -3312,6 +3337,9 @@ private:
     int first_ = 0, last_ = 0;
     bool onlyHeadings_ = true;
     uint64_t number_ = 0;
+    size_t overlap_ = 0;
+    std::string previous_;  // with overlap: the last chunk's own Markdown
+    std::string joined_;
 };
 
 // The lines of a table or code block's Markdown that open (`head`) and close (`tail`) each piece
@@ -3353,10 +3381,11 @@ void WriteChunks(const std::vector<PageData>& pages, const BlockList& list, std:
     blocks.pageMarkers = false;
     WriteMarkdown(pages, list, false, markdown, counts, math, blocks, &written);
     const size_t limit = std::min(std::max(settings.chunkChars, kMinChunkChars), kMaxChunkChars);
-    ChunkWriter chunks(pages, out);
+    ChunkWriter chunks(pages, out, std::min<size_t>(settings.chunkOverlap, limit / 2));
     std::vector<PageBox> boxes;
     std::vector<size_t> starts;
     std::string heading, piece;
+    int openPage = 0;  // the page of the last block taken
     for (size_t w = 0; w < written.size(); ++w) {
         const WrittenBlock& entry = written[w];
         const Block& block = list.blocks[entry.block];
@@ -3366,6 +3395,9 @@ void WriteChunks(const std::vector<PageData>& pages, const BlockList& list, std:
         BlockBoxes(pages, list, block, boxes);
         const int page = block.kind == BlockKind::Comment ? static_cast<int>(block.number)
                                                           : pages[list.lines[block.first].page].number;
+        // Page chunks: a block on another page than the block before it closes the open chunk.
+        if (settings.chunkBy == ChunkBy::Page && !chunks.Empty() && page != openPage) chunks.Flush();
+        openPage = page;
         if (isHeading && !chunks.Empty() && !chunks.OnlyHeadings()) chunks.Flush();
         const bool alone = md.size() > limit;
         if (alone || (!chunks.Empty() && chunks.Size() + 2 + md.size() > limit)) chunks.Flush();
@@ -3392,13 +3424,14 @@ void WriteChunks(const std::vector<PageData>& pages, const BlockList& list, std:
             const std::string_view open = md.substr(0, starts[head]);  // with its line break
             const std::string_view close = tail > 0 ? md.substr(starts[n - tail] - 1) : std::string_view();
             piece.assign(open.data(), open.size());
-            bool body = false;
+            bool body = false, first = true;
             for (size_t l = head; l < n - tail; ++l) {
                 const size_t end = l + 1 < n ? starts[l + 1] - 1 : md.size();
                 const std::string_view line = md.substr(starts[l], end - starts[l]);
                 if (body && piece.size() + 1 + line.size() + close.size() > limit) {
                     piece.append(close.data(), close.size());
-                    chunks.Piece(index, piece, boxes, page);
+                    chunks.Piece(index, piece, boxes, page, "\n\n", first);
+                    first = false;
                     piece.assign(open.data(), open.size());
                     body = false;
                 }
@@ -3407,18 +3440,20 @@ void WriteChunks(const std::vector<PageData>& pages, const BlockList& list, std:
                 body = true;
             }
             piece.append(close.data(), close.size());
-            chunks.Piece(index, piece, boxes, page);
+            chunks.Piece(index, piece, boxes, page, "\n\n", first);
             continue;
         }
+        std::string_view joint = "\n\n";  // before the piece: a blank line, then what a cut left out
         for (size_t at = 0; at < md.size();) {
             const std::string_view rest = md.substr(at);
             if (rest.size() <= limit) {
-                chunks.Piece(index, rest, boxes, page);
+                chunks.Piece(index, rest, boxes, page, joint, true);
                 break;
             }
             size_t cut = 0, next = 0;
             TextCut(rest, limit, cut, next);
-            chunks.Piece(index, rest.substr(0, cut), boxes, page);
+            chunks.Piece(index, rest.substr(0, cut), boxes, page, joint, true);
+            joint = rest.substr(cut, next - cut);
             at += next;
         }
     }

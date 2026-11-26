@@ -24,6 +24,10 @@ export interface ConvertOptions {
   pages?: number | string | [number | null, number | null];
   /** Chunks: at most this many bytes of Markdown a chunk, 256 to 1,000,000 (default 4000). */
   chunkChars?: number;
+  /** Chunks: each chunk begins with up to this many bytes of the one before, from a word start (0 to 500,000, at most half of chunkChars; default 0); its "overlap" gives how many. */
+  chunkOverlap?: number;
+  /** Chunks: closed by size only (default), or also at every page. */
+  chunkBy?: "size" | "page";
   /** JSON: each block's boxes only (default), its lines too (page, box, text), or its lines with their words. */
   jsonDetail?: "blocks" | "lines" | "words";
   /** Write the images: true (linked as images/NAME) or the folder name the Markdown links them under. */
@@ -56,6 +60,8 @@ export interface Chunk {
   pages: [number, number];
   boxes: Box[];
   blocks: number[];
+  /** With chunkOverlap: how many bytes at the start of markdown come from the chunk before. */
+  overlap?: number;
   markdown: string;
 }
 

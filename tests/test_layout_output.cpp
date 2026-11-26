@@ -663,6 +663,17 @@ std::vector<std::string> Arrays(const std::string& jsonl, std::string_view key) 
     return values;
 }
 
+// The values of `"key":N` (an integer member) in the lines of `jsonl`, in order.
+std::vector<size_t> Numbers(const std::string& jsonl, std::string_view key) {
+    std::vector<size_t> values;
+    const std::string marker = "\"" + std::string(key) + "\":";
+    for (size_t at = jsonl.find(marker); at != std::string::npos; at = jsonl.find(marker, at)) {
+        at += marker.size();
+        values.push_back(static_cast<size_t>(std::strtoul(jsonl.c_str() + at, nullptr, 10)));
+    }
+    return values;
+}
+
 OutputSettings ChunkSettings(uint32_t chars) {
     OutputSettings settings;
     settings.format = OutputFormat::Chunks;
@@ -761,18 +772,74 @@ void TestChunks() {
     }
     RAYOPDF_CHECK(repeated && rows == 40 && Count(table, "| 140 |") == 1, 2013);
 
-    // Unsplit blocks: the chunks' Markdown joined is the Markdown output, block by block in order.
+    // Unsplit blocks: the chunks' Markdown joined is the Markdown output, block by block in order;
+    // with overlap too, once each chunk's first "overlap" bytes are left out.
     bool whole = true;
     for (auto build : {SectionsPage, LongTablePage}) {
         const std::string markdown = Run(build, OutputSettings());
-        const std::string chunks = Run(build, ChunkSettings(kDefaultChunkChars));
-        std::string text, order, expected;
-        for (const std::string& part : Strings(chunks, "markdown")) text += (text.empty() ? "" : "\n\n") + part;
-        for (const std::string& list : Arrays(chunks, "blocks")) order += (order.empty() ? "" : ",") + list;
-        for (int b = 0, n = Count(markdown, "\n\n") + 1; b < n; ++b) expected += (b > 0 ? "," : "") + std::to_string(b);
-        whole = whole && text + "\n" == markdown && order == expected;
+        for (const uint32_t overlap : {0u, 40u}) {
+            OutputSettings settings = ChunkSettings(kDefaultChunkChars);
+            settings.chunkOverlap = overlap;
+            const std::string chunks = Run(build, settings);
+            const std::vector<std::string> parts = Strings(chunks, "markdown");
+            const std::vector<size_t> skips = Numbers(chunks, "overlap");
+            std::string text, order, expected;
+            for (size_t p = 0; p < parts.size() && (overlap == 0 || p < skips.size()); ++p)
+                text += (p == 0 ? "" : "\n\n") + parts[p].substr(overlap == 0 ? 0 : skips[p]);
+            for (const std::string& list : Arrays(chunks, "blocks")) order += (order.empty() ? "" : ",") + list;
+            for (int b = 0, n = Count(markdown, "\n\n") + 1; b < n; ++b) expected += (b > 0 ? "," : "") + std::to_string(b);
+            whole = whole && text + "\n" == markdown && order == expected &&
+                    skips.size() == (overlap == 0 ? 0 : parts.size());
+        }
     }
     RAYOPDF_CHECK(whole, 2014);
+}
+
+// --chunk-overlap: each chunk begins with the end of the one before, from a word start, and what
+// stood between them; without its first "overlap" bytes it is the chunk written without overlap.
+// A later piece of a table takes none. --chunk-by=page: a chunk ends at every page.
+void TestChunkOverlapAndPages() {
+    OutputSettings settings = ChunkSettings(kDefaultChunkChars);
+    const std::vector<std::string> plain = Strings(Run(SectionsPage, settings), "markdown");
+    settings.chunkOverlap = 30;
+    const std::string sections = Run(SectionsPage, settings);
+    Show("chunks with overlap", sections);
+    const std::vector<std::string> texts = Strings(sections, "markdown");
+    const std::vector<size_t> skips = Numbers(sections, "overlap");
+    RAYOPDF_CHECK(texts.size() == 3 && plain.size() == 3 && skips.size() == 3 && skips[0] == 0 && skips[1] == 29 &&
+                      texts[1].compare(0, 29, "growth across every region.\n\n") == 0 && texts[1].substr(29) == plain[1] &&
+                      skips[2] > 2 && skips[2] <= 32 && texts[2].substr(skips[2]) == plain[2] &&
+                      plain[1].size() >= skips[2] - 2 &&
+                      plain[1].compare(plain[1].size() - (skips[2] - 2), skips[2] - 2, texts[2], 0, skips[2] - 2) == 0,
+                  2680);
+    // A paragraph cut at sentence ends: the space the cut left out joins the overlap to the piece.
+    OutputSettings cut = ChunkSettings(300);
+    const std::vector<std::string> pieces = Strings(Run(LongParagraphPage, cut), "markdown");
+    cut.chunkOverlap = 60;
+    const std::string overlapped = Run(LongParagraphPage, cut);
+    const std::vector<std::string> joined = Strings(overlapped, "markdown");
+    const std::vector<size_t> lead = Numbers(overlapped, "overlap");
+    bool rejoined = pieces.size() >= 4 && joined.size() == pieces.size() && lead.size() == pieces.size() && lead[0] == 0;
+    for (size_t p = 1; rejoined && p < pieces.size(); ++p) {
+        const size_t k = lead[p];
+        rejoined = k >= 2 && k <= 61 && joined[p].substr(k) == pieces[p] && joined[p][k - 1] == ' ' &&
+                   pieces[p - 1].compare(pieces[p - 1].size() - (k - 1), k - 1, joined[p], 0, k - 1) == 0;
+    }
+    RAYOPDF_CHECK(rejoined, 2681);
+    OutputSettings rows = ChunkSettings(300);
+    rows.chunkOverlap = 60;
+    const std::vector<size_t> table = Numbers(Run(LongTablePage, rows), "overlap");
+    RAYOPDF_CHECK(table.size() >= 3 &&
+                      std::count(table.begin(), table.end(), size_t(0)) == static_cast<std::ptrdiff_t>(table.size()),
+                  2682);
+    OutputSettings pages = ChunkSettings(kDefaultChunkChars);
+    const std::string one = Run(RunningPages, pages);
+    pages.chunkBy = ChunkBy::Page;
+    const std::string each = Run(RunningPages, pages);
+    Show("page chunks", each);
+    RAYOPDF_CHECK(Arrays(one, "pages") == std::vector<std::string>({"1,3"}) &&
+                      Arrays(each, "pages") == std::vector<std::string>({"1,1", "2,2", "3,3"}) && !Contains(each, "\"overlap\""),
+                  2683);
 }
 
 // A title and a paragraph.
@@ -1097,6 +1164,7 @@ int main() {
     TestSmallCapsKept();
     TestExactFormat();
     TestChunks();
+    TestChunkOverlapAndPages();
     TestInspect();
     TestJsonDetail();
     TestOutlineTargets();
