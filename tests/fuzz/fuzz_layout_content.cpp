@@ -5,7 +5,8 @@
 // are reached), a link annotation and an outline, and form fields and a FreeText annotation drawn
 // as page text: appearances that are that form (directly and through a state dictionary), a
 // comb field, a check box, and a choice field whose value and /DA are the input's first bytes (a
-// synthesized appearance).
+// synthesized appearance); and a highlight over the page whose comment, author and date are those
+// bytes, written as JSON (the text its quads cover).
 #include "../pdf_builder.h"
 
 #include "layout/convert.h"
@@ -54,7 +55,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         "<< /Subtype /Widget /Parent << /FT /Btn /V /On >> /Rect [10 10 20 20] /AS /On >> "
         "<< /Subtype /Widget /FT /Ch /Opt [[(a) (Alpha)] (b)] /V [" + hex + " (a)] /DA " + hex +
         " /Rect [50 130 300 160] >> "
-        "<< /Subtype /FreeText /Rect [300 300 400 400] /AP << /N " + x1 + " >> >>";
+        "<< /Subtype /FreeText /Rect [300 300 400 400] /AP << /N " + x1 + " >> >> "
+        "<< /Subtype /Highlight /Rect [0 0 612 792] /QuadPoints [0 792 612 792 0 0 612 0 10 20 30] /Contents " + hex +
+        " /T " + hex + " /M " + hex + " >>";
     b.Set(page, "<< /Type /Page /Parent " + std::to_string(pages) + " 0 R /MediaBox [0 0 612 792] /Resources " +
                     resources + " /Contents " + std::to_string(contents) + " 0 R /Annots [" + annots + "] >>");
     b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) +
@@ -67,5 +70,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     std::string markdown;
     RayoPdf::Layout::ConvertReport report;
     RayoPdf::Layout::Convert(*document, RayoPdf::Layout::ConvertOptions(), markdown, report);
+    RayoPdf::Layout::ConvertOptions json;
+    json.format = RayoPdf::Layout::OutputFormat::Json;
+    RayoPdf::Layout::Convert(*document, json, markdown, report);
     return 0;
 }

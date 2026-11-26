@@ -5,6 +5,7 @@
 #include "common/utf8.h"
 #include "layout/glyph_box.h"
 #include "layout/math.h"
+#include "layout/metadata.h"
 #include "layout/path_box.h"
 #include "pdf/content_lexer.h"
 #include "pdf/trees.h"
@@ -422,6 +423,9 @@ private:
     // of form fields and FreeText annotations.
     void ReadAnnotations(int index, bool draw);
     void ReadLink(const PdfValue& annot);
+    // A markup annotation kept as data (PageData::markups), unless the page holds
+    // kMaxMarkupsPerPage already.
+    void ReadMarkup(const PdfValue& annot, MarkupKind kind);
     // One widget or FreeText annotation drawn (its appearance, a check mark or a synthesized
     // value); false once the page's annotation budget is spent.
     bool DrawAnnotation(const PdfValue& annot, uint32_t object, bool widget);
@@ -1771,6 +1775,9 @@ int WinAnsiByte(uint32_t cp) {
     return -1;
 }
 
+// The /Subtype of each MarkupKind, in its order.
+constexpr std::string_view kMarkupSubtypes[] = {"Highlight", "Underline", "StrikeOut", "Squiggly", "Text", "FreeText"};
+
 void Interpreter::ReadAnnotations(int index, bool draw) {
     const PdfValue& annots = doc_.Get(doc_.PageDict(index), "Annots");
     if (!annots.IsArray()) return;
@@ -1782,6 +1789,17 @@ void Interpreter::ReadAnnotations(int index, bool draw) {
         if (subtype.IsName("Link")) {
             if (page_.links.size() < kMaxLinksPerPage) ReadLink(annot);
             continue;
+        }
+        if (draw && subtype.IsName()) {
+            // Markup annotations as data, whatever the drawing budget left (FreeText is drawn too).
+            uint8_t kind = 0;
+            for (const std::string_view name : kMarkupSubtypes) {
+                if (subtype.Name() == name) {
+                    ReadMarkup(annot, static_cast<MarkupKind>(kind));
+                    break;
+                }
+                ++kind;
+            }
         }
         if (!open) continue;
         const bool widget = subtype.IsName("Widget");
@@ -1838,6 +1856,59 @@ void Interpreter::ReadLink(const PdfValue& annot) {
     }
     link.uriLength = static_cast<uint32_t>(page_.text.size() - link.uri);
     page_.links.push_back(link);
+}
+
+void Interpreter::ReadMarkup(const PdfValue& annot, MarkupKind kind) {
+    if (page_.markups.size() >= kMaxMarkupsPerPage || page_.text.size() >= (size_t(1) << 30)) return;
+    // What a viewer shows on screen, as DrawAnnotation: not Hidden or NoView.
+    if (doc_.Get(annot, "F").Int() & (2 | 32)) return;
+    MarkupArea m;
+    m.kind = kind;
+    m.firstBox = static_cast<uint32_t>(page_.markupBoxes.size());
+    // Text markup: each quad (§12.5.6.10: eight numbers, four corners, which writers give in
+    // different orders) as the bounding box of its corners on the upright page.
+    const PdfValue& quads = doc_.Get(annot, "QuadPoints");
+    if (kind <= MarkupKind::Squiggly && quads.IsArray()) {
+        const PdfSpan<PdfValue> q = quads.Array();
+        const Matrix& t = pageMatrix_;
+        for (size_t i = 0; i + 8 <= q.size() && m.boxCount < kMaxMarkupBoxes; i += 8) {
+            double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            bool ok = true;
+            for (size_t c = 0; c < 8 && ok; c += 2) {
+                double x = 0, y = 0;
+                ok = doc_.Number(q[i + c], x) && doc_.Number(q[i + c + 1], y);
+                const double px = x * t.a + y * t.c + t.e, py = x * t.b + y * t.d + t.f;
+                x0 = std::min(x0, px), x1 = std::max(x1, px), y0 = std::min(y0, py), y1 = std::max(y1, py);
+            }
+            if (!ok || !std::isfinite(x0 + x1 + y0 + y1)) continue;
+            page_.markupBoxes.push_back(MarkupBox{float(x0), float(y0), float(x1), float(y1)});
+            m.boxCount++;
+        }
+    }
+    if (m.boxCount == 0) {
+        PdfRect rect;
+        if (!doc_.Rect(doc_.Get(annot, "Rect"), rect)) return;
+        const Box box = UnitSquare(Multiply(Matrix{rect.Width(), 0, 0, rect.Height(), rect.x0, rect.y0}, pageMatrix_));
+        if (!std::isfinite(box.x0 + box.x1 + box.y0 + box.y1)) return;
+        page_.markupBoxes.push_back(MarkupBox{float(box.x0), float(box.y0), float(box.x1), float(box.y1)});
+        m.boxCount = 1;
+    }
+    // /Contents, /T (the author) and /M (the date of the last change), as UTF-8.
+    std::string text, date;
+    const auto keep = [&](std::string_view key, uint32_t& at, uint32_t& length, bool isDate) {
+        const PdfValue& v = doc_.Get(annot, key);
+        if (!v.IsString() || v.String().empty()) return;
+        text.clear();
+        AppendTextString(v.String().substr(0, kMaxMarkupTextBytes), text);
+        if (isDate && PdfDateToIso(text, date)) text.swap(date);
+        at = static_cast<uint32_t>(page_.text.size());
+        page_.text += text;
+        length = static_cast<uint32_t>(text.size());
+    };
+    keep("Contents", m.contents, m.contentsLength, false);
+    keep("T", m.author, m.authorLength, false);
+    keep("M", m.date, m.dateLength, true);
+    page_.markups.push_back(m);
 }
 
 bool Interpreter::DrawAnnotation(const PdfValue& annot, uint32_t object, bool widget) {

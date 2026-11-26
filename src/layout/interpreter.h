@@ -21,7 +21,10 @@
 // /NeedAppearances, is drawn from its /V in the font and size of its /DA (else Helvetica) when the
 // value is WinAnsi text; a password field is never drawn. A comb field's glyphs carry its value as
 // one text. Annotations drawn, field parents and field values are capped; past
-// kMaxAnnotationsPerPage the page counts a limit hit.
+// kMaxAnnotationsPerPage the page counts a limit hit. With AnnotationMode::All markup annotations
+// (Highlight, Underline, StrikeOut, Squiggly, Text and FreeText; not Hidden or NoView) are also
+// kept as data (PageData::markups): at most kMaxMarkupsPerPage, kMaxMarkupBoxes quads each, their
+// /Contents cut at kMaxMarkupTextBytes.
 #pragma once
 
 #include "layout/page.h"
@@ -43,6 +46,9 @@ constexpr uint32_t kMaxLinksPerPage = 1u << 14;
 constexpr uint32_t kMaxAnnotationsPerPage = 1u << 12;  // widgets and FreeText annotations drawn
 constexpr int kMaxFieldDepth = 32;                     // /Parent hops of a field's inherited entries
 constexpr size_t kMaxFieldValueBytes = 4096;           // a field value drawn
+constexpr uint32_t kMaxMarkupsPerPage = 1u << 12;      // markup annotations kept
+constexpr uint32_t kMaxMarkupBoxes = 1024;             // quads of one markup annotation
+constexpr size_t kMaxMarkupTextBytes = 65536;          // a markup annotation's /Contents kept
 constexpr size_t kMaxInlineImageBytes = size_t(64) << 20;  // inline image sources kept per page
 constexpr uint32_t kMaxRulingsPerPage = 1u << 16;
 constexpr uint32_t kMaxPiecesPerPath = 4096;  // straight axis-aligned pieces kept of one path

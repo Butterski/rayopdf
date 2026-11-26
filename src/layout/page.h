@@ -159,6 +159,23 @@ struct LinkArea {
     uint32_t uriLength = 0;
 };
 
+// A markup annotation kept for the JSON output's "annotations" (AnnotationMode::All): text markup
+// (§12.5.6.10), a note (Text, §12.5.6.4) or FreeText (§12.5.6.6), shown on screen (not Hidden or
+// NoView). Its boxes on the upright page are PageData::markupBoxes[firstBox, firstBox + boxCount):
+// the bounding box of each of its /QuadPoints quads, else its /Rect. /Contents, /T and /M (as
+// PdfDateToIso writes it, or as the file has it) are UTF-8 in PageData::text, empty when absent.
+enum class MarkupKind : uint8_t { Highlight, Underline, StrikeOut, Squiggly, Text, FreeText };
+struct MarkupArea {
+    MarkupKind kind = MarkupKind::Highlight;
+    uint32_t firstBox = 0, boxCount = 0;
+    uint32_t contents = 0, contentsLength = 0;
+    uint32_t author = 0, authorLength = 0;
+    uint32_t date = 0, dateLength = 0;
+};
+struct MarkupBox {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
 // A straight axis-aligned piece of a painted path, as painted (a stroke widened by its line width,
 // a filled rectangle as its box, a side of a filled polygon with no thickness): the raw material of
 // table rulings (algorithms §6.7). A stroked rectangle is recorded as its four sides; pieces under
@@ -305,6 +322,10 @@ struct PageData {
     // the content's and before any the later stages add; per annotation, its share.
     uint32_t annotationFirst = 0, annotationEnd = 0;
     std::vector<AnnotationText> annotationTexts;
+    // Markup annotations in /Annots order (AnnotationMode::All), at most kMaxMarkupsPerPage, and
+    // their boxes (layout/interpreter.h).
+    std::vector<MarkupArea> markups;
+    std::vector<MarkupBox> markupBoxes;
 
     // Built by BuildLines and OrderLines.
     std::vector<Line> lines;
@@ -320,6 +341,7 @@ struct PageData {
     std::string_view ImageName(const ImageBox& i) const { return std::string_view(text).substr(i.name, i.nameLength); }
     std::string_view ImageAlt(const ImageBox& i) const { return std::string_view(text).substr(i.alt, i.altLength); }
     std::string_view ImageOcrText(const ImageBox& i) const { return std::string_view(text).substr(i.ocr, i.ocrLength); }
+    std::string_view TextAt(uint32_t offset, uint32_t length) const { return std::string_view(text).substr(offset, length); }
     // The tagged formula (index + 1 into formulaAlts) glyph `glyph` belongs to, 0 for none.
     uint32_t FormulaOf(uint32_t glyph) const { return glyph < glyphFormula.size() ? glyphFormula[glyph] : 0; }
     std::string_view FormulaText(uint32_t formula) const {
@@ -359,6 +381,8 @@ struct PageData {
         hiddenGlyphs = 0;
         annotationFirst = annotationEnd = 0;
         annotationTexts.clear();
+        markups.clear();
+        markupBoxes.clear();
     }
 };
 

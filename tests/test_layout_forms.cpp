@@ -418,6 +418,45 @@ void JsonFields() {
                   2632);
 }
 
+void JsonAnnotations() {
+    // The JSON output's "annotations": markup annotations in /Annots order with their boxes,
+    // contents, author, date and the text a text markup marks; the Markdown stays as it is.
+    const auto build = [](bool annotated) {
+        FormDoc f;
+        if (annotated) {
+            f.Annot("<< /Type /Annot /Subtype /Highlight /Rect [0 630 612 660] /QuadPoints [0 654 612 654 0 636 612 636] "
+                    "/Contents (Check this) /T (Ann) /M (D:20240506070809Z) >>");
+            f.Annot("<< /Type /Annot /Subtype /Highlight /F 2 /Rect [0 590 612 615] /QuadPoints [0 612 612 612 0 596 612 596] "
+                    "/Contents (hidden) >>");
+            f.Annot("<< /Type /Annot /Subtype /Text /Rect [500 700 520 720] /Contents <FEFF004E006F00740065> >>");
+            f.Annot("<< /Type /Annot /Subtype /StrikeOut /Rect [60 590 400 615] >>");
+            f.Annot("<< /Type /Annot /Subtype /Square /Rect [60 500 400 515] /Contents (not markup) >>");
+        }
+        return f.Build("BT /F1 12 Tf 72 640 Td (Marked words here.) Tj ET\nBT /F1 12 Tf 72 600 Td (Other text.) Tj ET\n"
+                       "BT /F1 12 Tf 72 400 Td (More body text below the marks.) Tj ET");
+    };
+    const std::string pdf = build(true), plain = build(false);
+    const std::string json = Json(pdf, AnnotationMode::All);
+    RAYOPDF_CHECK(Has(json, "],\"annotations\":[{\"page\":1,\"type\":\"highlight\",\"boxes\":[[0.00,636.00,612.00,654.00]],"
+                            "\"contents\":\"Check this\",\"author\":\"Ann\",\"date\":\"2024-05-06T07:08:09Z\","
+                            "\"text\":\"Marked words here.\"}") &&
+                      json.find("\"annotations\"") < json.find("\"blocks\""),
+                  2633);
+    RAYOPDF_CHECK(Has(json, ",{\"page\":1,\"type\":\"note\",\"boxes\":[[500.00,700.00,520.00,720.00]],\"contents\":\"Note\","
+                            "\"author\":null,\"date\":null,\"text\":null}") &&
+                      !Has(json, "hidden") && !Has(json, "not markup"),
+                  2634);
+    // Without quads a text markup's box is its /Rect.
+    RAYOPDF_CHECK(Has(json, "{\"page\":1,\"type\":\"strikeout\",\"boxes\":[[60.00,590.00,400.00,615.00]],\"contents\":null,"
+                            "\"author\":null,\"date\":null,\"text\":\"Other text.\"}]"),
+                  2635);
+    // The Markdown and the blocks do not change; --annotations=links keeps none.
+    const std::string bare = Json(plain, AnnotationMode::All);
+    RAYOPDF_CHECK(Convert(pdf) == Convert(plain) && !Has(Json(pdf, AnnotationMode::Links), "\"annotations\"") &&
+                      !Has(bare, "\"annotations\"") && json.substr(json.find(",\"blocks\"")) == bare.substr(bare.find(",\"blocks\"")),
+                  2636);
+}
+
 void Limits() {
     // Past kMaxAnnotationsPerPage drawn annotations the page counts a limit hit; a form that draws
     // itself ends as a content error.
@@ -455,6 +494,8 @@ void Limits() {
     Text::FontCache crowdedFonts(*crowded);
     InterpretPage(*crowded, crowdedFonts, 0, AnnotationMode::All, page, stats);
     RAYOPDF_CHECK(page.limitHit && page.annotationTexts.size() == kMaxAnnotationsPerPage, 2628);
+    // Every one is also a markup annotation, kept up to kMaxMarkupsPerPage.
+    RAYOPDF_CHECK(page.markups.size() == kMaxMarkupsPerPage && page.markupBoxes.size() == kMaxMarkupsPerPage, 2637);
 }
 
 } // namespace
@@ -474,6 +515,7 @@ int main() {
     Duplicates();
     LinksAsBefore();
     JsonFields();
+    JsonAnnotations();
     Limits();
     std::puts("test_layout_forms: ok");
     return 0;

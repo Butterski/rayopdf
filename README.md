@@ -214,8 +214,9 @@ Every benchmark, tool version and number, and how to reproduce them:
 - **Encrypted PDFs** need their password; certificate encryption is not supported.
 - **Memory** grows with the input file (it is mapped into memory) and, when images are written,
   with the largest JPEG or JPEG 2000 image.
-- **Annotations** other than links, form fields and FreeText notes (comments, highlights,
-  stamps) are not read.
+- **Annotations** other than links, form fields and FreeText notes do not reach the Markdown:
+  highlights, underlines, strike-outs and comments are listed in the JSON output's `annotations`;
+  stamps and drawings are not read.
 
 ## Documentation
 

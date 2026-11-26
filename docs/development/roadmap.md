@@ -396,8 +396,10 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 - Form fields and FreeText annotations (decided 2026-11-26 for 1.2, `--annotations=all`, the
   default): their text is the page's, where it stands, as a viewer shows it on screen; a check box
   or radio button is a task box (`- [x]`, `- [ ]`); a password field and hidden annotations are
-  never read; a value the page prints at the same place reads once (not bold). `links` reads
-  links only (1.1's output), `none` no annotation.
+  never read; a value the page prints at the same place reads once (not bold). The JSON output
+  lists the form's fields (`fields`) and the markup annotations (`annotations`: highlights,
+  underlines, strike-outs, squiggles, comments and FreeText notes with the text they mark), which
+  leave the Markdown as it is. `links` reads links only (1.1's output), `none` no annotation.
 
 ### D7 Command line
 
@@ -549,7 +551,8 @@ operand stack 64, Flate output per stream min(256 MiB, 1000 × compressed size),
 decoded-bytes budget, a per-page operator budget and a per-document wall-clock budget. Every limit
 fails closed and is counted in `--report`. Annotations: at most 4,096 widgets and FreeText
 annotations drawn a page (past it the page counts a limit hit), 32 field-parent hops, 4,096 bytes
-of a field value drawn.
+of a field value drawn; 4,096 markup annotations kept a page, 1,024 quads each and 64 KiB of a
+comment.
 
 ## Milestones
 

@@ -27,6 +27,7 @@ JSON object on one line, ending in a line break:
 | `pages` | one object a converted page: `page` (1-based number in the file), `width`, `height` (points) |
 | `outline` | only when the PDF has bookmarks: `{"level","title","page"}` an entry, depth first (`level` 1 at the top; `page` the page it leads to, `null` when none; entries outside `--pages` too) |
 | `fields` | only when the PDF has form fields with a widget on a converted page, and only with `--annotations=all` (the default): one object a field, in the form's field order: `name` (full name, partial names joined with `.`), `type` (`text`, `checkbox`, `radio`, `choice`, `signature`, `button`), `value` (`null` when it has none and always for passwords, signatures and pushbuttons; `true`/`false` for a check box; a list for a choice of several), `page`, `box` (`[x0,y0,x1,y1]`, its first widget on a converted page), `read_only`, `required` |
+| `annotations` | only when a converted page has markup annotations shown on screen, and only with `--annotations=all`: one object an annotation, page by page in the page's order: `page`, `type` (`highlight`, `underline`, `strikeout`, `squiggly`, `note`, `freetext`), `boxes` (`[[x0,y0,x1,y1],...]`: each quad's bounding box, else its rectangle), `contents`, `author`, `date`, and for the four text markups `text` (the page text its boxes cover); `null` for what it lacks. The Markdown does not change. |
 | `blocks` | the content in reading order |
 
 ## A block

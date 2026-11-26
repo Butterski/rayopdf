@@ -159,7 +159,10 @@ void WriteHtml(const std::vector<PageData>& pages, const BlockList& blocks, bool
 // marker and inline images left out); with Words each line also has "words":[{"box","text"}...],
 // split at the line's word breaks. With `settings.fields` holding fields, "fields":[{"name","type",
 // "value","page","box":[x0,y0,x1,y1],"read_only","required"}...] follows "pages" and "outline": value null, a
-// string, a list of strings (a choice of several) or a boolean (a check box).
+// string, a list of strings (a choice of several) or a boolean (a check box). Pages with markup
+// annotations (PageData::markups) add "annotations":[{"page","type","boxes":[[x0,y0,x1,y1]...],
+// "contents","author","date","text"}...] before "blocks", null for a value an annotation lacks;
+// "text", for the text markups only, is the ordered page text whose glyph centres fall in its boxes.
 void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
                const DocumentMetadata* metadata, const std::vector<OutlineEntry>* outline, std::string& out,
                WriteCounts& counts, MathMode math = MathMode::Unicode, const WriteSettings& settings = {});

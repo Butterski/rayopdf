@@ -2908,6 +2908,83 @@ void AppendDetailLine(std::string& out, const PageData& page, const Line& line, 
     out.push_back('}');
 }
 
+// The text a text-markup annotation marks: the glyphs of the page's ordered lines whose box
+// centres fall in one of its boxes (within a point, as a link's words), with one space at a word
+// break or a new line between two of them; inline images are left out.
+void MarkedText(const PageData& page, const MarkupArea& m, std::string& out) {
+    out.clear();
+    const MarkupBox* boxes = page.markupBoxes.data() + m.firstBox;
+    for (const uint32_t li : page.order) {
+        const Line& line = page.lines[li];
+        bool space = !out.empty();
+        for (uint32_t k = 0; k < line.count; ++k) {
+            const uint32_t gi = page.lineGlyphs[line.first + k];
+            const Glyph& g = page.glyphs[gi];
+            space = space || (k > 0 && (g.flags & kGlyphSpaceBefore));
+            if (g.flags & kGlyphImage) continue;
+            const UprightBox b = GlyphPageBox(page, gi);
+            const float cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+            bool in = false;
+            for (uint32_t i = 0; i < m.boxCount && !in; ++i)
+                in = cx >= boxes[i].x0 - 1 && cx <= boxes[i].x1 + 1 && cy >= boxes[i].y0 - 1 && cy <= boxes[i].y1 + 1;
+            if (!in) continue;
+            if (space && !out.empty()) out.push_back(' ');
+            space = false;
+            out += page.GlyphText(g);
+        }
+    }
+}
+
+// `,"annotations":[...]`: the markup annotations of the converted pages in page and /Annots order
+// (PageData::markups); nothing when there are none.
+void AppendAnnotations(std::string& out, const std::vector<PageData>& pages, std::string& text) {
+    static constexpr const char* kTypes[] = {"highlight", "underline", "strikeout", "squiggly", "note", "freetext"};
+    bool first = true;
+    const auto string = [&](const char* key, const PageData& page, uint32_t at, uint32_t length) {
+        AppendKey(out, key);
+        if (length == 0) {
+            out += "null";
+        } else {
+            Batch::AppendJsonString(out, page.TextAt(at, length));
+        }
+    };
+    for (const PageData& page : pages) {
+        for (const MarkupArea& m : page.markups) {
+            out += first ? ",\"annotations\":[{\"page\":" : ",{\"page\":";
+            first = false;
+            out += std::to_string(page.number);
+            out += ",\"type\":\"";
+            out += kTypes[static_cast<size_t>(m.kind)];
+            out += "\",\"boxes\":[";
+            for (uint32_t i = 0; i < m.boxCount; ++i) {
+                const MarkupBox& b = page.markupBoxes[m.firstBox + i];
+                out += i > 0 ? ",[" : "[";
+                AppendCoordinate(out, b.x0);
+                out.push_back(',');
+                AppendCoordinate(out, b.y0);
+                out.push_back(',');
+                AppendCoordinate(out, b.x1);
+                out.push_back(',');
+                AppendCoordinate(out, b.y1);
+                out.push_back(']');
+            }
+            out.push_back(']');
+            string("contents", page, m.contents, m.contentsLength);
+            string("author", page, m.author, m.authorLength);
+            string("date", page, m.date, m.dateLength);
+            AppendKey(out, "text");
+            if (m.kind <= MarkupKind::Squiggly) {
+                MarkedText(page, m, text);
+                Batch::AppendJsonString(out, text);
+            } else {
+                out += "null";
+            }
+            out.push_back('}');
+        }
+    }
+    if (!first) out.push_back(']');
+}
+
 // `,"lines":[...]` of `block` (WriteJson with JsonDetail Lines or Words): its lines in order, a
 // table's cells' lines cell by cell, none for an image or a comment.
 void AppendBlockLines(std::string& out, const std::vector<PageData>& pages, const BlockList& list, const Block& block,
@@ -3130,9 +3207,10 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         }
         out.push_back(']');
     }
+    std::string text;
+    AppendAnnotations(out, pages, text);
     out += ",\"blocks\":[";
     std::vector<PageBox> boxes;
-    std::string text;
     for (size_t w = 0; w < written.size(); ++w) {
         const WrittenBlock& entry = written[w];
         const Block& block = list.blocks[entry.block];
