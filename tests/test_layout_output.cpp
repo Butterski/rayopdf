@@ -959,6 +959,33 @@ void TestLabelsAndLanguage() {
                   2664);
 }
 
+// A figure's caption and a sentence that names a table.
+std::vector<PageData> CaptionPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    AddText(pages[0], "The measured values rose steadily over the whole year.", 72, 700, 10);
+    AddText(pages[0], "Figure 1: Values by month.", 72, 660, 10);
+    AddText(pages[0], "Table 2 shows the same values by region.", 72, 620, 10);
+    return pages;
+}
+
+// The JSON output's roles: a caption (not the sentence naming a table), kept furniture's running
+// header and page number, none by default.
+void TestRoles() {
+    OutputSettings settings = JsonSettings(JsonDetail::Blocks);
+    const std::string captions = Run(CaptionPage, settings);
+    Show("roles", captions);
+    RAYOPDF_CHECK(Count(captions, "\"role\":") == 1 &&
+                      Contains(captions, "\"role\":\"caption\",\"markdown\":\"Figure 1: Values by month.\""),
+                  2665);
+    RAYOPDF_CHECK(!Contains(Run(RunningPages, settings), "\"role\""), 2666);
+    settings.furniture = Furniture::Keep;
+    const std::string kept = Run(RunningPages, settings);
+    Show("roles kept", kept);
+    RAYOPDF_CHECK(Count(kept, "\"role\":\"page_header\",\"markdown\":\"ACME Quarterly Report 2026\"") == 3 &&
+                      Count(kept, "\"role\":\"page_number\"") == 3 && !Contains(kept, "\"role\":\"page_footer\""),
+                  2667);
+}
+
 } // namespace
 
 int main() {
@@ -979,6 +1006,7 @@ int main() {
     TestJsonDetail();
     TestOutlineTargets();
     TestLabelsAndLanguage();
+    TestRoles();
     std::puts("layout output tests passed");
     return 0;
 }

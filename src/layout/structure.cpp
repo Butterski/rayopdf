@@ -60,7 +60,7 @@ constexpr StandardRole kStandardRoles[] = {
     {"NonStruct", StructRole::Group, 0}, {"Private", StructRole::Group, 0},
     {"TOC", StructRole::Group, 0},       {"Index", StructRole::Group, 0},
     {"Aside", StructRole::Group, 0},     {"BlockQuote", StructRole::BlockQuote, 0},
-    {"P", StructRole::Paragraph, 0},     {"Caption", StructRole::Paragraph, 0},
+    {"P", StructRole::Paragraph, 0},     {"Caption", StructRole::Paragraph, kCaptionLevel},
     {"TOCI", StructRole::Paragraph, 0},  {"BibEntry", StructRole::Paragraph, 0},
     {"Title", StructRole::Paragraph, 0}, {"H", StructRole::Heading, 0},
     {"H1", StructRole::Heading, 1},      {"H2", StructRole::Heading, 2},
@@ -1345,6 +1345,7 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
     list.monoDocument = geo.monoDocument;
     list.boldBody = geo.boldBody;
     list.italicBody = geo.italicBody;
+    list.tagged = true;
     const size_t n = pages.size();
     // Per line, its geometric block.
     std::vector<std::vector<int32_t>> geoBlock(n);
@@ -1538,6 +1539,9 @@ void TaggedLayout::Blocks(const std::vector<PageData>& pages, BlockList& list) {
                 b.quote = 1;
         }
         b.size = firstLine.size;
+        const StructNode& element = structure_->nodes[owner->node];
+        if (owner->kind == OwnerKind::Paragraph && element.role == StructRole::Paragraph && element.level == kCaptionLevel)
+            b.role = static_cast<uint8_t>(BlockRole::Caption);
         bool fromTree = true;  // a list item marked by the tree (else by the geometric pass)
         switch (owner->kind) {
         case OwnerKind::Heading:

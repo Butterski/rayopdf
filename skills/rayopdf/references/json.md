@@ -37,6 +37,7 @@ Every block has, in this order:
 | `type` | `heading`, `paragraph`, `list_item`, `code`, `table`, `image`, `footnote` or `comment` |
 | `page` | the page it starts on |
 | `boxes` | one `{"page":N,"bbox":[x0,y0,x1,y1]}` a page it covers: the union of its lines, in page points, origin at the bottom left, two decimals (turned text: its box on the page; a table: the table's box; an image: the image's box; a comment: `[]`) |
+| `role` | only on some blocks: `caption` (a figure's or table's caption; tagged PDFs: their `/Caption`), `formula` (a displayed formula, `--math=latex`), `page_header`, `page_footer`, `page_number` (furniture kept with `--furniture=keep`) |
 
 Then by type:
 

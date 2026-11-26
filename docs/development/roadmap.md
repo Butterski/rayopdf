@@ -289,6 +289,13 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `/Names /Dests` name tree, a named one possibly a dictionary with `/D`), `null` when none; the
   destinations are resolved only for JSON (`src/pdf/trees.h`: name and number trees at most 32
   levels deep and 2^20 nodes and pairs, read once and searched by key).
+  `role` (2026-11-26), after `boxes` and only where it applies, says what a block is besides its
+  type (no new `type` value): `caption` (the untagged path: a paragraph whose first line is a
+  float's caption, `IsFloatCaption`; the tagged path: a `/Caption` element), `formula` (with
+  `--math=latex`, a paragraph written as `$$…$$`), `page_header`, `page_footer`, `page_number`
+  (kept furniture, `--furniture=keep`: a line whose repetition key is a page number, else a
+  header when turned or in the page's upper half, else a footer; kept in `Line::reserved` without
+  changing what the rules decide). Computed only when JSON is written.
   Page labels (2026-11-26): with `/PageLabels`, every page of `pages` has `label`, from the
   number tree's range whose key is the greatest at most the page's index: its `/P` prefix (at
   most 64 bytes of the string) and its number `/St` (default 1) plus the page's place in the

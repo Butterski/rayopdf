@@ -43,6 +43,10 @@ enum class CommentKind : uint8_t {
 // GitHub alerts (`> [!NOTE]`): a block quote titled by one of these words alone on its first line.
 enum class AlertKind : uint8_t { None, Note, Tip, Important, Warning, Caution };
 
+// What a block is besides its kind (the JSON output's "role", roadmap D6): a figure's or table's
+// caption, a display formula, kept page furniture (a running header, footer, page number).
+enum class BlockRole : uint8_t { None, Caption, Formula, PageHeader, PageFooter, PageNumber };
+
 // One line of a block: `skip` glyphs at its start (a list marker) are not text.
 struct BlockLine {
     uint32_t page = 0;   // index into the pages vector
@@ -60,6 +64,7 @@ struct Block {
     bool ordered = false;   // list items
     bool closeParen = false; // ordered list items: the enumerator ends in ")" ("4)"), not "."
     bool listParagraph = false; // a further paragraph of the list item before it, at its `depth`
+    uint8_t role = 0;       // BlockRole the structure tree gives it (a Caption); 0 otherwise
     // Ordered list items: the enumerator's value; comments: the page number; headings: when not
     // 0, the heading is the first `number` glyphs of its line only (a label run in with its
     // paragraph, which starts later on the same line).
@@ -90,6 +95,7 @@ struct BlockList {
     // is the document's normal one, not emphasis.
     bool boldBody = false;
     bool italicBody = false;
+    bool tagged = false;            // the blocks come from a structure tree (TaggedLayout::Blocks)
 };
 
 // Pages carry their lines in reading order (PageData::order). `unmappedPages` holds per page (index

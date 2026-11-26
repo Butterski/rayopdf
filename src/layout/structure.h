@@ -58,6 +58,7 @@ constexpr uint32_t kMaxStructureItems = 1u << 22;    // marked-content ids and a
 constexpr uint32_t kMaxStructureDepth = 512;         // element nesting
 constexpr uint32_t kMaxRoleMapChain = 32;            // RoleMap hops from a name to a standard type
 constexpr uint32_t kMaxNumberTreeDepth = 32;         // ParentTree /Kids levels
+constexpr uint8_t kCaptionLevel = 1;                 // StructNode::level of a Caption (a Paragraph)
 constexpr uint32_t kMaxStructureText = 1u << 24;     // bytes of /Alt and /ActualText kept
 
 // The checks (algorithms §6.10).
@@ -107,7 +108,7 @@ enum : uint8_t {
 struct StructNode {
     uint32_t parent = UINT32_MAX;    // UINT32_MAX for the tree's top elements
     StructRole role = StructRole::Unknown;
-    uint8_t level = 0;               // headings: 1-6, 0 for H
+    uint8_t level = 0;               // headings: 1-6, 0 for H; paragraphs: kCaptionLevel for a Caption
     uint8_t flags = 0;
     uint8_t reserved = 0;
     uint16_t rowSpan = 1, colSpan = 1;

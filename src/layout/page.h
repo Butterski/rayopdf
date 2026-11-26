@@ -222,7 +222,7 @@ struct Line {
     uint32_t chars = 0;      // visible non-space characters
     uint16_t flags = 0;
     uint8_t dir = 0;
-    uint8_t reserved = 0;
+    uint8_t reserved = 0;    // kept furniture (kLineFurniture): its BlockRole (FurnitureKind); else 0
 };
 
 // The allocator of PageData::glyphs: std::allocator's, except that a record the vector grows by

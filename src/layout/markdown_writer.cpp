@@ -2513,6 +2513,41 @@ void AppendBlockLines(std::string& out, const std::vector<PageData>& pages, cons
     out.push_back(']');
 }
 
+// The JSON output's "role" of `block`, whose Markdown is `md`: what the structure tree gives (a
+// Caption); kept furniture's kind (Line::reserved, FurnitureKind); in LaTeX mode a paragraph
+// written as a display formula ($$…$$); on the untagged path a paragraph whose first line is a
+// float's caption (IsFloatCaption). `text` is scratch.
+BlockRole RoleOf(const std::vector<PageData>& pages, const BlockList& list, const Block& block, std::string_view md,
+                 MathMode math, std::string& text) {
+    if (block.role != 0) return static_cast<BlockRole>(block.role);
+    if (block.kind == BlockKind::Comment || block.count == 0) return BlockRole::None;
+    const BlockLine& ref = list.lines[block.first];
+    const PageData& page = pages[ref.page];
+    const Line& first = page.lines[ref.line];
+    if ((first.flags & kLineFurniture) && first.reserved != 0) return static_cast<BlockRole>(first.reserved);
+    if (block.kind != BlockKind::Paragraph) return BlockRole::None;
+    if (math == MathMode::Latex) {
+        while (md.size() >= 2 && md[0] == '>' && md[1] == ' ') md.remove_prefix(2);
+        while (!md.empty() && md[0] == ' ') md.remove_prefix(1);
+        if (md.substr(0, 2) == "$$") return BlockRole::Formula;
+    }
+    if (list.tagged || first.count == 0) return BlockRole::None;
+    LineText(page, first, text, ref.skip);
+    return IsFloatCaption(text) ? BlockRole::Caption : BlockRole::None;
+}
+
+const char* RoleName(BlockRole role) {
+    switch (role) {
+    case BlockRole::Caption: return "caption";
+    case BlockRole::Formula: return "formula";
+    case BlockRole::PageHeader: return "page_header";
+    case BlockRole::PageFooter: return "page_footer";
+    case BlockRole::PageNumber: return "page_number";
+    case BlockRole::None: break;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 const char* BlockTypeName(BlockKind kind) {
@@ -2641,6 +2676,13 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         BlockBoxes(pages, list, block, boxes);
         out += ",\"boxes\":";
         AppendBoxes(out, pages, boxes.data(), boxes.size());
+        const std::string_view md = std::string_view(markdown).substr(entry.begin, entry.end - entry.begin);
+        if (const char* role = RoleName(RoleOf(pages, list, block, md, math, text))) {
+            AppendKey(out, "role");
+            out.push_back('"');
+            out += role;
+            out.push_back('"');
+        }
         switch (block.kind) {
         case BlockKind::Heading:
             AppendInteger(out, "level", static_cast<uint64_t>(std::max(1, std::min<int>(6, block.level))));

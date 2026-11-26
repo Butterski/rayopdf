@@ -133,17 +133,6 @@ bool IsTerminal(uint32_t cp) {
            cp == 0xFF01 || cp == 0xFF1F;
 }
 
-// A float's caption: a caption whose label and number no lowercase word follows ("Table 1 shows
-// …" opens a sentence of the body).
-bool IsFloatCaption(std::string_view t) {
-    if (!IsCaption(t)) return false;
-    size_t i = t.find(' ');  // after the label word
-    while (i < t.size() && t[i] == ' ') ++i;
-    while (i < t.size() && t[i] != ' ') ++i;  // the number
-    while (i < t.size() && t[i] == ' ') ++i;
-    return i >= t.size() || t[i] < 'a' || t[i] > 'z';
-}
-
 // A GitHub alert's title: one alert word alone ("Note", "WARNING", "Tip:"), in any letter case.
 uint8_t AlertOf(std::string_view t) {
     if (!t.empty() && t.back() == ':') t.remove_suffix(1);

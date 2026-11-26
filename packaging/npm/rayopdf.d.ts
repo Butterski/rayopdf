@@ -86,6 +86,7 @@ export interface JsonBlock {
   type: "heading" | "paragraph" | "list_item" | "code" | "table" | "image" | "footnote" | "comment";
   page: number;
   boxes: Box[];
+  role?: "caption" | "formula" | "page_header" | "page_footer" | "page_number";
   level?: number;
   depth?: number;
   ordered?: boolean;

@@ -1875,6 +1875,13 @@ int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink) {
     return removed;
 }
 
+BlockRole FurnitureKind(const PageData& page, const Line& line, std::string& text, std::string& key) {
+    LineText(page, line, text);
+    RunningKey(text, key);
+    if (!key.empty() && IsPageNumberKey(key)) return BlockRole::PageNumber;
+    return line.dir != 0 || line.vb + line.vt >= page.height ? BlockRole::PageHeader : BlockRole::PageFooter;
+}
+
 namespace {
 
 // Figures as obstacles (algorithms §5.1, XY-Cut++ pre-masks figures): an image beside a column

@@ -118,6 +118,7 @@ Every block has, in this order:
 | `type` | `heading`, `paragraph`, `list_item`, `code`, `table`, `image`, `footnote` or `comment`. |
 | `page` | The page it starts on. |
 | `boxes` | One `{"page":N,"bbox":[x0,y0,x1,y1]}` for each page it covers: the union of its lines, in points, origin at the bottom left of the page, two decimals. Turned text has its box on the upright page; a table has the table's box, an image its placement; a comment has `[]`. |
+| `role` | Only on some blocks, what the block is besides its type: `caption` (a figure's or table's caption; in a tagged PDF its `/Caption` elements), `formula` (a displayed formula, with `--math=latex`), `page_header`, `page_footer` or `page_number` (page furniture kept with `--furniture=keep`). |
 
 Then, by type:
 

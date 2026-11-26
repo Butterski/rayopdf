@@ -59,6 +59,16 @@ void AppendLineText(const PageData& page, const Line& line, std::string& out, ui
 // A caption: a label word and its number ("Figure 6.1.1: …", "Table 13.2. …", "Fig. A1",
 // "TABLE IV"), in any letter case.
 bool IsCaption(std::string_view t);
+// A float's caption: a caption whose label and number no lowercase word follows ("Table 1 shows
+// …" opens a sentence of the body).
+inline bool IsFloatCaption(std::string_view t) {
+    if (!IsCaption(t)) return false;
+    size_t i = t.find(' ');  // after the label word
+    while (i < t.size() && t[i] == ' ') ++i;
+    while (i < t.size() && t[i] != ' ') ++i;  // the number
+    while (i < t.size() && t[i] == ' ') ++i;
+    return i >= t.size() || t[i] < 'a' || t[i] > 'z';
+}
 
 // Calls use(text) with the texts of `line`'s glyphs [k0, k1) in order, a run of glyphs whose texts
 // follow each other in the page text as one piece: the same bytes as glyph by glyph.

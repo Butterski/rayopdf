@@ -159,15 +159,19 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
     // Kept furniture: no running line, edge row or margin line is removed (a used tree still leaves
     // out its artifacts). The lines the rules would remove stay as text marked kLineFurniture:
     // they head nothing and make no block with the text. Rows only the edge-row model takes for
-    // furniture (kLineEdgeModel) stay plain text.
+    // furniture (kLineEdgeModel) stay plain text. Each keeps its kind (FurnitureKind) in
+    // Line::reserved for the JSON output's "role".
     const bool keepFurniture = output && output->furniture == Furniture::Keep;
     const FeatureSink* features = output ? output->features : nullptr;
     if (!tree && !keepFurniture) report.headerFooterLines += RemoveRunningLines(pages, features);
     if (!tree && keepFurniture && RemoveRunningLines(pages) > 0) {
+        std::string text, key;
         for (PageData& page : pages)
             for (Line& line : page.lines)
-                if (line.flags & kLineRemoved)
+                if (line.flags & kLineRemoved) {
                     line.flags = static_cast<uint16_t>((line.flags & ~kLineRemoved) | kLineFurniture);
+                    line.reserved = static_cast<uint8_t>(FurnitureKind(page, line, text, key));
+                }
     }
     if (images) PlaceImages(pages, *images, report);
     std::vector<uint8_t> unmapped(pages.size(), 0);

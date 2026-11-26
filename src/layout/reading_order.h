@@ -19,7 +19,9 @@
 
 #include "layout/features.h"
 #include "layout/page.h"
+#include "layout/semantics.h"
 
+#include <string>
 #include <vector>
 
 namespace RayoPdf::Layout {
@@ -33,6 +35,12 @@ constexpr float kRunningBand = 0.12f;
 // edge-row model (layout/model.h) removes rows they keep in the outer tenth of a page. `sink`
 // (layout/features.h) gets the edge rows examined there, with the rules' decisions.
 int RemoveRunningLines(std::vector<PageData>& pages, const FeatureSink* sink = nullptr);
+
+// The kind of furniture a line RemoveRunningLines marked is (the JSON output's "role" of kept
+// furniture, Furniture::Keep, stored in Line::reserved): a page number when its repetition key is
+// one ("#", "page #", "# of #" ...), else a running header when it is turned or in the page's upper
+// half, else a footer. `text` and `key` are scratch. Decides nothing RemoveRunningLines decides.
+BlockRole FurnitureKind(const PageData& page, const Line& line, std::string& text, std::string& key);
 
 // Fills page.order with the lines not removed, in reading order: upright text first, then each
 // other direction in its own frame.
