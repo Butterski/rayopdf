@@ -52,6 +52,7 @@ Research notes, written before or during the work they informed:
 | Note | Topic |
 |---|---|
 | [Landscape](research/landscape.md) | Other converters, benchmarks and corpora. |
+| [Features](research/features.md) | Features of the other converters and RayoPDF's gaps (for 1.2). |
 | [Algorithms](research/algorithms.md) | PDF parsing, fonts, text, layout and structure recovery. |
 | [Speed](research/speed.md) | Techniques of fast parsers and how to measure them. |
 | [OCR and ML](research/ocr-ml.md) | When OCR is needed, engines, models and runtimes. |
