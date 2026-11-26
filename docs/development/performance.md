@@ -1826,6 +1826,31 @@ module, 1.0.0's against 1.1.0's over odl in three runs: 1,287 → 1,260, 1,258 �
 code. The fresh time fell five times as far as the instructions: the round's target was the
 memory a process touches, and its page faults fell by 13 % at the median.
 
+## Twenty-sixth round (1.2)
+
+The round's candidates come from the 1.2 research (2026-11-26, 1.1.0 measured): the page threads'
+waits, the fresh process's heap faults, the output write, `--serve`, the WebAssembly build flags
+and font loading. Every step is output-identical. Machine as above; the round ran while four other
+sessions built and tested, so steps are decided on counts and their times taken in a quiet window.
+
+One trap of fresh-process counts, found here: the kernel's work and the page faults of a fresh
+`--convert` depend on the state of the binary's file in the page cache. The same bytes copied
+minutes ago against hours ago: 136 against 133 faults and up to 235 K more kernel instructions at
+odl 053. Binaries compared fresh are copied at the same moment.
+
+### Tried and rejected (2026-11-26)
+
+- **Output written through `O_TMPFILE`** (`WriteAll`: a file without a name in the target's
+  directory, linked under the target's name; no temporary name, no rename). The write's system
+  calls alone (1,575 bytes, median of 3,000 writes, one CPU), old way against the design:
+  a new file on tmpfs 16.4-16.8 → 13.6-14.0 µs, on ext4 37.2-37.5 → 28.3-28.9 µs; a replaced
+  file (`linkat` refused, the file linked under a temporary name and renamed) on tmpfs 18.6-19.2
+  → 23.6-24.4 µs, on ext4 100-114 → 117-128 µs. The redesign looked first (`lstat`) and took the
+  unnamed file only for a new target: new files 16.0-16.3 µs (tmpfs) and 30.4-30.5 µs (ext4),
+  replaced files 20.3-21.1 µs and 107-116 µs. At most 7 µs of a 0.88 ms conversion for a new file
+  on ext4, 2-5 µs lost for a replaced one (`bench.py fresh` and a rerun batch replace their
+  outputs), and no instruction or fault count moves: not kept.
+
 ## Open candidates (measured, not done)
 
 - **Text path:** line and word texts read in place when contiguous in the page text, instead of
