@@ -402,7 +402,7 @@ Also use the actual **space glyphs in the stream**:
 - Nesting from the marker x-position (cluster x into levels). Continuation lines align to the text start (hanging indent).
 
 ### 6.4 Code blocks
-- Monospace detection: FontDescriptor FixedPitch flag (bit 1, §9.8.2 Table 123); a uniform width array; font name (Courier, Mono, Consolas, Menlo, Code, `*Mono*`).
+- Monospace detection: FontDescriptor FixedPitch flag (bit 1, §9.8.2 Table 123); a uniform width array; font name (Courier, Consolas, Menlo, Code, "Mono" as a name part but not "Monotype", Typewriter, Cousine). pdfTeX's typewriter faces (`CMTT`, `SFTT`, NimbusMonL) are not taken by name: in 1.2's gate that cost READoc arXiv text and tables.
 - Supporting signals: a background fill rect or shading behind the block; a left bar.
 - Preserve whitespace by computing leading spaces = (x − block_x0)/space_advance of the monospace font. Emit fenced code blocks. Inline monospace runs become backticks.
 

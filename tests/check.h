@@ -11,7 +11,8 @@
 // formats 2000-2049 and 2650-2699, JSON strings and pages in a pipeline 2050-2099, robust
 // statistics 2100-2149, statistical layout 2150-2199, LaTeX math structure 2200-2249, small models
 // 2250-2299, tables 2300-2349, LaTeX math fonts 2350-2399, footnotes 2400-2449, headings
-// 2500-2549, dehyphenation and line joins 2585-2599).
+// 2500-2549, dehyphenation and line joins 2585-2599, monospace font names and table structure
+// 2800-2849).
 // An exit status has 8 bits, so codes past 255 leave the process as code % 256, and as 1 when that
 // would be 0.
 #pragma once

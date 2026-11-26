@@ -608,6 +608,32 @@ void TestSimpleFonts() {
     RAYOPDF_CHECK(fallback.Unmappable(), 374);
 }
 
+// Monospace from the font name alone (no FixedPitch flag): "Mono" as a name part, TeX's and Latin
+// Modern's typewriter faces and the Courier clones, the subset tag removed; never "Monotype".
+void TestMonospaceNames() {
+    static const struct {
+        const char* name;
+        bool monospace;
+    } kNames[] = {
+        {"ABCDEF+LMTypewriter10-Regular", true}, {"LMMono10-Regular", true}, {"ABCDEF+CMTT10", false},
+        {"SFTT1000", false}, {"DejaVuSansMono-Bold", true}, {"Cousine-Regular", true},
+        {"SFMono-Regular", true}, {"RobotoMono-Regular", true}, {"Monospace821BT-Roman", true},
+        {"NimbusMonL-Regu", false}, {"LucidaSansTypewriter", true},
+        {"CourierNew", true}, {"MonotypeCorsiva", false}, {"MonolineScript", false}, {"CMR10", false},
+        {"Helvetica", false},
+    };
+    Loaded l;
+    Load(l, [](Test::PdfBuilder&) {
+        std::string f;
+        for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+            f += " /M" + std::to_string(i) + " << /Type /Font /Subtype /Type1 /BaseFont /" + kNames[i].name +
+                 " /FontDescriptor << /Type /FontDescriptor /Flags 32 >> >>";
+        return f;
+    }, 1479);
+    for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+        RAYOPDF_CHECK(l.Get("M" + std::to_string(i)).Style().monospace == kNames[i].monospace, 2800);
+}
+
 void TestType0AndType3() {
     Loaded l;
     Load(l, [](Test::PdfBuilder& b) {
@@ -902,6 +928,7 @@ int main() {
     TestEncodingCMap();
     TestPrograms();
     TestSimpleFonts();
+    TestMonospaceNames();
     TestType0AndType3();
     TestEmbeddedPrograms();
     TestLazyPrograms();

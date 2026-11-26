@@ -91,11 +91,32 @@ bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
     return false;
 }
 
-// Style from a font name (algorithms §6.4, §6.6): "-Bold", ",Bold", "BoldItalic", "Semibold",
-// "Black", "Heavy"; URW's "-Medi" and "-Demi" weights (NimbusRomNo9L-Medi is the Times-Bold clone
-// LaTeX's times packages embed; "Medium" elsewhere is weight 500, not bold); TeX's bold extended
-// "CMBX12", "SFBX1000" and "CMB10"; "Italic", "Oblique", a trailing "-It"/"It"; "Mono", "Courier",
-// "Code", "Consol(as)", "Menlo".
+// `prefix` in lower case, as ContainsNoCase's needle.
+bool StartsNoCase(std::string_view name, std::string_view prefix) {
+    return name.size() >= prefix.size() && ContainsNoCase(name.substr(0, prefix.size()), prefix);
+}
+
+// "Mono" as a part of a name, any case: not followed by a lower-case letter ("RobotoMono-Regular",
+// "SFMono", "LMMono10", "DejaVuSansMono", "IBMPlexMono"), or followed by "spac" ("Monospace821BT");
+// never "MonotypeCorsiva" or "MonolineScript".
+bool MonoWord(std::string_view name) {
+    for (size_t at = 0; at + 4 <= name.size(); ++at) {
+        if (!StartsNoCase(name.substr(at), "mono")) continue;
+        const char next = at + 4 < name.size() ? name[at + 4] : '\0';
+        if (!(next >= 'a' && next <= 'z') || StartsNoCase(name.substr(at + 4), "spac")) return true;
+    }
+    return false;
+}
+
+// Style from a font name (algorithms §6.4, §6.6), the subset tag already removed: "-Bold", ",Bold",
+// "BoldItalic", "Semibold", "Black", "Heavy"; URW's "-Medi" and "-Demi" weights (NimbusRomNo9L-Medi
+// is the Times-Bold clone LaTeX's times packages embed; "Medium" elsewhere is weight 500, not
+// bold); TeX's bold extended "CMBX12", "SFBX1000" and "CMB10"; "Italic", "Oblique", a trailing
+// "-It"/"It". Monospace: "Mono" as a name part, "Courier", "Code", "Consol(as)", "Menlo",
+// "Typewriter" (Latin Modern's OpenType "LMTypewriter10", "LucidaSansTypewriter") and "Cousine".
+// pdfTeX's Type 1 typewriter faces (CMTT, cm-super's SFTT, the courier package's NimbusMonL)
+// are left to the descriptor's FixedPitch flag: taking their names cost READoc's arXiv text and
+// tables in 1.2's gate (\texttt as code spans).
 void StyleFromName(std::string_view name, FontStyle& style) {
     if (ContainsNoCase(name, "bold") || ContainsNoCase(name, "black") || ContainsNoCase(name, "heavy")) style.bold = true;
     if (ContainsNoCase(name, "italic") || ContainsNoCase(name, "oblique")) style.italic = true;
@@ -113,8 +134,9 @@ void StyleFromName(std::string_view name, FontStyle& style) {
     if (name.size() >= 4 && (name.substr(0, 4) == "CMBX" || name.substr(0, 4) == "SFBX" ||
                              (name.substr(0, 3) == "CMB" && name[3] >= '0' && name[3] <= '9')))
         style.bold = true;
-    if (ContainsNoCase(name, "mono") || ContainsNoCase(name, "courier") || ContainsNoCase(name, "code") ||
-        ContainsNoCase(name, "consol") || ContainsNoCase(name, "menlo")) {
+    if (MonoWord(name) || ContainsNoCase(name, "courier") || ContainsNoCase(name, "code") ||
+        ContainsNoCase(name, "consol") || ContainsNoCase(name, "menlo") || ContainsNoCase(name, "typewriter") ||
+        ContainsNoCase(name, "cousine")) {
         style.monospace = true;
     }
     if (ContainsNoCase(name, "symbol") || ContainsNoCase(name, "dingbat") || ContainsNoCase(name, "wingding")) {
