@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -383,7 +385,7 @@ public:
     Interpreter(const Document& document, Text::FontCache& fonts, PageData& page, PageStats& stats)
         : doc_(document), fonts_(fonts), page_(page), stats_(stats) {}
 
-    void Run(int index, bool withLinks);
+    void Run(int index, AnnotationMode annotations);
 
 private:
     void RunStream(std::string_view content, const PdfValue& resources, int depth);
@@ -416,7 +418,20 @@ private:
     RAYOPDF_HOT_INLINE void AddPiece(double x0, double y0, double x1, double y1, bool rect);
     RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources, std::string_view data);
     void PaintedSample(const PdfValue& dictionary, std::string_view data);
-    void ReadLinks(int index);
+    // The page's /Annots in order (Run, after the content): link areas, and with `draw` the text
+    // of form fields and FreeText annotations.
+    void ReadAnnotations(int index, bool draw);
+    void ReadLink(const PdfValue& annot);
+    // One widget or FreeText annotation drawn (its appearance, a check mark or a synthesized
+    // value); false once the page's annotation budget is spent.
+    bool DrawAnnotation(const PdfValue& annot, uint32_t object, bool widget);
+    bool DrawAppearance(const PdfValue& annot, const PdfRect& rect);
+    void DrawCheckMark(const PdfRect& rect, bool on);
+    void SynthesizeValue(const PdfRect& rect, std::string_view value, std::string_view da, bool multiline);
+    // The glyphs from `first` on as one glyph carrying `value` (comb fields).
+    void CarryText(uint32_t first, std::string_view value);
+    // The state an annotation is drawn in: the page content's left behind, with CTM `ctm`.
+    void ResetForAnnotation(const Matrix& ctm);
     void NextLine(double tx, double ty) {
         Matrix t;
         t.e = tx;
@@ -495,9 +510,18 @@ private:
     // form's lexer reads its own must not move it (a short one lives inside the string object).
     std::deque<std::string> formBuffers_;
     std::string_view opSource_;                // the source of the operator being executed
+    // While annotations are drawn (ReadAnnotations): the form's default resources (/AcroForm /DR,
+    // resolved; Null when none), in which fonts missing from an appearance's resources are looked
+    // up (its /Font, null when none); its default /DA; /NeedAppearances; annotations drawn.
+    bool annotating_ = false;
+    const PdfValue* formResources_ = nullptr;
+    const PdfValue* formFonts_ = nullptr;
+    std::string_view formDa_;
+    bool needAppearances_ = false;
+    uint32_t annotationsDrawn_ = 0;
 };
 
-void Interpreter::Run(int index, bool withLinks) {
+void Interpreter::Run(int index, AnnotationMode annotations) {
     const PdfRect crop = doc_.CropBox(index);
     const int rotate = doc_.Rotate(index);
     const double w = crop.Width(), h = crop.Height();
@@ -550,7 +574,7 @@ void Interpreter::Run(int index, bool withLinks) {
     if (!content.empty()) RunStream(content, doc_.Resources(index), 0);
     // Marked content left open at the end still applies its ActualText.
     while (!marked_.empty()) EndMarked();
-    if (withLinks) ReadLinks(index);
+    if (annotations != AnnotationMode::None) ReadAnnotations(index, annotations == AnnotationMode::All);
     page_.limitHit = budgetHit_;
 }
 
@@ -989,8 +1013,15 @@ bool Interpreter::SetFont(const PdfValue& resources, std::string_view name, doub
     const PdfValue& fontsDict = fonts ? doc_.Resolve(*fonts) : doc_.Get(own, "Font");
     const PdfValue* entry = fontsDict.Find(name);
     if (!entry) {
-        gs_.font = nullptr;
-        return false;
+        // An appearance stream that names a font of the form's resources without its own copy
+        // (viewers read /AcroForm /DR there too).
+        const PdfValue* shared = annotating_ && formFonts_ ? formFonts_->Find(name) : nullptr;
+        if (!shared) {
+            gs_.font = nullptr;
+            return false;
+        }
+        SetFontEntry(*shared, size);
+        return true;
     }
     SetFontEntry(*entry, size);
     if (memo && gs_.fontId < fontIds_.size() && OneHop(fonts) && OneHop(entry)) {
@@ -1702,38 +1733,394 @@ RAYOPDF_NOINLINE bool Interpreter::PlaceGlyphsGeneral(std::string_view bytes, co
     return open;
 }
 
-void Interpreter::ReadLinks(int index) {
+// A name made in code, its bytes static.
+PdfValue StaticName(std::string_view name) {
+    PdfValue v;
+    v.type = PdfValue::Type::Name;
+    v.count = static_cast<uint32_t>(name.size());
+    v.data = name.data();
+    return v;
+}
+
+// The font a synthesized field value is drawn in when the form gives none: Helvetica in
+// WinAnsiEncoding, a direct dictionary (FontCache keeps it by its entries' address).
+const PdfValue& HelveticaFont() {
+    static const PdfDictEntry entries[] = {{"Type", StaticName("Font")},
+                                           {"Subtype", StaticName("Type1")},
+                                           {"BaseFont", StaticName("Helvetica")},
+                                           {"Encoding", StaticName("WinAnsiEncoding")}};
+    static const PdfValue font = [] {
+        PdfValue v;
+        v.type = PdfValue::Type::Dict;
+        v.count = 4;
+        v.data = entries;
+        return v;
+    }();
+    return font;
+}
+
+// The WinAnsiEncoding byte of code point `cp` (ISO 32000-1 Annex D.2), -1 when it has none.
+int WinAnsiByte(uint32_t cp) {
+    if ((cp >= 0x20 && cp <= 0x7E) || (cp >= 0xA0 && cp <= 0xFF)) return static_cast<int>(cp);
+    static constexpr uint16_t kHigh[32] = {0x20AC, 0,      0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+                                           0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0,      0x017D, 0,
+                                           0,      0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+                                           0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0,      0x017E, 0x0178};
+    for (int i = 0; i < 32; ++i)
+        if (cp != 0 && kHigh[i] == cp) return 0x80 + i;
+    return -1;
+}
+
+void Interpreter::ReadAnnotations(int index, bool draw) {
     const PdfValue& annots = doc_.Get(doc_.PageDict(index), "Annots");
     if (!annots.IsArray()) return;
+    bool prepared = false, open = draw;
+    uint64_t glyphs = 0, unmapped = 0, guessed = 0;
     for (const PdfValue& item : annots.Array()) {
-        if (page_.links.size() >= kMaxLinksPerPage) break;
         const PdfValue& annot = doc_.Resolve(item);
-        if (!doc_.Get(annot, "Subtype").IsName("Link")) continue;
-        const PdfValue& action = doc_.Get(annot, "A");
-        if (!doc_.Get(action, "S").IsName("URI")) continue;
-        const PdfValue& uri = doc_.Get(action, "URI");
-        if (!uri.IsString() || uri.String().empty()) continue;
-        PdfRect rect;
-        if (!doc_.Rect(doc_.Get(annot, "Rect"), rect)) continue;
-        Box box = UnitSquare(Multiply(Matrix{rect.Width(), 0, 0, rect.Height(), rect.x0, rect.y0}, pageMatrix_));
-        LinkArea link;
-        link.x0 = float(box.x0), link.y0 = float(box.y0), link.x1 = float(box.x1), link.y1 = float(box.y1);
-        link.uri = static_cast<uint32_t>(page_.text.size());
-        std::string_view bytes = uri.String().substr(0, 8192);
-        // URIs are 7-bit ASCII (§12.6.4.7); spaces and controls are percent-encoded.
-        for (unsigned char ch : bytes) {
-            if (ch <= 0x20 || ch >= 0x7F) {
-                static const char kHex[] = "0123456789ABCDEF";
-                page_.text.push_back('%');
-                page_.text.push_back(kHex[ch >> 4]);
-                page_.text.push_back(kHex[ch & 15]);
-            } else {
-                page_.text.push_back(static_cast<char>(ch));
-            }
+        const PdfValue& subtype = doc_.Get(annot, "Subtype");
+        if (subtype.IsName("Link")) {
+            if (page_.links.size() < kMaxLinksPerPage) ReadLink(annot);
+            continue;
         }
-        link.uriLength = static_cast<uint32_t>(page_.text.size() - link.uri);
-        page_.links.push_back(link);
+        if (!open) continue;
+        const bool widget = subtype.IsName("Widget");
+        if (!widget && !subtype.IsName("FreeText")) continue;
+        if (!prepared) {
+            // The document's form (§12.7.3): its default resources and whether viewers must make
+            // the fields' appearances anew.
+            prepared = true;
+            annotating_ = true;
+            const PdfValue& form = doc_.Get(doc_.Catalog(), "AcroForm");
+            formResources_ = &doc_.Get(form, "DR");
+            const PdfValue& fonts = doc_.Get(*formResources_, "Font");
+            formFonts_ = fonts.IsDict() ? &fonts : nullptr;
+            formDa_ = doc_.Get(form, "DA").String();
+            needAppearances_ = doc_.Get(form, "NeedAppearances").Bool();
+            page_.annotationFirst = static_cast<uint32_t>(page_.glyphs.size());
+            glyphs = stats_.glyphs, unmapped = stats_.unmapped, guessed = stats_.guessed;
+        }
+        open = DrawAnnotation(annot, item.IsRef() ? item.refNum : 0, widget);
     }
+    if (!prepared) return;
+    annotating_ = false;
+    page_.annotationEnd = static_cast<uint32_t>(page_.glyphs.size());
+    // What the annotations showed is counted apart: the page's text quality (OCR routing, the
+    // unmapped comment) is its content's.
+    stats_.annotationGlyphs += stats_.glyphs - glyphs;
+    stats_.annotationUnmapped += stats_.unmapped - unmapped;
+    stats_.annotationGuessed += stats_.guessed - guessed;
+    stats_.glyphs = glyphs, stats_.unmapped = unmapped, stats_.guessed = guessed;
+}
+
+void Interpreter::ReadLink(const PdfValue& annot) {
+    const PdfValue& action = doc_.Get(annot, "A");
+    if (!doc_.Get(action, "S").IsName("URI")) return;
+    const PdfValue& uri = doc_.Get(action, "URI");
+    if (!uri.IsString() || uri.String().empty()) return;
+    PdfRect rect;
+    if (!doc_.Rect(doc_.Get(annot, "Rect"), rect)) return;
+    Box box = UnitSquare(Multiply(Matrix{rect.Width(), 0, 0, rect.Height(), rect.x0, rect.y0}, pageMatrix_));
+    LinkArea link;
+    link.x0 = float(box.x0), link.y0 = float(box.y0), link.x1 = float(box.x1), link.y1 = float(box.y1);
+    link.uri = static_cast<uint32_t>(page_.text.size());
+    std::string_view bytes = uri.String().substr(0, 8192);
+    // URIs are 7-bit ASCII (§12.6.4.7); spaces and controls are percent-encoded.
+    for (unsigned char ch : bytes) {
+        if (ch <= 0x20 || ch >= 0x7F) {
+            static const char kHex[] = "0123456789ABCDEF";
+            page_.text.push_back('%');
+            page_.text.push_back(kHex[ch >> 4]);
+            page_.text.push_back(kHex[ch & 15]);
+        } else {
+            page_.text.push_back(static_cast<char>(ch));
+        }
+    }
+    link.uriLength = static_cast<uint32_t>(page_.text.size() - link.uri);
+    page_.links.push_back(link);
+}
+
+bool Interpreter::DrawAnnotation(const PdfValue& annot, uint32_t object, bool widget) {
+    // What a viewer shows on screen: not Hidden (flag bit 2) or NoView (bit 6) annotations (§12.5.3).
+    if (doc_.Get(annot, "F").Int() & (2 | 32)) return true;
+    PdfRect rect;
+    if (!doc_.Rect(doc_.Get(annot, "Rect"), rect) || !(rect.Width() > 0) || !(rect.Height() > 0)) return true;
+    if (annotationsDrawn_ >= kMaxAnnotationsPerPage) {
+        budgetHit_ = true;
+        return false;
+    }
+    annotationsDrawn_++;
+    const uint32_t first = static_cast<uint32_t>(page_.glyphs.size());
+    // Text only: what an appearance paints (field borders, backgrounds, comb cells) or places
+    // (images) is no part of the page's drawing.
+    const size_t shapes = page_.shapes.size(), rulings = page_.rulings.size(), images = page_.images.size();
+    const size_t inlineImages = page_.inlineImages.size();
+    if (!widget) {
+        DrawAppearance(annot, rect);
+    } else {
+        // The field's entries, the widget's own or inherited from its parents (§12.7.3.1).
+        const auto inherited = [&](std::string_view key) -> const PdfValue* {
+            const PdfValue* node = &annot;
+            for (int depth = 0; depth < kMaxFieldDepth && node->IsDict(); ++depth) {
+                if (const PdfValue* v = node->Find(key)) return &doc_.Resolve(*v);
+                node = &doc_.Get(*node, "Parent");
+            }
+            return nullptr;
+        };
+        const PdfValue* type = inherited("FT");
+        const PdfValue* flagValue = inherited("Ff");
+        const int64_t ff = flagValue ? flagValue->Int() : 0;
+        const std::string_view ft = type ? type->Name() : std::string_view();
+        if (ft == "Btn") {
+            // A check box or radio button (not a pushbutton, flag bit 17) as a task box: ☑ in an
+            // "on" state, else ☐ (its appearance, a ZapfDingbats ✔ or ●, would read as a bullet).
+            if (!(ff & (int64_t(1) << 16))) {
+                const PdfValue& state = doc_.Get(annot, "AS");
+                bool on = false;
+                if (state.IsName()) {
+                    on = !state.Name().empty() && state.Name() != "Off";
+                } else if (const PdfValue* value = inherited("V")) {
+                    on = value->IsName() && !value->Name().empty() && value->Name() != "Off";
+                }
+                DrawCheckMark(rect, on);
+            }
+        } else if (ft == "Tx" || ft == "Ch") {
+            // Not a password (text flag bit 14): its value is never written.
+            if (!(ft == "Tx" && (ff & (int64_t(1) << 13)))) {
+                const bool drawn = !needAppearances_ && DrawAppearance(annot, rect);
+                // The value as text (UTF-8): a string, a choice's selected options (their display
+                // texts from /Opt) one a line.
+                std::string value;
+                if (const PdfValue* v = inherited("V")) {
+                    const PdfValue* options = ft == "Ch" ? inherited("Opt") : nullptr;
+                    const auto add = [&](const PdfValue& item) {
+                        std::string_view text = item.IsString() ? item.String() : item.Name();
+                        if (options && options->IsArray()) {
+                            for (const PdfValue& o : options->Array()) {
+                                const PdfValue& pair = doc_.Resolve(o);
+                                if (pair.IsArray() && pair.Array().size() == 2 &&
+                                    doc_.Resolve(pair.Array()[0]).String() == text) {
+                                    text = doc_.Resolve(pair.Array()[1]).String();
+                                    break;
+                                }
+                            }
+                        }
+                        if (text.empty() || value.size() >= kMaxFieldValueBytes) return;
+                        if (!value.empty()) value.push_back('\n');
+                        AppendTextString(text.substr(0, kMaxFieldValueBytes), value);
+                    };
+                    if (v->IsArray()) {
+                        for (const PdfValue& item : v->Array()) add(doc_.Resolve(item));
+                    } else {
+                        add(*v);
+                    }
+                    if (value.size() > kMaxFieldValueBytes) value.resize(kMaxFieldValueBytes);
+                }
+                const bool multiline = ft == "Tx" ? (ff & (int64_t(1) << 12)) != 0 : !(ff & (int64_t(1) << 17));
+                const PdfValue* da = inherited("DA");
+                if (!drawn) {
+                    SynthesizeValue(rect, value, da && da->IsString() ? da->String() : formDa_, multiline);
+                } else if (ft == "Tx" && (ff & (int64_t(1) << 24)) && !value.empty()) {
+                    // A comb field (bit 25) spreads its characters one a cell, which word gaps
+                    // would split: its glyphs carry the value as one text, as ActualText does.
+                    CarryText(first, value);
+                }
+            }
+        } else if (ft != "Sig") {
+            // A widget with no field type of its own: what it shows. Signatures show no field text.
+            DrawAppearance(annot, rect);
+        }
+    }
+    page_.shapes.resize(shapes);
+    page_.rulings.resize(rulings);
+    page_.images.resize(images);
+    page_.inlineImages.resize(inlineImages);
+    const uint32_t end = static_cast<uint32_t>(page_.glyphs.size());
+    if (end > first) page_.annotationTexts.push_back(AnnotationText{object, first, end});
+    return !budgetHit_;
+}
+
+void Interpreter::CarryText(uint32_t first, std::string_view value) {
+    GlyphVector& glyphs = page_.glyphs;
+    uint32_t carrier = UINT32_MAX;
+    for (uint32_t i = first; i < glyphs.size(); ++i) {
+        Glyph& g = glyphs[i];
+        if (g.flags & kGlyphDropped) continue;
+        if (carrier == UINT32_MAX) {
+            carrier = i;
+            continue;
+        }
+        Glyph& c = glyphs[carrier];
+        if (g.dir == c.dir) {
+            c.u0 = Fmin(c.u0, g.u0), c.u1 = Fmax(c.u1, g.u1);
+            c.vb = Fmin(c.vb, g.vb), c.vt = Fmax(c.vt, g.vt);
+        }
+        g.flags |= kGlyphDropped;
+    }
+    if (carrier == UINT32_MAX || page_.text.size() >= (size_t(1) << 30)) return;
+    Glyph& c = glyphs[carrier];
+    c.text = static_cast<uint32_t>(page_.text.size());
+    for (char ch : value) page_.text.push_back(static_cast<unsigned char>(ch) < 0x20 ? ' ' : ch);
+    const size_t length = page_.text.size() - c.text;
+    c.textLength = static_cast<uint16_t>(length < 65535 ? length : 65535);
+    c.flags = static_cast<uint16_t>(c.flags & ~(kGlyphUnmapped | kGlyphGuessed | kGlyphSpace));
+}
+
+void Interpreter::ResetForAnnotation(const Matrix& ctm) {
+    gs_ = GState();
+    gs_.ctm = ctm;
+    gs_.clip = pageBox_;
+    textMatrix_ = lineMatrix_ = Matrix();
+    pieces_.clear();
+    pathEmpty_ = true;
+    pathCurved_ = false;
+    pathSegments_ = 0;
+    pathSubpaths_ = 0;
+    pathIsRect_ = false;
+    pendingClip_ = 0;
+    startX_ = startY_ = curX_ = curY_ = 0;
+    mcid_ = -1;
+    mcStream_ = 0;
+    artifactDepth_ = 0;
+    markedOverflow_ = 0;
+}
+
+bool Interpreter::DrawAppearance(const PdfValue& annot, const PdfRect& rect) {
+    // The normal appearance (§12.5.5): a stream, or a state dictionary whose stream /AS names.
+    const PdfValue& appearances = doc_.Get(annot, "AP");
+    const PdfValue* entry = appearances.IsDict() ? appearances.Find("N") : nullptr;
+    if (!entry) return false;
+    const PdfValue* stream = &doc_.Resolve(*entry);
+    if (!stream->IsStream()) {
+        const PdfValue& state = doc_.Get(annot, "AS");
+        entry = stream->IsDict() && state.IsName() ? stream->Find(state.Name()) : nullptr;
+        if (!entry) return false;
+        stream = &doc_.Resolve(*entry);
+        if (!stream->IsStream()) return false;
+    }
+    // Placement: the form's /BBox under its /Matrix, as an upright box T, scaled and moved onto
+    // /Rect (A); the form is drawn with Matrix × A × the page's matrix, clipped to /BBox.
+    PdfRect bbox;
+    if (!doc_.Rect(doc_.Get(*stream, "BBox"), bbox)) return true;
+    Matrix form;
+    const PdfValue& matrix = doc_.Get(*stream, "Matrix");
+    if (matrix.IsArray() && matrix.Array().size() == 6) {
+        double m[6];
+        bool ok = true;
+        for (int i = 0; i < 6; ++i) ok = ok && doc_.Number(matrix.Array()[static_cast<size_t>(i)], m[i]);
+        if (ok) form = Matrix{m[0], m[1], m[2], m[3], m[4], m[5]};
+    }
+    const Box t = UnitSquare(Multiply(Matrix{bbox.Width(), 0, 0, bbox.Height(), bbox.x0, bbox.y0}, form));
+    const double tw = t.x1 - t.x0, th = t.y1 - t.y0;
+    if (!(tw > 0) || !(th > 0)) return true;
+    const double sx = rect.Width() / tw, sy = rect.Height() / th;
+    const Matrix ctm = Multiply(Matrix{sx, 0, 0, sy, rect.x0 - t.x0 * sx, rect.y0 - t.y0 * sy}, pageMatrix_);
+    if (!Finite(ctm)) return true;
+    ResetForAnnotation(ctm);
+    RunForm(*stream, entry->IsRef() ? entry->refNum : 0, *formResources_, 0);
+    while (!marked_.empty()) EndMarked();
+    return true;
+}
+
+void Interpreter::DrawCheckMark(const PdfRect& rect, bool on) {
+    if (page_.glyphs.size() >= kMaxGlyphsPerPage || page_.text.size() >= (size_t(1) << 30)) {
+        budgetHit_ = true;
+        return;
+    }
+    const Box box = UnitSquare(Multiply(Matrix{rect.Width(), 0, 0, rect.Height(), rect.x0, rect.y0}, pageMatrix_));
+    const double w = box.x1 - box.x0, h = box.y1 - box.y0;
+    if (!(w > 0) || !(h > 0) || !std::isfinite(w) || !std::isfinite(h)) return;
+    // One glyph over the widget's box, its size the box's smaller side.
+    const double size = Fmin(w, h);
+    Glyph& g = page_.glyphs.emplace_back();
+    g.u0 = float(box.x0), g.u1 = float(box.x1), g.vb = float(box.y0), g.vt = float(box.y1);
+    g.v = float(box.y0 + 0.2 * size);
+    g.size = float(size);
+    g.text = static_cast<uint32_t>(page_.text.size());
+    page_.text += on ? "\xE2\x98\x91" : "\xE2\x98\x90";  // ☑ ☐
+    g.textLength = 3;
+    const double cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+    const bool clipped = cx < pageBox_.x0 || cx > pageBox_.x1 || cy < pageBox_.y0 || cy > pageBox_.y1;
+    g.flags = clipped ? kGlyphClipped : 0;
+    g.dir = 0;
+    g.mcStream = 0;
+    g.font = 0xFFFF;  // no font of the page's
+    g.mcid = -1;
+}
+
+void Interpreter::SynthesizeValue(const PdfRect& rect, std::string_view value, std::string_view da, bool multiline) {
+    if (value.empty()) return;
+    // The font and size /DA sets ("/Helv 0 Tf 0 g", §12.7.4.3): its last Tf. A size of 0 fits
+    // the box.
+    std::string_view fontName;
+    double size = 0;
+    {
+        std::string_view tokens[3];
+        size_t at = 0;
+        while (at < da.size()) {
+            while (at < da.size() && (da[at] == ' ' || da[at] == '\t' || da[at] == '\r' || da[at] == '\n')) ++at;
+            const size_t start = at;
+            while (at < da.size() && da[at] != ' ' && da[at] != '\t' && da[at] != '\r' && da[at] != '\n') ++at;
+            if (at == start) break;
+            const std::string_view token = da.substr(start, at - start);
+            if (token == "Tf" && tokens[1].size() > 1 && tokens[1][0] == '/') {
+                fontName = tokens[1].substr(1);
+                size = std::strtod(std::string(tokens[2]).c_str(), nullptr);
+            }
+            tokens[1] = tokens[2], tokens[2] = token;
+        }
+    }
+    // The value in WinAnsiEncoding, one hexadecimal string a line; a character outside it leaves
+    // the value to the JSON output's fields.
+    std::vector<std::string> lines(1);
+    size_t at = 0;
+    uint32_t cp = 0;
+    size_t length = 0, longest = 0, chars = 0;
+    bool afterReturn = false;
+    while (Utf8::Decode(value, at, cp, length)) {
+        at += length;
+        const bool lineFeed = cp == '\n' && afterReturn;  // the second byte of CR LF
+        afterReturn = cp == '\r';
+        if (cp == '\n' || cp == '\r') {
+            if (!lineFeed) {
+                lines.emplace_back();
+                chars = 0;
+            }
+            continue;
+        }
+        if (cp == '\t') cp = ' ';
+        const int byte = WinAnsiByte(cp);
+        if (byte < 0) return;
+        static const char kHex[] = "0123456789ABCDEF";
+        lines.back().push_back(kHex[byte >> 4]);
+        lines.back().push_back(kHex[byte & 15]);
+        longest = std::max(longest, ++chars);
+    }
+    if (at < value.size()) return;
+    const double w = rect.Width(), h = rect.Height();
+    if (!(size > 0) || !std::isfinite(size)) {
+        // Auto size: the box's height, at most 12 points, narrowed to fit the longest line at
+        // about half an em a character.
+        size = multiline ? 12 : Fmin(12.0, Fmax(4.0, (h - 4) * 0.75));
+        if (longest > 0) size = Fmax(4.0, Fmin(size, (w - 4) / (0.5 * static_cast<double>(longest))));
+    }
+    const double leading = 1.15 * size;
+    const double y = multiline ? h - 2 - 0.8 * size : (h - size) / 2 + 0.2 * size;
+    std::string content;
+    char number[64];
+    std::snprintf(number, sizeof number, "BT 2 %.3f Td ", y);
+    content += number;
+    std::snprintf(number, sizeof number, " Tj 0 %.3f Td <", -leading);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        content += i == 0 ? "<" : number;
+        content += lines[i];
+        content += '>';
+    }
+    content += " Tj ET";
+    ResetForAnnotation(Multiply(Matrix{1, 0, 0, 1, rect.x0, rect.y0}, pageMatrix_));
+    const PdfValue* entry = formFonts_ && !fontName.empty() ? formFonts_->Find(fontName) : nullptr;
+    SetFontEntry(entry ? *entry : HelveticaFont(), size);
+    RunStream(content, *formResources_, 1);
 }
 
 } // namespace
@@ -1787,12 +2174,12 @@ void AppendTextString(std::string_view bytes, std::string& out) {
     }
 }
 
-void InterpretPage(const Document& document, Text::FontCache& fonts, int index, bool withLinks, PageData& page,
-                   PageStats& stats) {
+void InterpretPage(const Document& document, Text::FontCache& fonts, int index, AnnotationMode annotations,
+                   PageData& page, PageStats& stats) {
     page.Clear();
     page.number = index + 1;
     Interpreter interpreter(document, fonts, page, stats);
-    interpreter.Run(index, withLinks);
+    interpreter.Run(index, annotations);
 }
 
 void ReadOutline(const Document& document, std::vector<OutlineEntry>& out, bool targets) {

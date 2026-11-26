@@ -49,9 +49,10 @@ void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mod
 // 80 % of its characters and covering at least 60 % of the region is a table drawn as an image:
 // its text becomes an OCR text layer (so the page's tables read it) and the image is not written
 // (ImageState::Skipped). Every region read as a text layer brings the rules of its pixels when
-// AddOcrGlyphs found none over it.
+// AddOcrGlyphs found none over it. `annotations` is the mode the pages were interpreted with
+// (glyph-shape recovery interprets them again).
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                    AnnotationMode annotations, std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
                     const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten);
 
 } // namespace RayoPdf::Layout

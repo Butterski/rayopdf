@@ -505,6 +505,8 @@ enum class OwnerKind : uint8_t { Paragraph, Heading, ListItem, Code, Cell, Figur
 
 constexpr uint32_t kLabelBit = 0x80000000u;
 constexpr uint32_t kNoOwner = 0x7FFFFFFFu;
+// Glyph visits of the search for annotations' owners on one page (TaggedLayout::Prepare).
+constexpr uint64_t kMaxAnnotationSteps = uint64_t(1) << 24;
 
 // The item of (stream, mcid) on page `p`, or nullptr.
 const StructItem* FindItem(const Structure& s, uint32_t p, uint32_t stream, int32_t mcid) {
@@ -927,6 +929,9 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
 
     // Every glyph's element: its owner, whether it is a list label, its place in the tree.
     uint64_t visible = 0, mapped = 0, semantic = 0;
+    // Owners from here on are the paragraphs of annotations' text placed by geometry: no claim of
+    // the tree's for check 3 to test.
+    const uint32_t treeOwners = static_cast<uint32_t>(owners_.size());
     for (size_t p = 0; p < n; ++p) {
         const PageData& page = pages[p];
         std::vector<uint32_t>& owner = glyphOwner_[p];
@@ -952,7 +957,8 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
                 seq[gi] = item->seq;
             }
             owner[gi] = o;
-            if (!Counted(g)) continue;
+            // An annotation's text is no part of the content the tree must cover (it has no MCID).
+            if (!Counted(g) || page.AnnotationGlyph(static_cast<uint32_t>(gi))) continue;
             // Artifacts by structure (an Artifact element, PDF 2.0) are not counted either.
             if (item && nodeOwner_[item->node] == kNone) continue;
             visible++;
@@ -961,6 +967,82 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
             const Owner& own = owners_[o & ~kLabelBit];
             if (own.kind != OwnerKind::Paragraph || own.quote > 0 || own.listParagraph || nodeStyle_[item->node] != 0)
                 semantic++;
+        }
+        // Annotations' text: with the element an OBJR item of the page names for the annotation,
+        // in its place in the tree; failing that with the owned glyph before it on the page (the
+        // nearest to its left on its row, else the nearest above), after that glyph's text (the
+        // search over the page's glyphs is bounded, kMaxAnnotationSteps a page: past it with the
+        // page's last owned glyph); on a page with no owned text, a paragraph of its own after the
+        // page's tree content, in geometric order (top to bottom, then left to right). Never left
+        // out as untagged text.
+        if (!page.annotationTexts.empty()) {
+            uint32_t pageLast = kNoOwner, pageLastSeq = UINT32_MAX;
+            for (uint32_t gi = 0; gi < page.annotationFirst; ++gi)
+                if (owner[gi] != kNoOwner && Counted(page.glyphs[gi]))
+                    pageLast = owner[gi] & ~kLabelBit, pageLastSeq = seq[gi];
+            uint64_t steps = 0;
+            struct Unplaced {
+                float top, left;
+                uint32_t first, end;
+            };
+            std::vector<Unplaced> unplaced;
+            for (const AnnotationText& a : page.annotationTexts) {
+                uint32_t o = kNoOwner, s = UINT32_MAX;
+                if (a.object != 0 && p + 1 < structure.pageItems.size()) {
+                    // The page's OBJR items (mcid -1) sort first in its items.
+                    for (uint32_t k = structure.pageItems[p]; k < structure.pageItems[p + 1]; ++k) {
+                        const StructItem& it = structure.items[k];
+                        if (it.stream != 0 || it.mcid != -1) break;
+                        if (it.annotation == a.object && nodeOwner_[it.node] != kNone) {
+                            o = nodeOwner_[it.node], s = it.seq;
+                            break;
+                        }
+                    }
+                }
+                float ax0 = INFINITY, ay0 = INFINITY, ax1 = -INFINITY, ay1 = -INFINITY;
+                for (uint32_t gi = a.first; gi < a.end; ++gi) {
+                    const UprightBox b = GlyphPageBox(page.glyphs[gi]);
+                    ax0 = Fmin(ax0, b.x0), ay0 = Fmin(ay0, b.y0), ax1 = Fmax(ax1, b.x1), ay1 = Fmax(ay1, b.y1);
+                }
+                if (o == kNoOwner && pageLast != kNoOwner) {
+                    if (steps + page.annotationFirst <= kMaxAnnotationSteps) {
+                        steps += page.annotationFirst;
+                        const float midY = 0.5f * (ay0 + ay1);
+                        uint32_t left = kNoOwner, above = kNoOwner;
+                        float leftX = -INFINITY, aboveY = INFINITY, aboveDx = INFINITY;
+                        for (uint32_t gi = 0; gi < page.annotationFirst; ++gi) {
+                            if (owner[gi] == kNoOwner || !Counted(page.glyphs[gi])) continue;
+                            const UprightBox b = GlyphPageBox(page.glyphs[gi]);
+                            if (b.y0 <= midY && b.y1 >= midY && b.x1 <= ax0 + 1.0f) {
+                                if (b.x1 > leftX) leftX = b.x1, left = gi;
+                            } else if (b.y0 >= midY) {
+                                const float dx = b.x1 < ax0 ? ax0 - b.x1 : b.x0 > ax1 ? b.x0 - ax1 : 0.0f;
+                                if (b.y0 < aboveY || (b.y0 == aboveY && dx < aboveDx))
+                                    aboveY = b.y0, aboveDx = dx, above = gi;
+                            }
+                        }
+                        const uint32_t before = left != kNoOwner ? left : above;
+                        if (before != kNoOwner) o = owner[before] & ~kLabelBit, s = seq[before];
+                    }
+                    if (o == kNoOwner) o = pageLast, s = pageLastSeq;
+                }
+                if (o == kNoOwner) {
+                    unplaced.push_back(
+                        Unplaced{std::isfinite(ay1) ? ay1 : 0.0f, std::isfinite(ax0) ? ax0 : 0.0f, a.first, a.end});
+                    continue;
+                }
+                for (uint32_t gi = a.first; gi < a.end && gi < owner.size(); ++gi) owner[gi] = o, seq[gi] = s;
+            }
+            std::stable_sort(unplaced.begin(), unplaced.end(), [](const Unplaced& a, const Unplaced& b) {
+                return a.top != b.top ? a.top > b.top : a.left < b.left;
+            });
+            for (const Unplaced& u : unplaced) {
+                Owner own;
+                own.kind = OwnerKind::Paragraph;
+                const uint32_t o = static_cast<uint32_t>(owners_.size());
+                owners_.push_back(own);
+                for (uint32_t gi = u.first; gi < u.end && gi < owner.size(); ++gi) owner[gi] = o, seq[gi] = 0;
+            }
         }
         // Figures with their images (alternate text) say more than "paragraph" too.
         for (const ImageBox& image : page.images) {
@@ -994,7 +1076,7 @@ StructureUse TaggedLayout::Prepare(std::vector<PageData>& pages, const Structure
                 k = Piece(page, glyphOwner_[p], glyphSeq_[p], line, k, u.owner, u.key, u.box);
                 const uint32_t o = u.owner;
                 // Notes are out of the flow: the tree puts them where they are cited.
-                if (o == kNoOwner || owners_[o].kind == OwnerKind::Note) continue;
+                if (o == kNoOwner || o >= treeOwners || owners_[o].kind == OwnerKind::Note) continue;
                 if (units.size() < kMaxOrderUnits) units.push_back(u);
             }
         }

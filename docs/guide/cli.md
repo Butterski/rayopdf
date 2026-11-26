@@ -105,7 +105,7 @@ Formulas are read from the glyphs of the text layer. On scanned pages they stay 
 | Option | Effect |
 |---|---|
 | `--no-structure` | Ignore the structure tree of a tagged PDF and use layout analysis only. By default a structure tree that passes RayoPDF's checks decides the blocks. |
-| `--no-annotations` | Do not turn link annotations into Markdown links. |
+| `--annotations=MODE` | `all` (default): link annotations become Markdown links, and the text of form fields and FreeText annotations is read where it stands on the page, as a viewer shows it (hidden ones left out); a check box or radio button becomes a task box (`- [x]`, `- [ ]`), a password field is never read. `links`: links only, as 1.1 read them. `none` (also `--no-annotations`): no annotation is read. |
 | `--no-exact` | Convert the pages even when the PDF carries its RayoMD source ([below](#pdfs-made-by-rayomd)). |
 
 ### OCR

@@ -53,12 +53,14 @@ struct GlyphRecoveryStats {
     uint32_t requests = 0;
 };
 
-// Recovers the text of the fonts on `candidates` (indices into `pages`, interpreted with `fonts`,
-// lines not built). Updates the glyphs' text and flags and quality[p].unreliable. Returns the
-// first add-on failure (Ok when every request was answered or none was needed).
+// Recovers the text of the fonts on `candidates` (indices into `pages`, interpreted with `fonts`
+// and `annotations`, lines not built). Updates the glyphs' text and flags and
+// quality[p].unreliable. Returns the first add-on failure (Ok when every request was answered or
+// none was needed).
 OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, OcrSession& session,
-                             const std::vector<uint32_t>& candidates, std::vector<PageData>& pages,
-                             std::vector<PageTextQuality>& quality, GlyphRecoveryStats& stats);
+                             AnnotationMode annotations, const std::vector<uint32_t>& candidates,
+                             std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                             GlyphRecoveryStats& stats);
 
 // Paints the vector content of `page` (page.number - 1 of `document`) onto a page canvas at
 // kVectorPageScale and recognises it, adding its lines as an OCR text layer: the non-space glyphs

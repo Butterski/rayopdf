@@ -2,7 +2,7 @@
 // The rayopdf command line (roadmap D7).
 //
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-//                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
+//                                   [--no-exact] [--annotations=all|links|none] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
 //                                   [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N]
 //                                   [--json-detail=blocks|lines|words]
@@ -122,7 +122,10 @@ void PrintUsage(std::FILE* out) {
         "                     none for standard output; only none in the batch modes)\n"
         "  --no-exact         convert the pages even when the PDF carries its RayoMD source\n"
         "                     (by default a verified rayomd-source/1 payload is written as it is)\n"
-        "  --no-annotations   do not turn link annotations into Markdown links\n"
+        "  --annotations=MODE all (default): link annotations become Markdown links, and the\n"
+        "                     text of form fields (check boxes as task items) and FreeText\n"
+        "                     annotations is read as the page's; links: links only;\n"
+        "                     none: no annotation read (also --no-annotations)\n"
         "  --no-structure     ignore the structure tree of a tagged PDF (layout analysis only)\n"
         "  --math=MODE        unicode (default): formulas as Unicode text, scripts as Unicode\n"
         "                     superscripts and subscripts or else <sup>/<sub>;\n"

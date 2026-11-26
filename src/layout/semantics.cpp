@@ -2623,6 +2623,18 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
         return ocrSized[p] == 2;
     };
+    // Whether every glyph of block b's lines was drawn by an annotation (PageData::AnnotationGlyph).
+    const auto annotationOnly = [&](const RawBlock& b) {
+        for (uint32_t i = b.first; i < b.first + b.count; ++i) {
+            const PageData& page = pages[infos[i].page];
+            if (page.annotationEnd == page.annotationFirst) return false;
+            const Line& l = page.lines[infos[i].line];
+            if (l.count == 0) return false;
+            for (uint32_t g = 0; g < l.count; ++g)
+                if (!page.AnnotationGlyph(page.lineGlyphs[l.first + g])) return false;
+        }
+        return b.count > 0;
+    };
     for (size_t r = 0; r < raws.size(); ++r) {
         const RawBlock& b = raws[r];
         const Info& first = infos[b.first];
@@ -2647,6 +2659,12 @@ void BuildBlocks(const std::vector<PageData>& pages, const std::vector<OutlineEn
         }
         if (b.note != 0) {
             k.kind = BlockKind::Footnote;
+            continue;
+        }
+        // Text annotations drew alone (a form's values, FreeText notes) is no heading, whatever
+        // its size or face: the page's own text titles it.
+        if (annotationOnly(b)) {
+            if (first.listStart()) k.kind = BlockKind::ListItem;
             continue;
         }
         if (alertTitle[r]) continue;

@@ -18,7 +18,9 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
     Layout::ConvertOptions out;
     out.firstPage = options.firstPage;
     out.lastPage = options.lastPage;
-    out.annotations = options.annotations;
+    out.annotations = !options.annotations    ? Layout::AnnotationMode::None
+                      : options.annotationText ? Layout::AnnotationMode::All
+                                               : Layout::AnnotationMode::Links;
     out.structure = options.structure;
     out.exact = options.exact;
     out.imageDirectory = options.imageDirectory;

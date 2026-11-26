@@ -54,7 +54,8 @@ latex = rayopdf.convert("paper.pdf", math="latex", pages="1-3").text
 | `figure_text` | `"keep"` | `"keep"`, `"drop"` |
 | `chunk_chars` | 4,000 | 256 to 1,000,000 bytes a chunk |
 | `json_detail` | `"blocks"` | `"blocks"`, `"lines"`, `"words"`: with `format="json"`, each block's lines, or lines and words, too |
-| `structure`, `annotations`, `exact` | `True` | `False` is `--no-structure`, `--no-annotations`, `--no-exact` |
+| `structure`, `exact` | `True` | `False` is `--no-structure`, `--no-exact` |
+| `annotations` | `True` | `True` or `"all"`, `"links"`, `False` or `"none"`: `--annotations` (form fields and FreeText annotations as text, links only, none) |
 | `ocr` | `"off"` | `"off"`, `"auto"`, `"force"`: the [OCR add-on](ocr.md), found as the command line finds it |
 | `ocr_addon` | `None` | the add-on's path |
 | `workers` | 1 | page threads, 1 to 64 |

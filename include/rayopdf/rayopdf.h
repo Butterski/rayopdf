@@ -60,7 +60,11 @@ struct Options {
     Math math = Math::Unicode;
     Ocr ocr = Ocr::Off;                      // Auto finds the add-on as the CLI does
     std::string ocrAddon;                    // the add-on to run; empty: $RAYOPDF_OCR, beside the program, PATH
-    bool annotations = true;                 // link annotations become Markdown links
+    // --annotations: both true is `all` (link annotations become Markdown links, and the text of
+    // form fields and FreeText annotations is read as the page's); annotationText false is `links`
+    // (links only, 1.1's reading); annotations false is `none` (no annotation read).
+    bool annotations = true;
+    bool annotationText = true;
     bool structure = true;                   // a tagged PDF's structure tree is used when it passes the checks
     bool exact = true;                       // a verified RayoMD source payload is written as it is
     bool pageMarkers = false;                // Markdown: <!-- page N --> before each page's blocks

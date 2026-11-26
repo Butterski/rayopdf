@@ -48,7 +48,8 @@ function flags(options, imageFolder) {
   if (options.frontMatter) out.push("--front-matter");
   if (options.plain) out.push("--plain");
   if (options.structure === false) out.push("--no-structure");
-  if (options.annotations === false) out.push("--no-annotations");
+  if (options.annotations === false) out.push("--annotations=none");
+  else if (options.annotations != null && options.annotations !== true) out.push(`--annotations=${options.annotations}`);
   if (options.exact === false) out.push("--no-exact");
   return out;
 }

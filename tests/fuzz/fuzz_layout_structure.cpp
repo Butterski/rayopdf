@@ -2,7 +2,8 @@
 // libFuzzer target of the tagged path (src/layout/structure.cpp): the input is a small program
 // that builds a tagged PDF with tests/pdf_builder.h (elements of any role and attribute, MCIDs with
 // and without /Pg, marked text, artifacts, untagged text, kids that loop back, MCRs into a Form
-// XObject, RoleMap entries that may cycle), which is then converted with the structure tree on.
+// XObject, RoleMap entries that may cycle, OBJR kids naming the form fields each page draws or
+// any other object), which is then converted with the structure tree on.
 // Every input is a well-formed file, so the fuzzer spends its time in the structure reader, the
 // checks and the block builder rather than in the object layer (fuzz_layout_document covers that).
 // It needs no seeds.
@@ -46,6 +47,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size > 4096) return 0;
     RayoPdf::Test::TaggedBuilder t(2);
     const int formObject = t.Pdf().Reserve();
+    // A filled text field on each page, drawn as page text; OBJR kids may name them.
+    int widgets[2];
+    for (int p = 0; p < 2; ++p) {
+        const int ap = t.Pdf().AddStream("/Type /XObject /Subtype /Form /BBox [0 0 180 17] /Resources << /Font << /Helv "
+                                         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>",
+                                         "/Tx BMC BT /Helv 10 Tf 2 4 Td (field value) Tj ET EMC");
+        widgets[p] = t.Pdf().Add("<< /Type /Annot /Subtype /Widget /FT /Tx /T (f" + std::to_string(p) +
+                                 ") /V (field value) /Rect [" + std::to_string(100 + 200 * p) + " 600 " +
+                                 std::to_string(280 + 200 * p) + " 617] /AP << /N " + std::to_string(ap) + " 0 R >> >>");
+        t.PageExtra(p, "/Annots [" + std::to_string(widgets[p]) + " 0 R]");
+    }
     std::vector<int> stack{0};
     std::vector<int> elements;
     std::string content[2];
@@ -113,7 +125,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             break;
         case 11:
             if (stack.back() != 0)
-                t.Kid(stack.back(), "<< /Type /OBJR /Obj " + std::to_string(next() % 16) + " 0 R >>");
+                t.Kid(stack.back(), "<< /Type /OBJR /Obj " +
+                                        std::to_string(next() % 2 ? widgets[next() % 2] : next() % 16) + " 0 R >>");
             break;
         case 12:
             // Text right inside nested marked content of one MCID.

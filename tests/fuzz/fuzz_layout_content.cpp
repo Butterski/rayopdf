@@ -2,7 +2,10 @@
 // libFuzzer target: the whole conversion of one page whose content stream is the input. The page
 // has a simple font, an Identity-H Type0 font without a font program, an ExtGState, marked-content
 // properties and a Form XObject that draws the input again (so form recursion and its cycle check
-// are reached), a link annotation and an outline.
+// are reached), a link annotation and an outline, and form fields and a FreeText annotation drawn
+// as page text: appearances that are that form (directly and through a state dictionary), a
+// comb field, a check box, and a choice field whose value and /DA are the input's first bytes (a
+// synthesized appearance).
 #include "../pdf_builder.h"
 
 #include "layout/convert.h"
@@ -34,11 +37,29 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                            resources + " /Length " + std::to_string(stream.size()) + " >>\nstream\n" + stream + "\nendstream";
     b.Set(form, formBody);
     const int contents = b.AddStream("", stream);
+    // The input's first bytes as a PDF hex string.
+    std::string hex = "<";
+    for (size_t i = 0; i < size && i < 64; ++i) {
+        static const char kHex[] = "0123456789ABCDEF";
+        hex.push_back(kHex[data[i] >> 4]);
+        hex.push_back(kHex[data[i] & 15]);
+    }
+    hex += ">";
+    const std::string x1 = std::to_string(form) + " 0 R";
+    const std::string annots =
+        "<< /Subtype /Link /Rect [0 0 300 800] /A << /S /URI /URI (https://e.x/) >> >> "
+        "<< /Subtype /Widget /FT /Tx /T (a) /V (value) /Rect [50 50 300 80] /AP << /N " + x1 + " >> >> "
+        "<< /Subtype /Widget /FT /Tx /Ff 16777216 /MaxLen 4 /V (abcd) /Rect [50 90 300 120] /AS /On "
+        "/AP << /N << /On " + x1 + " /Off " + x1 + " >> >> >> "
+        "<< /Subtype /Widget /Parent << /FT /Btn /V /On >> /Rect [10 10 20 20] /AS /On >> "
+        "<< /Subtype /Widget /FT /Ch /Opt [[(a) (Alpha)] (b)] /V [" + hex + " (a)] /DA " + hex +
+        " /Rect [50 130 300 160] >> "
+        "<< /Subtype /FreeText /Rect [300 300 400 400] /AP << /N " + x1 + " >> >>";
     b.Set(page, "<< /Type /Page /Parent " + std::to_string(pages) + " 0 R /MediaBox [0 0 612 792] /Resources " +
-                    resources + " /Contents " + std::to_string(contents) +
-                    " 0 R /Annots [<< /Subtype /Link /Rect [0 0 300 800] /A << /S /URI /URI (https://e.x/) >> >>] >>");
+                    resources + " /Contents " + std::to_string(contents) + " 0 R /Annots [" + annots + "] >>");
     b.Set(catalog, "<< /Type /Catalog /Pages " + std::to_string(pages) +
-                       " 0 R /Outlines << /First << /Title (Title) >> >> >>");
+                       " 0 R /Outlines << /First << /Title (Title) >> >> /AcroForm << /DR << /Font << /Helv << /Type "
+                       "/Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /DA (/Helv 0 Tf 0 g) >> >>");
     b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] /Count 1 >>");
     const std::string pdf = b.Build(catalog);
     std::unique_ptr<RayoPdf::Document> document;

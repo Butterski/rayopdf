@@ -135,7 +135,15 @@ void MeasurePage(const PageData& page, uint64_t glyphs, uint64_t unreliable, Pag
     };
     const unsigned char* const base = reinterpret_cast<const unsigned char*>(page.text.data());
     const size_t textSize = page.text.size();
-    for (const Glyph& g : page.glyphs) {
+    // The glyphs annotations drew ([annotationFirst, annotationEnd)) are no part of the text layer:
+    // the glyphs before them, then those after.
+    const Glyph* const all = page.glyphs.data();
+    const uint32_t count = static_cast<uint32_t>(page.glyphs.size());
+    const bool drawn = page.annotationEnd > page.annotationFirst && page.annotationEnd <= count;
+    const uint32_t skipFrom = drawn ? page.annotationFirst : count, skipTo = drawn ? page.annotationEnd : count;
+    for (int part = 0; part < 2; ++part)
+    for (const Glyph *gp = all + (part ? skipTo : 0), *const gend = all + (part ? count : skipFrom); gp != gend; ++gp) {
+        const Glyph& g = *gp;
         const uint16_t flags = g.flags;
         // Spaces end a word; they, dropped, clipped and image glyphs are not counted (one test for
         // all four).
@@ -258,6 +266,10 @@ void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, Oc
     }
     // Regions: large images with no text over them.
     const float pageArea = page.width * page.height;
+    const Glyph* const all = page.glyphs.data();
+    const uint32_t count = static_cast<uint32_t>(page.glyphs.size());
+    const bool drawn = page.annotationEnd > page.annotationFirst && page.annotationEnd <= count;
+    const uint32_t skipFrom = drawn ? page.annotationFirst : count, skipTo = drawn ? page.annotationEnd : count;
     for (uint32_t i = 0; i < page.images.size(); ++i) {
         const ImageBox& image = page.images[i];
         if (Area(image) < kRegionMinShare * pageArea) continue;
@@ -272,13 +284,19 @@ void PlanPage(const PageData& page, const PageSignals& signals, OcrMode mode, Oc
         if (repeated) continue;
         uint32_t covering = 0;
         const float x0 = image.x0, y0 = image.y0, x1 = image.x1, y1 = image.y1;
-        for (const Glyph& g : page.glyphs) {
-            // Most glyphs lie outside the image: the box test first.
-            const UprightBox box = GlyphPageBox(g);
-            const float cx = 0.5f * (box.x0 + box.x1), cy = 0.5f * (box.y0 + box.y1);
-            if (!(cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) || !Counted(g)) continue;
-            if (++covering > kRegionMaxCoveringChars) break;
-        }
+        // Over the glyphs before and after the annotations' ([annotationFirst, annotationEnd)).
+        const auto cover = [&](const Glyph* from, const Glyph* to) {
+            for (const Glyph* gp = from; gp != to; ++gp) {
+                const Glyph& g = *gp;
+                // Most glyphs lie outside the image: the box test first.
+                const UprightBox box = GlyphPageBox(g);
+                const float cx = 0.5f * (box.x0 + box.x1), cy = 0.5f * (box.y0 + box.y1);
+                if (!(cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) || !Counted(g)) continue;
+                if (++covering > kRegionMaxCoveringChars) return;
+            }
+        };
+        cover(all, all + skipFrom);
+        if (covering <= kRegionMaxCoveringChars) cover(all + skipTo, all + count);
         if (covering > kRegionMaxCoveringChars) continue;
         plan.images.push_back(i);
     }

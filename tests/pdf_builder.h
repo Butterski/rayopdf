@@ -213,6 +213,7 @@ public:
         root_ = pdf_.Reserve();
         for (int i = 0; i < pageCount; ++i) pageObjects_.push_back(pdf_.Reserve());
         parentTree_.resize(static_cast<size_t>(pageCount));
+        pageExtra_.resize(static_cast<size_t>(pageCount));
     }
     // The builder underneath, for further objects (Form XObjects).
     PdfBuilder& Pdf() { return pdf_; }
@@ -246,6 +247,10 @@ public:
         std::string& kids = element == 0 ? rootKids_ : elements_[static_cast<size_t>(element - 1)].kids;
         kids += kid + " ";
     }
+    // More entries for page `page`'s dictionary ("/Annots [12 0 R]") and for the catalog
+    // ("/AcroForm << ... >>").
+    void PageExtra(int page, const std::string& entries) { pageExtra_[static_cast<size_t>(page)] += " " + entries; }
+    void CatalogExtra(const std::string& entries) { catalogExtra_ += " " + entries; }
     // The file: page `i` shows contents[i] with Helvetica as /F1 and `resources` (more resource
     // entries); the StructTreeRoot carries `rootExtra` (a /RoleMap).
     std::string Build(const std::vector<std::string>& contents, const std::string& rootExtra = "",
@@ -257,7 +262,8 @@ public:
                                           " 0 R /MediaBox [0 0 612 792] /StructParents " + std::to_string(i) +
                                           " /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont "
                                           "/Helvetica >> >> " +
-                                          resources + " >> /Contents " + std::to_string(stream) + " 0 R >>");
+                                          resources + " >> /Contents " + std::to_string(stream) + " 0 R" +
+                                          pageExtra_[i] + " >>");
             kids += std::to_string(pageObjects_[i]) + " 0 R ";
         }
         for (const Item& item : elements_) {
@@ -277,7 +283,7 @@ public:
                             "] >> /ParentTreeNextKey " + std::to_string(parentTree_.size()) + " " + rootExtra + " >>");
         pdf_.Set(pages_, "<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(pageObjects_.size()) + " >>");
         pdf_.Set(catalog_, "<< /Type /Catalog /Pages " + std::to_string(pages_) + " 0 R /StructTreeRoot " +
-                               std::to_string(root_) + " 0 R /MarkInfo << /Marked true >> >>");
+                               std::to_string(root_) + " 0 R /MarkInfo << /Marked true >>" + catalogExtra_ + " >>");
         return pdf_.Build(catalog_);
     }
 
@@ -294,6 +300,8 @@ private:
     std::vector<Item> elements_;
     std::string rootKids_;
     std::vector<std::vector<int>> parentTree_;
+    std::vector<std::string> pageExtra_;
+    std::string catalogExtra_;
 };
 
 // Content-stream text `text` (no parentheses or backslashes) at (x, y) in Helvetica `size`, in a

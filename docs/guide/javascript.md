@@ -52,7 +52,8 @@ console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
 | `figureText` | `"keep"` (default), `"drop"` |
 | `chunkChars` | 256 to 1,000,000 bytes a chunk (default 4,000) |
 | `jsonDetail` | `"blocks"` (default), `"lines"`, `"words"`: with `format: "json"`, each block's lines, or lines and words, too |
-| `structure`, `annotations`, `exact` | `true` (default); `false` is `--no-structure`, `--no-annotations`, `--no-exact` |
+| `structure`, `exact` | `true` (default); `false` is `--no-structure`, `--no-exact` |
+| `annotations` | `true` or `"all"` (default), `"links"`, `false` or `"none"`: `--annotations` (form fields and FreeText annotations as text, links only, none) |
 
 The [command-line guide](cli.md#options) explains each option, and
 [output formats](formats.md) what each format holds.

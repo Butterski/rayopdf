@@ -50,11 +50,11 @@ void Measure(const PageStats& stats, OcrMode ocr, size_t slot, Conversion& conve
     if (ocr != OcrMode::Off) RoutePage(conversion.pages[slot], quality, ocr, conversion.routes[slot]);
 }
 
-// One page's counters into the report.
+// One page's counters into the report: the glyphs of its content and of its annotations.
 void Tally(const PageStats& stats, ConvertReport& report) {
-    report.glyphs += stats.glyphs;
-    report.unmappedGlyphs += stats.unmapped;
-    report.guessedGlyphs += stats.guessed;
+    report.glyphs += stats.glyphs + stats.annotationGlyphs;
+    report.unmappedGlyphs += stats.unmapped + stats.annotationUnmapped;
+    report.guessedGlyphs += stats.guessed + stats.annotationGuessed;
 }
 
 // When the page threads start. A thread is not free (its start, and the first touch of its
@@ -191,7 +191,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     // The pages' content is read: its buffer (this thread's) goes back to the heap for what follows.
     if (options.oneShot) Document::ReleasePageContent();
     report.pages = static_cast<int>(pages.size());
-    RecognisePages(document, fonts, options.ocr, pages, quality, conversion->routes, report,
+    RecognisePages(document, fonts, options.ocr, options.annotations, pages, quality, conversion->routes, report,
                    !options.imageDirectory.empty());
     // The fonts are done with once the pages are read and recognised (the glyphs hold their texts
     // and a page-local font number): in a process of its own their memory goes back to the heap

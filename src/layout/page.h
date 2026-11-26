@@ -140,6 +140,18 @@ struct ImageBox {
     bool ocrTable = false;
 };
 
+// What the interpreter reads of a page's annotations (--annotations, layout/interpreter.h): link
+// areas and the text form fields and FreeText annotations draw (All, the default), link areas only
+// (Links, 1.1's reading), or nothing (None).
+enum class AnnotationMode : uint8_t { All, Links, None };
+
+// The glyphs one annotation drew: PageData::glyphs[first, end), within the page's annotation
+// glyphs; `object` its object number (0 for a direct dictionary), which an OBJR item names.
+struct AnnotationText {
+    uint32_t object = 0;
+    uint32_t first = 0, end = 0;
+};
+
 // A link annotation with a URI action.
 struct LinkArea {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -289,6 +301,10 @@ struct PageData {
     std::vector<uint32_t> glyphFormula;
     int contentErrors = 0;       // content streams not fully read or interpreted
     bool limitHit = false;       // the operator or glyph budget ran out
+    // Glyphs drawn by annotations (AnnotationMode::All): [annotationFirst, annotationEnd), after
+    // the content's and before any the later stages add; per annotation, its share.
+    uint32_t annotationFirst = 0, annotationEnd = 0;
+    std::vector<AnnotationText> annotationTexts;
 
     // Built by BuildLines and OrderLines.
     std::vector<Line> lines;
@@ -316,6 +332,8 @@ struct PageData {
             if (lines[li].count > 0 || (lines[li].flags & kLineTableAnchor)) return true;
         return false;
     }
+    // Whether glyph `glyph` was drawn by an annotation.
+    bool AnnotationGlyph(uint32_t glyph) const { return glyph - annotationFirst < annotationEnd - annotationFirst; }
 
     void Clear() {
         glyphs.clear();
@@ -339,6 +357,8 @@ struct PageData {
         contentErrors = 0;
         limitHit = false;
         hiddenGlyphs = 0;
+        annotationFirst = annotationEnd = 0;
+        annotationTexts.clear();
     }
 };
 

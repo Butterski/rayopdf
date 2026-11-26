@@ -350,7 +350,9 @@ void Folder::Place(uint32_t i) {
     }
     if (found != kEmpty) {
         g.flags |= kGlyphDropped;
-        if (!(glyphs[found].flags & kGlyphInvisible)) glyphs[found].flags |= kGlyphBold;
+        // An annotation's glyph over the same text (a field's value the page prints too) is no
+        // overprinting: dropped, nothing made bold.
+        if (!(glyphs[found].flags & kGlyphInvisible) && !page.AnnotationGlyph(i)) glyphs[found].flags |= kGlyphBold;
         page.hiddenGlyphs++;
         return;
     }
@@ -2343,9 +2345,18 @@ void BuildLines(PageData& page, bool mathScripts) {
 
     // Hidden text (algorithms §4.3): invisible, clipped or tiny glyphs leave (CollectAndFold),
     // except that invisible text is the page's text when nothing visible is (an OCR layer). The
-    // add-on's OCR layer (kGlyphOcr) stays whatever else the page has.
+    // add-on's OCR layer (kGlyphOcr) stays whatever else the page has. The glyphs annotations drew
+    // ([annotationFirst, annotationEnd): a note over a scan) do not make the page's text visible.
     bool visibleText = false, invisibleText = false;
-    for (const Glyph& g : glyphs) {
+    const uint32_t count = static_cast<uint32_t>(glyphs.size());
+    const bool drawn = page.annotationEnd > page.annotationFirst && page.annotationEnd <= count;
+    const uint32_t skipFrom = drawn ? page.annotationFirst : count, skipTo = drawn ? page.annotationEnd : count;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (RAYOPDF_UNLIKELY(i == skipFrom)) {
+            i = skipTo - 1;
+            continue;
+        }
+        const Glyph& g = glyphs[i];
         if (g.flags & (kGlyphDropped | kGlyphSpace | kGlyphOcr)) continue;
         if (g.flags & kGlyphClipped || g.size < 1.0f) continue;
         if (!(g.flags & kGlyphInvisible)) {

@@ -386,12 +386,17 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `<rect class="cell">` (the union of its lines' boxes); images as `<rect class="image">` with
   their file names. At most 20,000 lines are drawn a page, then a note says how many were not.
   All text is HTML-escaped (control characters as spaces, malformed UTF-8 as U+FFFD).
+- Form fields and FreeText annotations (decided 2026-11-26 for 1.2, `--annotations=all`, the
+  default): their text is the page's, where it stands, as a viewer shows it on screen; a check box
+  or radio button is a task box (`- [x]`, `- [ ]`); a password field and hidden annotations are
+  never read; a value the page prints at the same place reads once (not bold). `links` reads
+  links only (1.1's output), `none` no annotation.
 
 ### D7 Command line
 
 ```
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
-        [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
+        [--no-exact] [--annotations=all|links|none] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
         [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N] [--json-detail=blocks|lines|words]
         [--page-markers] [--front-matter]
@@ -524,7 +529,9 @@ The limits of [algorithms §1.5](../research/algorithms.md#15-hostile-input-limi
 object nesting 64, form XObject depth 40 with a cycle set, a page-tree cycle set, q/Q stack 256,
 operand stack 64, Flate output per stream min(256 MiB, 1000 × compressed size), a per-document
 decoded-bytes budget, a per-page operator budget and a per-document wall-clock budget. Every limit
-fails closed and is counted in `--report`.
+fails closed and is counted in `--report`. Annotations: at most 4,096 widgets and FreeText
+annotations drawn a page (past it the page counts a limit hit), 32 field-parent hops, 4,096 bytes
+of a field value drawn.
 
 ## Milestones
 

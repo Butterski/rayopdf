@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Core tests of src/api, the C++ API of include/rayopdf/rayopdf.h (codes 1950-1999).
+// Core tests of src/api, the C++ API of include/rayopdf/rayopdf.h (codes 1950-1999), and the
+// --annotations flag (2626).
 #include "check.h"
 #include "pdf_builder.h"
+#include "api/flags.h"
 #include "rayopdf/rayopdf.h"
 
 #include <string>
@@ -60,6 +62,22 @@ void TestReport() {
                   1954);
 }
 
+void TestAnnotationsFlag() {
+    // --annotations=all|links|none, --no-annotations as none; anything else is invalid.
+    Api::DocumentOptions options;
+    std::string error;
+    const auto parse = [&](const char* arg) { return Api::ParseDocumentFlag(arg, options, error); };
+    using Layout::AnnotationMode;
+    RAYOPDF_CHECK(options.convert.annotations == AnnotationMode::All && parse("--annotations=links") == Api::FlagStatus::Taken &&
+                      options.convert.annotations == AnnotationMode::Links &&
+                      parse("--no-annotations") == Api::FlagStatus::Taken &&
+                      options.convert.annotations == AnnotationMode::None &&
+                      parse("--annotations=all") == Api::FlagStatus::Taken &&
+                      options.convert.annotations == AnnotationMode::All &&
+                      parse("--annotations=some") == Api::FlagStatus::Invalid,
+                  2626);
+}
+
 } // namespace
 
 int main() {
@@ -67,5 +85,6 @@ int main() {
     TestJson();
     TestFailures();
     TestReport();
+    TestAnnotationsFlag();
     return 0;
 }

@@ -152,7 +152,7 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
             page_markers: bool = False, front_matter: bool = False, furniture: str = "drop", plain: bool = False,
             tables: str = "auto", quotes: str = "keep", small_caps: str = "lower", figure_text: str = "keep",
             chunk_chars: Optional[int] = None, json_detail: str = "blocks", structure: bool = True,
-            annotations: bool = True, exact: bool = True, ocr: str = "off",
+            annotations: Union[bool, str] = True, exact: bool = True, ocr: str = "off",
             ocr_addon: Union[None, str, os.PathLike] = None, workers: int = 1) -> Result:
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
@@ -163,7 +163,9 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
     format json: each block's lines, or its lines and their words, besides its boxes); ocr: off,
     auto or force (the rayopdf-ocr add-on, found as the command line finds it, or `ocr_addon`);
     images: a folder the image files are written to, linked as FOLDER/NAME (default: no images);
-    pages: 3, "2-5", (2, None); workers: page threads, 1 to 64.
+    pages: 3, "2-5", (2, None); workers: page threads, 1 to 64; annotations: True or "all" (links,
+    and the text of form fields and FreeText annotations), "links" (links only), False or "none"
+    (no annotation read).
     Raises a RayoPdfError subclass when the conversion fails.
     """
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -184,9 +186,10 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
         args.append(f"--chunk-chars={int(chunk_chars)}")
     if ocr_addon is not None:
         args.append(f"--ocr-addon={os.fspath(ocr_addon)}")
+    if annotations is not True:
+        args.append("--annotations=none" if annotations is False else f"--annotations={annotations}")
     for flag, on in (("--page-markers", page_markers), ("--front-matter", front_matter), ("--plain", plain),
-                     ("--no-structure", not structure), ("--no-annotations", not annotations),
-                     ("--no-exact", not exact)):
+                     ("--no-structure", not structure), ("--no-exact", not exact)):
         if on:
             args.append(flag)
     encoded = [a.encode("utf-8") for a in args]

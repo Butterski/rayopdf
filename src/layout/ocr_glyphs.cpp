@@ -822,8 +822,9 @@ uint32_t Popcount(uint8_t v) {
 } // namespace
 
 OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, OcrSession& session,
-                             const std::vector<uint32_t>& candidates, std::vector<PageData>& pages,
-                             std::vector<PageTextQuality>& quality, GlyphRecoveryStats& stats) {
+                             AnnotationMode annotations, const std::vector<uint32_t>& candidates,
+                             std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                             GlyphRecoveryStats& stats) {
     if (candidates.empty()) return OcrStatus::Ok;
     // The candidate pages interpreted again, with their glyphs' fonts and codes.
     std::vector<std::vector<GlyphUse>> uses(pages.size());
@@ -832,7 +833,8 @@ OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, O
     const auto trace = [&](uint32_t p) {
         PageStats pageStats;
         pageStats.uses = &uses[p];
-        InterpretPage(document, fonts, pages[p].number - 1, false, scratch, pageStats);
+        // Read as the conversion read it (its annotations' glyphs too), so that glyph i is glyph i.
+        InterpretPage(document, fonts, pages[p].number - 1, annotations, scratch, pageStats);
         if (scratch.glyphs.size() != pages[p].glyphs.size()) uses[p].clear();  // not the same page: left alone
     };
     std::unordered_map<const Text::Font*, FontStats> fontStats;

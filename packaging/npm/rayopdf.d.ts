@@ -36,8 +36,8 @@ export interface ConvertOptions {
   plain?: boolean;
   /** Use a tagged PDF's structure tree (default true). */
   structure?: boolean;
-  /** Turn link annotations into Markdown links (default true). */
-  annotations?: boolean;
+  /** Annotations: true or "all" (default; links become Markdown links, and the text of form fields and FreeText annotations is read), "links" (links only), false or "none" (no annotation read). */
+  annotations?: boolean | "all" | "links" | "none";
   /** Write a verified RayoMD source payload as it is (default true). */
   exact?: boolean;
 }

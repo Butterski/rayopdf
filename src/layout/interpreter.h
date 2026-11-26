@@ -9,6 +9,19 @@
 // Hostile input: q/Q nesting is capped at kMaxStateDepth, Form XObjects at kMaxFormDepth with a
 // cycle check, and every page has an operator and a glyph budget. A broken operand skips its
 // operator; a stream that cannot be decoded or interpreted fully counts as a content error.
+//
+// After the content, the page's annotations (§12.5) in /Annots order: link annotations with a URI
+// action become link areas; with AnnotationMode::All the text of form fields (widgets: not
+// pushbuttons or signatures) and FreeText annotations is drawn as glyphs after the content's, as a
+// viewer shows it on screen (not Hidden or NoView). An appearance (/AP /N, a state dictionary's
+// stream through /AS) is placed on /Rect (§12.5.5) from the state the content left reset, and
+// records glyphs only: what it paints or places is no part of the page's drawing. A font its
+// resources lack comes from the form's /DR. A check box or radio button is one glyph, ☑ or ☐, over
+// its box. A text or choice field without an appearance, or every one when the form sets
+// /NeedAppearances, is drawn from its /V in the font and size of its /DA (else Helvetica) when the
+// value is WinAnsi text; a password field is never drawn. A comb field's glyphs carry its value as
+// one text. Annotations drawn, field parents and field values are capped; past
+// kMaxAnnotationsPerPage the page counts a limit hit.
 #pragma once
 
 #include "layout/page.h"
@@ -27,6 +40,9 @@ constexpr uint32_t kMaxOperatorsPerPage = 4u << 20;
 constexpr uint32_t kMaxGlyphsPerPage = 1u << 19;
 constexpr uint32_t kMaxShapesPerPage = 1u << 16;
 constexpr uint32_t kMaxLinksPerPage = 1u << 14;
+constexpr uint32_t kMaxAnnotationsPerPage = 1u << 12;  // widgets and FreeText annotations drawn
+constexpr int kMaxFieldDepth = 32;                     // /Parent hops of a field's inherited entries
+constexpr size_t kMaxFieldValueBytes = 4096;           // a field value drawn
 constexpr size_t kMaxInlineImageBytes = size_t(64) << 20;  // inline image sources kept per page
 constexpr uint32_t kMaxRulingsPerPage = 1u << 16;
 constexpr uint32_t kMaxPiecesPerPath = 4096;  // straight axis-aligned pieces kept of one path
@@ -47,9 +63,12 @@ struct GlyphUse {
 
 // Counters of one page for ConvertReport.
 struct PageStats {
-    uint64_t glyphs = 0;    // shown codes
+    uint64_t glyphs = 0;    // shown codes of the content
     uint64_t unmapped = 0;  // codes with no Unicode text
     uint64_t guessed = 0;   // codes whose Unicode text is a guess
+    // The same of the annotations drawn (AnnotationMode::All), apart: the page's text quality is
+    // its content's.
+    uint64_t annotationGlyphs = 0, annotationUnmapped = 0, annotationGuessed = 0;
     // When set (glyph-shape recovery interprets a page again), every glyph kept on the page.
     std::vector<GlyphUse>* uses = nullptr;
     // When set, called with the size of the page's content once it is read, before it is
@@ -58,10 +77,10 @@ struct PageStats {
     void* contentContext = nullptr;
 };
 
-// Interprets page `index` (0-based) of `document` into `page` (cleared first). `withLinks` reads
-// the page's link annotations too.
-void InterpretPage(const Document& document, Text::FontCache& fonts, int index, bool withLinks, PageData& page,
-                   PageStats& stats);
+// Interprets page `index` (0-based) of `document` into `page` (cleared first), with its
+// annotations as `annotations` asks.
+void InterpretPage(const Document& document, Text::FontCache& fonts, int index, AnnotationMode annotations,
+                   PageData& page, PageStats& stats);
 
 // The document outline (§12.3.3), depth-first, at most kMaxOutlineEntries entries. `targets` also
 // resolves each item's destination (its /Dest, or the /D of a GoTo action: an explicit

@@ -102,7 +102,7 @@ Options go after the output path, in any order:
 | Keep running headers, footers and page numbers | `--furniture=keep` (default `drop`) |
 | Encrypted PDF | `--password=PW` |
 | Ignore the tags of a tagged PDF | `--no-structure` (layout analysis only) |
-| Links as plain text | `--no-annotations` |
+| Links as plain text, no form-field values | `--annotations=none` (`links`: links only, without form-field values and FreeText notes) |
 | Re-read a PDF RayoMD made from Markdown | `--no-exact` (by default its embedded, verified Markdown source is written as it is) |
 | OCR | `--ocr=auto` (default), `off`, `force`; `--ocr-addon=PATH` (section 4) |
 

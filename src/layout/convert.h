@@ -9,6 +9,7 @@
 #include "layout/features.h"
 #include "layout/math.h"
 #include "layout/ocr_options.h"
+#include "layout/page.h"
 #include "pdf/document.h"
 
 #include <cstdint>
@@ -68,7 +69,9 @@ enum class JsonDetail : uint8_t { Blocks, Lines, Words };
 struct ConvertOptions {
     int firstPage = 1;         // 1-based, inclusive
     int lastPage = 0;          // 0: the last page
-    bool annotations = true;   // link annotations become Markdown links
+    // Annotations (layout/interpreter.h): link annotations become Markdown links, and with All
+    // the text of form fields and FreeText annotations is read as the page's (--annotations).
+    AnnotationMode annotations = AnnotationMode::All;
     bool structure = true;     // a structure tree that passes the checks decides blocks and order (D5)
     bool exact = true;         // a verified rayomd-source/1 payload is written as it is (D5, layout/exact.h)
     // Images (D6): each image worth keeping is written to `imageDirectory` (created when the first

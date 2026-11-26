@@ -60,7 +60,19 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
     } else if (arg == "--no-exact") {
         options.convert.exact = false;
     } else if (arg == "--no-annotations") {
-        options.convert.annotations = false;
+        options.convert.annotations = Layout::AnnotationMode::None;
+    } else if (StartsWith(arg, "--annotations=")) {
+        const std::string_view mode = arg.substr(14);
+        if (mode == "all") {
+            options.convert.annotations = Layout::AnnotationMode::All;
+        } else if (mode == "links") {
+            options.convert.annotations = Layout::AnnotationMode::Links;
+        } else if (mode == "none") {
+            options.convert.annotations = Layout::AnnotationMode::None;
+        } else {
+            error = "--annotations takes all, links or none: " + std::string(mode);
+            return FlagStatus::Invalid;
+        }
     } else if (arg == "--no-structure") {
         options.convert.structure = false;
     } else if (StartsWith(arg, "--ocr=")) {

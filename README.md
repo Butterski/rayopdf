@@ -130,6 +130,7 @@ Options go after the paths, in any order. The most used:
 | `--plain` | No inline markup: no emphasis, code spans, links or `<sup>`/`<sub>` (their text stays). |
 | `--tables=html` / `--tables=pipe` | Every table as HTML, or every table as a pipe table. Default: pipe tables, and HTML only for a table whose cells span rows. |
 | `--furniture=keep` | Keep running headers, footers and page numbers (removed by default). |
+| `--annotations=links` / `--annotations=none` | Read link annotations only, or no annotation. Default: links, and the text of form fields (check boxes as task items) and FreeText annotations where it stands. |
 | `--ocr=off` / `--ocr=force` | Never start the OCR add-on, or also OCR pages that already carry an invisible OCR text layer. |
 | `--report` | Print one JSON record with the document's counters (pages, repairs, OCR, …). |
 | `--workers=N` | Threads (1 to 64). The output never depends on it. |
@@ -213,6 +214,8 @@ Every benchmark, tool version and number, and how to reproduce them:
 - **Encrypted PDFs** need their password; certificate encryption is not supported.
 - **Memory** grows with the input file (it is mapped into memory) and, when images are written,
   with the largest JPEG or JPEG 2000 image.
+- **Annotations** other than links, form fields and FreeText notes (comments, highlights,
+  stamps) are not read.
 
 ## Documentation
 

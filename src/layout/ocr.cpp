@@ -95,7 +95,7 @@ void RoutePage(const PageData& page, const PageTextQuality& quality, OcrMode mod
 }
 
 void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrOptions& options,
-                    std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
+                    AnnotationMode annotations, std::vector<PageData>& pages, std::vector<PageTextQuality>& quality,
                     const std::vector<PageRoute>& routes, ConvertReport& report, bool imagesWritten) {
     if (options.mode == OcrMode::Off) return;
     std::vector<uint32_t> glyphPages, vectorPages;
@@ -123,7 +123,8 @@ void RecognisePages(const Document& document, Text::FontCache& fonts, const OcrO
     // report (a missing or broken add-on is reported by the routed pages below).
     if ((!glyphPages.empty() || !vectorPages.empty()) && session->Ensure() == OcrStatus::Ok) {
         GlyphRecoveryStats glyphs;
-        const OcrStatus status = RecoverGlyphShapes(document, fonts, *session, glyphPages, pages, quality, glyphs);
+        const OcrStatus status =
+            RecoverGlyphShapes(document, fonts, *session, annotations, glyphPages, pages, quality, glyphs);
         report.ocrGlyphFonts += static_cast<int>(glyphs.fontsAccepted);
         report.ocrGlyphs += glyphs.usesReplaced;
         if (status != OcrStatus::Ok && status != OcrStatus::Refused) unavailable = failed = true;

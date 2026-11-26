@@ -164,7 +164,7 @@ Flate robustness matters more than raw throughput:
 - One "interpreter" pass per page emits an **event list** into a per-page arena: glyph runs (with font, size, Trm, colour, alpha, Tr, MCID stack top, ActualText id, OC visibility, clip box), axis-aligned line and rect segments (with stroke/fill and colour), image boxes, and shading boxes.
 - Track the clip as an axis-aligned box only (an intersection of rects); exact path clipping is not needed for text `[INFERENCE]`.
 - Follow pdf.js's inline-image EI logic exactly.
-- Never extract text from Type 3 CharProcs or annotation appearances, except as an option for form field values.
+- Never extract text from Type 3 CharProcs. Annotation appearances: reversed in 1.2 (decided 2026-11-26 after features.md G1 found form-field values lost without a comment, SafeDocs 0000854 writing 81 bytes): by default the appearances of form fields (widgets, not pushbuttons or signatures) and FreeText annotations are drawn as page text after the page's content, glyphs only, as a viewer shows them on screen (not Hidden or NoView); check boxes and radio buttons become ☑/☐ task boxes; a field without an appearance, or every field under `/NeedAppearances`, is drawn from its value. `--annotations=links` keeps 1.1's reading (links only), `--annotations=none` reads none.
 
 ---
 

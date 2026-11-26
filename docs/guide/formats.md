@@ -21,7 +21,8 @@ RayoPDF writes [GitHub Flavored Markdown](https://github.github.com/gfm/):
 - **Paragraphs**, with emphasis, strikethrough, code spans and links where the PDF has them.
 - **Lists.** Items keep their printed markers. Numbers followed by `.` or `)` become ordered
   items with the printed numbers (`4)` stays `4)`). Any other marker, such as `a.`, `(e)`, `iv)`
-  or `[12]`, stays as text at the start of an unordered item: `- (e) No charge`.
+  or `[12]`, stays as text at the start of an unordered item: `- (e) No charge`. A printed check
+  box (☐, ☑, ☒) before an item makes a task item, `- [ ]` or `- [x]`.
 - **Code blocks**, block quotes and GitHub alerts (`> [!NOTE]`).
 - **Tables** as pipe tables. A table where a cell with text spans rows, or spans columns below a
   header of several rows, or holds several paragraphs, is written as an HTML `<table>`.
@@ -33,6 +34,10 @@ RayoPDF writes [GitHub Flavored Markdown](https://github.github.com/gfm/):
 - **Formulas** as Unicode text, or as LaTeX with `--math=latex`
   ([command-line guide](cli.md#formulas---math)).
 - **Right-to-left and CJK text** in reading order.
+- **Form fields and FreeText annotations** as text where they stand, as a viewer shows them: a
+  filled field's value, a check box or radio button as a task box (`- [x] I agree`); hidden
+  annotations and password fields are left out. `--annotations=links` reads link annotations
+  only, `--annotations=none` none ([command-line guide](cli.md#reading-the-pdf)).
 
 Text is escaped only where it would otherwise change the structure. For example, `*` and `_`
 are escaped only where a CommonMark reader could take them as emphasis, so `0.05**` stays as it

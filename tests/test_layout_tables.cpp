@@ -2290,7 +2290,7 @@ void TestDotsNotRulings() {
     Text::FontCache fonts(*doc);
     PageData page;
     PageStats stats;
-    InterpretPage(*doc, fonts, 0, false, page, stats);
+    InterpretPage(*doc, fonts, 0, AnnotationMode::None, page, stats);
     RAYOPDF_CHECK(page.rulings.size() == 1 && page.rulings[0].x0 < 72 && page.rulings[0].x1 > 400, 1705);
 }
 
@@ -2642,7 +2642,7 @@ int Dump(const char* path, int only) {
     std::vector<PageData> pages(static_cast<size_t>(doc->PageCount()));
     for (int i = 0; i < doc->PageCount(); ++i) {
         PageStats stats;
-        InterpretPage(*doc, fonts, i, false, pages[static_cast<size_t>(i)], stats);
+        InterpretPage(*doc, fonts, i, AnnotationMode::None, pages[static_cast<size_t>(i)], stats);
         if (std::getenv("RAYOPDF_DUMP_LATEX")) PrepareMathGlyphs(pages[static_cast<size_t>(i)]);
         BuildLines(pages[static_cast<size_t>(i)]);
     }
