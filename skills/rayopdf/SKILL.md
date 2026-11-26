@@ -93,7 +93,7 @@ Options go after the output path, in any order:
 | Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000) |
 | See what the layout analysis decided | `--format=inspect` (one HTML file, no script: each page's lines, blocks numbered in reading order, removed furniture struck through, table cells, images) |
 | A comment before each page's text | `--page-markers` (`<!-- page N -->`; a list or quote across a page break is split there) |
-| The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `pages`) |
+| The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `language`, `pages`) |
 | Text without inline markup | `--plain` (no `**`, `*`, `` ` ``, links, `<sup>`/`<sub>` or `[^n]`; their text stays) |
 | Every table as HTML | `--tables=html` (default `auto`: pipe tables unless a span needs HTML) |
 | Every table as a pipe table, spans flattened (readers without HTML) | `--tables=pipe` |

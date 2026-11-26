@@ -253,7 +253,8 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   their own (a page whose text only continues a paragraph, after it; pages at the end); a marker
   ends a list or block quote that runs across a page break. `--front-matter` writes YAML front
   matter first from the document information (`/Info`): `title`, `author`, `subject`,
-  `keywords`, `creator`, `producer`, `created`, `modified` (only those present, each a
+  `keywords`, `creator`, `producer`, `created`, `modified`, and the catalog's `/Lang` as
+  `language` (2026-11-26) (only those present, each a
   double-quoted string, dates as ISO 8601 `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the date
   gives its offset, else as the file has them) and `pages: N`, between `---` lines and a blank
   line; not when a verified RayoMD payload that starts with its own front matter is written.
@@ -288,6 +289,12 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   `/Names /Dests` name tree, a named one possibly a dictionary with `/D`), `null` when none; the
   destinations are resolved only for JSON (`src/pdf/trees.h`: name and number trees at most 32
   levels deep and 2^20 nodes and pairs, read once and searched by key).
+  Page labels (2026-11-26): with `/PageLabels`, every page of `pages` has `label`, from the
+  number tree's range whose key is the greatest at most the page's index: its `/P` prefix (at
+  most 64 bytes of the string) and its number `/St` (default 1) plus the page's place in the
+  range in style `/S` (`D`; `R`, `r` Roman, thousands as M repeated at most 64 times; `A`, `a`
+  one letter repeated, at most 64 times; beyond those limits decimal); no `/S` gives the prefix
+  alone, a page before every range `""`.
 - Output options for conventions on which benchmarks' ground truths contradict each other
   (decided 2026-11-13; off by default, the default output byte-identical): `--plain` writes no
   inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts

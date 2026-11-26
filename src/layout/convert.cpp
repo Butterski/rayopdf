@@ -147,7 +147,10 @@ struct DocumentParts {
         ReadOutline(*parts.document, parts.conversion->outline, parts.metadata != nullptr);
         if (parts.structure && parts.first <= parts.last)
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
-        if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);
+        if (parts.metadata) {
+            ReadMetadata(*parts.document, *parts.metadata);
+            ReadPageLabels(*parts.document, parts.first, parts.last, parts.metadata->labels);
+        }
         return parts.document->Report().repaired;
     }
 };

@@ -929,6 +929,36 @@ void TestOutlineTargets() {
     RAYOPDF_CHECK(!Contains(ConvertPdf(PagesPdf(1, ""), options), "\"outline\""), 2657);
 }
 
+// Page labels in every style (Roman, decimal with a prefix and a start, a prefix alone, letters,
+// numbers past the Roman and letter limits in decimal) and the catalog's /Lang, in the JSON and
+// in the front matter.
+void TestLabelsAndLanguage() {
+    ConvertOptions options;
+    options.ocr.mode = OcrMode::Off;
+    options.format = OutputFormat::Json;
+    const std::string pdf =
+        PagesPdf(6, "/Lang (en-GB) /PageLabels << /Nums [0 << /S /r >> 2 << /S /D /P (A-) /St 7 >> 4 << /P (Index) >> "
+                    "5 << /S /A /St 27 >>] >>");
+    const std::string json = ConvertPdf(pdf, options);
+    Show("labels", json);
+    RAYOPDF_CHECK(Strings(json, "label") == std::vector<std::string>({"i", "ii", "A-7", "A-8", "Index", "AA"}), 2660);
+    RAYOPDF_CHECK(Contains(json, ",\"metadata\":{\"language\":\"en-GB\"},") &&
+                      Contains(json, "{\"page\":1,\"width\":612.00,\"height\":792.00,\"label\":\"i\"}"),
+                  2661);
+    const std::string large =
+        ConvertPdf(PagesPdf(3, "/PageLabels << /Nums [0 << /S /R /St 1994 >> 1 << /S /a /St 100000 >> "
+                               "2 << /S /R /St 99999999 >>] >>"),
+                   options);
+    RAYOPDF_CHECK(Strings(large, "label") == std::vector<std::string>({"MCMXCIV", "100000", "99999999"}), 2662);
+    // No /PageLabels: no "label"; the front matter has the language.
+    RAYOPDF_CHECK(!Contains(ConvertPdf(PagesPdf(1, "/Lang (de)"), options), "\"label\""), 2663);
+    options.format = OutputFormat::Markdown;
+    options.frontMatter = true;
+    RAYOPDF_CHECK(ConvertPdf(PagesPdf(1, "/Lang (de)"), options) ==
+                      "---\nlanguage: \"de\"\npages: 1\n---\n\nAlpha is the first page.\n",
+                  2664);
+}
+
 } // namespace
 
 int main() {
@@ -948,6 +978,7 @@ int main() {
     TestInspect();
     TestJsonDetail();
     TestOutlineTargets();
+    TestLabelsAndLanguage();
     std::puts("layout output tests passed");
     return 0;
 }

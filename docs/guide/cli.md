@@ -69,7 +69,7 @@ The same file and the same options always give the same bytes.
 | `--chunk-chars=N` | With chunks: at most N bytes of Markdown a chunk, 256 to 1,000,000 (default 4,000). A longer block is split. |
 | `--format=inspect` | One HTML file that draws each page: its lines, its blocks numbered in reading order, removed headers and footers struck through, table cells and images. Open it in a browser. |
 | `--page-markers` | Markdown only: write `<!-- page N -->` before each page's Markdown. |
-| `--front-matter` | Markdown only: start with YAML front matter from the PDF's metadata (title, author, dates, page count). |
+| `--front-matter` | Markdown only: start with YAML front matter from the PDF's metadata (title, author, dates, language, page count). |
 
 [Output formats](formats.md) shows each format with an example.
 

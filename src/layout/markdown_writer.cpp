@@ -2605,6 +2605,10 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         AppendCoordinate(out, pages[p].width);
         out += ",\"height\":";
         AppendCoordinate(out, pages[p].height);
+        if (metadata && p < metadata->labels.size()) {
+            AppendKey(out, "label");
+            Batch::AppendJsonString(out, metadata->labels[p]);
+        }
         out.push_back('}');
     }
     out.push_back(']');

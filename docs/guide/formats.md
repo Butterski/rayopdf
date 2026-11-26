@@ -61,7 +61,8 @@ rayopdf --convert paper.pdf paper.md --page-markers
 
 `--front-matter` starts the Markdown with YAML front matter from the PDF's document
 information: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created` and
-`modified` when the file has them (dates in ISO 8601), and `pages`.
+`modified` when the file has them (dates in ISO 8601), `language` (the PDF's `/Lang`, such as
+`en-GB`) when it has one, and `pages`.
 
 ```sh
 rayopdf --convert paper.pdf paper.md --front-matter
@@ -105,8 +106,8 @@ Top level:
 | `rayopdf` | The version that wrote it. |
 | `schema` | `1`. A later schema that changes a field's meaning gets a new number. |
 | `repaired` | `true` when the file was damaged and repaired (text may be missing). |
-| `metadata` | The document information fields that are not empty: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`. Dates are `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the PDF gives an offset; a date that does not parse stays as the PDF wrote it. |
-| `pages` | One object a converted page: `page` (its number in the file, from 1), `width` and `height` in points. |
+| `metadata` | The document information fields that are not empty: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, and `language` (the PDF's natural language, such as `en-GB`). Dates are `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the PDF gives an offset; a date that does not parse stays as the PDF wrote it. |
+| `pages` | One object a converted page: `page` (its number in the file, from 1), `width` and `height` in points, and `label` when the PDF has page labels: the number printed on the page as the PDF defines it (`iv`, `A-7`, `Index`). |
 | `outline` | Only when the PDF has an outline (bookmarks): one `{"level","title","page"}` an entry, depth first, `level` 1 for the top level, `page` the page its destination leads to (`null` when it leads to none). Entries outside `--pages` are listed too. |
 | `blocks` | The content, in reading order. |
 

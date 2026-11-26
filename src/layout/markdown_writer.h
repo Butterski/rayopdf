@@ -110,8 +110,9 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, 
 // {"rayopdf":VERSION,"schema":1,"repaired":bool,"metadata":{non-empty fields},"pages":[{"page",
 // "width","height"}...],"blocks":[{"type","page","boxes":[{"page","bbox":[x0,y0,x1,y1]}...],
 // ...,"markdown"}...]}. Boxes are in page points, origin at the lower left; `metadata` null
-// writes an empty object. A non-empty `outline` is written after "pages" as
-// "outline":[{"level","title","page"}...] (page null when its destination led to none).
+// writes an empty object, and its `labels`, when it has them, are the pages' "label". A non-empty
+// `outline` is written after "pages" as "outline":[{"level","title","page"}...] (page null when
+// its destination led to none).
 // `counts` as WriteMarkdown counts; each block's Markdown as WriteMarkdown
 // writes it with `settings` (page markers aside). With `settings.jsonDetail` Lines or Words every
 // block also has "lines":[{"page","box":[x0,y0,x1,y1],"text"}...] before "markdown": its lines in

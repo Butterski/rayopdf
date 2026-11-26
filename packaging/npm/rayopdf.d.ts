@@ -108,8 +108,10 @@ export interface JsonDocument {
   rayopdf: string;
   schema: 1;
   repaired: boolean;
+  /** title, author, subject, keywords, creator, producer, created, modified, language: those the PDF has. */
   metadata: Record<string, string>;
-  pages: { page: number; width: number; height: number }[];
+  /** label only when the PDF has page labels. */
+  pages: { page: number; width: number; height: number; label?: string }[];
   /** Only when the PDF has bookmarks; page null when the destination leads to none. */
   outline?: { level: number; title: string; page: number | null }[];
   blocks: JsonBlock[];

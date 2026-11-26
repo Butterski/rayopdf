@@ -3,6 +3,10 @@
 
 #include "common/batch.h"
 #include "layout/interpreter.h"
+#include "pdf/trees.h"
+
+#include <algorithm>
+#include <utility>
 
 namespace RayoPdf::Layout {
 
@@ -36,6 +40,32 @@ bool Offset(std::string_view text, size_t& at, int& hours, int& minutes) {
         if (at < text.size() && text[at] == '\'') ++at;
     }
     return true;
+}
+
+// A page label's number in style `style` (§12.4.2: D decimal, R and r Roman, A and a letters)
+// appended to `out`. Roman numerals take thousands as repeated M, letters repeat one letter (A to Z,
+// then AA to ZZ, ...), each at most kMaxLabelRepeats times; a value past that, or below 1, is
+// written in decimal.
+void AppendLabelNumber(char style, int64_t value, std::string& out) {
+    constexpr auto kRepeats = static_cast<int64_t>(kMaxLabelRepeats);
+    if ((style == 'R' || style == 'r') && value >= 1 && value / 1000 <= kRepeats) {
+        static constexpr const char* kOnes[] = {"", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix"};
+        static constexpr const char* kTens[] = {"", "x", "xx", "xxx", "xl", "l", "lx", "lxx", "lxxx", "xc"};
+        static constexpr const char* kHundreds[] = {"", "c", "cc", "ccc", "cd", "d", "dc", "dcc", "dccc", "cm"};
+        const size_t start = out.size();
+        out.append(static_cast<size_t>(value / 1000), 'm');
+        out += kHundreds[value / 100 % 10];
+        out += kTens[value / 10 % 10];
+        out += kOnes[value % 10];
+        if (style == 'R')
+            for (size_t i = start; i < out.size(); ++i) out[i] = static_cast<char>(out[i] - 'a' + 'A');
+        return;
+    }
+    if ((style == 'A' || style == 'a') && value >= 1 && (value - 1) / 26 < kRepeats) {
+        out.append(static_cast<size_t>((value - 1) / 26 + 1), static_cast<char>(style + (value - 1) % 26));
+        return;
+    }
+    out += std::to_string(value);
 }
 
 } // namespace
@@ -82,26 +112,49 @@ bool PdfDateToIso(std::string_view date, std::string& out) {
 
 void ReadMetadata(const Document& document, DocumentMetadata& out) {
     out = DocumentMetadata();
+    // The /Info keys of the fields before "language", which the catalog's /Lang gives.
     static constexpr const char* kKeys[] = {"Title",   "Author",   "Subject",      "Keywords",
                                             "Creator", "Producer", "CreationDate", "ModDate"};
-    static_assert(sizeof(kKeys) / sizeof(kKeys[0]) == sizeof(kMetadataFields) / sizeof(kMetadataFields[0]),
-                  "one /Info key a field");
-    const PdfValue& info = document.Info();
-    if (!info.IsDict()) return;
+    constexpr size_t kInfoKeys = sizeof(kKeys) / sizeof(kKeys[0]);
+    static_assert(kInfoKeys + 1 == sizeof(kMetadataFields) / sizeof(kMetadataFields[0]),
+                  "one /Info key a field, then /Lang");
     std::string text;
-    for (size_t k = 0; k < sizeof(kKeys) / sizeof(kKeys[0]); ++k) {
-        const PdfValue& value = document.Get(info, kKeys[k]);
-        if (!value.IsString()) continue;
+    const auto read = [&](const PdfValue& value, size_t k) {
+        if (!value.IsString()) return;
         text.clear();
         AppendTextString(value.String(), text);
         size_t begin = 0, end = text.size();
         while (begin < end && IsBlank(text[begin])) ++begin;
         while (end > begin && IsBlank(text[end - 1])) --end;
-        if (end - begin > kMaxMetadataBytes) continue;
+        if (end - begin > kMaxMetadataBytes) return;
         std::string& field = out.*kMetadataFields[k].member;
         const std::string_view trimmed(text.data() + begin, end - begin);
-        // The dates (the last two fields) in ISO 8601 when they parse.
-        if (k < 6 || !PdfDateToIso(trimmed, field)) field.assign(trimmed);
+        // The dates in ISO 8601 when they parse.
+        if ((k != 6 && k != 7) || !PdfDateToIso(trimmed, field)) field.assign(trimmed);
+    };
+    const PdfValue& info = document.Info();
+    if (info.IsDict())
+        for (size_t k = 0; k < kInfoKeys; ++k) read(document.Get(info, kKeys[k]), k);
+    read(document.Get(document.Catalog(), "Lang"), kInfoKeys);
+}
+
+void ReadPageLabels(const Document& document, int first, int last, std::vector<std::string>& out) {
+    out.clear();
+    std::vector<std::pair<int64_t, const PdfValue*>> ranges;
+    ReadNumberTree(document, document.Get(document.Catalog(), "PageLabels"), ranges);
+    if (ranges.empty() || first > last) return;
+    out.resize(static_cast<size_t>(last - first + 1));
+    size_t r = 0;  // the page's range: the last whose key is at most its index
+    for (int index = first; index <= last; ++index) {
+        while (r + 1 < ranges.size() && ranges[r + 1].first <= index) ++r;
+        if (ranges[r].first > index) continue;
+        const PdfValue& range = document.Resolve(*ranges[r].second);
+        std::string& label = out[static_cast<size_t>(index - first)];
+        AppendTextString(document.Get(range, "P").String().substr(0, kMaxLabelPrefix), label);
+        const std::string_view style = document.Get(range, "S").Name();
+        if (style.size() != 1 || std::string_view("DRrAa").find(style[0]) == std::string_view::npos) continue;
+        const int64_t start = std::max<int64_t>(1, std::min<int64_t>(document.Get(range, "St").Int(1), int64_t(1) << 40));
+        AppendLabelNumber(style[0], start + (index - ranges[r].first), label);
     }
 }
 
