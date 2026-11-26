@@ -1893,6 +1893,7 @@ measured, on which CPU and machine, and when; `--json FILE` keeps the whole resu
 |`bench.py warm`|`--bench` best of 3 per document, the binaries alternating: ms/page median, p95, mean, pages/s|release bar, warm|
 |`bench.py fresh`|`tools/bench/fresh_timer.c`, 11 runs a document after 2, rounds in rotated order: median, paired change, p95, mean, CPU time, page faults; with `--per-doc` also each document's figures and the ten slowest|release bar, fresh|
 |`bench.py pages`|fresh wall time of multi-page documents per `--workers` count, summed (`tools/bench/cmdbench.c`)|Pages in parallel|
+|`bench.py serve`|one `--serve --json` process a binary and round, one request at a time: wall time a request (sum, median, p95, mean, requests/s), peak and final RSS (`/proc/PID/status`), faults a request; the first round's answers against `--convert`'s (exit code, record, output)|`--serve`|
 |`bench.py tools`|every tool through its own command line as a fresh process: time, factor against RayoPDF, peak RSS|the comparison of a version record|
 |`bench.py wasm`|the WebAssembly module in Node.js (`tools/bench/wasm_bench.mjs`, `rayopdf-wasm:1`), best of 3 per document, the modules alternating: what `warm` prints; with `--native BIN` the exit code and output bytes against `BIN --convert`, "identical: N of M"|the wasm module's speed and identity|
 
@@ -1908,6 +1909,7 @@ python3 tools/bench.py instr --bin base=BASE --bin new=NEW --opt=--images=none -
 python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
 python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none --per-doc
 python3 tools/bench.py pages --bin NEW --list MULTIPAGE.txt --cpus 2,3,4,5
+python3 tools/bench.py serve --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
 python3 tools/bench.py tools --bin NEW --doc odl183=$O/01030000000183.pdf --doc safe348=0000348.pdf \
     --cpus 3 --cpus 2,3,4,5
 python3 tools/dev.py build --config wasm --dir wasm-new   # then copy build/wasm-new away: WASMDIR
@@ -1918,13 +1920,14 @@ python3 tools/dev.py --image rayopdf-perf:1 run --mount benchmark-output:/src/be
 
 - **Binaries:** compare files kept outside `build/` (the base is the binary of the commit
   before), static builds or builds made in `rayopdf-build:2`.
-- **CPUs:** `warm`, `fresh` and `wasm` time on one CPU (`--cpu 3` here), `pages` and `tools` on the CPUs of
-  `--cpus`; a time counts only when nothing else runs on them or on their sibling threads (here
-  CPU 9 is CPU 3's second thread). `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11` keeps the containers of
-  `tools/dev.py`, `bench.py identical` and `bench.py instr` off both. Instruction counts and
-  `identical` do not depend on the load; under load every time grows (the same binaries gave 2,215
-  pages/s on the idle machine and about 1,550 with sixty processes runnable beside the pinned
-  CPU), while the change between two binaries interleaved in one run moved by a point or two.
+- **CPUs:** `warm`, `fresh`, `serve` and `wasm` time on one CPU (`--cpu 3` here), `pages` and
+  `tools` on the CPUs of `--cpus`; a time counts only when nothing else runs on them or on their
+  sibling threads (here CPU 9 is CPU 3's second thread). `RAYOPDF_DOCKER_CPUS=0-2,4-8,10-11`
+  keeps the containers of `tools/dev.py`, `bench.py identical` and `bench.py instr` off both.
+  Instruction counts and `identical` do not depend on the load; under load every time grows (the
+  same binaries gave 2,215 pages/s on the idle machine and about 1,550 with sixty processes
+  runnable beside the pinned CPU), while the change between two binaries interleaved in one run
+  moved by a point or two.
 - **Not in the tool:** the task-clock and user instructions of `--batch --workers=1` come from
   `perf stat -e instructions:u` in a privileged container of `rayopdf-perf:1` (host
   `perf_event_paranoid` is 4; the binary is `/usr/lib/linux-tools/*/perf`).

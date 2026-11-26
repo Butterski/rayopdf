@@ -89,6 +89,7 @@ python3 tools/bench.py instr --bin base=BASE --bin new=NEW --doc DOC.pdf --opt=-
 python3 tools/bench.py warm  --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
 python3 tools/bench.py fresh --bin base=BASE --bin new=NEW --dir $O --opt=--images=none
 python3 tools/bench.py pages --bin NEW --dir MULTIPAGE-PDFS             # per --workers count
+python3 tools/bench.py serve --bin base=BASE --bin new=NEW --dir $O --opt=--images=none   # --serve
 python3 tools/bench.py tools --bin NEW --doc NAME=DOC.pdf               # against the other tools
 ```
 

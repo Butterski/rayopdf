@@ -66,6 +66,21 @@ Usage:
       (0: no --workers option, the default), summed over the documents, and the ratios against
       one worker. --list names a file with one PDF path a line.
 
+  python3 tools/bench.py serve --bin NAME=PATH [--bin ...] --dir DIR|--list FILE [...]
+                               [--opt=--images=none ...] [--rounds 2] [--cpu 3] [--timeout 300]
+      One `rayopdf --serve --json OPTIONS` process a binary and round over every PDF under the
+      folders (subfolders too) and of the lists: the requests `{"id":N,"input":DOC}` one at a time
+      in their order, the answers carrying the output. Per request the wall time from writing the
+      request to reading the whole answer, and the resident memory after it (VmRSS of
+      /proc/PID/status); per session the peak (VmHWM), the final VmRSS and the minor faults. The
+      rounds alternate the binaries; a document keeps its median time per binary. Prints the sum,
+      median, p95 and mean ms a request, requests/s, the change of the sum against the first
+      binary, peak and final RSS and faults a request. The first round's answers are then checked
+      against `BIN --convert DOC OUT --report OPTIONS`: exit code, the report record (without
+      "id", "output" and "ms") and the output (Markdown and HTML as bytes, JSON and chunks as
+      parsed values); prints "answers identical: N of M" a binary and its first differences, and
+      exits with 1 when anything differs.
+
   python3 tools/bench.py wasm --module NAME=DIR [--module ...] --dir DIR [--dir ...]
                               [--opt=--images=none ...] [--runs 3] [--rounds 2] [--cpu 3]
                               [--native BIN] [--jobs N] [--cpus LIST]
@@ -92,10 +107,12 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import filecmp
+import hashlib
 import json
 import os
 import platform
 import re
+import select
 import shlex
 import shutil
 import statistics
@@ -661,6 +678,163 @@ def cmd_pages(args) -> int:
     return 0
 
 
+# ---- serve ---------------------------------------------------------------------------------------
+
+ANSWER_KEYS = ("markdown", "json", "chunks", "html")
+
+
+def canonical(kind: str, value) -> str:
+    """An answer as a digest: text by its bytes, JSON and chunks by their parsed values."""
+    text = value.encode("utf-8", "surrogateescape") if kind in ("markdown", "html") else \
+        json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8", "surrogateescape")
+    return hashlib.sha256(text).hexdigest()
+
+
+def record_fields(record: dict) -> dict:
+    """What the check compares of a serve answer or a --report record."""
+    return {key: value for key, value in record.items() if key not in ("id", "output", "ms") + ANSWER_KEYS}
+
+
+def serve_session(path: str, docs: list[str], opts: list[str], timeout: int, answers: list | None) -> dict:
+    """One `--serve --json` process over the documents, one request at a time in their order. With
+    `answers`, each answer's code, record fields and output digest are appended to it."""
+    proc = subprocess.Popen([path, "--serve", "--json"] + opts, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    fd, pending = proc.stdout.fileno(), bytearray()
+
+    def answer(what: str) -> bytes:
+        deadline = time.monotonic() + timeout
+        while True:
+            end = pending.find(b"\n")
+            if end >= 0:
+                line = bytes(pending[:end])
+                del pending[:end + 1]
+                return line
+            if not select.select([fd], [], [], max(0.0, deadline - time.monotonic()))[0]:
+                proc.kill()
+                raise SystemExit(f"bench: --serve gave no answer for {what} in {timeout} s")
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                raise SystemExit(f"bench: --serve ended at {what} (exit code {proc.wait()})")
+            pending.extend(chunk)
+
+    def status(key: str) -> int:
+        with open(f"/proc/{proc.pid}/status", encoding="ascii") as lines:
+            return next((int(line.split()[1]) for line in lines if line.startswith(key)), 0)
+
+    answer("the first line")
+    ms, rss, failed = [], [], 0
+    for i, doc in enumerate(docs):
+        request = json.dumps({"id": i, "input": doc}).encode("utf-8") + b"\n"
+        start = time.perf_counter_ns()
+        proc.stdin.write(request)
+        proc.stdin.flush()
+        line = answer(doc)
+        ms.append((time.perf_counter_ns() - start) / 1e6)
+        rss.append(status("VmRSS:"))
+        record = json.loads(line.decode("utf-8", "surrogateescape"))
+        failed += record.get("code") != 0
+        if answers is not None:
+            kind = next((key for key in ANSWER_KEYS if key in record), None)
+            answers.append({"code": record.get("code"), "fields": record_fields(record), "kind": kind,
+                            "digest": canonical(kind, record[kind]) if kind else None})
+    with open(f"/proc/{proc.pid}/stat", encoding="ascii") as stat:
+        faults = int(stat.read().rsplit(")", 1)[1].split()[7])
+    peak = status("VmHWM:")
+    proc.stdin.write(b"quit\n")
+    proc.stdin.close()
+    code = proc.wait(timeout)
+    return {"ms": ms, "rss_kib": rss, "peak_kib": peak, "final_kib": rss[-1] if rss else 0, "faults": faults,
+            "failed": failed, "exit_code": code}
+
+
+def inside_serve(job: dict) -> dict:
+    docs = [doc for _, doc in job["docs"]]
+    sessions: dict[str, list[dict]] = {name: [] for name, _ in job["bins"]}
+    answers: dict[str, list[dict]] = {name: [] for name, _ in job["bins"]}
+    for r in range(job["rounds"]):
+        for name, path in rotated(job["bins"], r):
+            sessions[name].append(serve_session(path, docs, job["opts"], job["timeout"],
+                                                answers[name] if r == 0 else None))
+            log(f"serve: round {r + 1} of {job['rounds']}, {name}: {sum(sessions[name][-1]['ms']):.1f} ms")
+    checks = {}
+    out = f"{SCRATCH}/serve"
+    for name, path in job["bins"]:
+        differences = []
+        for i, ((label, doc), served) in enumerate(zip(job["docs"], answers[name])):
+            shutil.rmtree(out, ignore_errors=True)
+            os.makedirs(out)
+            try:
+                res = subprocess.run([path, "--convert", doc, f"{out}/out", "--report"] + job["opts"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=job["timeout"])
+            except subprocess.TimeoutExpired:
+                differences.append({"document": label, "differs": ["--convert timed out"]})
+                continue
+            what = []
+            if res.returncode != served["code"]:
+                what.append(f"exit code {res.returncode} against the answer's {served['code']}")
+            report = res.stdout.decode("utf-8", "surrogateescape").strip()
+            if not report or record_fields(json.loads(report)) != served["fields"]:
+                what.append("record")
+            if res.returncode == 0 and served["kind"]:
+                data = Path(f"{out}/out").read_bytes()
+                if served["kind"] in ("markdown", "html"):
+                    value = data.decode("utf-8", "surrogateescape")
+                elif served["kind"] == "json":
+                    value = json.loads(data.decode("utf-8", "surrogateescape"))
+                else:
+                    value = [json.loads(line) for line in data.decode("utf-8", "surrogateescape").splitlines()]
+                if canonical(served["kind"], value) != served["digest"]:
+                    what.append(served["kind"])
+            if what:
+                differences.append({"document": label, "differs": what})
+            if (i + 1) % 500 == 0:
+                log(f"serve: {name}, {i + 1} of {len(docs)} answers checked")
+        checks[name] = {"identical": len(docs) - len(differences), "differences": differences}
+    return {"sessions": sessions, "checks": checks}
+
+
+def cmd_serve(args) -> int:
+    bins, docs = named_files(args.bin, "--bin"), documents(args.dir or [], args.list or [], recursive=True)
+    job = {"task": "serve", "bins": bins, "docs": docs, "opts": args.opt, "rounds": args.rounds,
+           "timeout": args.timeout}
+    result = measure_inside(job, str(args.cpu), [path for _, path in bins + docs])
+    result.update({"command": "serve", "scope": scope(), "cpu": args.cpu, "image": PERF_IMAGE,
+                   "folders": args.dir, "lists": args.list, "options": args.opt, "rounds": args.rounds,
+                   "documents": [label for label, _ in docs], "rows": {}})
+    rows, base, differ = [], None, 0
+    for name, _ in bins:
+        sessions = result["sessions"][name]
+        per_doc = [statistics.median(times) for times in zip(*(session["ms"] for session in sessions))]
+        ordered = sorted(per_doc)
+        total = sum(per_doc)
+        row = {"requests": len(per_doc), "failed": max(session["failed"] for session in sessions), "sum_ms": total,
+               "median_ms": statistics.median(ordered), "p95_ms": ordered[len(ordered) * 95 // 100],
+               "mean_ms": total / len(per_doc), "requests_per_s": len(per_doc) / total * 1000,
+               "peak_mib": max(session["peak_kib"] for session in sessions) / 1024,
+               "final_mib": statistics.median(session["final_kib"] for session in sessions) / 1024,
+               "faults_per_request": statistics.median(session["faults"] for session in sessions) / len(per_doc),
+               "document_ms": per_doc}
+        result["rows"][name] = row
+        base = base or row
+        rows.append([name, str(row["requests"]), str(row["failed"]), f"{total:.1f}", f"{row['median_ms']:.3f}",
+                     f"{row['p95_ms']:.3f}", f"{row['mean_ms']:.3f}", f"{row['requests_per_s']:,.0f}",
+                     percent(total, base["sum_ms"]) if row is not base else "", f"{row['peak_mib']:.1f}",
+                     f"{row['final_mib']:.1f}", f"{row['faults_per_request']:.1f}"])
+        differ += len(result["checks"][name]["differences"])
+    text = headline(f"serve: {len(docs)} requests, --serve --json [{' '.join(args.opt)}], one session a binary "
+                    f"and round, {args.rounds} alternating rounds, CPU {args.cpu}, {PERF_IMAGE}", result["scope"])
+    text += "\n\n" + table(["binary", "requests", "failed", "sum, ms", "median ms", "p95", "mean", "requests/s",
+                            f"sum against {bins[0][0]}", "peak RSS, MiB", "final RSS, MiB", "faults a request"], rows)
+    for name, _ in bins:
+        check = result["checks"][name]
+        text += f"\n{name}: answers identical to --convert's: {check['identical']} of {len(docs)}"
+        for difference in check["differences"][:args.show]:
+            text += f"\n  {difference['document']}: {'; '.join(difference['differs'])}"
+    finish(args, result, text)
+    return 1 if differ else 0
+
+
 # ---- wasm ----------------------------------------------------------------------------------------
 
 def inside_wasm(job: dict) -> dict:
@@ -773,7 +947,7 @@ def cmd_wasm(args) -> int:
 # ---- command line --------------------------------------------------------------------------------
 
 INSIDE = {"warm": inside_warm, "fresh": inside_fresh, "identical": inside_identical, "instr": inside_instr,
-          "pages": inside_pages, "wasm": inside_wasm}
+          "pages": inside_pages, "serve": inside_serve, "wasm": inside_wasm}
 
 
 def cmd_inside(_args) -> int:
@@ -789,7 +963,7 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter,
                                      epilog=__doc__.split("\n\n", 1)[1])
     sub = parser.add_subparsers(dest="command", required=True,
-                                metavar="{warm,fresh,identical,instr,tools,pages,wasm}")
+                                metavar="{warm,fresh,identical,instr,tools,pages,serve,wasm}")
 
     def add(name: str, func, text: str | None):
         p = sub.add_parser(name, help=text)
@@ -857,6 +1031,15 @@ def main() -> int:
     p.add_argument("--cpus", default="2,3,4,5", help="cpuset of the container (default 2,3,4,5)")
     p.add_argument("--runs", type=int, default=15, help="timed runs a document and count (default 15)")
     p.add_argument("--warmup", type=int, default=2, help="untimed runs first (default 2)")
+
+    p = add("serve", cmd_serve, "one --serve process over documents: time a request, memory, answers checked")
+    binaries_and_options(p)
+    p.add_argument("--dir", action="append", help="a folder of PDFs, subfolders included")
+    p.add_argument("--list", action="append", metavar="FILE", help="a file with one PDF path a line")
+    p.add_argument("--rounds", type=int, default=2, help="sessions a binary, alternating (default 2)")
+    p.add_argument("--cpu", type=int, default=3, help="the CPU to measure on (default 3)")
+    p.add_argument("--timeout", type=int, default=300, help="seconds a request may take (default 300)")
+    p.add_argument("--show", type=int, default=5, help="differences to print a binary (default 5)")
 
     p = add("wasm", cmd_wasm, "the WebAssembly module's speed, and its output against a native binary")
     p.add_argument("--module", action="append", required=True, metavar="NAME=DIR",
