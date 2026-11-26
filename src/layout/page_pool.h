@@ -5,6 +5,7 @@
 // common/threads.h the image module): its threads start once and wait between rounds.
 #pragma once
 
+#include "common/thread.h"
 #include "common/threads.h"
 
 #include <atomic>
@@ -12,7 +13,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -65,7 +65,7 @@ private:
     std::mutex mutex_;
     std::condition_variable start_;  // a round opened, or the pool goes
     std::condition_variable done_;   // a round's last helper left it
-    std::vector<std::thread> threads_;  // under mutex_
+    std::vector<Thread> threads_;  // under mutex_
     std::atomic<unsigned> started_{0};  // threads_.size()
     std::vector<Round*> rounds_;        // the open rounds, outermost first (under mutex_)
     bool closing_ = false;              // under mutex_

@@ -27,6 +27,10 @@
 
 #include <cstdlib>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 extern char** environ;
 #endif
 
@@ -287,7 +291,14 @@ bool ChildProcess::Start(const std::string& path, const std::vector<std::string>
     Kill();
     timedOut_ = false;
     int fds[2];
+#ifdef __APPLE__
+    // macOS has no SOCK_CLOEXEC: the child closes every descriptor its file actions do not name
+    // (POSIX_SPAWN_CLOEXEC_DEFAULT below), which also keeps these two out of the add-ons that
+    // other batch workers start at the same time.
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return false;
+#else
     if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) != 0) return false;
+#endif
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attributes;
     posix_spawn_file_actions_init(&actions);
@@ -295,6 +306,9 @@ bool ChildProcess::Start(const std::string& path, const std::vector<std::string>
     posix_spawn_file_actions_adddup2(&actions, fds[1], 0);
     posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
     if (!keepStandardError) posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+#ifdef __APPLE__
+    else posix_spawn_file_actions_addinherit_np(&actions, 2);
+#endif
     // The child starts with SIGPIPE at its default and no signal blocked, whatever this process set.
     sigset_t none, pipe;
     sigemptyset(&none);
@@ -302,7 +316,11 @@ bool ChildProcess::Start(const std::string& path, const std::vector<std::string>
     sigaddset(&pipe, SIGPIPE);
     posix_spawnattr_setsigmask(&attributes, &none);
     posix_spawnattr_setsigdefault(&attributes, &pipe);
+#ifdef __APPLE__
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT);
+#else
     posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+#endif
     std::vector<char*> argv;
     argv.reserve(args.size() + 2);
     argv.push_back(const_cast<char*>(path.c_str()));
@@ -324,6 +342,15 @@ bool ChildProcess::Start(const std::string& path, const std::vector<std::string>
         Kill();
         return false;
     }
+#ifdef __APPLE__
+    // A write to an add-on that has gone fails with EPIPE instead of raising SIGPIPE (macOS has
+    // no MSG_NOSIGNAL); and no other program this process starts inherits the socket.
+    const int on = 1;
+    if (setsockopt(socket_, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on) != 0 || fcntl(socket_, F_SETFD, FD_CLOEXEC) != 0) {
+        Kill();
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -334,7 +361,11 @@ bool ChildProcess::Running() const {
 bool ChildProcess::Write(std::string_view data, OcrClock::time_point deadline) {
     if (socket_ < 0) return false;
     while (!data.empty()) {
+#ifdef __APPLE__
+        const ssize_t n = send(socket_, data.data(), data.size(), 0);
+#else
         const ssize_t n = send(socket_, data.data(), data.size(), MSG_NOSIGNAL);
+#endif
         if (n > 0) {
             data.remove_prefix(static_cast<size_t>(n));
             continue;
@@ -408,10 +439,19 @@ void ChildProcess::CloseHandles() {
 }
 
 std::string ExecutableDirectory() {
+#ifdef __APPLE__
+    char buffer[4096];
+    uint32_t size = sizeof buffer;
+    if (_NSGetExecutablePath(buffer, &size) != 0) return std::string();
+    char resolved[PATH_MAX];
+    if (!realpath(buffer, resolved)) return std::string();
+    return Directory(std::string(resolved));
+#else
     char buffer[4096];
     const ssize_t n = readlink("/proc/self/exe", buffer, sizeof buffer);
     if (n <= 0 || static_cast<size_t>(n) >= sizeof buffer) return std::string();
     return Directory(std::string(buffer, static_cast<size_t>(n)));
+#endif
 }
 
 std::string EnvironmentValue(const char* name) {

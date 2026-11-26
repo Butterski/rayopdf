@@ -14,7 +14,7 @@ PagePool::~PagePool() {
         closing_ = true;
     }
     start_.notify_all();
-    for (std::thread& thread : threads_) thread.join();
+    for (Thread& thread : threads_) thread.Join();
 }
 
 void PagePool::Start(unsigned threads) {
@@ -24,7 +24,7 @@ void PagePool::Start(unsigned threads) {
     std::lock_guard<std::mutex> lock(mutex_);
     while (threads_.size() < threads) {
         const unsigned worker = static_cast<unsigned>(threads_.size()) + 1;
-        threads_.emplace_back(&PagePool::Serve, this, worker);
+        threads_.emplace_back([this, worker] { Serve(worker); });
     }
     started_.store(static_cast<unsigned>(threads_.size()), std::memory_order_relaxed);
 }

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 
 #ifndef RAYOPDF_VERSION
 #define RAYOPDF_VERSION "0.0.0"
@@ -39,11 +40,16 @@ constexpr const char* kStyle =
     "p.note{color:#a00}\n"
     ".legend span{display:inline-block;margin-right:12px;padding:0 4px;border:1px solid}\n";
 
-// A number as `%.2f` writes it (0 for a value that is not finite; -0 as 0).
+// A number as `%.2f` writes it (0 for a value that is not finite; -0 as 0). Apple's libc++ has no
+// floating-point std::to_chars before macOS 13.3; its snprintf rounds as correctly.
 void AppendNumber(std::string& out, float value) {
     char buf[48];
     const double number = std::isfinite(value) ? static_cast<double>(value) + 0.0 : 0.0;
+#ifdef __APPLE__
+    out.append(buf, static_cast<size_t>(std::snprintf(buf, sizeof buf, "%.2f", number)));
+#else
     out.append(buf, std::to_chars(buf, buf + sizeof buf, number, std::chars_format::fixed, 2).ptr);
+#endif
 }
 
 // Appends `text` escaped for HTML text and attribute values, at most `limit` characters (then

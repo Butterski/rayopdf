@@ -2,6 +2,7 @@
 // Derived from RayoMD src/common/batch_report.cpp at ef106ca (Apache-2.0, same author).
 #include "common/batch.h"
 
+#include "common/thread.h"
 #include "common/utf8.h"
 
 #include <atomic>
@@ -158,11 +159,11 @@ void RunJobs(size_t count, unsigned workers, void (*run)(void*, unsigned, size_t
         for (size_t index; (index = next.fetch_add(1, std::memory_order_relaxed)) < count;) run(context, worker, index);
     };
     // The calling thread is worker 0: one thread fewer to start, and its heap is the warm one.
-    std::vector<std::thread> threads;
+    std::vector<Thread> threads;
     threads.reserve(workers - 1);
-    for (unsigned id = 1; id < workers; ++id) threads.emplace_back(work, id);
+    for (unsigned id = 1; id < workers; ++id) threads.emplace_back([&work, id] { work(id); });
     work(0);
-    for (std::thread& thread : threads) thread.join();
+    for (Thread& thread : threads) thread.Join();
 }
 
 OrderedOutput::~OrderedOutput() {

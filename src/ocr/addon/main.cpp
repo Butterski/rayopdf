@@ -39,8 +39,13 @@
 #endif
 #include <windows.h>
 #else
+#include <climits>
 #include <csignal>
+#include <cstdlib>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #endif
 
 namespace {
@@ -75,6 +80,13 @@ std::string ExecutableFolder() {
     path.resize(size_t(bytes));
     WideCharToMultiByte(CP_UTF8, 0, buffer.data(), int(n), &path[0], bytes, nullptr, nullptr);
     std::replace(path.begin(), path.end(), '\\', '/');
+#elif defined(__APPLE__)
+    std::vector<char> buffer(4096);
+    uint32_t size = uint32_t(buffer.size());
+    if (_NSGetExecutablePath(buffer.data(), &size) != 0) return std::string();
+    char resolved[PATH_MAX];
+    if (!realpath(buffer.data(), resolved)) return std::string();
+    path = resolved;
 #else
     std::vector<char> buffer(4096);
     const ssize_t n = readlink("/proc/self/exe", buffer.data(), buffer.size());

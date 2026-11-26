@@ -458,8 +458,14 @@ FileType TypeOf(mode_t mode) {
     return S_ISREG(mode) ? FileType::Regular : S_ISDIR(mode) ? FileType::Directory : FileType::Other;
 }
 
+// The modification time in nanoseconds (macOS names the field st_mtimespec).
 int64_t Nanoseconds(const struct stat& info) {
-    return static_cast<int64_t>(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec;
+#ifdef __APPLE__
+    const timespec& time = info.st_mtimespec;
+#else
+    const timespec& time = info.st_mtim;
+#endif
+    return static_cast<int64_t>(time.tv_sec) * 1000000000 + time.tv_nsec;
 }
 
 } // namespace

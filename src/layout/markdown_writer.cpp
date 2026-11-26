@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string_view>
 
@@ -2378,11 +2379,16 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
 
 namespace {
 
-// A coordinate as `%.2f` writes it (0 for a value that is not finite: JSON has no NaN).
+// A coordinate as `%.2f` writes it (0 for a value that is not finite: JSON has no NaN). Apple's
+// libc++ has no floating-point std::to_chars before macOS 13.3; its snprintf rounds as correctly.
 void AppendCoordinate(std::string& out, float value) {
     char buf[64];
     const double number = std::isfinite(value) ? static_cast<double>(value) : 0.0;
+#ifdef __APPLE__
+    out.append(buf, static_cast<size_t>(std::snprintf(buf, sizeof buf, "%.2f", number)));
+#else
     out.append(buf, std::to_chars(buf, buf + sizeof buf, number, std::chars_format::fixed, 2).ptr);
+#endif
 }
 
 void AppendKey(std::string& out, const char* key) {

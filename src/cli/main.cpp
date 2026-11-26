@@ -33,6 +33,7 @@
 #include "common/batch.h"
 #include "common/file.h"
 #include "common/serve.h"
+#include "common/thread.h"
 #include "layout/convert.h"
 #include "layout/ocr_client.h"
 #include "pdf/document.h"
@@ -53,7 +54,6 @@
 #include <set>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #if defined(__GLIBC__)
@@ -797,7 +797,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
 
     ServeQueue queue;
     queue.capacity = size_t(2) * workers;
-    std::vector<std::thread> threads;
+    std::vector<Thread> threads;
     const auto work = [&] {
         std::string markdown;
         Layout::OcrSession ocr(session.convert.ocr);
@@ -871,7 +871,7 @@ int RunServe(const DocumentOptions& session, unsigned workers) {
         queue.closed = true;
     }
     queue.changed.notify_all();
-    for (std::thread& thread : threads) thread.join();
+    for (Thread& thread : threads) thread.Join();
     return answers.Close() ? kExitOk : kExitUnwritable;
 }
 
