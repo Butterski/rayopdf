@@ -53,4 +53,10 @@ struct FormField {
 // the field tree (depth first), into `out` (replaced).
 void ReadFields(const Document& document, int first, int last, std::vector<FormField>& out);
 
+// Whether `document` is an XFA form (ISO 32000-1 §12.7.8) whose fields this conversion does not
+// read: its catalog sets /NeedsRendering true (a dynamic form, whose pages are a placeholder), or
+// its /AcroForm holds /XFA and no widget annotation stands on pages `first` to `last` (0-based):
+// the fields live in the XFA data only. At most kMaxFieldNodes annotations are looked at.
+bool XfaForm(const Document& document, int first, int last);
+
 } // namespace RayoPdf::Layout

@@ -217,6 +217,8 @@ Every benchmark, tool version and number, and how to reproduce them:
 - **Annotations** other than links, form fields and FreeText notes do not reach the Markdown:
   highlights, underlines, strike-outs and comments are listed in the JSON output's `annotations`;
   stamps and drawings are not read.
+- **XFA forms**: fields that live only in a form's XFA data are not read; the Markdown starts
+  with a comment that says so.
 
 ## Documentation
 

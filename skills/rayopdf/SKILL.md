@@ -186,6 +186,9 @@ Check `status` is `"ok"` (`"error"`: `error` says why) and `pages` is plausible,
 - `repaired` `true`, `broken_objects`, `failed_streams`, `content_errors` or `limit_hits` > 0: the
   file is damaged; the Markdown starts with
   `<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->`.
+- The Markdown starts with `<!-- rayopdf: this PDF is an XFA form; its fields are not read -->`:
+  the form's fields live only in its XFA data, which RayoPDF does not read; a viewer with XFA
+  support (Adobe Reader) shows them.
 - `images_skipped` > 0: images not written (undecodable, too small, or decoration); where one
   stood in the text, `<!-- rayopdf: image on page N not extracted (NAME) -->` marks it.
 - `structure`: `used` when a tagged PDF's structure tree decided the blocks; other values (`none`,

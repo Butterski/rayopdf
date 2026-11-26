@@ -53,9 +53,10 @@ RayoPDF never drops text silently. Where something could not be read, a comment 
 | `<!-- rayopdf: page N has no extractable text; OCR failed -->` | The add-on was started and failed on the page. |
 | `<!-- rayopdf: page N text is mostly unmapped glyphs -->` | The page's fonts map most glyphs to no text; the add-on can read their shapes. |
 | `<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->` | At the start of the output, for a damaged file. |
+| `<!-- rayopdf: this PDF is an XFA form; its fields are not read -->` | At the start of the output (after the comment of a repaired file), for an XFA form whose fields live only in its XFA data: its catalog asks a viewer to render it from XFA (`/NeedsRendering`), or no form-field widget stands on the converted pages. Not with `--annotations=links` or `none`. |
 | `<!-- rayopdf: image on page N not extracted (NAME) -->` | An image that could not be written. |
 
-The [report record](#the-report-record) counts the same cases.
+The [report record](#the-report-record) counts the same cases, all but the XFA form.
 
 ## Page markers and front matter
 

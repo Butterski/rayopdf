@@ -165,6 +165,7 @@ Flate robustness matters more than raw throughput:
 - Track the clip as an axis-aligned box only (an intersection of rects); exact path clipping is not needed for text `[INFERENCE]`.
 - Follow pdf.js's inline-image EI logic exactly.
 - Never extract text from Type 3 CharProcs. Annotation appearances: reversed in 1.2 (decided 2026-11-26 after features.md G1 found form-field values lost without a comment, SafeDocs 0000854 writing 81 bytes): by default the appearances of form fields (widgets, not pushbuttons or signatures) and FreeText annotations are drawn as page text after the page's content, glyphs only, as a viewer shows them on screen (not Hidden or NoView); check boxes and radio buttons become ☑/☐ task boxes; a field without an appearance, or every field under `/NeedAppearances`, is drawn from its value. Markup annotations (Highlight, Underline, StrikeOut, Squiggly, notes, FreeText) are kept as data, not drawn: the JSON output's `annotations` lists each with its quads' boxes, `/Contents`, author, date and the text its quads cover; the Markdown is unchanged by them. `--annotations=links` keeps 1.1's reading (links only), `--annotations=none` reads none.
+  XFA (§12.7.8) is not parsed: a dynamic form (`/NeedsRendering true`), or an `/AcroForm /XFA` with no widget on the converted pages, gets the comment `<!-- rayopdf: this PDF is an XFA form; its fields are not read -->` at the start of the Markdown (1.2; reading the XFA datasets would take a new XML parser of untrusted input).
 
 ---
 

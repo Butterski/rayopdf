@@ -55,6 +55,7 @@ struct OutputSettings {
     const FeatureSink* features = nullptr;       // developer mode: edge-row features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
     const std::vector<FormField>* fields = nullptr;  // JSON's "fields" (WriteSettings::fields); likewise
+    bool xfa = false;                            // Markdown: the XFA comment (WriteSettings::xfa)
     bool oneShot = false;                        // ConvertOptions::oneShot: stage storage freed once the pages are past it
 };
 

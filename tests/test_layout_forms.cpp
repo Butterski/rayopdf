@@ -457,6 +457,24 @@ void JsonAnnotations() {
                   2636);
 }
 
+void Xfa() {
+    // An XFA form whose fields live only in its XFA data: the Markdown starts with a comment that
+    // says so; a form with widgets on its pages, --annotations=links and the JSON have none.
+    const std::string comment = "<!-- rayopdf: this PDF is an XFA form; its fields are not read -->\n";
+    const auto build = [](bool widget, const std::string& catalogTail) {
+        FormDoc f;
+        const int xfa = f.Stream("", "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"></xdp:xdp>");
+        if (widget) TextWidget(f, "120 695 300 712", "name", "Jane Doe");
+        return f.Build(std::string(kLabel), "<< /Fields [] /XFA " + std::to_string(xfa) + " 0 R >>" + catalogTail);
+    };
+    const std::string bare = build(false, ""), withWidget = build(true, ""), dynamic = build(true, " /NeedsRendering true");
+    const std::string md = Convert(bare);
+    RAYOPDF_CHECK(md.compare(0, comment.size(), comment) == 0 && Has(md, "Name:") && md.find(comment, 1) == std::string::npos,
+                  2638);
+    RAYOPDF_CHECK(!Has(Convert(bare, AnnotationMode::Links), "XFA") && !Has(Json(bare, AnnotationMode::All), "XFA"), 2639);
+    RAYOPDF_CHECK(!Has(Convert(withWidget), "XFA") && Convert(dynamic).compare(0, comment.size(), comment) == 0, 2640);
+}
+
 void Limits() {
     // Past kMaxAnnotationsPerPage drawn annotations the page counts a limit hit; a form that draws
     // itself ends as a content error.
@@ -516,6 +534,7 @@ int main() {
     LinksAsBefore();
     JsonFields();
     JsonAnnotations();
+    Xfa();
     Limits();
     std::puts("test_layout_forms: ok");
     return 0;

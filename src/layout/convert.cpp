@@ -228,6 +228,9 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.fields = &fields;
     output.oneShot = options.oneShot;
     const bool html = options.format == OutputFormat::Html;
+    // An XFA form whose fields are not read says so (the Markdown only; links-only reads as 1.1).
+    output.xfa = options.format == OutputFormat::Markdown && options.annotations == AnnotationMode::All &&
+                 first <= last && XfaForm(document, first - 1, last - 1);
     // Form fields with the annotations' text only: --annotations=links reads as 1.1 did.
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure,
                         json || html ? &metadata : nullptr, json,

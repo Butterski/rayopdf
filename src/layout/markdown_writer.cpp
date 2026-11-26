@@ -2271,6 +2271,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
     Writer writer(pages, list, out, counts, math, settings.plain, settings.smallCaps == SmallCaps::Lower);
     const bool styles = !settings.plain;
     if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
+    if (settings.xfa) out += "<!-- rayopdf: this PDF is an XFA form; its fields are not read -->\n";
     int contentColumn[9] = {};
     const Block* previous = nullptr;
     std::string prefix;

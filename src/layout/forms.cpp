@@ -244,4 +244,21 @@ void ReadFields(const Document& document, int first, int last, std::vector<FormF
     }
 }
 
+bool XfaForm(const Document& document, int first, int last) {
+    const PdfValue& catalog = document.Catalog();
+    if (document.Get(catalog, "NeedsRendering").Bool()) return true;
+    const PdfValue& xfa = document.Get(document.Get(catalog, "AcroForm"), "XFA");
+    if (!xfa.IsArray() && !xfa.IsStream()) return false;
+    uint32_t budget = kMaxFieldNodes;
+    for (int p = first; p <= last; ++p) {
+        const PdfValue& annots = document.Get(document.PageDict(p), "Annots");
+        if (!annots.IsArray()) continue;
+        for (const PdfValue& item : annots.Array()) {
+            if (budget-- == 0) return false;
+            if (document.Get(document.Resolve(item), "Subtype").IsName("Widget")) return false;
+        }
+    }
+    return true;
+}
+
 } // namespace RayoPdf::Layout

@@ -89,6 +89,9 @@ struct WriteSettings {
     // JSON: the document's form fields (layout/forms.h), written as "fields" after "pages" and "outline" when
     // there are any; null for none.
     const std::vector<FormField>* fields = nullptr;
+    // Markdown: the document is an XFA form whose fields are not read (layout/forms.h XfaForm); a
+    // comment says so after the one of a repaired file.
+    bool xfa = false;
 };
 
 // A block's box on one page (`page` an index into the pages), on the upright page, in points with
