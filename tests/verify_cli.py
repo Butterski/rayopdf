@@ -5,7 +5,7 @@
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
 with 1 and 4 workers), and the output options (--format=json, --format=chunks, --chunk-chars,
---format=inspect, --page-markers, --front-matter, --furniture, --plain, --tables). It builds the
+--format=inspect, --format=text, --page-markers, --front-matter, --furniture, --plain, --tables). It builds the
 PDFs it needs in a temporary directory (none are committed) and never times anything.
 
 Usage:
@@ -487,6 +487,31 @@ def check_inspect(c: Checker, work: Path, hello: str) -> None:
             ">Hello World</text>" in answer["html"], repr(answer)[:300])
 
 
+def check_text(c: Checker, work: Path, hello: str) -> None:
+    """--format=text: no markup, one form feed a page break, every heading's text a line of its
+    own; --batch writes NAME.txt; a serve answer carries the string "text"."""
+    pages = str(work / "pages.pdf")
+    markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
+    r = c.run("--convert", pages, "-", "--format=text")
+    text = r.stdout.decode("utf-8")
+    headings = [line.lstrip("#").strip() for line in markdown.splitlines() if line.startswith("#")]
+    lines = text.replace("\f", "\n").splitlines()
+    c.check("text output", r.returncode == 0 and text.count("\f") == 6 and "<!--" not in text and
+            not any(line.startswith("#") for line in lines) and all(h in lines for h in headings), repr(text[:300]))
+    source = work / "text-in"
+    source.mkdir()
+    (source / "hello.pdf").write_bytes(Path(hello).read_bytes())
+    r = c.run("--batch", str(source), str(work / "text-out"), "--format=text")
+    written = work / "text-out" / "hello.txt"
+    c.check("batch writes NAME.txt", r.returncode == 0 and written.exists() and
+            written.read_text("utf-8") == "Hello World\n" and not (work / "text-out" / "hello.md").exists())
+    request = json.dumps({"id": 1, "input": hello, "args": ["--format=text"]}).encode() + b"\n"
+    answers = records(c.run("--serve", "--json", stdin=request).stdout)
+    answer = answers[1] if len(answers) > 1 else {}
+    c.check("serve answers with the text", answer.get("text") == "Hello World\n" and "markdown" not in answer,
+            repr(answer)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -600,6 +625,7 @@ def main() -> int:
         check_output_features(c, work, hello)
         check_chunks(c, work, hello)
         check_inspect(c, work, hello)
+        check_text(c, work, hello)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

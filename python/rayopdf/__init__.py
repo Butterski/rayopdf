@@ -83,7 +83,7 @@ _ERRORS = {2: UsageError, 3: UnreadableError, 10: CorruptError, 11: PasswordRequ
 class Result:
     """A conversion's output.
 
-    text: the Markdown (or the JSON, JSON Lines or HTML of `format`);
+    text: the Markdown (or the JSON, JSON Lines, HTML or plain text of `format`);
     data: the JSON object for format="json", the list of chunks for format="chunks", else None;
     report: the --report counters (a dict);
     pages: the pages converted.
@@ -156,7 +156,7 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
             ocr_addon: Union[None, str, os.PathLike] = None, workers: int = 1) -> Result:
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
-    format: markdown, json, chunks or inspect; math: unicode or latex; furniture: drop or keep;
+    format: markdown, json, chunks, inspect or text; math: unicode or latex; furniture: drop or keep;
     tables: auto, html, pipe or pipe-latex; quotes: keep or ascii; small_caps: lower or keep (headings in small
     capitals in the source's case or as printed); figure_text: keep or drop (a figure's own text, its
     tick labels and legends, as paragraphs or left out); json_detail: blocks, lines or words (with

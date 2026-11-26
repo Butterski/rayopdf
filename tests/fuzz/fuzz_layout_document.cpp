@@ -5,7 +5,8 @@
 // that each input costs two conversions: JSON (--format=json, with --json-detail=blocks, lines or
 // words by the size again), which must be one object and a line break; chunks (--format=chunks
 // with the smallest chunk size), every line one object; the
-// inspector (--format=inspect), one HTML file without a script; Markdown with the output options
+// inspector (--format=inspect), one HTML file without a script, or plain text (--format=text, by
+// the size again), empty or ending in a line break or a form feed; Markdown with the output options
 // --plain, --tables=html, --tables=pipe or --tables=pipe-latex (by the size again),
 // --furniture=keep, --quotes=ascii, --small-caps=keep and --figure-text=drop;
 // or Markdown with a feature sink (`rayopdf --features`) counting the edge rows, which must be
@@ -50,9 +51,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         break;
     case 2:
-        options.format = RayoPdf::Layout::OutputFormat::Inspect;
+        options.format = size % 10 == 2 ? RayoPdf::Layout::OutputFormat::Inspect : RayoPdf::Layout::OutputFormat::Text;
         RayoPdf::Layout::Convert(*document, options, out, report);
-        if (out.compare(0, 15, "<!DOCTYPE html>") != 0 || out.find("<script") != std::string::npos) __builtin_trap();
+        if (options.format == RayoPdf::Layout::OutputFormat::Inspect
+                ? out.compare(0, 15, "<!DOCTYPE html>") != 0 || out.find("<script") != std::string::npos
+                : !out.empty() && out.back() != '\n' && out.back() != '\f')
+            __builtin_trap();
         break;
     case 3:
         options.plain = true;

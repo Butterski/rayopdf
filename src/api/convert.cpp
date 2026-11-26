@@ -35,6 +35,7 @@ Layout::ConvertOptions LayoutOptions(const Options& options) {
         case Format::Json: out.format = Layout::OutputFormat::Json; break;
         case Format::Chunks: out.format = Layout::OutputFormat::Chunks; break;
         case Format::Inspect: out.format = Layout::OutputFormat::Inspect; break;
+        case Format::Text: out.format = Layout::OutputFormat::Text; break;
     }
     out.chunkChars = options.chunkChars;
     out.jsonDetail = options.jsonDetail == JsonDetail::Words   ? Layout::JsonDetail::Words

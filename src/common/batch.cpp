@@ -121,6 +121,9 @@ void AppendRecord(std::string& out, const Record& record) {
     } else if (record.hasHtml) {
         out += ",\"html\":";
         AppendJsonString(out, record.html);
+    } else if (record.hasText) {
+        out += ",\"text\":";
+        AppendJsonString(out, record.text);
     } else if (record.hasMarkdown) {
         out += ",\"markdown\":";
         AppendJsonString(out, record.markdown);

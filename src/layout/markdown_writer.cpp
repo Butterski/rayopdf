@@ -204,10 +204,10 @@ uint32_t ScriptForm(uint32_t cp, bool sup) {
 class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math,
-           bool plain, bool smallCapsLower)
+           bool plain, bool smallCapsLower, bool text = false)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
           boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math),
-          plainOutput_(plain), smallCapsLower_(smallCapsLower) {
+          plainOutput_(plain), smallCapsLower_(smallCapsLower), text_(text) {
         for (const NoteRef& r : noteRefs_) letterRefs_ = letterRefs_ || r.count == 3;
     }
 
@@ -222,7 +222,7 @@ public:
     // its glyphs alone. False (nothing written) when a glyph of a small-capitals heading may be
     // math in LaTeX mode: Inline writes it then.
     bool PlainHeading(const Block& block);
-    // A fenced code block; `prefix` starts every line (block quotes).
+    // A fenced code block; `prefix` starts every line (block quotes). Text: the lines alone.
     void Code(const Block& block, const std::string& prefix);
     // A display formula's block (one kLineFormula line) as $$…$$ LaTeX; false (nothing written)
     // when the formula cannot be rebuilt.
@@ -329,6 +329,9 @@ private:
     bool plainOutput_ = false;
     // WriteSettings::smallCaps Lower: a small-capitals heading's small capitals as lower-case letters.
     bool smallCapsLower_ = true;
+    // WriteText: plain output (plainOutput_) without escapes or inline images, footnote references
+    // as "[n]", code without its fence.
+    bool text_ = false;
     // Some reference spans three glyphs: unraised "(a)" references (semantics.h) may be among them.
     bool letterRefs_ = false;
     std::vector<GlyphRef> refs_;
@@ -1041,17 +1044,16 @@ void Writer::ChangeStyle(uint8_t target, uint32_t at) {
 }
 
 // The characters AppendEscaped may escape, by byte value; text without them it writes as it is.
-// In LaTeX mode a dollar too.
+// In LaTeX mode a dollar too; in WriteText none.
 struct EscapeTable {
     bool may[256] = {};
-    constexpr explicit EscapeTable(bool dollar) {
-        constexpr char kChars[] = "\\*`_<]~&";
-        for (size_t i = 0; i + 1 < sizeof(kChars); ++i) may[static_cast<unsigned char>(kChars[i])] = true;
-        may[static_cast<unsigned char>('$')] = dollar;
+    constexpr explicit EscapeTable(std::string_view chars) {
+        for (const char c : chars) may[static_cast<unsigned char>(c)] = true;
     }
 };
-constexpr EscapeTable kEscape(false);
-constexpr EscapeTable kEscapeLatex(true);
+constexpr EscapeTable kEscape("\\*`_<]~&");
+constexpr EscapeTable kEscapeLatex("\\*`_<]~&$");
+constexpr EscapeTable kNoEscape("");
 
 bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 
@@ -1367,10 +1369,10 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
             }
         }
     }
-    const bool* const may = kLatex ? kEscapeLatex.may : kEscape.may;
+    const bool* const may = text_ ? kNoEscape.may : kLatex ? kEscapeLatex.may : kEscape.may;
     const size_t mark = out_.size();
-    // Heading and table cell text is inline: "## 1. Installation" opens no list.
-    bool blockStart = block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
+    // Heading and table cell text is inline: "## 1. Installation" opens no list. Text escapes nothing.
+    bool blockStart = !text_ && block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
     // The word being written: its text from out_[wordAt], its glyph count and whether it holds a
     // byte AppendEscaped may escape; `last` is the text of the last glyph written (worked out at the
     // end of each line: a line's last glyph is always written).
@@ -1569,6 +1571,10 @@ bool Writer::PlainHeading(const Block& block) {
     }
     while (!other_.empty() && other_.back() == ' ') other_.pop_back();
     const size_t from = out_.size();
+    if (text_) {
+        out_ += other_;
+        return true;
+    }
     runs_.clear();
     AppendEscaped(other_, false);
     DropNeedlessEscapes(from);
@@ -1708,7 +1714,11 @@ void Writer::WriteWords(const Block& block) {
             if (refEnd != 0) {
                 if (const uint32_t number = NoteNumber(refs[k], refEnd - k)) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
-                    if (plainOutput_) {
+                    if (text_) {
+                        out_.push_back('[');
+                        out_.append(std::to_string(number));
+                        out_.push_back(']');
+                    } else if (plainOutput_) {
                         out_.append(std::to_string(number));
                     } else {
                         out_.append("[^");
@@ -1720,11 +1730,13 @@ void Writer::WriteWords(const Block& block) {
                     continue;
                 }
             }
-            // An inline image glyph holds its Markdown link.
+            // An inline image glyph holds its Markdown link (text: none).
             if (refs[k].flags & kGlyphImage) {
-                SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
-                out_.append(Text(refs[k]));
-                blockStart = false;
+                if (!text_) {
+                    SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
+                    out_.append(Text(refs[k]));
+                    blockStart = false;
+                }
                 ++k;
                 continue;
             }
@@ -1778,8 +1790,8 @@ void Writer::WriteWords(const Block& block) {
                         for (const char c : t) escapes |= MayEscape(c);
                     }
                 }
-                bool plain = !start && !escapes;
-                if (latex && plain) plain = std::string_view(out_).substr(mark).find('$') == std::string_view::npos;
+                bool plain = text_ || (!start && !escapes);
+                if (latex && plain && !text_) plain = std::string_view(out_).substr(mark).find('$') == std::string_view::npos;
                 if (!plain) {
                     other_.assign(out_, mark, std::string::npos);
                     out_.resize(mark);
@@ -2108,6 +2120,10 @@ void Writer::Code(const Block& block, const std::string& prefix) {
         }
         while (!other_.empty() && other_.back() == ' ') other_.pop_back();
     }
+    if (text_) {
+        out_ += other_;
+        return;
+    }
     size_t run = 0, longest = 0;
     for (char c : other_) {
         run = c == '`' ? run + 1 : 0;
@@ -2125,6 +2141,18 @@ void Writer::Code(const Block& block, const std::string& prefix) {
     out_.push_back('\n');
     out_ += prefix;
     out_ += fence;
+}
+
+// The end of a footnote's text: an HTML endnote's back link (↩, maybe with the text-style selector
+// U+FE0E) is no text, nor are the spaces before it.
+void TrimNoteEnd(std::string& out) {
+    for (const std::string_view link : {"\xE2\x86\xA9\xEF\xB8\x8E", "\xE2\x86\xA9"}) {
+        if (out.size() >= link.size() && out.compare(out.size() - link.size(), link.size(), link) == 0) {
+            out.resize(out.size() - link.size());
+            break;
+        }
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
 }
 
 } // namespace
@@ -2243,14 +2271,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
             out += std::to_string(block.number);
             out += styles ? "]: " : " ";
             writer.Inline(block, styles);
-            // An HTML endnote's back link (↩, maybe with the text-style selector U+FE0E) is no text.
-            for (const std::string_view link : {"\xE2\x86\xA9\xEF\xB8\x8E", "\xE2\x86\xA9"}) {
-                if (out.size() >= link.size() && out.compare(out.size() - link.size(), link.size(), link) == 0) {
-                    out.resize(out.size() - link.size());
-                    break;
-                }
-            }
-            while (!out.empty() && out.back() == ' ') out.pop_back();
+            TrimNoteEnd(out);
             break;
         }
         case BlockKind::Table: {
@@ -2375,6 +2396,133 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
     }
     if (settings.pageMarkers) markPagesTo(pages.empty() ? 0 : pages.back().number);
     if (!out.empty()) out.push_back('\n');
+}
+
+void WriteText(const std::vector<PageData>& pages, const BlockList& list, std::string& out, WriteCounts& counts,
+               MathMode math, const WriteSettings& settings) {
+    Writer writer(pages, list, out, counts, math, true, settings.smallCaps == SmallCaps::Lower, true);
+    int contentColumn[9] = {};
+    const Block* previous = nullptr;
+    size_t page = 0;  // the page written last: form feeds have started every page up to it
+    std::vector<const Block*> notes;
+    std::vector<TablePart> parts;
+    std::vector<uint32_t> partFirst;
+    std::vector<std::string> grid;
+    const auto write = [&](const Block& block) {
+        if (block.kind == BlockKind::Table) {
+            parts.clear();
+            partFirst.clear();
+            for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+                const PageData& p = pages[list.lines[bl].page];
+                const Line& line = p.lines[list.lines[bl].line];
+                if (!(line.flags & kLineTableAnchor)) continue;
+                parts.push_back(TablePart{&p, &p.tables[line.first], nullptr});
+                partFirst.push_back(bl);
+            }
+            if (parts.empty()) return;
+        }
+        // A form feed for each page boundary before the block, else a blank line (a line break
+        // between the items of a list).
+        const size_t at = list.lines[block.first].page;
+        if (block.kind != BlockKind::Footnote && at > page) {
+            if (previous) out.push_back('\n');
+            out.append(at - page, '\f');
+            page = at;
+        } else if (previous) {
+            const bool tight = previous->kind == BlockKind::ListItem && block.kind == BlockKind::ListItem;
+            out += tight ? "\n" : "\n\n";
+        }
+        previous = &block;
+        switch (block.kind) {
+        case BlockKind::Comment:
+        case BlockKind::Image:
+            break;
+        case BlockKind::Heading:
+            counts.headings++;
+            if ((block.smallCaps > 0 || block.number != 0) && writer.PlainHeading(block)) break;
+            writer.Inline(block, false);
+            break;
+        case BlockKind::Paragraph:
+            counts.paragraphs++;
+            if (block.listParagraph) out.append(static_cast<size_t>(contentColumn[std::min<int>(block.depth, 8)]), ' ');
+            if (math == MathMode::Latex && writer.Display(block)) break;
+            writer.Inline(block, false);
+            break;
+        case BlockKind::ListItem: {
+            counts.listItems++;
+            const int depth = std::min<int>(block.depth, 8);
+            const int indent = depth == 0 ? 0 : contentColumn[depth - 1];
+            out.append(static_cast<size_t>(indent), ' ');
+            const std::string marker =
+                block.ordered ? std::to_string(block.number == 0 ? 1 : block.number) + (block.closeParen ? ")" : ".") : "-";
+            out += marker;
+            out.push_back(' ');
+            contentColumn[depth] = indent + static_cast<int>(marker.size()) + 1;
+            for (int d = depth + 1; d < 9; ++d) contentColumn[d] = contentColumn[depth] + 2 * (d - depth);
+            if (block.task) out += block.task == 2 ? "[x] " : "[ ] ";
+            writer.Inline(block, false);
+            break;
+        }
+        case BlockKind::Code:
+            counts.codeBlocks++;
+            writer.Code(block, std::string());
+            break;
+        case BlockKind::Footnote:
+            counts.footnotes++;
+            out.push_back('[');
+            out += std::to_string(block.number);
+            out += "] ";
+            writer.Inline(block, false);
+            TrimNoteEnd(out);
+            break;
+        case BlockKind::Table: {
+            // One row a line, its cells' text joined by tabs: a part's header rows that repeat
+            // the first part's left out, a spanning cell's text in its first row and column.
+            counts.tables++;
+            for (size_t p = 0; p < parts.size(); ++p) {
+                const Table& table = *parts[p].table;
+                const uint16_t skip = p > 0 ? RepeatedHeader(parts[0], parts[p]) : 0;
+                const uint32_t rows = table.rows > skip ? table.rows - skip : 0, cols = table.cols;
+                grid.assign(static_cast<size_t>(rows) * cols, std::string());
+                for (uint32_t c = 0; c < table.cellCount; ++c) {
+                    const TableCell& cell = parts[p].page->tableCells[table.firstCell + c];
+                    if (cell.count == 0 || cell.row < skip || static_cast<uint32_t>(cell.row - skip) >= rows ||
+                        cell.col >= cols)
+                        continue;
+                    Block sub;
+                    sub.kind = BlockKind::Table;
+                    sub.first = partFirst[p] + 1 + (cell.first - table.firstLine);
+                    sub.count = cell.count;
+                    const size_t mark = out.size();
+                    writer.Inline(sub, false);
+                    std::string& text = grid[static_cast<size_t>(cell.row - skip) * cols + cell.col];
+                    text.assign(out, mark, std::string::npos);
+                    out.resize(mark);
+                    std::replace(text.begin(), text.end(), '\t', ' ');
+                }
+                for (uint32_t r = 0; r < rows; ++r) {
+                    if (p > 0 || r > 0) out.push_back('\n');
+                    for (uint32_t c = 0; c < cols; ++c) {
+                        if (c > 0) out.push_back('\t');
+                        out += grid[static_cast<size_t>(r) * cols + c];
+                    }
+                }
+            }
+            break;
+        }
+        }
+    };
+    for (const Block& block : list.blocks) {
+        if (block.count == 0 || block.kind == BlockKind::Comment || block.kind == BlockKind::Image) continue;
+        if (block.kind == BlockKind::Footnote) {
+            notes.push_back(&block);
+            continue;
+        }
+        write(block);
+    }
+    for (const Block* note : notes) write(*note);
+    if (previous) out.push_back('\n');
+    if (page + 1 < pages.size()) out.append(pages.size() - 1 - page, '\f');
 }
 
 namespace {

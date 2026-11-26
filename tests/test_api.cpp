@@ -37,6 +37,11 @@ void TestJson() {
     RAYOPDF_CHECK(out.find("\"lines\":[{\"page\":1,\"box\":[") != std::string::npos &&
                       out.find("\"text\":\"Hello\"") != std::string::npos,
                   2655);
+    // Plain text (an output format's check: code from 2650-2699).
+    options = Api::Options();
+    options.format = Api::Format::Text;
+    Api::ConvertMemory(OnePagePdf(), options, out);
+    RAYOPDF_CHECK(out == "Hello from the API\n", 2673);
 }
 
 void TestFailures() {

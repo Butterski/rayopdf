@@ -39,7 +39,7 @@ console.log((await convert(new Uint8Array(readFileSync("paper.pdf")))).text)'
 
 | Option | Values |
 |---|---|
-| `format` | `"markdown"` (default), `"json"`, `"chunks"`, `"inspect"` |
+| `format` | `"markdown"` (default), `"json"`, `"chunks"`, `"inspect"`, `"text"` |
 | `math` | `"unicode"` (default), `"latex"` |
 | `pages` | `3`, `"2-5"`, `"-4"`, or `[first, last]` with `null` for an open end |
 | `password` | the user or owner password |

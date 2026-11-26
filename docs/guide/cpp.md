@@ -39,7 +39,7 @@ g++ -std=c++17 example.cpp -Iinclude lib/librayopdf.a -pthread -o example
 - `ConvertFile(path, options, output)` converts a file (path in UTF-8);
   `ConvertMemory(pdf, options, output)` converts the bytes of a PDF.
 - `Options` has the options of `--convert`: `password`, `firstPage` and `lastPage`, `format`
-  (`Markdown`, `Json`, `Chunks`, `Inspect`), `math`, `ocr` and `ocrAddon`, `annotations`,
+  (`Markdown`, `Json`, `Chunks`, `Inspect`, `Text`), `math`, `ocr` and `ocrAddon`, `annotations`,
   `structure`, `exact`, `pageMarkers`, `frontMatter`, `furniture`, `plain`, `tables`, `quotes`,
   `smallCaps`, `figureText`, `chunkChars`, `jsonDetail` (`Blocks`, `Lines`, `Words`),
   `imageDirectory` and `imageLinkPrefix` (no images when the directory is empty) and `workers`

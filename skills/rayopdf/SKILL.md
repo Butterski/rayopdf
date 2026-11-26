@@ -92,6 +92,7 @@ Options go after the output path, in any order:
 | Each block's lines (page, box, text), or lines and words, in the JSON | `--json-detail=lines` / `--json-detail=words` (default `blocks`) |
 | Chunks for retrieval (RAG) | `--format=chunks` (JSON Lines: `chunk`, `heading_path`, `pages`, `boxes`, `blocks`, `markdown`); `--chunk-chars=N` bytes a chunk (256-1000000, default 4000) |
 | See what the layout analysis decided | `--format=inspect` (one HTML file, no script: each page's lines, blocks numbered in reading order, removed furniture struck through, table cells, images) |
+| Plain text without any markup | `--format=text` (headings and paragraphs as text, list markers kept, tables a row a line with tab-separated cells, footnotes `[n] text` at the end, pages separated by form feeds) |
 | A comment before each page's text | `--page-markers` (`<!-- page N -->`; a list or quote across a page break is split there) |
 | The PDF's metadata as YAML front matter | `--front-matter` (`title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified`, `language`, `pages`) |
 | Text without inline markup | `--plain` (no `**`, `*`, `` ` ``, links, `<sup>`/`<sub>` or `[^n]`; their text stays) |
@@ -106,7 +107,7 @@ Options go after the output path, in any order:
 
 `--format=json`, `--page-markers` and `--front-matter` are not in releases before 0.2.0,
 `--plain`, `--tables`, `--furniture`, `--format=chunks` and `--format=inspect` not before
-0.3.0, and `--json-detail` not before 1.2.0: check `rayopdf --help` lists them.
+0.3.0, and `--json-detail` and `--format=text` not before 1.2.0: check `rayopdf --help` lists them.
 `--front-matter` and `--page-markers` have no effect with `--format=json`, whose `metadata` and
 per-block `page` carry the same information.
 
@@ -123,7 +124,7 @@ rayopdf --convert locked.pdf locked.md --password=secret
 
 For a folder: `rayopdf --batch <in-folder> <out-folder> [flags] --report` (`--recursive`,
 `--skip-unchanged`, `--report=FILE`, `--workers=N`). Each `a.pdf` becomes `a.md` (`a.json` with
-`--format=json`, `a.jsonl` with `--format=chunks`, `a.html` with `--format=inspect`), and its
+`--format=json`, `a.jsonl` with `--format=chunks`, `a.html` with `--format=inspect`, `a.txt` with `--format=text`), and its
 images go to `a-images/` beside it (`--images=none` for none; the batch modes refuse
 `--images=DIR`).
 
@@ -138,7 +139,7 @@ rayopdf --serve --json --math=latex < requests.jsonl
 Request lines (`input` a PDF; `output` the Markdown file to write, or left out to get the
 Markdown in the answer's `"markdown"` field, or with `--format=json` the JSON document in its
 `"json"` field, with `--format=chunks` the chunks as an array in its `"chunks"` field, with
-`--format=inspect` the HTML in its `"html"` field; `args`
+`--format=inspect` the HTML in its `"html"` field, with `--format=text` the text in its `"text"` field; `args`
 flags over the command line's: `--pages`, `--password`, `--math`,
 `--format`, `--images=none`, ...):
 

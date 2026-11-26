@@ -16,6 +16,8 @@
 // WriteChunks writes the same blocks as chunks for retrieval (roadmap D6), one JSON object a line:
 // consecutive blocks under one heading path, each chunk at most WriteSettings::chunkChars bytes of
 // Markdown where a block allows it.
+//
+// WriteText writes the same blocks as plain text, without any markup.
 #pragma once
 
 #include "layout/convert.h"
@@ -105,6 +107,17 @@ const char* BlockTypeName(BlockKind kind);
 void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired, std::string& out,
                    WriteCounts& counts, MathMode math = MathMode::Unicode, const WriteSettings& settings = {},
                    std::vector<WrittenBlock>* written = nullptr);
+
+// Appends the blocks as plain text (--format=text): headings and paragraphs as their text, list
+// items with their markers (and task boxes), code without its fence, a table one row a line with
+// its cells joined by tabs, footnote definitions "[n] text" after every other block (their
+// references "[n]"); no escapes, no links (their text stays), no images, no comments, no tags of
+// scripts. Blocks are separated by a blank line (list items by a line break), pages by form feeds
+// (U+000C): page N starts after the (N-1)th, a page without text adds one. Formulas with
+// MathMode::Latex as $…$ and $$…$$. `settings.smallCaps` as WriteMarkdown; the other settings do
+// not apply.
+void WriteText(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts,
+               MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
 
 // Appends the blocks as one compact JSON line (schema 1) to `out`:
 // {"rayopdf":VERSION,"schema":1,"repaired":bool,"metadata":{non-empty fields},"pages":[{"page",

@@ -16,8 +16,9 @@ namespace RayoPdf::Api {
 
 // What is written: Markdown, the document as one JSON object (schema 1: its metadata and its
 // blocks with their pages, boxes and Markdown; `rayopdf --format=json`), chunks for retrieval as
-// JSON Lines (`rayopdf --format=chunks`), or the layout inspector's HTML (`--format=inspect`).
-enum class Format : uint8_t { Markdown, Json, Chunks, Inspect };
+// JSON Lines (`rayopdf --format=chunks`), the layout inspector's HTML (`--format=inspect`), or
+// plain text without markup, pages separated by form feeds (`--format=text`).
+enum class Format : uint8_t { Markdown, Json, Chunks, Inspect, Text };
 // Formulas as Unicode text, or rebuilt as LaTeX between $ and $$.
 enum class Math : uint8_t { Unicode, Latex };
 // OCR through the rayopdf-ocr add-on: never; where the text layer fails (when the add-on is found);

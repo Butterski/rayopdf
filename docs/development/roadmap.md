@@ -139,8 +139,9 @@ Source: [algorithms §2, §4, §5, §6](../research/algorithms.md).
 ### D5 Source precedence
 
 1. `rayomd-source/1` exact recovery of RayoMD-made PDFs (`--no-exact` turns it off). JSON output,
-   chunks, the layout inspector and page markers need the pages' layout, so with `--format=json`,
-   `--format=chunks`, `--format=inspect` or `--page-markers` a payload is not used
+   chunks, the layout inspector, plain text and page markers need the pages' layout, so with
+   `--format=json`, `--format=chunks`, `--format=inspect`, `--format=text` or `--page-markers` a
+   payload is not used
    (`"exact":"format"`).
 2. A structure tree that passes validation.
 3. The document outline.
@@ -353,6 +354,14 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   piece closed with `</table>`; code at line ends, each piece within its fence and info string. A
   row or code line longer than N stays whole. Comments are ordinary blocks; page markers and front
   matter are not written; the repair comment is not a block and is left out.
+- Plain text (`--format=text`, decided 2026-11-26; `WriteText` in
+  `src/layout/markdown_writer.h`): the Markdown's blocks without markup or escapes (headings and
+  paragraphs as text, links as their text, script tags left out, inline images and image blocks
+  and comments left out), list markers and task boxes kept with the Markdown's indentation, code
+  without its fence, a table one row a line with its cells joined by tabs (a spanning cell's text
+  in its first row and column), footnote definitions `[n] text` after all other blocks (their
+  references `[n]`). A blank line between blocks (a line break between list items); pages
+  separated by form feeds, one a page boundary, so that page N's text follows the (N-1)th.
 - Layout inspector (`--format=inspect`, decided 2026-11-13; `src/layout/inspect_writer.h`): one
   deterministic HTML5 file with a `<style>` block and no script. Per page a
   `<section id="page-N">` with `<h2>Page N</h2>` and an SVG of `viewBox="0 0 W H"` in PDF points,
@@ -374,7 +383,7 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
 rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
         [--no-exact] [--no-annotations] [--no-structure] [--math=unicode|latex]
         [--ocr=auto|off|force] [--ocr-addon=PATH] [--report] [--workers=N]
-        [--format=markdown|json|chunks|inspect] [--chunk-chars=N] [--json-detail=blocks|lines|words]
+        [--format=markdown|json|chunks|inspect|text] [--chunk-chars=N] [--json-detail=blocks|lines|words]
         [--page-markers] [--front-matter]
         [--furniture=drop|keep] [--plain] [--tables=auto|html|pipe|pipe-latex]
 rayopdf --batch IN-FOLDER OUT-FOLDER [options] [--recursive] [--skip-unchanged] [--report[=FILE]]
@@ -404,11 +413,11 @@ JSON object a line;
 
 - **`--format=json`** (with **`--json-detail=lines|words`**), **`--format=chunks`** (with
   **`--chunk-chars=N`**, 256 to 1,000,000,
-  else a usage error), **`--format=inspect`**, **`--page-markers`**, **`--front-matter`**,
+  else a usage error), **`--format=inspect`**, **`--format=text`**, **`--page-markers`**, **`--front-matter`**,
   **`--plain`**, **`--tables=html`**, **`--tables=pipe`**, **`--tables=pipe-latex`**,
   **`--furniture=keep`**, **`--quotes=ascii`**, **`--small-caps=keep`** and
   **`--figure-text=drop`** choose what is
-  written (D6): the JSON document, chunks for retrieval or the layout inspector's HTML instead of
+  written (D6): the JSON document, chunks for retrieval, the layout inspector's HTML or plain text instead of
   Markdown, page markers in the Markdown, front matter before it, text without inline markup,
   every table as HTML or every table as a pipe table (its cells escaped for a LaTeX reader with
   `pipe-latex`), page furniture kept, ASCII quotation marks, small-capitals headings as printed,
@@ -417,7 +426,7 @@ JSON object a line;
   `--front-matter` (the record's `exact` is `format`).
 - **`--batch`** converts the `*.pdf` files of a folder (with `--recursive` its subfolders too,
   hidden ones and links to folders excepted, mirrored) to `NAME.md` (`NAME.json` with
-  `--format=json`, `NAME.jsonl` with `--format=chunks`, `NAME.html` with `--format=inspect`) and
+  `--format=json`, `NAME.jsonl` with `--format=chunks`, `NAME.html` with `--format=inspect`, `NAME.txt` with `--format=text`) and
   `NAME-images/` under the output
   folder, sorted by their UTF-8 paths. Two
   inputs with one output (`a.pdf`, `a.PDF`) leave the second refused (code 12). The exit code is
@@ -426,8 +435,8 @@ JSON object a line;
   1 without its `markdown`/`source_path` input, as the input of a PDF converter is a file). The
   first line out is `{"rayopdf":"VERSION","protocol":1}`; without `output` the answer carries the
   Markdown, with `--format=json` the JSON document itself as `"json"`, with `--format=chunks`
-  the chunks as one JSON array `"chunks"`, or with `--format=inspect` the HTML as the string
-  `"html"`. `args` holds flags of
+  the chunks as one JSON array `"chunks"`, with `--format=inspect` the HTML as the string
+  `"html"`, or with `--format=text` the text as the string `"text"`. `args` holds flags of
   `--convert` only; batch flags and unknown fields are code-2 errors and the session goes on.
   Lines are at most 1 MiB, `args` at most 64. The request reader (`src/common/serve.*`) has the
   fuzz target `fuzz_common_serve`.

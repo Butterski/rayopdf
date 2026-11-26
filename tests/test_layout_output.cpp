@@ -3,8 +3,8 @@
 // plain text without inline markup, emphasis delimiters a CommonMark reader takes as such, every
 // table as HTML or as a pipe table, page furniture kept, ASCII quotes, small-capitals headings as
 // printed, the exact recovery they turn off, chunks for retrieval (WriteChunks), the layout
-// inspector (WriteInspect) and the JSON output's lines and words. Exit codes 2000-2049 and
-// 2650-2699.
+// inspector (WriteInspect), the JSON output's lines and words, and plain text (WriteText). Exit
+// codes 2000-2049 and 2650-2699.
 #include "check.h"
 #include "exact_builder.h"
 #include "pdf_builder.h"
@@ -986,6 +986,44 @@ void TestRoles() {
                   2667);
 }
 
+OutputSettings TextSettings() {
+    OutputSettings settings;
+    settings.format = OutputFormat::Text;
+    return settings;
+}
+
+// A paragraph with the characters Markdown escapes, and a paragraph on a page after a page
+// without text, and a page without text at the end.
+std::vector<PageData> RawTextPages() {
+    std::vector<PageData> pages{NewPage(1), NewPage(2), NewPage(3), NewPage(4)};
+    AddText(pages[0], "Costs * 3 rose by 5_000 <now> & [a](b) at `noon`.", 72, 700, 10);
+    AddText(pages[2], "Charlie is the third page.", 72, 700, 10);
+    return pages;
+}
+
+// --format=text: no markup, footnotes "[n] text" at the end, tables a row a line with tab-separated
+// cells, list markers kept, no escapes, pages separated by form feeds.
+void TestText() {
+    const std::string styled = Run(StyledPage, TextSettings());
+    Show("text", styled);
+    RAYOPDF_CHECK(styled == "Plain words with strong and slanted text on the website of the 1st edition.[1]\n\n"
+                            "[1] Smith, Collected Essays, 2020.\n",
+                  2668);
+    const std::string table = Run(TablePage, TextSettings());
+    Show("text table", table);
+    RAYOPDF_CHECK(table == "Intro text before the table.\n\nName\tValue\nAlpha\t12\nBeta\t34\n\nClosing text after the table.\n",
+                  2669);
+    RAYOPDF_CHECK(Run(BulletPage, TextSettings()) == "- first item\n- second item\n" &&
+                      Run(HeadingPage, TextSettings()) == "Annual Review\n\nThe year brought steady growth across every region.\n",
+                  2670);
+    RAYOPDF_CHECK(Run(RunningPages, TextSettings()) ==
+                      "Body text of page 1 stays.\n\fBody text of page 2 stays.\n\fBody text of page 3 stays.\n",
+                  2671);
+    const std::string raw = Run(RawTextPages, TextSettings());
+    Show("text raw", raw);
+    RAYOPDF_CHECK(raw == "Costs * 3 rose by 5_000 <now> & [a](b) at `noon`.\n\f\fCharlie is the third page.\n\f", 2672);
+}
+
 } // namespace
 
 int main() {
@@ -1007,6 +1045,7 @@ int main() {
     TestOutlineTargets();
     TestLabelsAndLanguage();
     TestRoles();
+    TestText();
     std::puts("layout output tests passed");
     return 0;
 }

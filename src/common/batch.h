@@ -44,6 +44,8 @@ struct Record {
     std::string chunks;
     bool hasHtml = false;        // the same with --format=inspect: the inspector's HTML
     std::string html;
+    bool hasText = false;        // the same with --format=text: the plain text
+    std::string text;
 };
 
 // Appends `text` as a JSON string, its quotes included: quotes, backslashes and control characters
@@ -53,8 +55,8 @@ void AppendJsonString(std::string& out, std::string_view text);
 // Appends `record` to `out` as one line, its line break included:
 // {"id":..,"input":..,"output":..,"status":..,"code":..,"error":..,"pages":..,"bytes":..,"ms":..,
 //  <counters>,"markdown":..}; "id", "error" and "markdown" only when there are, and "json" (the
-//  object as it is), "chunks" (the array as it is) or "html" (a string) instead of "markdown" when
-//  there is one.
+//  object as it is), "chunks" (the array as it is), "html" or "text" (a string) instead of
+//  "markdown" when there is one.
 void AppendRecord(std::string& out, const Record& record);
 
 // The CPUs this process may run on: its affinity mask, which taskset or a container narrows, where

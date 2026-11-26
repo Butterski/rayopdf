@@ -1,13 +1,14 @@
 # Output formats
 
-What RayoPDF writes: Markdown (the default), JSON, chunks for retrieval, and an HTML layout
-view, plus the report record of `--report`. The [command-line guide](cli.md) lists the options
-that choose and adjust them.
+What RayoPDF writes: Markdown (the default), JSON, chunks for retrieval, plain text and an HTML
+layout view, plus the report record of `--report`. The [command-line guide](cli.md) lists the
+options that choose and adjust them.
 
 - [Markdown](#markdown)
 - [Page markers and front matter](#page-markers-and-front-matter)
 - [JSON: `--format=json`](#json---formatjson)
 - [Chunks: `--format=chunks`](#chunks---formatchunks)
+- [Plain text: `--format=text`](#plain-text---formattext)
 - [Layout view: `--format=inspect`](#layout-view---formatinspect)
 - [The report record](#the-report-record)
 
@@ -186,6 +187,28 @@ How chunks are cut:
   at the last space), a table by rows with its header rows repeated in each piece, code by lines
   with its fence reopened. A single table row or code line longer than N stays whole.
 - Page markers and front matter are not written into chunks.
+
+## Plain text: `--format=text`
+
+```sh
+rayopdf --convert paper.pdf paper.txt --format=text
+```
+
+The blocks of the Markdown as text without any markup:
+
+- headings and paragraphs as their text: no `#`, emphasis, code spans, `<sup>`/`<sub>` tags or
+  escapes; a link as its text;
+- list items with their markers (`-`, `1.` or `1)`, as in the Markdown) and their indentation, and task
+  items with `[x]` or `[ ]`;
+- code as its lines, without fences;
+- a table one row a line, its cells separated by a tab (a spanning cell's text in its first row
+  and column, the cells it covers empty);
+- footnotes as `[n] text` after all other text, their references in the text as `[n]`;
+- no images and no comments.
+
+Blocks are separated by a blank line, list items by a line break. Pages are separated by a form
+feed (U+000C): the text of page N follows the (N−1)th form feed, and a page without text adds
+one. With `--math=latex` formulas are written as `$…$` and `$$…$$`.
 
 ## Layout view: `--format=inspect`
 

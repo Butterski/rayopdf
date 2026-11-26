@@ -119,6 +119,8 @@ def main() -> int:
         check(isinstance(result.data, list) and len(result.data) == 1 and
               "Hello from Python" in result.data[0]["markdown"] and result.data[0]["pages"] == [1, 1],
               "format=chunks gives a list of chunks")
+        result = rayopdf.convert(pdf_path, format="text")
+        check(result.text == "Hello from Python\n" and result.data is None, "format=text gives the plain text")
         try:
             rayopdf.convert(b"not a pdf")
             check(False, "b'not a pdf' raises CorruptError")

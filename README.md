@@ -122,6 +122,7 @@ Options go after the paths, in any order. The most used:
 | `--format=json` | One JSON object: the document's metadata and its blocks, each with its type, page, position and Markdown. `--json-detail=lines` or `words` adds each block's lines, or lines and words, with their positions. |
 | `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes). |
 | `--format=inspect` | One HTML file that draws each page's lines and blocks in reading order, to see what the layout analysis decided. |
+| `--format=text` | Plain text without markup; pages separated by form feeds. |
 | `--math=latex` | Formulas as LaTeX (`$…$`, `$$…$$`) instead of Unicode text. |
 | `--page-markers` | Write `<!-- page N -->` before each page's Markdown. |
 | `--front-matter` | Start the Markdown with YAML front matter from the PDF's metadata. |
