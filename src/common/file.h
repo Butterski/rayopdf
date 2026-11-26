@@ -63,12 +63,7 @@ bool WriteAll(const std::string& path, std::string_view content);
 // already. False when it cannot, or when something else has the name.
 bool EnsureDirectory(const std::string& path);
 
-// A new, empty directory under the system's temporary folder ($TMPDIR or /tmp; on Windows
-// GetTempPath) whose name starts with `prefix`; its path in `path`. False when none can be made.
-bool MakeTemporaryDirectory(std::string_view prefix, std::string& path);
-
-// Deletes the file, or the empty directory, at `path`. False when it cannot.
-bool RemoveFile(const std::string& path);
+// Deletes the empty directory at `path`. False when it cannot.
 bool RemoveEmptyDirectory(const std::string& path);
 
 enum class FileType : uint8_t { None, Regular, Directory, Other };
