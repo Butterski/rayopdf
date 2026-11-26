@@ -103,8 +103,10 @@ FlagStatus ParseDocumentFlag(std::string_view arg, DocumentOptions& options, std
             options.convert.format = Layout::OutputFormat::Inspect;
         } else if (format == "text") {
             options.convert.format = Layout::OutputFormat::Text;
+        } else if (format == "html") {
+            options.convert.format = Layout::OutputFormat::Html;
         } else {
-            error = "--format takes markdown, json, chunks, inspect or text: " + std::string(format);
+            error = "--format takes markdown, json, chunks, inspect, text or html: " + std::string(format);
             return FlagStatus::Invalid;
         }
     } else if (StartsWith(arg, "--chunk-chars=")) {

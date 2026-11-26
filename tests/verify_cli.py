@@ -5,8 +5,9 @@
 one), --batch (records, exit codes, subfolders, skipping, the same files and records with 1 and 4
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
 with 1 and 4 workers), and the output options (--format=json, --format=chunks, --chunk-chars,
---format=inspect, --format=text, --page-markers, --front-matter, --furniture, --plain, --tables). It builds the
-PDFs it needs in a temporary directory (none are committed) and never times anything.
+--format=inspect, --format=text, --format=html, --page-markers, --front-matter, --furniture,
+--plain, --tables). It builds the PDFs it needs in a temporary directory (none are committed) and
+never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -372,7 +373,7 @@ def check_output_features(c: Checker, work: Path, hello: str) -> None:
     c.check("json detail: lines without words", r.returncode == 0 and b'"lines":[{' in r.stdout and
             b'"words"' not in r.stdout)
     c.check("bad json detail", c.run("--convert", pages, "-", "--format=json", "--json-detail=glyphs").returncode == 2)
-    c.check("bad format", c.run("--convert", pages, "-", "--format=html").returncode == 2)
+    c.check("bad format", c.run("--convert", pages, "-", "--format=pdf").returncode == 2)
     r = c.run("--convert", pages, "-", "--page-markers")
     marked = r.stdout.decode("utf-8")
     markers = [n for n in range(1, 8) if f"<!-- page {n} -->" in marked]
@@ -512,6 +513,31 @@ def check_text(c: Checker, work: Path, hello: str) -> None:
             repr(answer)[:300])
 
 
+def check_html(c: Checker, work: Path, hello: str) -> None:
+    """--format=html: one HTML5 document without a script, a heading element for each Markdown
+    heading; --batch writes NAME.html; a serve answer carries the string "html"."""
+    pages = str(work / "pages.pdf")
+    markdown = c.run("--convert", pages, "-").stdout.decode("utf-8")
+    r = c.run("--convert", pages, "-", "--format=html")
+    html = r.stdout.decode("utf-8")
+    headings = sum(1 for line in markdown.splitlines() if line.startswith("#"))
+    c.check("html output", r.returncode == 0 and html.startswith("<!DOCTYPE html>\n<html") and
+            html.endswith("</body>\n</html>\n") and "<script" not in html and
+            sum(html.count(f"<h{n}>") for n in range(1, 7)) == headings, repr(html[:300]))
+    source = work / "html-in"
+    source.mkdir()
+    (source / "hello.pdf").write_bytes(Path(hello).read_bytes())
+    r = c.run("--batch", str(source), str(work / "html-out"), "--format=html")
+    written = work / "html-out" / "hello.html"
+    c.check("batch writes NAME.html", r.returncode == 0 and written.exists() and
+            "<p>Hello World</p>" in written.read_text("utf-8") and not (work / "html-out" / "hello.md").exists())
+    request = json.dumps({"id": 1, "input": hello, "args": ["--format=html"]}).encode() + b"\n"
+    answers = records(c.run("--serve", "--json", stdin=request).stdout)
+    answer = answers[1] if len(answers) > 1 else {}
+    c.check("serve answers with the HTML document", "<p>Hello World</p>" in answer.get("html", "") and
+            "markdown" not in answer, repr(answer)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -626,6 +652,7 @@ def main() -> int:
         check_chunks(c, work, hello)
         check_inspect(c, work, hello)
         check_text(c, work, hello)
+        check_html(c, work, hello)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

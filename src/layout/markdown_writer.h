@@ -17,7 +17,8 @@
 // consecutive blocks under one heading path, each chunk at most WriteSettings::chunkChars bytes of
 // Markdown where a block allows it.
 //
-// WriteText writes the same blocks as plain text, without any markup.
+// WriteText writes the same blocks as plain text, without any markup; WriteHtml as one HTML5
+// document, the Markdown's words with tags in place of delimiters.
 #pragma once
 
 #include "layout/convert.h"
@@ -117,6 +118,23 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& blocks, 
 // MathMode::Latex as $…$ and $$…$$. `settings.smallCaps` as WriteMarkdown; the other settings do
 // not apply.
 void WriteText(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts,
+               MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
+
+// Appends the blocks as one HTML5 document (--format=html): `<html lang>` from the metadata's
+// language and `<title>` from its title (`metadata` null: neither), then the body: headings
+// <h1>-<h6>, paragraphs <p>, lists <ul>/<ol start> nested by depth with a list item's own
+// paragraphs inside it and task items with a disabled check box, code <pre><code>, block quotes
+// <blockquote> (an alert's with class "alert-note", "alert-tip", ...), tables as WriteHtmlTable
+// writes them (as `--tables=html` does with `settings.tables` Html, else unspaced), written
+// images as <img src alt> in a <p>, comments as WriteMarkdown's, and the footnotes last in
+// <section class="footnotes"><ol> as <li value="n" id="fn-n">. The inline text as WriteMarkdown
+// writes it, with <strong>, <em>, <code>, <del>, <a href> (no href for a javascript:, vbscript:
+// or data: target; a link whose text is its URL stays a link), <sup>, <sub>, references
+// <sup><a href="#fn-n">n</a></sup> and inline images <img>, HTML-escaped (no Markdown escapes,
+// no flanking repair); with MathMode::Latex formulas as \(…\) and \[…\]. `settings.plain`
+// writes no inline markup, as in WriteMarkdown; page markers do not apply.
+void WriteHtml(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
+               const DocumentMetadata* metadata, std::string& out, WriteCounts& counts,
                MathMode math = MathMode::Unicode, const WriteSettings& settings = {});
 
 // Appends the blocks as one compact JSON line (schema 1) to `out`:

@@ -123,6 +123,7 @@ Options go after the paths, in any order. The most used:
 | `--format=chunks` | JSON Lines, one chunk for retrieval a line, each with its heading path and pages. `--chunk-chars=N` sets the size (default 4,000 bytes). |
 | `--format=inspect` | One HTML file that draws each page's lines and blocks in reading order, to see what the layout analysis decided. |
 | `--format=text` | Plain text without markup; pages separated by form feeds. |
+| `--format=html` | The document as one HTML5 page, with `lang` and `<title>` from the PDF. |
 | `--math=latex` | Formulas as LaTeX (`$…$`, `$$…$$`) instead of Unicode text. |
 | `--page-markers` | Write `<!-- page N -->` before each page's Markdown. |
 | `--front-matter` | Start the Markdown with YAML front matter from the PDF's metadata. |

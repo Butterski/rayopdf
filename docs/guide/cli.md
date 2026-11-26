@@ -69,6 +69,7 @@ The same file and the same options always give the same bytes.
 | `--chunk-chars=N` | With chunks: at most N bytes of Markdown a chunk, 256 to 1,000,000 (default 4,000). A longer block is split. |
 | `--format=inspect` | One HTML file that draws each page: its lines, its blocks numbered in reading order, removed headers and footers struck through, table cells and images. Open it in a browser. |
 | `--format=text` | Plain text without markup: headings and paragraphs as their text, list markers kept, code without fences, a table one row a line with its cells separated by tabs, footnotes `[n] text` at the end. Pages are separated by form feeds. |
+| `--format=html` | The document as one HTML5 page: headings, paragraphs with their emphasis, code and links, nested lists, code blocks, block quotes, tables, images and footnotes; `lang` and `<title>` from the PDF's metadata. |
 | `--page-markers` | Markdown only: write `<!-- page N -->` before each page's Markdown. |
 | `--front-matter` | Markdown only: start with YAML front matter from the PDF's metadata (title, author, dates, language, page count). |
 
@@ -178,7 +179,7 @@ The `exact` field of the [report record](formats.md#the-report-record) says what
 | `none` | The PDF carries no source. |
 | `off` | `--no-exact` was given. |
 | `pages` | Not used because `--pages` selects part of the document. |
-| `format` | Not used because an option needs the pages' layout: `--format=json`, `chunks`, `inspect` or `text`, `--page-markers`, `--plain`, any `--tables` other than `auto`, `--furniture=keep`, `--quotes=ascii`, `--small-caps=keep` or `--figure-text=drop`. |
+| `format` | Not used because an option needs the pages' layout: `--format=json`, `chunks`, `inspect`, `text` or `html`, `--page-markers`, `--plain`, any `--tables` other than `auto`, `--furniture=keep`, `--quotes=ascii`, `--small-caps=keep` or `--figure-text=drop`. |
 | `unsupported`, `corrupt`, `integrity`, `limit`, `utf8`, `mismatch` | The payload was rejected for this reason, and the pages were converted. |
 
 `--no-exact` always converts the pages.
@@ -191,8 +192,8 @@ rayopdf --batch papers md-out --recursive --skip-unchanged --report=report.jsonl
 
 `--batch` converts every `*.pdf` of a folder (any case of `.pdf`) to `OUT-FOLDER/NAME.md`, and
 its images to `OUT-FOLDER/NAME-images/`. With `--format=json` the file is `NAME.json`, with
-`--format=chunks` `NAME.jsonl`, with `--format=inspect` `NAME.html`, with `--format=text`
-`NAME.txt`.
+`--format=chunks` `NAME.jsonl`, with `--format=inspect` or `html` `NAME.html`, with
+`--format=text` `NAME.txt`.
 
 | Option | Effect |
 |---|---|
@@ -226,7 +227,7 @@ printf '%s\n' '{"id":"1","input":"a.pdf","output":"out/a.md","args":["--pages=1-
 - With `output`, the converted file is written there, with its images beside it as with
   `--convert`. Without `output`, the answer carries the result and no images are written: the
   Markdown as `markdown`, with `--format=json` the JSON object as `json`, with `--format=chunks`
-  the chunks as the array `chunks`, with `--format=inspect` the HTML as `html`, with
+  the chunks as the array `chunks`, with `--format=inspect` or `html` the HTML as `html`, with
   `--format=text` the text as `text`.
 - `args` holds options of `--convert` (such as `--pages`, `--password`, `--format`, `--math` or
   `--plain`), applied over the options the session started with. Batch options are refused.

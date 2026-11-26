@@ -32,6 +32,9 @@ enum : uint8_t {
 };
 constexpr int kStyleCount = 4;
 constexpr std::string_view kDelimiters[kStyleCount] = {"**", "*", "`", "~~"};
+// WriteHtml: the styles' tags, in kDelimiters' order.
+constexpr std::string_view kOpenTags[kStyleCount] = {"<strong>", "<em>", "<code>", "<del>"};
+constexpr std::string_view kCloseTags[kStyleCount] = {"</strong>", "</em>", "</code>", "</del>"};
 
 enum : uint8_t { kScriptNone = 0, kScriptSup = 1, kScriptSub = 2 };
 
@@ -201,13 +204,55 @@ uint32_t ScriptForm(uint32_t cp, bool sup) {
     }
 }
 
+// What a Writer writes: Markdown, plain text (WriteText) or HTML (WriteHtml).
+enum class Dialect : uint8_t { Markdown, Text, Html };
+
+// Appends `t` as the value of an HTML attribute in double quotes: `&`, `<`, `>` and `"` as
+// character references, control characters as spaces.
+void AppendAttribute(std::string& out, std::string_view t) {
+    for (const char c : t) {
+        switch (c) {
+        case '&': out += "&amp;"; break;
+        case '<': out += "&lt;"; break;
+        case '>': out += "&gt;"; break;
+        case '"': out += "&quot;"; break;
+        default: out.push_back(static_cast<unsigned char>(c) < ' ' ? ' ' : c); break;
+        }
+    }
+}
+
+// A link target an HTML page may follow: not a script or data URI (javascript:, vbscript:,
+// data:, in any case, after leading spaces and control characters, which browsers skip).
+bool SafeHref(std::string_view uri) {
+    size_t at = 0;
+    while (at < uri.size() && static_cast<unsigned char>(uri[at]) <= ' ') ++at;
+    std::string scheme;
+    for (; at < uri.size() && uri[at] != ':' && scheme.size() < 16; ++at) {
+        const char c = uri[at];
+        if (c == '\t' || c == '\n' || c == '\r') continue;  // browsers drop them inside the scheme too
+        scheme.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c + 0x20) : c);
+    }
+    return at >= uri.size() || (scheme != "javascript" && scheme != "vbscript" && scheme != "data");
+}
+
+// `<img src="NAME" alt="ALT">` of a written image: its alternate text (a tagged figure's /Alt,
+// else the text OCR read in it).
+void AppendImageTag(std::string& out, const PageData& page, const ImageBox& image) {
+    out += "<img src=\"";
+    AppendAttribute(out, page.ImageName(image));
+    out += "\" alt=\"";
+    AppendAttribute(out, image.altLength > 0 ? page.ImageAlt(image) : page.ImageOcrText(image));
+    out += "\">";
+}
+
 class Writer {
 public:
     Writer(const std::vector<PageData>& pages, const BlockList& blocks, std::string& out, WriteCounts& counts, MathMode math,
-           bool plain, bool smallCapsLower, bool text = false)
+           bool plain, bool smallCapsLower, Dialect dialect = Dialect::Markdown)
         : pages_(pages), lines_(blocks.lines), noteRefs_(blocks.noteRefs), out_(out), counts_(counts),
           boldIsBody_(blocks.boldBody), italicIsBody_(blocks.italicBody), monoIsBody_(blocks.monoDocument), math_(math),
-          plainOutput_(plain), smallCapsLower_(smallCapsLower), text_(text) {
+          plainOutput_(plain), smallCapsLower_(smallCapsLower), text_(dialect == Dialect::Text),
+          html_(dialect == Dialect::Html), opens_(html_ ? kOpenTags : kDelimiters), closes_(html_ ? kCloseTags : kDelimiters) {
         for (const NoteRef& r : noteRefs_) letterRefs_ = letterRefs_ || r.count == 3;
     }
 
@@ -222,7 +267,8 @@ public:
     // its glyphs alone. False (nothing written) when a glyph of a small-capitals heading may be
     // math in LaTeX mode: Inline writes it then.
     bool PlainHeading(const Block& block);
-    // A fenced code block; `prefix` starts every line (block quotes). Text: the lines alone.
+    // A fenced code block; `prefix` starts every line (block quotes). Text: the lines alone; HTML:
+    // <pre><code>.
     void Code(const Block& block, const std::string& prefix);
     // A display formula's block (one kLineFormula line) as $$…$$ LaTeX; false (nothing written)
     // when the formula cannot be rebuilt.
@@ -332,6 +378,20 @@ private:
     // WriteText: plain output (plainOutput_) without escapes or inline images, footnote references
     // as "[n]", code without its fence.
     bool text_ = false;
+    // WriteHtml: styles, links, scripts, note references, images and formulas (\(…\), \[…\]) as
+    // HTML, text HTML-escaped, no flanking repair.
+    bool html_ = false;
+    const std::string_view* opens_ = kDelimiters;   // a style's opening delimiter, or tag
+    const std::string_view* closes_ = kDelimiters;  // its closing one
+    // A formula's delimiters: $…$ and $$…$$, in HTML \(…\) and \[…\]; its LaTeX HTML-escaped.
+    void MathOpen(bool display) { out_.append(html_ ? (display ? "\\[" : "\\(") : (display ? "$$" : "$")); }
+    void MathClose(bool display) { out_.append(html_ ? (display ? "\\]" : "\\)") : (display ? "$$" : "$")); }
+    void AppendLatex(std::string_view latex) {
+        if (html_)
+            AppendHtmlEscaped(latex, out_);
+        else
+            out_.append(latex);
+    }
     // Some reference spans three glyphs: unraised "(a)" references (semantics.h) may be among them.
     bool letterRefs_ = false;
     std::vector<GlyphRef> refs_;
@@ -786,7 +846,7 @@ void Writer::StyleWords(bool styles) {
             if (!bare && !text.empty() && text.back() == '/') bare = false;
         }
         // Link text that shows a URL stays text: GFM autolinks it, and the visible URL, broken
-        // over lines or cut short, is what the page says.
+        // over lines or cut short, is what the page says. HTML has no autolinks: the link stays.
         const bool url = text.substr(0, 7) == "http://" || text.substr(0, 8) == "https://" || text.substr(0, 4) == "www.";
         const bool autolinkable = url || text.find('@') != std::string_view::npos;
         if ((bare && autolinkable) || url) {
@@ -800,8 +860,13 @@ void Writer::StyleWords(bool styles) {
                 if (other_ == target)
                     for (size_t j = i + 1; j < end; ++j) words_[j].spaceBefore = false;
             }
-            for (size_t j = i; j < end; ++j) words_[j].link = -1;
-        } else {
+            if (!html_) {
+                for (size_t j = i; j < end; ++j) words_[j].link = -1;
+                i = end;
+                continue;
+            }
+        }
+        {
             counts_.links++;
             // Clause punctuation ending the link's last word follows the link: an annotation drawn
             // over whole words takes in "reference," with its comma. A full stop stays: a linked
@@ -1009,7 +1074,7 @@ void Writer::ChangeStyle(uint8_t target, uint32_t at) {
     while (depth_ > keep) {
         const uint8_t bit = stack_[--depth_];
         if (bit != kStyleCode) delimiters_.push_back(Delimiter{out_.size(), at > 0 ? at - 1 : 0, bit, false});
-        out_.append(kDelimiters[bit == kStyleBold ? 0 : bit == kStyleItalic ? 1 : bit == kStyleCode ? 2 : 3]);
+        out_.append(closes_[bit == kStyleBold ? 0 : bit == kStyleItalic ? 1 : bit == kStyleCode ? 2 : 3]);
     }
     uint8_t missing = static_cast<uint8_t>(target & ~kept);
     const size_t n = refs_.size();
@@ -1037,7 +1102,7 @@ void Writer::ChangeStyle(uint8_t target, uint32_t at) {
             }
         }
         if (best != 2) delimiters_.push_back(Delimiter{out_.size(), at, static_cast<uint8_t>(1u << best), true});
-        out_.append(kDelimiters[best]);
+        out_.append(opens_[best]);
         stack_[depth_++] = static_cast<uint8_t>(1u << best);
         missing = static_cast<uint8_t>(missing & ~(1u << best));
     }
@@ -1054,6 +1119,7 @@ struct EscapeTable {
 constexpr EscapeTable kEscape("\\*`_<]~&");
 constexpr EscapeTable kEscapeLatex("\\*`_<]~&$");
 constexpr EscapeTable kNoEscape("");
+constexpr EscapeTable kHtmlEscape("&<>");  // WriteHtml
 
 bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 
@@ -1061,6 +1127,10 @@ bool MayEscape(char c) { return kEscape.may[static_cast<unsigned char>(c)]; }
 // DropNeedlessEscapes), code spans, HTML and autolink openers, entity references, and block
 // markers at the start of the block.
 void Writer::AppendEscaped(std::string_view t, bool blockStart) {
+    if (html_) {
+        AppendHtmlEscaped(t, out_);
+        return;
+    }
     if (blockStart && !t.empty()) {
         const char c = t[0];
         bool allHashes = t.size() <= 6;
@@ -1257,7 +1327,7 @@ bool LeftFlanking(uint8_t before, uint8_t after) {
 constexpr int kFlankAttempts = 4;
 
 bool Writer::RepairFlanking(size_t from, int attempt) {
-    if (delimiters_.empty()) return false;
+    if (html_ || delimiters_.empty()) return false;
     const size_t size = out_.size(), count = delimiters_.size();
     // The class of the character at out_[at]; in LaTeX mode a dollar is either class: a reader of
     // formulas takes `$…$` as one piece. The text is as AppendEscaped wrote it: an escaped
@@ -1369,10 +1439,10 @@ bool Writer::InlinePlain(const Block& block, bool styles) {
             }
         }
     }
-    const bool* const may = text_ ? kNoEscape.may : kLatex ? kEscapeLatex.may : kEscape.may;
+    const bool* const may = text_ ? kNoEscape.may : html_ ? kHtmlEscape.may : kLatex ? kEscapeLatex.may : kEscape.may;
     const size_t mark = out_.size();
     // Heading and table cell text is inline: "## 1. Installation" opens no list. Text escapes nothing.
-    bool blockStart = !text_ && block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
+    bool blockStart = !text_ && !html_ && block.kind != BlockKind::Heading && block.kind != BlockKind::Table;
     // The word being written: its text from out_[wordAt], its glyph count and whether it holds a
     // byte AppendEscaped may escape; `last` is the text of the last glyph written (worked out at the
     // end of each line: a line's last glyph is always written).
@@ -1633,6 +1703,11 @@ void Writer::WriteWords(const Block& block) {
     const auto closeLink = [&](uint32_t at) {
         SetStyle(0, at);
         if (openLink < 0) return;
+        if (html_) {
+            out_.append("</a>");
+            openLink = -1;
+            return;
+        }
         out_.append("](");
         const bool angle = openUri.find_first_of(" ()<>") != std::string_view::npos;
         if (angle) out_.push_back('<');
@@ -1668,7 +1743,15 @@ void Writer::WriteWords(const Block& block) {
             }
             if (w.spaceBefore) out_.push_back(' ');
             if (w.link >= 0 && openLink < 0) {
-                out_.push_back('[');
+                if (!html_) {
+                    out_.push_back('[');
+                } else if (SafeHref(Uri(w))) {
+                    out_.append("<a href=\"");
+                    AppendAttribute(out_, Uri(w));
+                    out_.append("\">");
+                } else {
+                    out_.append("<a>");
+                }
                 openLink = w.link;
                 openUri = Uri(w);
                 blockStart = false;
@@ -1714,7 +1797,10 @@ void Writer::WriteWords(const Block& block) {
             if (refEnd != 0) {
                 if (const uint32_t number = NoteNumber(refs[k], refEnd - k)) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
-                    if (text_) {
+                    if (html_) {
+                        const std::string n = std::to_string(number);
+                        out_ += "<sup><a href=\"#fn-" + n + "\">" + n + "</a></sup>";
+                    } else if (text_) {
                         out_.push_back('[');
                         out_.append(std::to_string(number));
                         out_.push_back(']');
@@ -1732,7 +1818,13 @@ void Writer::WriteWords(const Block& block) {
             }
             // An inline image glyph holds its Markdown link (text: none).
             if (refs[k].flags & kGlyphImage) {
-                if (!text_) {
+                if (html_) {
+                    SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
+                    const PageData& page = pages_[refs[k].page];
+                    for (const ImageBox& image : page.images)
+                        if (image.glyph == refs[k].glyph) AppendImageTag(out_, page, image);
+                    blockStart = false;
+                } else if (!text_) {
                     SetStyle(static_cast<uint8_t>(open() & ~kStyleCode), k);
                     out_.append(Text(refs[k]));
                     blockStart = false;
@@ -1765,9 +1857,14 @@ void Writer::WriteWords(const Block& block) {
             if (depth_ > 0) blockStart = false;
             if (styles[k] & kStyleCode) {
                 // Code spans hold their text as is; a backtick inside cannot be written in a
-                // single-backtick span, so it becomes an apostrophe.
-                for (uint32_t j = k; j < runEnd; ++j)
+                // single-backtick span, so it becomes an apostrophe. HTML: escaped, in <code>.
+                for (uint32_t j = k; j < runEnd; ++j) {
+                    if (html_) {
+                        AppendHtmlEscaped(Text(refs[j]), out_);
+                        continue;
+                    }
                     for (char c : Text(refs[j])) out_.push_back(c == '`' ? '\'' : c);
+                }
             } else {
                 // Plain text: a script's text without its tag, so a run at the block's start is
                 // escaped as one.
@@ -1790,7 +1887,7 @@ void Writer::WriteWords(const Block& block) {
                         for (const char c : t) escapes |= MayEscape(c);
                     }
                 }
-                bool plain = text_ || (!start && !escapes);
+                bool plain = text_ || (!html_ && !start && !escapes);
                 if (latex && plain && !text_) plain = std::string_view(out_).substr(mark).find('$') == std::string_view::npos;
                 if (!plain) {
                     other_.assign(out_, mark, std::string::npos);
@@ -1956,7 +2053,13 @@ void Writer::AppendFormulaAlt(std::string_view alt) {
     size_t b = 0, e = alt.size();
     while (b < e && static_cast<unsigned char>(alt[b]) <= ' ') ++b;
     while (e > b && static_cast<unsigned char>(alt[e - 1]) <= ' ') --e;
-    for (size_t i = b; i < e; ++i) out_.push_back(static_cast<unsigned char>(alt[i]) < ' ' ? ' ' : alt[i]);
+    for (size_t i = b; i < e; ++i) {
+        const char c = static_cast<unsigned char>(alt[i]) < ' ' ? ' ' : alt[i];
+        if (html_ && (c == '&' || c == '<' || c == '>'))
+            AppendHtmlEscaped(std::string_view(&c, 1), out_);
+        else
+            out_.push_back(c);
+    }
 }
 
 uint32_t Writer::TaggedDisplay(const Block& block) const {
@@ -1982,9 +2085,9 @@ uint32_t Writer::TaggedDisplay(const Block& block) const {
 bool Writer::WriteFormula(uint32_t from, uint32_t to) {
     // A tagged formula's LaTeX (FindFormulas made the run its glyphs).
     if (const uint32_t f = pages_[refs_[from].page].FormulaOf(refs_[from].glyph)) {
-        out_.push_back('$');
+        MathOpen(false);
         AppendFormulaAlt(pages_[refs_[from].page].FormulaText(f));
-        out_.push_back('$');
+        MathClose(false);
         return true;
     }
     mathIn_.Clear();
@@ -2008,17 +2111,17 @@ bool Writer::WriteFormula(uint32_t from, uint32_t to) {
     // as a wrong inline formula), so it keeps the greedy rebuild's result.
     const bool alone = from == 0 && to == refs_.size();
     if (BuildLatex(mathIn_, false, latex_, tag_, !alone) != MathStatus::Ok) return false;
-    out_.push_back('$');
-    out_.append(latex_);
-    out_.push_back('$');
+    MathOpen(false);
+    AppendLatex(latex_);
+    MathClose(false);
     return true;
 }
 
 bool Writer::Display(const Block& block) {
     if (const uint32_t f = TaggedDisplay(block)) {
-        out_.append("$$");
+        MathOpen(true);
         AppendFormulaAlt(pages_[lines_[block.first].page].FormulaText(f));
-        out_.append("$$");
+        MathClose(true);
         return true;
     }
     if (block.count != 1) return false;
@@ -2031,9 +2134,9 @@ bool Writer::Display(const Block& block) {
     AddMathRules(page, line.u0 - 1, line.u1 + 1, line.vb - line.size, line.vt + line.size, mathIn_);
     latex_.clear();
     if (BuildLatex(mathIn_, true, latex_, tag_) != MathStatus::Ok) return false;
-    out_.append("$$");
-    out_.append(latex_);
-    out_.append("$$");
+    MathOpen(true);
+    AppendLatex(latex_);
+    MathClose(true);
     // The equation number stays outside the formula: as \tag it makes olmOCR's KaTeX comparison
     // fail more often (2026-11-09, arxiv_math 0.648 with \tag, 0.664 without).
     if (!tag_.empty()) {
@@ -2122,6 +2225,12 @@ void Writer::Code(const Block& block, const std::string& prefix) {
     }
     if (text_) {
         out_ += other_;
+        return;
+    }
+    if (html_) {
+        out_ += "<pre><code>";
+        AppendHtmlEscaped(other_, out_);
+        out_ += "</code></pre>";
         return;
     }
     size_t run = 0, longest = 0;
@@ -2400,7 +2509,7 @@ void WriteMarkdown(const std::vector<PageData>& pages, const BlockList& list, bo
 
 void WriteText(const std::vector<PageData>& pages, const BlockList& list, std::string& out, WriteCounts& counts,
                MathMode math, const WriteSettings& settings) {
-    Writer writer(pages, list, out, counts, math, true, settings.smallCaps == SmallCaps::Lower, true);
+    Writer writer(pages, list, out, counts, math, true, settings.smallCaps == SmallCaps::Lower, Dialect::Text);
     int contentColumn[9] = {};
     const Block* previous = nullptr;
     size_t page = 0;  // the page written last: form feeds have started every page up to it
@@ -2523,6 +2632,179 @@ void WriteText(const std::vector<PageData>& pages, const BlockList& list, std::s
     for (const Block* note : notes) write(*note);
     if (previous) out.push_back('\n');
     if (page + 1 < pages.size()) out.append(pages.size() - 1 - page, '\f');
+}
+
+void WriteHtml(const std::vector<PageData>& pages, const BlockList& list, bool repaired, const DocumentMetadata* metadata,
+               std::string& out, WriteCounts& counts, MathMode math, const WriteSettings& settings) {
+    Writer writer(pages, list, out, counts, math, settings.plain, settings.smallCaps == SmallCaps::Lower, Dialect::Html);
+    const bool styles = !settings.plain;
+    out += "<!DOCTYPE html>\n<html";
+    if (metadata && !metadata->language.empty()) {
+        out += " lang=\"";
+        AppendAttribute(out, metadata->language);
+        out.push_back('"');
+    }
+    out += ">\n<head>\n<meta charset=\"utf-8\">\n<title>";
+    if (metadata) AppendHtmlEscaped(metadata->title, out);
+    out += "</title>\n</head>\n<body>\n";
+    if (repaired) out += "<!-- rayopdf: the file was damaged and has been repaired; text may be missing -->\n";
+    // The lists open, outermost first (1: ordered), each with its last item open; the block
+    // quotes open around them.
+    std::vector<uint8_t> lists;
+    int quotes = 0;
+    const auto closeLists = [&](size_t keep) {
+        for (; lists.size() > keep; lists.pop_back()) out += lists.back() ? "</li>\n</ol>\n" : "</li>\n</ul>\n";
+    };
+    const auto closeQuotes = [&](int keep) {
+        for (; quotes > keep; --quotes) out += "</blockquote>\n";
+    };
+    std::vector<const Block*> notes;
+    std::vector<TablePart> parts;
+    for (const Block& block : list.blocks) {
+        if (block.kind != BlockKind::Comment && block.count == 0) continue;
+        if (block.kind == BlockKind::Footnote) {
+            notes.push_back(&block);
+            continue;
+        }
+        // Block quotes, as the Markdown's: a table or comment is never quoted, an alert starts a
+        // quote of its own.
+        const int quote = block.kind == BlockKind::Table || block.kind == BlockKind::Comment ? 0 : block.quote;
+        if (quote != quotes || (block.alert != 0 && quote > 0)) {
+            closeLists(0);
+            closeQuotes(block.alert != 0 ? 0 : std::min(quote, quotes));
+            for (; quotes < quote; ++quotes) {
+                static const char* const kAlerts[] = {"note", "tip", "important", "warning", "caution"};
+                out += "<blockquote";
+                if (block.alert != 0 && quotes + 1 == quote) {
+                    out += " class=\"alert-";
+                    out += kAlerts[std::min<int>(block.alert, 5) - 1];
+                    out.push_back('"');
+                }
+                out += ">\n";
+            }
+        }
+        const size_t depth = static_cast<size_t>(std::min<int>(block.depth, 8));
+        if (block.kind == BlockKind::ListItem) {
+            counts.listItems++;
+            // Items deeper than this one end; one of the other kind at this depth ends its list.
+            closeLists(std::min(lists.size(), depth + 1));
+            if (lists.size() == depth + 1) {
+                if (lists.back() == (block.ordered ? 1 : 0))
+                    out += "</li>\n";
+                else
+                    closeLists(depth);
+            }
+            for (; lists.size() < depth; lists.push_back(0)) out += lists.empty() ? "<ul>\n<li>" : "\n<ul>\n<li>";
+            if (lists.size() == depth) {
+                if (!lists.empty()) out.push_back('\n');
+                if (block.ordered) {
+                    out += "<ol";
+                    if (block.number > 1) out += " start=\"" + std::to_string(block.number) + "\"";
+                    out += ">\n";
+                } else {
+                    out += "<ul>\n";
+                }
+                lists.push_back(block.ordered ? 1 : 0);
+            }
+            out += "<li>";
+            if (block.task) out += block.task == 2 ? "<input type=\"checkbox\" checked disabled> " : "<input type=\"checkbox\" disabled> ";
+            writer.Inline(block, styles);
+            continue;
+        }
+        // A paragraph that goes on a list item stays in it; any other block ends the lists.
+        if (block.kind == BlockKind::Paragraph && block.listParagraph && lists.size() > depth) {
+            closeLists(depth + 1);
+            counts.paragraphs++;
+            out += "\n<p>";
+            if (!(math == MathMode::Latex && writer.Display(block))) writer.Inline(block, styles);
+            out += "</p>";
+            continue;
+        }
+        closeLists(0);
+        switch (block.kind) {
+        case BlockKind::Comment:
+            out += "<!-- rayopdf: page ";
+            out += std::to_string(block.number);
+            out += block.level == static_cast<uint8_t>(CommentKind::NoText)      ? " has no extractable text -->\n"
+                   : block.level == static_cast<uint8_t>(CommentKind::OcrFailed) ? " has no extractable text; OCR failed -->\n"
+                                                                                  : " text is mostly unmapped glyphs -->\n";
+            break;
+        case BlockKind::Heading: {
+            counts.headings++;
+            const std::string level = std::to_string(std::max<int>(1, std::min<int>(6, block.level)));
+            out += "<h" + level + ">";
+            if (!((block.smallCaps > 0 || block.number != 0) && writer.PlainHeading(block))) writer.Inline(block, false);
+            out += "</h" + level + ">\n";
+            break;
+        }
+        case BlockKind::Paragraph:
+            counts.paragraphs++;
+            out += "<p>";
+            if (!(math == MathMode::Latex && writer.Display(block))) writer.Inline(block, styles);
+            out += "</p>\n";
+            break;
+        case BlockKind::Code:
+            counts.codeBlocks++;
+            writer.Code(block, std::string());
+            out.push_back('\n');
+            break;
+        case BlockKind::Table: {
+            parts.clear();
+            for (uint32_t bl = block.first; bl < block.first + block.count; ++bl) {
+                const PageData& page = pages[list.lines[bl].page];
+                const Line& line = page.lines[list.lines[bl].line];
+                if (line.flags & kLineTableAnchor) parts.push_back(TablePart{&page, &page.tables[line.first], nullptr});
+            }
+            if (parts.empty()) break;
+            counts.tables++;
+            WriteHtmlTable(parts, out, settings.tables == TableFormat::Html);
+            out.push_back('\n');
+            break;
+        }
+        case BlockKind::Image: {
+            const BlockLine& anchor = list.lines[block.first];
+            const PageData& page = pages[anchor.page];
+            const ImageBox& image = page.images[page.lines[anchor.line].first];
+            if (image.state != ImageState::Written) {
+                out += "<!-- rayopdf: image on page ";
+                out += std::to_string(block.number);
+                out += " not extracted (";
+                out += page.ImageName(image);
+                out += ") -->\n";
+                break;
+            }
+            out += "<p>";
+            AppendImageTag(out, page, image);
+            out += "</p>\n";
+            break;
+        }
+        case BlockKind::ListItem:
+        case BlockKind::Footnote:
+            break;
+        }
+    }
+    closeLists(0);
+    closeQuotes(0);
+    // Footnotes at the end, each with the id its references link to (the first of a number).
+    if (!notes.empty()) {
+        out += "<section class=\"footnotes\">\n<ol>\n";
+        std::vector<uint32_t> numbers;
+        for (const Block* note : notes) {
+            counts.footnotes++;
+            const std::string n = std::to_string(note->number);
+            out += "<li value=\"" + n + "\"";
+            if (std::find(numbers.begin(), numbers.end(), note->number) == numbers.end()) {
+                numbers.push_back(note->number);
+                out += " id=\"fn-" + n + "\"";
+            }
+            out += ">";
+            writer.Inline(*note, styles);
+            TrimNoteEnd(out);
+            out += "</li>\n";
+        }
+        out += "</ol>\n</section>\n";
+    }
+    out += "</body>\n</html>\n";
 }
 
 namespace {

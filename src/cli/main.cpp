@@ -4,7 +4,7 @@
 //   rayopdf --convert IN.pdf OUT.md [--images=DIR|none] [--password=PW] [--pages=A-B]
 //                                   [--no-exact] [--no-annotations] [--no-structure] [--ocr=auto|off|force]
 //                                   [--ocr-addon=PATH] [--report] [--math=unicode|latex] [--workers=N]
-//                                   [--format=markdown|json|chunks|inspect|text] [--chunk-chars=N]
+//                                   [--format=markdown|json|chunks|inspect|text|html] [--chunk-chars=N]
 //                                   [--json-detail=blocks|lines|words]
 //                                   [--page-markers] [--front-matter] [--furniture=drop|keep] [--plain]
 //                                   [--tables=auto|html|pipe|pipe-latex]
@@ -132,7 +132,8 @@ void PrintUsage(std::FILE* out) {
         "                     chunks: JSON Lines, one chunk for retrieval a line (heading path,\n"
         "                     pages, boxes, blocks, Markdown); inspect: an HTML page drawing\n"
         "                     each page's lines, blocks in reading order, cells and images;\n"
-        "                     text: plain text without markup, pages separated by form feeds\n"
+        "                     text: plain text without markup, pages separated by form feeds;\n"
+        "                     html: the document as one HTML5 file\n"
         "  --chunk-chars=N    chunks: at most N bytes of Markdown a chunk (256 to 1000000,\n"
         "                     default 4000; a longer block is split)\n"
         "  --json-detail=WHAT json: blocks (default); lines: each block's lines too (page, box,\n"
@@ -176,10 +177,11 @@ void PrintUsage(std::FILE* out) {
         "--serve --json reads requests {\"id\":\"1\",\"input\":\"a.pdf\",\"output\":\"a.md\",\"args\":[...]}\n"
         "(\"output\" left out: the answer carries the Markdown, or with --format=json the JSON as\n"
         "\"json\", with --format=chunks the chunks as the array \"chunks\", with --format=inspect the\n"
-        "HTML as \"html\", with --format=text the text as \"text\") and answers each with its record,\n"
-        "in request order, after a first line {\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it.\n"
-        "--batch writes NAME.json with --format=json, NAME.jsonl with --format=chunks, NAME.html\n"
-        "with --format=inspect, NAME.txt with --format=text.\n"
+        "HTML as \"html\", with --format=text the text as \"text\", with --format=html the HTML as\n"
+        "\"html\") and answers each with its record, in request order, after a first line\n"
+        "{\"rayopdf\":\"VERSION\",\"protocol\":1}; quit ends it. --batch writes NAME.json with\n"
+        "--format=json, NAME.jsonl with --format=chunks, NAME.html with --format=inspect or html,\n"
+        "NAME.txt with --format=text.\n"
         "\n"
         "Exit codes: 0 converted, 2 usage, 3 unreadable input, 10 corrupt beyond repair,\n"
         "11 password required, 12 unwritable output, 13 unsupported encryption.\n",
@@ -644,18 +646,20 @@ int RunBatch(const std::string& inputFolder, const std::string& outputFolder, co
     // Jobs in input order. Output subfolders are made here, before the workers start, and two
     // inputs whose Markdown would be the same file (a.pdf, a.PDF) leave the second refused.
     std::vector<BatchJob> jobs(files.size());
+    const Layout::OutputFormat format = document.convert.format;
+    const char* const extension = format == Layout::OutputFormat::Json     ? ".json"
+                                  : format == Layout::OutputFormat::Chunks ? ".jsonl"
+                                  : format == Layout::OutputFormat::Text   ? ".txt"
+                                  : format == Layout::OutputFormat::Inspect || format == Layout::OutputFormat::Html
+                                      ? ".html"
+                                      : ".md";
     std::set<std::string> outputs;
     std::set<std::string> folders;
     for (size_t i = 0; i < files.size(); ++i) {
         BatchJob& job = jobs[i];
         const std::string& relative = files[i];
         job.input = Join(inputFolder, relative);
-        job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) +
-                     (document.convert.format == Layout::OutputFormat::Json      ? ".json"
-                      : document.convert.format == Layout::OutputFormat::Chunks  ? ".jsonl"
-                      : document.convert.format == Layout::OutputFormat::Inspect ? ".html"
-                      : document.convert.format == Layout::OutputFormat::Text    ? ".txt"
-                                                                                 : ".md");
+        job.output = Join(outputFolder, std::string_view(relative).substr(0, relative.size() - 4)) + extension;
         if (!outputs.insert(kWindows ? Lowered(job.output) : job.output).second) {
             job.record.status = "error";
             job.record.code = kExitUnwritable;
@@ -752,7 +756,7 @@ void ServeRequest(const Serve::Request& request, const DocumentOptions& session,
                 at = end + 1;
             }
             record.chunks.push_back(']');
-        } else if (options.format == Layout::OutputFormat::Inspect) {
+        } else if (options.format == Layout::OutputFormat::Inspect || options.format == Layout::OutputFormat::Html) {
             record.hasHtml = true;
             record.html.swap(markdown);
         } else if (options.format == Layout::OutputFormat::Text) {

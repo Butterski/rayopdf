@@ -5161,6 +5161,8 @@ int Detector::Run() {
     return restored_;
 }
 
+} // namespace
+
 void AppendHtmlEscaped(std::string_view t, std::string& out) {
     for (char c : t) {
         switch (c) {
@@ -5171,6 +5173,8 @@ void AppendHtmlEscaped(std::string_view t, std::string& out) {
         }
     }
 }
+
+namespace {
 
 // A cell's text without the dot leaders that run its label to the next column ("Short ......"):
 // typography, not text. Three dots or more, or ellipses, with spaces, at the end of a cell that has

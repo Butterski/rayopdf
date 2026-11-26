@@ -121,6 +121,9 @@ def main() -> int:
               "format=chunks gives a list of chunks")
         result = rayopdf.convert(pdf_path, format="text")
         check(result.text == "Hello from Python\n" and result.data is None, "format=text gives the plain text")
+        result = rayopdf.convert(pdf_path, format="html")
+        check(result.text.startswith("<!DOCTYPE html>") and "<p>Hello from Python</p>" in result.text and
+              result.data is None, "format=html gives an HTML document")
         try:
             rayopdf.convert(b"not a pdf")
             check(False, "b'not a pdf' raises CorruptError")

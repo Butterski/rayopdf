@@ -92,6 +92,9 @@ try {
     result.data[0].markdown.includes("Hello from WebAssembly") && result.data[0].pages[1] === 1, "format chunks");
   result = await rayopdf.convert(pdf, { format: "text" });
   check(result.text === "Hello from WebAssembly\n" && result.data === null, "format text");
+  result = await rayopdf.convert(pdf, { format: "html" });
+  check(result.text.startsWith("<!DOCTYPE html>") && result.text.includes("<p>Hello from WebAssembly</p>") &&
+    result.data === null, "format html");
   result = await rayopdf.convert(onePagePdf("A page with a picture", true), { images: true });
   const names = [...result.images.keys()];
   check(names.length === 1 && result.images.get(names[0]).length > 8 && result.text.includes(`](images/${names[0]})`),

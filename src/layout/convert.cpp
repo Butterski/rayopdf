@@ -140,17 +140,16 @@ struct DocumentParts {
     int first;
     int last;
     bool structure;                // ConvertOptions::structure
-    DocumentMetadata* metadata;    // the JSON output's, or null
+    DocumentMetadata* metadata;    // the JSON or HTML output's, or null
+    bool json;                     // the JSON output: outline targets and page labels too
 
     static bool Read(void* context) {
         const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
-        ReadOutline(*parts.document, parts.conversion->outline, parts.metadata != nullptr);
+        ReadOutline(*parts.document, parts.conversion->outline, parts.json);
         if (parts.structure && parts.first <= parts.last)
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
-        if (parts.metadata) {
-            ReadMetadata(*parts.document, *parts.metadata);
-            ReadPageLabels(*parts.document, parts.first, parts.last, parts.metadata->labels);
-        }
+        if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);
+        if (parts.json) ReadPageLabels(*parts.document, parts.first, parts.last, parts.metadata->labels);
         return parts.document->Report().repaired;
     }
 };
@@ -222,7 +221,9 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.features = options.features;
     output.metadata = &metadata;
     output.oneShot = options.oneShot;
-    DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure, json ? &metadata : nullptr};
+    const bool html = options.format == OutputFormat::Html;
+    DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure,
+                        json || html ? &metadata : nullptr, json};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,
                  options.math, pool.get(), &read, &output);

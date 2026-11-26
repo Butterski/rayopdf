@@ -125,4 +125,7 @@ void WriteGfmTable(const std::vector<TablePart>& parts, std::string& out, bool r
 // set them; a browser shows the same table.
 void WriteHtmlTable(const std::vector<TablePart>& parts, std::string& out, bool spaced = false);
 
+// Appends `t` with `&`, `<` and `>` as HTML character references.
+void AppendHtmlEscaped(std::string_view t, std::string& out);
+
 } // namespace RayoPdf::Layout

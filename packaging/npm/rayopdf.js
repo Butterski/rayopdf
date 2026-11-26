@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // RayoPDF in WebAssembly: PDF to Markdown (or JSON, chunks, the layout inspector's HTML, plain
-// text) in the browser or Node.js, with the converter of the command line and its options.
+// text, HTML) in the browser or Node.js, with the converter of the command line and its options.
 //
 //   import { convert } from "rayopdf";
 //   const { text } = await convert(new Uint8Array(pdfBytes));

@@ -228,6 +228,8 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         WriteChunks(pages, blocks, markdown, counts, math, settings);
     } else if (output && output->format == OutputFormat::Text) {
         WriteText(pages, blocks, markdown, counts, math, settings);
+    } else if (output && output->format == OutputFormat::Html) {
+        WriteHtml(pages, blocks, repaired, output->metadata, markdown, counts, math, settings);
     } else if (output && output->format == OutputFormat::Inspect) {
         // The blocks' Markdown (page markers aside) for the inspector's tooltips.
         std::string text;

@@ -3,8 +3,8 @@
 // plain text without inline markup, emphasis delimiters a CommonMark reader takes as such, every
 // table as HTML or as a pipe table, page furniture kept, ASCII quotes, small-capitals headings as
 // printed, the exact recovery they turn off, chunks for retrieval (WriteChunks), the layout
-// inspector (WriteInspect), the JSON output's lines and words, and plain text (WriteText). Exit
-// codes 2000-2049 and 2650-2699.
+// inspector (WriteInspect), the JSON output's lines and words, plain text (WriteText) and HTML
+// (WriteHtml). Exit codes 2000-2049 and 2650-2699.
 #include "check.h"
 #include "exact_builder.h"
 #include "pdf_builder.h"
@@ -1024,6 +1024,63 @@ void TestText() {
     RAYOPDF_CHECK(raw == "Costs * 3 rose by 5_000 <now> & [a](b) at `noon`.\n\f\fCharlie is the third page.\n\f", 2672);
 }
 
+OutputSettings HtmlSettings() {
+    OutputSettings settings;
+    settings.format = OutputFormat::Html;
+    return settings;
+}
+
+// A word under a link to a script.
+std::vector<PageData> ScriptLinkPage() {
+    std::vector<PageData> pages{NewPage(1)};
+    const float x = AddText(pages[0], "Please ", 72, 700, 10);
+    const float end = AddText(pages[0], "click", x, 700, 10);
+    AddText(pages[0], " here.", end, 700, 10);
+    AddLink(pages[0], x, 697, end, 709, "javascript:alert(1)");
+    return pages;
+}
+
+// --format=html: one HTML5 document, the Markdown's words with tags, HTML tables as --tables=html
+// writes them, lists, footnotes last, language and title from the PDF, no script links.
+void TestHtml() {
+    const std::string styled = Run(StyledPage, HtmlSettings());
+    Show("html", styled);
+    RAYOPDF_CHECK(styled == "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title></title>\n</head>\n<body>\n"
+                            "<p>Plain words with <strong>strong</strong> and <em>slanted</em> text on the "
+                            "<a href=\"https://example.org/\">website</a> of the 1<sup>st</sup> "
+                            "edition.<sup><a href=\"#fn-1\">1</a></sup></p>\n"
+                            "<section class=\"footnotes\">\n<ol>\n<li value=\"1\" id=\"fn-1\">Smith, Collected Essays, "
+                            "2020.</li>\n</ol>\n</section>\n</body>\n</html>\n",
+                  2674);
+    OutputSettings html = HtmlSettings();
+    html.tables = TableFormat::Html;
+    OutputSettings markdown;
+    markdown.tables = TableFormat::Html;
+    const std::string page = Run(TablePage, html), md = Run(TablePage, markdown);
+    Show("html table", page);
+    const auto table = [](const std::string& s) {
+        const size_t at = s.find("<table>");
+        return at == std::string::npos ? std::string() : s.substr(at, s.find("</table>") + 8 - at);
+    };
+    RAYOPDF_CHECK(!table(md).empty() && table(page) == table(md) &&
+                      Contains(page, "<p>Intro text before the table.</p>\n<table>"),
+                  2675);
+    RAYOPDF_CHECK(Contains(Run(BulletPage, HtmlSettings()), "<body>\n<ul>\n<li>first item</li>\n<li>second item</li>\n</ul>\n</body>"),
+                  2676);
+    RAYOPDF_CHECK(Contains(Run(RawTextPages, HtmlSettings()), "<p>Costs * 3 rose by 5_000 &lt;now&gt; &amp; [a](b) at `noon`.</p>"),
+                  2677);
+    ConvertOptions options;
+    options.ocr.mode = OcrMode::Off;
+    options.format = OutputFormat::Html;
+    const std::string titled = ConvertPdf(PagesPdf(1, "/Lang (de)", {"<< /Title (Q&A <1>) >>"}, "/Info 5 0 R"), options);
+    Show("html title", titled);
+    RAYOPDF_CHECK(Contains(titled, "<html lang=\"de\">\n<head>\n<meta charset=\"utf-8\">\n<title>Q&amp;A &lt;1&gt;</title>") &&
+                      Contains(titled, "<p>Alpha is the first page.</p>"),
+                  2678);
+    const std::string script = Run(ScriptLinkPage, HtmlSettings());
+    RAYOPDF_CHECK(Contains(script, "<p>Please <a>click</a> here.</p>") && !Contains(script, "javascript"), 2679);
+}
+
 } // namespace
 
 int main() {
@@ -1046,6 +1103,7 @@ int main() {
     TestLabelsAndLanguage();
     TestRoles();
     TestText();
+    TestHtml();
     std::puts("layout output tests passed");
     return 0;
 }

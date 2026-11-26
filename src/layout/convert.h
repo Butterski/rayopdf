@@ -22,9 +22,9 @@ constexpr unsigned kDefaultPageWorkers = 4;
 
 // What Convert writes (roadmap D6): Markdown, the document as one JSON object (schema 1, the blocks
 // with their pages, boxes and Markdown; layout/markdown_writer.h WriteJson), chunks for retrieval
-// as JSON Lines (WriteChunks), the layout inspector, one HTML file (layout/inspect_writer.h), or
-// plain text (WriteText).
-enum class OutputFormat : uint8_t { Markdown, Json, Chunks, Inspect, Text };
+// as JSON Lines (WriteChunks), the layout inspector, one HTML file (layout/inspect_writer.h),
+// plain text (WriteText), or the document as HTML (WriteHtml).
+enum class OutputFormat : uint8_t { Markdown, Json, Chunks, Inspect, Text, Html };
 
 // ConvertOptions::chunkChars: the default and the bounds a caller checks (Convert clamps to them).
 constexpr uint32_t kDefaultChunkChars = 4000;
@@ -136,8 +136,8 @@ enum class ExactUse : uint8_t {
     None,         // the file claims no payload
     Used,         // the payload passed both checks and is the Markdown written
     Pages,        // not used: a page range was asked for and the payload is the whole document
-    Format,       // not used: the output asked for (JSON, chunks, the inspector, text, page markers,
-                  // plain text, HTML tables, kept furniture) needs the pages' layout
+    Format,       // not used: the output asked for (JSON, chunks, the inspector, text, HTML, page
+                  // markers, plain text, HTML tables, kept furniture) needs the pages' layout
     Unsupported,  // rejected: another profile version or encoding
     Corrupt,      // rejected: the file or the profile's objects are not as the profile writes them
     Integrity,    // rejected: the payload's SHA-256 or length does not match its packet
@@ -193,8 +193,9 @@ struct ConvertReport {
 // Converts the pages of `document` to Markdown in `markdown` (replaced): a verified RayoMD source
 // payload as it is (layout/exact.h), else the pages; with OutputFormat::Json the document as one
 // JSON object instead, with OutputFormat::Chunks its chunks as JSON Lines, with
-// OutputFormat::Inspect the inspector's HTML, with OutputFormat::Text plain text. Never fails: what
-// cannot be read is reported in `report` and marked in the text.
+// OutputFormat::Inspect the inspector's HTML, with OutputFormat::Text plain text, with
+// OutputFormat::Html the document as HTML. Never fails: what cannot be read is reported in
+// `report` and marked in the text.
 void Convert(const Document& document, const ConvertOptions& options, std::string& markdown, ConvertReport& report);
 
 } // namespace RayoPdf::Layout

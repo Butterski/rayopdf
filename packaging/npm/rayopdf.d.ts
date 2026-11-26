@@ -2,8 +2,8 @@
 // Types of rayopdf.js: RayoPDF's converter in WebAssembly.
 
 export interface ConvertOptions {
-  /** markdown (default), json (the JSON document, schema 1), chunks (JSON Lines), inspect (HTML) or text (plain text, pages separated by form feeds). */
-  format?: "markdown" | "json" | "chunks" | "inspect" | "text";
+  /** markdown (default), json (the JSON document, schema 1), chunks (JSON Lines), inspect (HTML), text (plain text, pages separated by form feeds) or html (the document as one HTML5 file). */
+  format?: "markdown" | "json" | "chunks" | "inspect" | "text" | "html";
   /** Formulas as Unicode text (default) or rebuilt as LaTeX. */
   math?: "unicode" | "latex";
   /** Running headers, footers and page numbers: left out (default) or kept. */

@@ -156,7 +156,7 @@ def convert(source: Union[str, os.PathLike, bytes, bytearray, memoryview], *, pa
             ocr_addon: Union[None, str, os.PathLike] = None, workers: int = 1) -> Result:
     """Converts a PDF (a path, or its bytes) as `rayopdf --convert` does.
 
-    format: markdown, json, chunks, inspect or text; math: unicode or latex; furniture: drop or keep;
+    format: markdown, json, chunks, inspect, text or html; math: unicode or latex; furniture: drop or keep;
     tables: auto, html, pipe or pipe-latex; quotes: keep or ascii; small_caps: lower or keep (headings in small
     capitals in the source's case or as printed); figure_text: keep or drop (a figure's own text, its
     tick labels and legends, as paragraphs or left out); json_detail: blocks, lines or words (with

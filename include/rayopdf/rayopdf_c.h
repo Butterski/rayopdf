@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// RayoPDF's C ABI: PDF to Markdown (or JSON, chunks, the inspector's HTML, plain text) in the
-// calling process, for languages that call C: the Python package (ctypes, over librayopdf.so or
-// rayopdf.dll), the WebAssembly module and C programs. C99; the functions keep no state between
-// calls and may run on several threads at once.
+// RayoPDF's C ABI: PDF to Markdown (or JSON, chunks, the inspector's HTML, plain text, HTML) in
+// the calling process, for languages that call C: the Python package (ctypes, over librayopdf.so
+// or rayopdf.dll), the WebAssembly module and C programs. C99; the functions keep no state
+// between calls and may run on several threads at once.
 //
 //   rayopdf_output out;
 //   const char* args[] = {"--format=json"};

@@ -41,7 +41,7 @@ latex = rayopdf.convert("paper.pdf", math="latex", pages="1-3").text
 
 | Argument | Default | Values |
 |---|---|---|
-| `format` | `"markdown"` | `"markdown"`, `"json"`, `"chunks"`, `"inspect"`, `"text"` |
+| `format` | `"markdown"` | `"markdown"`, `"json"`, `"chunks"`, `"inspect"`, `"text"`, `"html"` |
 | `pages` | all | `3`, `"2-5"`, `"-4"`, or a tuple `(2, None)` |
 | `password` | `None` | the user or owner password |
 | `images` | `None` (no images) | a folder: image files are written there and linked as `FOLDER/NAME` |

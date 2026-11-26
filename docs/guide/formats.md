@@ -1,14 +1,15 @@
 # Output formats
 
-What RayoPDF writes: Markdown (the default), JSON, chunks for retrieval, plain text and an HTML
-layout view, plus the report record of `--report`. The [command-line guide](cli.md) lists the
-options that choose and adjust them.
+What RayoPDF writes: Markdown (the default), JSON, chunks for retrieval, plain text, HTML and an
+HTML layout view, plus the report record of `--report`. The [command-line guide](cli.md) lists
+the options that choose and adjust them.
 
 - [Markdown](#markdown)
 - [Page markers and front matter](#page-markers-and-front-matter)
 - [JSON: `--format=json`](#json---formatjson)
 - [Chunks: `--format=chunks`](#chunks---formatchunks)
 - [Plain text: `--format=text`](#plain-text---formattext)
+- [HTML: `--format=html`](#html---formathtml)
 - [Layout view: `--format=inspect`](#layout-view---formatinspect)
 - [The report record](#the-report-record)
 
@@ -209,6 +210,31 @@ The blocks of the Markdown as text without any markup:
 Blocks are separated by a blank line, list items by a line break. Pages are separated by a form
 feed (U+000C): the text of page N follows the (N−1)th form feed, and a page without text adds
 one. With `--math=latex` formulas are written as `$…$` and `$$…$$`.
+
+## HTML: `--format=html`
+
+```sh
+rayopdf --convert paper.pdf paper.html --format=html
+```
+
+One HTML5 page (no style, no script) with the blocks of the Markdown as elements:
+
+- `<html lang>` from the PDF's language (`/Lang`) and `<title>` from its title;
+- headings `<h1>`–`<h6>`, paragraphs `<p>`, code blocks `<pre><code>`;
+- lists `<ul>` and `<ol start>`, nested by depth, a list item's further paragraphs inside it, task
+  items with a disabled check box;
+- block quotes `<blockquote>`; an alert's has the class `alert-note`, `alert-tip`,
+  `alert-important`, `alert-warning` or `alert-caution`;
+- tables as the HTML tables of the Markdown output (`--tables=html` spaces their cells);
+- written images as `<img src alt>`, and the comments of the Markdown as HTML comments;
+- footnotes at the end, in `<section class="footnotes">` as a numbered list whose items have the ids
+  `fn-N` the references `<sup><a href="#fn-N">N</a></sup>` link to.
+
+Inside a block the words are those of the Markdown, with tags in place of its markup:
+`<strong>`, `<em>`, `<code>`, `<del>`, `<a href>`, `<sup>` and `<sub>`; text is HTML-escaped
+and nothing else is. A link to a `javascript:`, `vbscript:` or `data:` target keeps its text
+without the `href`. With `--math=latex` formulas are written as `\(…\)` and `\[…\]` for MathJax
+or KaTeX; `--plain` leaves out the inline tags.
 
 ## Layout view: `--format=inspect`
 

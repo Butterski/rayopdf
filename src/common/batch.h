@@ -42,7 +42,7 @@ struct Record {
     std::string json;            // one JSON object, without its line break
     bool hasChunks = false;      // the same with --format=chunks: the chunks as a JSON array, as it is
     std::string chunks;
-    bool hasHtml = false;        // the same with --format=inspect: the inspector's HTML
+    bool hasHtml = false;        // the same with --format=inspect or html: the HTML
     std::string html;
     bool hasText = false;        // the same with --format=text: the plain text
     std::string text;
