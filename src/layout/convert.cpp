@@ -142,6 +142,7 @@ struct DocumentParts {
     bool structure;                // ConvertOptions::structure
     DocumentMetadata* metadata;    // the JSON or HTML output's, or null
     bool json;                     // the JSON output: outline targets and page labels too
+    std::vector<FormField>* fields;  // the JSON output's form fields (--annotations=all only), or null
 
     static bool Read(void* context) {
         const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
@@ -150,6 +151,7 @@ struct DocumentParts {
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
         if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);
         if (parts.json) ReadPageLabels(*parts.document, parts.first, parts.last, parts.metadata->labels);
+        if (parts.fields) ReadFields(*parts.document, parts.first, parts.last, *parts.fields);
         return parts.document->Report().repaired;
     }
 };
@@ -207,6 +209,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     // printed and figure text left out: what the writer writes instead of the default Markdown.
     const bool json = options.format == OutputFormat::Json;
     DocumentMetadata metadata;
+    std::vector<FormField> fields;
     OutputSettings output;
     output.format = options.format;
     output.pageMarkers = options.pageMarkers;
@@ -222,10 +225,13 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.jsonDetail = options.jsonDetail;
     output.features = options.features;
     output.metadata = &metadata;
+    output.fields = &fields;
     output.oneShot = options.oneShot;
     const bool html = options.format == OutputFormat::Html;
+    // Form fields with the annotations' text only: --annotations=links reads as 1.1 did.
     DocumentParts parts{&document, conversion.get(), first - 1, last - 1, options.structure,
-                        json || html ? &metadata : nullptr, json};
+                        json || html ? &metadata : nullptr, json,
+                        json && options.annotations == AnnotationMode::All ? &fields : nullptr};
     const DocumentRead read{&DocumentParts::Read, &parts};
     ConvertPages(pages, quality, conversion->outline, false, markdown, report, &images, &conversion->structure,
                  options.math, pool.get(), &read, &output);

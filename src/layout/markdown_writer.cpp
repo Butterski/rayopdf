@@ -3091,6 +3091,45 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
         }
         out.push_back(']');
     }
+    if (settings.fields && !settings.fields->empty()) {
+        out += ",\"fields\":[";
+        for (size_t f = 0; f < settings.fields->size(); ++f) {
+            const FormField& field = (*settings.fields)[f];
+            out += f > 0 ? ",{\"name\":" : "{\"name\":";
+            Batch::AppendJsonString(out, field.name);
+            out += ",\"type\":\"";
+            out += FieldTypeName(field.type);
+            out += "\",\"value\":";
+            switch (field.value) {
+            case FieldValue::None: out += "null"; break;
+            case FieldValue::Bool: out += field.checked ? "true" : "false"; break;
+            case FieldValue::Text: Batch::AppendJsonString(out, field.texts.empty() ? std::string() : field.texts[0]); break;
+            case FieldValue::List:
+                out.push_back('[');
+                for (size_t t = 0; t < field.texts.size(); ++t) {
+                    if (t > 0) out.push_back(',');
+                    Batch::AppendJsonString(out, field.texts[t]);
+                }
+                out.push_back(']');
+                break;
+            }
+            AppendInteger(out, "page", static_cast<uint64_t>(field.page));
+            out += ",\"box\":[";
+            AppendCoordinate(out, field.x0);
+            out.push_back(',');
+            AppendCoordinate(out, field.y0);
+            out.push_back(',');
+            AppendCoordinate(out, field.x1);
+            out.push_back(',');
+            AppendCoordinate(out, field.y1);
+            out += "],\"read_only\":";
+            out += field.readOnly ? "true" : "false";
+            out += ",\"required\":";
+            out += field.required ? "true" : "false";
+            out.push_back('}');
+        }
+        out.push_back(']');
+    }
     out += ",\"blocks\":[";
     std::vector<PageBox> boxes;
     std::string text;

@@ -223,6 +223,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.chunkOverlap = output->chunkOverlap;
         settings.chunkBy = output->chunkBy;
         settings.jsonDetail = output->jsonDetail;
+        settings.fields = output->fields;
     }
     if (output && output->format == OutputFormat::Json) {
         WriteJson(pages, blocks, repaired, output->metadata, &outline, markdown, counts, math, settings);

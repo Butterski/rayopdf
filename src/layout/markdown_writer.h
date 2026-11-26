@@ -22,6 +22,7 @@
 #pragma once
 
 #include "layout/convert.h"
+#include "layout/forms.h"
 #include "layout/math.h"
 #include "layout/metadata.h"
 #include "layout/page.h"
@@ -85,6 +86,9 @@ struct WriteSettings {
     uint32_t chunkOverlap = 0;
     ChunkBy chunkBy = ChunkBy::Size;
     JsonDetail jsonDetail = JsonDetail::Blocks;
+    // JSON: the document's form fields (layout/forms.h), written as "fields" after "pages" and "outline" when
+    // there are any; null for none.
+    const std::vector<FormField>* fields = nullptr;
 };
 
 // A block's box on one page (`page` an index into the pages), on the upright page, in points with
@@ -153,7 +157,9 @@ void WriteHtml(const std::vector<PageData>& pages, const BlockList& blocks, bool
 // order (a table's: its cells' lines, cell by cell; an image or a comment: none), each line's box
 // on the upright page and its text as the page shows it (words joined by one space, a list item's
 // marker and inline images left out); with Words each line also has "words":[{"box","text"}...],
-// split at the line's word breaks.
+// split at the line's word breaks. With `settings.fields` holding fields, "fields":[{"name","type",
+// "value","page","box":[x0,y0,x1,y1],"read_only","required"}...] follows "pages" and "outline": value null, a
+// string, a list of strings (a choice of several) or a boolean (a check box).
 void WriteJson(const std::vector<PageData>& pages, const BlockList& blocks, bool repaired,
                const DocumentMetadata* metadata, const std::vector<OutlineEntry>* outline, std::string& out,
                WriteCounts& counts, MathMode math = MathMode::Unicode, const WriteSettings& settings = {});

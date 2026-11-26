@@ -26,6 +26,7 @@ JSON object on one line, ending in a line break:
 | `metadata` | the document information that is not empty: `title`, `author`, `subject`, `keywords`, `creator`, `producer`, `created`, `modified` (dates as `YYYY-MM-DDTHH:MM:SS` with `Z` or `±HH:MM` when the PDF gives an offset; a date that does not parse stays as the PDF wrote it) |
 | `pages` | one object a converted page: `page` (1-based number in the file), `width`, `height` (points) |
 | `outline` | only when the PDF has bookmarks: `{"level","title","page"}` an entry, depth first (`level` 1 at the top; `page` the page it leads to, `null` when none; entries outside `--pages` too) |
+| `fields` | only when the PDF has form fields with a widget on a converted page, and only with `--annotations=all` (the default): one object a field, in the form's field order: `name` (full name, partial names joined with `.`), `type` (`text`, `checkbox`, `radio`, `choice`, `signature`, `button`), `value` (`null` when it has none and always for passwords, signatures and pushbuttons; `true`/`false` for a check box; a list for a choice of several), `page`, `box` (`[x0,y0,x1,y1]`, its first widget on a converted page), `read_only`, `required` |
 | `blocks` | the content in reading order |
 
 ## A block

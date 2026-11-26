@@ -4,8 +4,8 @@
 #pragma once
 
 #include "layout/convert.h"
+#include "layout/forms.h"
 #include "layout/images.h"
-#include "layout/page.h"
 
 #include <string>
 #include <vector>
@@ -54,6 +54,7 @@ struct OutputSettings {
     JsonDetail jsonDetail = JsonDetail::Blocks;  // JSON only (WriteSettings::jsonDetail)
     const FeatureSink* features = nullptr;       // developer mode: edge-row features
     const DocumentMetadata* metadata = nullptr;  // JSON's "metadata"; read by then when a DocumentRead fills it
+    const std::vector<FormField>* fields = nullptr;  // JSON's "fields" (WriteSettings::fields); likewise
     bool oneShot = false;                        // ConvertOptions::oneShot: stage storage freed once the pages are past it
 };
 

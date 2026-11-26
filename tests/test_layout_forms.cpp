@@ -364,6 +364,60 @@ void LinksAsBefore() {
                   2625);
 }
 
+std::string Json(const std::string& pdf, AnnotationMode mode) {
+    std::unique_ptr<Document> document = Open(pdf);
+    ConvertOptions options;
+    options.annotations = mode;
+    options.format = OutputFormat::Json;
+    options.ocr.mode = OcrMode::Off;
+    std::string json;
+    ConvertReport report;
+    Layout::Convert(*document, options, json, report);
+    return json;
+}
+
+void JsonFields() {
+    // The JSON output's "fields": terminal fields with a widget on a converted page, their full
+    // names, inherited types and values.
+    FormDoc f;
+    const int name = TextWidget(f, "120 695 300 712", "name", "Jane Doe", "/Ff 2");
+    const int agree = f.Annot("<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /V /Yes /AS /Yes /Rect [72 678 82 688] >>");
+    const int group = f.Annot("", false);
+    const int a = f.Annot("<< /Type /Annot /Subtype /Widget /AS /Off /Rect [72 638 82 648] /Parent " +
+                          std::to_string(group) + " 0 R >>");
+    const int b = f.Annot("<< /Type /Annot /Subtype /Widget /AS /1 /Rect [72 618 82 628] /Parent " +
+                          std::to_string(group) + " 0 R >>");
+    f.b.Set(group, "<< /FT /Btn /Ff 32768 /T (size) /V /1 /Opt [(Small) (Large)] /Kids [" + std::to_string(a) + " 0 R " +
+                       std::to_string(b) + " 0 R] >>");
+    const int multi = f.Annot("<< /Type /Annot /Subtype /Widget /FT /Ch /Ff 2097152 /T (langs) /V [(de) (fr)] "
+                              "/Rect [120 535 300 552] >>");
+    const int secret = f.Annot("<< /Type /Annot /Subtype /Widget /FT /Tx /Ff 8192 /T (pin) /V (1234) /Rect [120 495 300 512] >>");
+    // A parent holding a kid field, and a field whose widget is on no page.
+    const int parent = f.b.Reserve();
+    const int child = f.Annot("<< /Type /Annot /Subtype /Widget /T (city) /V (Lyon) /Rect [120 455 300 472] /Parent " +
+                              std::to_string(parent) + " 0 R >>");
+    f.b.Set(parent, "<< /T (address) /FT /Tx /Kids [" + std::to_string(child) + " 0 R] >>");
+    const int nowhere = f.b.Add("<< /Type /Annot /Subtype /Widget /FT /Tx /T (lost) /V (gone) /Rect [0 0 10 10] >>");
+    std::string list;
+    for (int n : {name, agree, group, multi, secret, parent, nowhere}) list += std::to_string(n) + " 0 R ";
+    const std::string pdf = f.Build(kLabel, "<< /Fields [" + list + "] >>");
+    const std::string json = Json(pdf, AnnotationMode::All);
+    RAYOPDF_CHECK(Has(json, "],\"fields\":[{\"name\":\"name\",\"type\":\"text\",\"value\":\"Jane Doe\",\"page\":1,\"box\":[") &&
+                      Has(json, "\"read_only\":false,\"required\":true}") && json.find("\"fields\"") < json.find("\"blocks\""),
+                  2629);
+    RAYOPDF_CHECK(Has(json, "{\"name\":\"agree\",\"type\":\"checkbox\",\"value\":true,") &&
+                      Has(json, "{\"name\":\"size\",\"type\":\"radio\",\"value\":\"Large\",") &&
+                      Has(json, "{\"name\":\"langs\",\"type\":\"choice\",\"value\":[\"de\",\"fr\"],"),
+                  2630);
+    RAYOPDF_CHECK(Has(json, "{\"name\":\"pin\",\"type\":\"text\",\"value\":null,") && !Has(json, "1234") &&
+                      Has(json, "{\"name\":\"address.city\",\"type\":\"text\",\"value\":\"Lyon\",") && !Has(json, "lost"),
+                  2631);
+    // Not with --annotations=links (1.1's JSON), nor in a file without fields.
+    RAYOPDF_CHECK(!Has(Json(pdf, AnnotationMode::Links), "\"fields\"") &&
+                      !Has(Json(Test::OnePage("BT /F1 12 Tf 72 700 Td (No form.) Tj ET"), AnnotationMode::All), "\"fields\""),
+                  2632);
+}
+
 void Limits() {
     // Past kMaxAnnotationsPerPage drawn annotations the page counts a limit hit; a form that draws
     // itself ends as a content error.
@@ -419,6 +473,7 @@ int main() {
     OcrRouting();
     Duplicates();
     LinksAsBefore();
+    JsonFields();
     Limits();
     std::puts("test_layout_forms: ok");
     return 0;
