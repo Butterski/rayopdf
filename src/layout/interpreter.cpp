@@ -400,6 +400,9 @@ private:
     void SetFontEntry(const PdfValue& entry, double size);
     void ApplyExtGState(const PdfValue& resources, std::string_view name);
     void DoXObject(const PdfValue& resources, std::string_view name, int depth);
+    // Runs a Form XObject's content: its /Matrix, /BBox clip and own /Resources (else
+    // `fallbackResources`), refusing a form already being run (`num` 0: a direct form, unchecked).
+    void RunForm(const PdfValue& xobject, uint32_t num, const PdfValue& fallbackResources, int depth);
     const PdfValue* FindXObject(const PdfValue& xobjects, std::string_view name);
     void BeginMarked(std::string_view tag, const PdfValue* properties, const PdfValue& resources);
     void EndMarked();
@@ -1074,7 +1077,14 @@ void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, in
         budgetHit_ = true;
         return;
     }
-    const uint32_t num = entry->IsRef() ? entry->refNum : 0;
+    RunForm(xobject, entry->IsRef() ? entry->refNum : 0, resources, depth);
+}
+
+void Interpreter::RunForm(const PdfValue& xobject, uint32_t num, const PdfValue& fallbackResources, int depth) {
+    if (depth + 1 > kMaxFormDepth) {
+        budgetHit_ = true;
+        return;
+    }
     if (num != 0) {
         for (uint32_t active : formStack_)
             if (active == num) {
@@ -1112,7 +1122,7 @@ void Interpreter::DoXObject(const PdfValue& resources, std::string_view name, in
     formStack_.push_back(num);
     // `data` must stay unchanged while the lexer reads it: deeper forms use deeper buffers.
     const std::string_view content(data);
-    RunStream(content, own.IsDict() ? own : resources, depth + 1);
+    RunStream(content, own.IsDict() ? own : fallbackResources, depth + 1);
     formStack_.pop_back();
     while (stack_.size() > savedStack) stack_.pop_back();
     gs_ = saved;
