@@ -926,8 +926,10 @@ bool LoadToUnicode(const Document& doc, const PdfValue& dict, const Repair::Cont
     untrusted = false;
     const PdfValue& stream = doc.Get(dict, "ToUnicode");
     if (!stream.IsStream()) return false;
-    std::string data;
-    const StreamStatus status = doc.StreamData(stream, data, kCMapStreamLimit);
+    // Read in place: nothing inflates before ParseToUnicode is done with it.
+    std::string storage;
+    std::string_view data;
+    const StreamStatus status = doc.StreamView(stream, storage, data, kCMapStreamLimit);
     if (status == StreamStatus::Corrupt || status == StreamStatus::NotStream) return false;
     ParseToUnicode(data, out);
     const size_t parsed = out.entries.size();

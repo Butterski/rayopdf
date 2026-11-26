@@ -1026,6 +1026,59 @@ void TestStreamReader() {
     RAYOPDF_CHECK(sameReport(read->Report(), whole->Report()), 256);
 }
 
+// Document::StreamView against StreamData: the same bytes, status and report counts for streams
+// inflated in place and for those decoded into the storage; one inflated in place is a view of
+// the thread's Inflate buffer.
+void TestStreamView() {
+    PdfBuilder b;
+    const int catalog = b.Reserve();
+    const int pages = b.Reserve();
+    std::string truncated = ZlibStored(SampleText());
+    truncated.resize(truncated.size() / 2);
+    const std::vector<int> streams = {
+        b.AddStream("/Filter /FlateDecode", DeflateZeros(5000)),
+        b.AddStream("/Filter /FlateDecode", ZlibStored(SampleText())),
+        b.AddStream("/Filter /FlateDecode", truncated),
+        b.AddStream("/Filter /FlateDecode", "no deflate data"),
+        b.AddStream("/Filter [/A85 /Fl]", Ascii85Encode(ZlibStored(SampleText())) + "~>"),
+        b.AddStream("/Filter [/AHx /DCTDecode]", "4142>"),
+        b.AddStream("/Filter /Fl /DecodeParms << /Predictor 12 /Columns 3 >>",
+                    ZlibStored(std::string("\x00" "ET " "\x02" "\x00\x00\x00" "\x09", 9))),
+        b.AddStream("", SampleText()),
+        b.Add("<< /NotA /Stream >>"),
+    };
+    const int page = b.Add("<< /Type /Page /Parent 2 0 R >>");
+    b.Set(catalog, "<< /Type /Catalog /Pages 2 0 R >>");
+    b.Set(pages, "<< /Type /Pages /Kids [" + std::to_string(page) + " 0 R] >>");
+    const std::string file = b.Build(catalog);
+    const auto sameReport = [](const DocumentReport& x, const DocumentReport& y) {
+        return x.salvagedStreams == y.salvagedStreams && x.failedStreams == y.failedStreams &&
+               x.limitHits == y.limitHits && x.brokenObjects == y.brokenObjects;
+    };
+    for (const size_t limit : {size_t(1) << 30, size_t(1000)}) {
+        const auto whole = OpenOk(file, 271);
+        const auto view = OpenOk(file, 271);
+        for (const int stream : streams) {
+            PdfValue ref;
+            ref.type = PdfValue::Type::Ref;
+            ref.refNum = static_cast<uint32_t>(stream);
+            std::string expected, storage;
+            std::string_view got;
+            const StreamStatus status = whole->StreamData(ref, expected, limit);
+            RAYOPDF_CHECK(view->StreamView(ref, storage, got, limit) == status && got == expected, 271);
+            RAYOPDF_CHECK(sameReport(view->Report(), whole->Report()), 271);
+        }
+    }
+    const auto doc = OpenOk(file, 272);
+    PdfValue ref;
+    ref.type = PdfValue::Type::Ref;
+    ref.refNum = static_cast<uint32_t>(streams[1]);
+    std::string storage;
+    std::string_view got;
+    RAYOPDF_CHECK(doc->StreamView(ref, storage, got) == StreamStatus::Ok && got == SampleText(), 272);
+    RAYOPDF_CHECK(storage.empty() && got.data() == reinterpret_cast<const char*>(Inflate::ThreadOutput().Data()), 272);
+}
+
 void TestNesting() {
     // Arrays nested past the limit: the object is broken, the document still opens.
     PdfBuilder b;
@@ -1529,6 +1582,7 @@ int main() {
     TestGarbageAndRepair();
     TestStreams();
     TestStreamReader();
+    TestStreamView();
     TestNesting();
     TestPageTree();
     TestXrefQuirks();

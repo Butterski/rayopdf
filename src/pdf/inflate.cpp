@@ -990,7 +990,7 @@ void Output::Release() {
 Result Inflate(std::string_view in, std::string& out, size_t limit) {
     // An upper bound that keeps `limit + 1 + kSlack` in range.
     limit = std::min(limit, kMaxLimit);
-    Output& buffer = PerThread<Output>();
+    Output& buffer = ThreadOutput();
     Inflater inflater(reinterpret_cast<const uint8_t*>(in.data()), in.size(), buffer, 0, limit,
                       PerThread<DynamicTables>());
     const Result result = inflater.Run();
@@ -998,6 +998,8 @@ Result Inflate(std::string_view in, std::string& out, size_t limit) {
     if (buffer.Capacity() > kKeptBuffer) buffer.Release();
     return result;
 }
+
+Output& ThreadOutput() { return PerThread<Output>(); }
 
 Result InflateInto(std::string_view in, Output& out, size_t at, size_t limit, size_t& length) {
     limit = std::min(limit, kMaxLimit);

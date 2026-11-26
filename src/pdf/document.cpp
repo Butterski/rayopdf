@@ -1007,6 +1007,44 @@ struct Document::Impl {
         return status;
     }
 
+    // Whether RunStages would run one filter of `stages` (it skips Crypt), Flate without a
+    // predictor: then the stream can inflate in place.
+    static bool InflatesInPlace(const Stage* stages, size_t count) {
+        const Stage* last = nullptr;
+        size_t decoders = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (stages[i].kind == Filters::Kind::Crypt) continue;
+            decoders++;
+            last = &stages[i];
+        }
+        return decoders == 1 && last->kind == Filters::Kind::Flate && last->params.predictor != 2 &&
+               last->params.predictor < 10;
+    }
+
+    // StreamData(value, ·, limit) read in place (Document::StreamView).
+    StreamStatus StreamView(const PdfValue& value, std::string& storage, std::string_view& out, size_t limit) {
+        out = {};
+        Stage stages[kMaxFilters];
+        size_t count = 0;
+        std::string_view raw;
+        StreamStatus start = StreamStatus::Ok;
+        const StreamStatus prepared = Prepare(value, limit, stages, count, Scratch().decrypted, raw, start);
+        if (prepared != StreamStatus::Ok) return prepared;
+        StreamStatus status;
+        if (InflatesInPlace(stages, count)) {
+            Inflate::Output& buffer = Inflate::ThreadOutput();
+            size_t length = 0;
+            status = Worse(start, Filters::DecodeFlateInto(raw, buffer, 0, limit, length));
+            if (length > 0) out = std::string_view(reinterpret_cast<const char*>(buffer.Data()), length);
+        } else {
+            storage.clear();
+            status = Worse(start, RunStages(raw, stages, count, storage, limit));
+            out = storage;
+        }
+        Count(status, out.size());
+        return status;
+    }
+
     // StreamData(value, ·, limit) onto `out` from its byte `at` on: `length` bytes, the same bytes,
     // status and counts. A stream of one Flate filter (Crypt aside) without a predictor inflates
     // straight into `out`; any other is decoded into `piece` as StreamData decodes it, then copied.
@@ -1019,17 +1057,8 @@ struct Document::Impl {
         StreamStatus start = StreamStatus::Ok;
         const StreamStatus prepared = Prepare(value, limit, stages, count, Scratch().decrypted, raw, start);
         if (prepared != StreamStatus::Ok) return prepared;
-        // The filters RunStages runs (it skips Crypt).
-        const Stage* last = nullptr;
-        size_t decoders = 0;
-        for (size_t i = 0; i < count; i++) {
-            if (stages[i].kind == Filters::Kind::Crypt) continue;
-            decoders++;
-            last = &stages[i];
-        }
         StreamStatus status;
-        if (decoders == 1 && last->kind == Filters::Kind::Flate && last->params.predictor != 2 &&
-            last->params.predictor < 10) {
+        if (InflatesInPlace(stages, count)) {
             status = Worse(start, Filters::DecodeFlateInto(raw, out, at, limit, length));
         } else {
             status = Worse(start, RunStages(raw, stages, count, piece, limit));
@@ -1787,6 +1816,10 @@ bool Document::Rect(const PdfValue& value, PdfRect& out) const { return impl_->R
 
 StreamStatus Document::StreamData(const PdfValue& stream, std::string& out, size_t limit) const {
     return impl_->StreamData(stream, out, limit);
+}
+
+StreamStatus Document::StreamView(const PdfValue& stream, std::string& storage, std::string_view& out, size_t limit) const {
+    return impl_->StreamView(stream, storage, out, limit);
 }
 
 Document::StreamReader::~StreamReader() {

@@ -102,6 +102,12 @@ public:
     // /DecodeParms, at most `limit` bytes, into `out` (replaced). Decoding stops before the first
     // image filter (Unsupported, `out` holding the data that filter would read).
     StreamStatus StreamData(const PdfValue& stream, std::string& out, size_t limit = kDefaultStreamLimit) const;
+    // StreamData's bytes, status and counts, read in place: a stream of one Flate filter (Crypt
+    // aside) without a predictor inflates into the calling thread's Inflate buffer and `out` views
+    // it, valid until the thread's next inflate; any other is decoded into `storage` as StreamData
+    // decodes it, and `out` views that.
+    StreamStatus StreamView(const PdfValue& stream, std::string& storage, std::string_view& out,
+                            size_t limit = kDefaultStreamLimit) const;
 
     class StreamReader;
 

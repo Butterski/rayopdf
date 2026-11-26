@@ -58,8 +58,13 @@ private:
     bool mapped_ = false;  // data_ is Map's mapping, not a malloc block
 };
 
-// Inflates `in` into `out` (replaced), at most `limit` bytes.
+// Inflates `in` into `out` (replaced), at most `limit` bytes. It decodes into the calling thread's
+// ThreadOutput, then copies.
 Result Inflate(std::string_view in, std::string& out, size_t limit);
+
+// The calling thread's buffer Inflate decodes into: InflateInto it to read the output in place, until
+// the thread's next Inflate.
+Output& ThreadOutput();
 
 // Inflate onto `out` from its byte `at` on (the bytes before stay as they are; the data's matches
 // never reach them): `length` bytes of output, the same bytes and Result as Inflate. `out` may
