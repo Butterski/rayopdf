@@ -625,9 +625,21 @@ documents have at least one `image_only` page and 4.1 % at least one `broken` pa
 is web-crawled PDFs, not the four target document classes, so the gate re-measures R on its own
 corpus.
 
-### Status (2026-11-26)
+### Status (2026-11-27)
 
-1.1.0 is released ([v1.1.0](../benchmarks/v1.1.0-2026-11-26.md),
+1.2.0 is released ([v1.2.0](../benchmarks/v1.2.0-2026-11-27.md),
+[release check](../benchmarks/release-check-2026-11-27.md)): form fields and annotations reach
+the output (`--annotations`), JSON gains lines, words, the outline, fields, annotations, links,
+page labels and roles, `--format=html` and `--format=text` join, chunks overlap or follow pages,
+the CLI reads standard input, and Linux arm64 and macOS builds write Linux x64's bytes (the code
+without fused multiply-adds, a signed `char` and sorts with one order). Through the strict gate:
+odl TEDS 0.934 → 0.937 in its declared options, OmniParseBench tables 0.602 → 0.620
+(development, with the add-on), olmOCR `table_tests` 0.653 → 0.656, synthetic construct F1 on
+the two later producers 0.866 → 0.915. Speed holds: 0.896 ms fresh (1.1.0 0.899 alongside),
+2,227 pages/s warm, the WebAssembly module +13.5 %. The bar holds: (c) as above; (d) 27 fuzz
+targets, 24.0 h, clean, ASan sweeps clean.
+
+1.1.0 was released ([v1.1.0](../benchmarks/v1.1.0-2026-11-26.md),
 [release check](../benchmarks/release-check-2026-11-26.md)): 1.0.0's output byte for byte, faster
 as a fresh process (0.924 → 0.883 ms a page, page faults 152 → 132, odl's heaviest page 18.1 →
 14.9 ms; 2,203 → 2,228 pages/s warm, the 1.0.0 binary measured alongside), the OCR add-on with
@@ -660,8 +672,8 @@ arXiv `table_teds`, open since 0.1.0, is 0.730 in READoc's declared options agai
 tool, NID and MHS above docling. (c): 2,207 pages/s warm, 0.912 ms fresh. (d): 25 fuzz targets,
 26.1 h, clean; ASan sweeps in three modes clean. (e): reported in the release check.
 
-- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 1.1.0
-  campaign covered all 25 fuzz targets.
+- **M1 Reader:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md), release checks). The 1.2.0
+  campaign covered all 27 fuzz targets.
 - **M2 Text:** met ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M3 Layout:** open: olmOCR `headers_footers` (0.890, docling 0.898), `long_tiny_text` in the
   default output (0.509; 0.525 in olmOCR's declared options, docling 0.523), synthetic
@@ -673,8 +685,9 @@ tool, NID and MHS above docling. (c): 2,207 pages/s warm, 0.912 ms fresh. (d): 2
 - **M6 Tagged:** open: construct F1 gate 0.98 ([v0.0.10](../benchmarks/v0.0.10-2026-11-09.md)).
 - **M7 Product:** front ends, Windows build, packaging, the speed bar, structured output, the C++
   API, library archives, the container image, the C ABI, Python wheels and the npm package done;
-  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0, 1.0.0 and 1.1.0
-  ([v1.1.0](../benchmarks/v1.1.0-2026-11-26.md), [performance.md](performance.md)).
+  releases 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0, 1.0.0, 1.1.0 and 1.2.0
+  ([v1.2.0](../benchmarks/v1.2.0-2026-11-27.md), [performance.md](performance.md)); Linux arm64
+  and macOS builds since 1.2.0.
 - **M8 OCR/ML gate:** decided in [ocr_ml_decision.md](ocr_ml_decision.md) and built as the add-on
   `rayopdf-ocr` ([ocr-engine.md](ocr-engine.md),
   [baselines-scanned](../benchmarks/baselines-scanned-2026-11-07.md)), which reads tables drawn
