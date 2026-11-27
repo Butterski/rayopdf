@@ -16,7 +16,8 @@ else installed.
         print(error.status, error)
 
 The options are those of `rayopdf --convert`; a call converts on `workers` page threads and
-releases the GIL while it runs. LangChain and LlamaIndex loaders: rayopdf.integrations.
+releases the GIL while it runs. LangChain and LlamaIndex loaders and a Haystack component:
+rayopdf.integrations.
 """
 
 from __future__ import annotations

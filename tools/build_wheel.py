@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Build the Python package's wheels from an already-built shared library, reproducibly.
 
-A wheel holds python/rayopdf/ (the ctypes binding and its LangChain and LlamaIndex loaders), the
-library in rayopdf/_lib/, and in its .dist-info folder METADATA (Requires-Python >= 3.9, extras
-langchain and llama-index), WHEEL, RECORD (SHA-256 of every file), LICENSE, NOTICE and the core
+A wheel holds python/rayopdf/ (the ctypes binding, its LangChain and LlamaIndex loaders and its
+Haystack component), the library in rayopdf/_lib/, and in its .dist-info folder METADATA
+(Requires-Python >= 3.9, extras langchain, llama-index and haystack), WHEEL, RECORD (SHA-256 of
+every file), LICENSE, NOTICE and the core
 archives' third_party/licenses/. Entries are sorted and carry one fixed time (SOURCE_DATE_EPOCH,
 else the time of the HEAD commit), so the same library gives the same bytes.
 
@@ -47,7 +48,7 @@ PLATFORMS = {
     "windows": ("win_amd64", "rayopdf.dll", "build/windows/rayopdf.dll"),
 }
 SUMMARY = "PDF to Markdown, JSON and chunks for retrieval, in process: RayoPDF's converter"
-EXTRAS = {"langchain": "langchain-core", "llama-index": "llama-index-core"}
+EXTRAS = {"langchain": "langchain-core", "llama-index": "llama-index-core", "haystack": "haystack-ai"}
 
 
 def metadata(version: str, readme: bytes, repository: str) -> bytes:

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """Checks of the Python package (python/rayopdf) over a built librayopdf.so or librayopdf.dylib:
-Markdown, the JSON document, chunks, the error classes, and the library's ABI: a library of this
-machine's architecture (ELF x86-64 or aarch64, Mach-O arm64 or x86_64) exporting only the rayopdf_*
-functions; an ELF one (read with `objdump -T`) with no glibc symbol version above 2.28, the
-manylinux_2_28 wheels' promise.
+Markdown, the JSON document, chunks, the error classes, the Haystack component against a stub
+haystack package, and the library's ABI: a library of this machine's architecture (ELF x86-64 or
+aarch64, Mach-O arm64 or x86_64) exporting only the rayopdf_* functions; an ELF one (read with
+`objdump -T`) with no glibc symbol version above 2.28, the manylinux_2_28 wheels' promise.
 The package is copied with the library into a temporary folder and imported from there; the PDF
 is built by the script.
 
@@ -16,6 +16,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
+import logging
 import platform
 import re
 import shutil
@@ -55,6 +57,100 @@ def one_page_pdf(text: str) -> bytes:
     out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
     return bytes(out)
+
+
+# A stand-in for the part of haystack-ai's API that rayopdf.integrations.haystack uses.
+HAYSTACK_STUB = '''
+import dataclasses
+from typing import Any, Dict, Optional
+
+
+@dataclasses.dataclass
+class Document:
+    content: Optional[str] = None
+    meta: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+class _Component:
+    def __call__(self, cls):
+        cls.__haystack_component__ = True
+        return cls
+
+    @staticmethod
+    def output_types(**types):
+        def wrap(run):
+            run.__haystack_output_types__ = types
+            return run
+        return wrap
+
+
+component = _Component()
+
+
+def default_to_dict(obj, **init_parameters):
+    return {"type": f"{type(obj).__module__}.{type(obj).__name__}", "init_parameters": init_parameters}
+
+
+def default_from_dict(cls, data):
+    return cls(**data.get("init_parameters", {}))
+'''
+HAYSTACK_DATACLASSES_STUB = '''
+import dataclasses
+from typing import Any, Dict, Optional
+
+
+@dataclasses.dataclass
+class ByteStream:
+    data: bytes
+    meta: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    mime_type: Optional[str] = None
+'''
+
+
+def check_haystack(work: Path, pdf_path: Path, check) -> None:
+    """RayoPdfToDocument against the stub haystack package: paths and ByteStreams, meta for every
+    source or one a source, failed sources skipped with a warning, chunks, to_dict/from_dict."""
+    (work / "haystack" / "dataclasses").mkdir(parents=True)
+    (work / "haystack" / "__init__.py").write_text(HAYSTACK_STUB, encoding="utf-8")
+    (work / "haystack" / "dataclasses" / "__init__.py").write_text(HAYSTACK_DATACLASSES_STUB, encoding="utf-8")
+    importlib.invalidate_caches()
+    from haystack.dataclasses import ByteStream
+    from rayopdf import UsageError
+    from rayopdf.integrations.haystack import RayoPdfToDocument
+
+    warnings: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = warnings.append
+    logging.getLogger("rayopdf.integrations.haystack").addHandler(handler)
+    sources = [pdf_path, ByteStream(data=pdf_path.read_bytes(), meta={"file_path": "memory.pdf"}),
+               str(work / "missing.pdf"), ByteStream(data=b"not a pdf")]
+    documents = RayoPdfToDocument().run(sources=sources, meta={"batch": 7})["documents"]
+    check(len(documents) == 2 and all("Hello from Python" in d.content for d in documents) and
+          documents[0].meta == {"file_path": str(pdf_path), "batch": 7, "pages": 1} and
+          documents[1].meta == {"file_path": "memory.pdf", "batch": 7, "pages": 1},
+          f"haystack: one Document a PDF, its meta: {[d.meta for d in documents]}")
+    check(len(warnings) == 2 and all(w.levelno == logging.WARNING for w in warnings),
+          f"haystack: each failed source skipped with a warning: {len(warnings)}")
+    converter = RayoPdfToDocument(format="chunks", chunk_chars=256)
+    documents = converter.run(sources=[pdf_path], meta=[{"n": 1}])["documents"]
+    check(len(documents) == 1 and "Hello from Python" in documents[0].content and
+          documents[0].meta == {"file_path": str(pdf_path), "n": 1, "chunk": 0, "pages": [1, 1], "heading_path": []},
+          f"haystack: format=chunks gives a Document a chunk: {[d.meta for d in documents]}")
+    data = converter.to_dict()
+    again = RayoPdfToDocument.from_dict(data)
+    check(data["init_parameters"] == {"format": "chunks", "chunk_chars": 256} and again.format == "chunks" and
+          again.options == {"chunk_chars": 256}, f"haystack: to_dict and from_dict: {data}")
+    for bad in ("json", "inspect"):
+        try:
+            RayoPdfToDocument(format=bad)
+            check(False, f"haystack: format={bad} raises ValueError")
+        except ValueError:
+            pass
+    try:
+        RayoPdfToDocument(math="tex").run(sources=[pdf_path])
+        check(False, "haystack: an invalid option raises UsageError")
+    except UsageError as error:
+        check(error.status == 2, f"haystack: UsageError: {error}")
 
 
 def main() -> int:
@@ -143,11 +239,13 @@ def main() -> int:
             check(False, "a missing file raises")
         except FileNotFoundError:
             pass
-        for module in ("rayopdf.integrations.langchain", "rayopdf.integrations.llama_index"):
+        for module in ("rayopdf.integrations.langchain", "rayopdf.integrations.llama_index",
+                       "rayopdf.integrations.haystack"):
             try:
                 __import__(module)
             except ImportError as error:
                 check("pip install" in str(error), f"{module} names what to install: {error}")
+        check_haystack(Path(work), pdf_path, check)
     if failures:
         print(f"{len(failures)} check(s) failed", file=sys.stderr)
         return 1

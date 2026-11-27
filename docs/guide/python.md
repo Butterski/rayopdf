@@ -19,8 +19,9 @@ pip install rayopdf-1.1.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
 pip install rayopdf-1.1.0-py3-none-win_amd64.whl                # Windows
 ```
 
-The LangChain and LlamaIndex loaders need their own packages: the extras `rayopdf[langchain]`
-(`langchain-core`) and `rayopdf[llama-index]` (`llama-index-core`) install them.
+The LangChain and LlamaIndex loaders and the Haystack component need their own packages: the
+extras `rayopdf[langchain]` (`langchain-core`), `rayopdf[llama-index]` (`llama-index-core`) and
+`rayopdf[haystack]` (`haystack-ai`) install them.
 
 ## Convert
 
@@ -123,3 +124,25 @@ documents = RayoPdfReader(chunk_chars=2000).load_data("paper.pdf")
 
 `load_data(file, extra_info=None)` returns one `Document` a chunk, with the same metadata as the
 LangChain loader plus `extra_info`.
+
+## Haystack
+
+```python
+from haystack import Pipeline
+from rayopdf.integrations.haystack import RayoPdfToDocument
+
+documents = RayoPdfToDocument().run(sources=["paper.pdf"])["documents"]  # one Document a PDF
+pipeline = Pipeline()
+pipeline.add_component("converter", RayoPdfToDocument(format="chunks", chunk_chars=2000))
+```
+
+`RayoPdfToDocument` is a Haystack 2 component. `run(sources, meta=None)` takes paths and
+`ByteStream`s and returns `{"documents": [...]}`: one `Document` a PDF with its Markdown (with
+`format="text"` or `"html"`, its plain text or HTML) and the metadata `pages` (the number
+converted), or with `format="chunks"` one `Document` a chunk with the LangChain loader's chunk
+metadata. Every `Document` also gets `file_path` for a path, a `ByteStream`'s own metadata, and
+`meta`: one dictionary for every source, or a list of one a source. A source that cannot be read
+or converted is skipped with a warning; an invalid option raises `UsageError`. Other keyword
+arguments are `convert`'s options; `to_dict` and `from_dict` save and load them with a pipeline.
+Importing the component without `haystack-ai` installed raises an `ImportError` that names the
+package.

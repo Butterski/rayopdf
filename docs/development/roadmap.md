@@ -499,9 +499,12 @@ JSON object a line;
   three `rayopdf_*` functions, libstdc++ and libgcc linked in, no glibc symbol newer than 2.28) or
   `rayopdf.dll` (static MinGW runtime). The package `python/rayopdf` (ctypes, Python 3.9+) loads
   it from `rayopdf/_lib/`: `convert(source, **options) -> Result` (`text`, `data`, `report`,
-  `pages`), `version()`, `RayoPdfError` with one subclass a status, and the loaders
+  `pages`), `version()`, `RayoPdfError` with one subclass a status, the loaders
   `rayopdf.integrations.langchain.RayoPdfLoader` and `rayopdf.integrations.llama_index.RayoPdfReader`
-  (one document a chunk). `tests/verify_python.py` and, under Wine, `tests/c_api_smoke.c` check them.
+  (one document a chunk) and the Haystack 2 component
+  `rayopdf.integrations.haystack.RayoPdfToDocument` (2026-11-27; one document a PDF, or a chunk
+  with `format="chunks"`; extra `haystack`). `tests/verify_python.py` (the component against a
+  stub `haystack` package) and, under Wine, `tests/c_api_smoke.c` check them.
 - **WebAssembly and npm:** under Emscripten (`tools/dev.py` config `wasm`, image `rayopdf-wasm:1`)
   CMake builds the target `rayopdf_wasm` alone: `rayopdf-core.mjs` (an ES6 module factory for
   browsers and Node.js) and `rayopdf-core.wasm` from the C ABI, without threads (one page thread,
