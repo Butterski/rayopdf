@@ -1836,10 +1836,52 @@ sessions built and tested, so steps are decided on counts and their times taken 
 One trap of fresh-process counts, found here: the kernel's work and the page faults of a fresh
 `--convert` depend on the state of the binary's file in the page cache. The same bytes copied
 minutes ago against hours ago: 136 against 133 faults and up to 235 K more kernel instructions at
-odl 053. Binaries compared fresh are copied at the same moment.
+odl 053. Binaries compared fresh are copied at the same moment, and even then two copies of one
+binary made one after the other differed by 2.4 faults a document over odl (median 132 against
+135): a change of one or two faults at the median needs such an A/A pair beside it. odl 141's
+count also swings between about 450 and 990 with whether the kernel grants its inflate mapping
+huge pages (`MADV_HUGEPAGE` under the `madvise` policy), so it is compared over interleaved rounds.
 
-### Tried and rejected (2026-11-26)
+Steps kept. Output identical in each: G-bytes over 5,886 documents in ten option sets (58,860
+comparisons, 0 differ) or, for the WebAssembly flags, a native binary byte-identical to the one
+before. User instructions are `instr.sh`'s against the commit before; fresh instructions the
+callgrind program totals of the 21 documents of the twenty-fifth round. Times were taken in a
+quiet window on 2026-11-27 (CPU 3, nothing else running).
 
+|Step|Change|Effect|
+|---|---|---|
+|`49e0064` wasm: -O3 and link-time optimisation|Emscripten compiles the module at -O3 with `-flto` and links it with `-flto`; native flags unchanged|odl (`bench.py wasm`, best of 3 in one Node.js process, 3 alternating rounds): 1,411 → 1,490 pages/s (+5.7 %), median 0.590 → 0.550 ms a page; module 2,881,829 bytes (−55,932); output against the native binary as before: odl 200 of 200, the same 19 of the other 5,686 documents|
+|`14966fc` perf(serve)|`AppendJsonString` copies each run of bytes that need no escape with one append (a differential test against the byte-by-byte form: every byte and byte pair, overlong, surrogate, too large and truncated sequences, 3,000 random texts); the answer's Markdown moved into the record and back; `--serve` takes `--batch`'s allocator settings|odl (`bench.py serve`, 200 requests, 5 alternating sessions): 112.6 → 110.3 ms (−2.1 %), peak RSS 12.4 → 9.9 MiB, final RSS 11.4 → 9.2 MiB, page faults 14.8 → 10.9 a request; over all 5,886 G-bytes inputs in one process: faults 32.6 → 29.4 a request, peak RSS 579.7 MiB both, final 566.1 → 566.2 MiB; answers identical to `--convert`'s. The step's time target was −3 %; it was kept for the memory and the faults|
+|`3ea4baa` perf(fonts): a ToUnicode stream parsed in place|`Document::StreamView`: a stream of one Flate filter without a predictor inflates into the thread's inflate buffer and is read there, not copied out; `LoadToUnicode` parses that view|odl −0.063 %, `tables` −0.024 %, `arxiv_math` −0.026 %, SafeDocs −0.020 %, `multi_column` −0.019 %|
+|`6854b6e` perf(interpreter): a heavy page's shapes and rulings reserved|A page of 256 KiB of content or more reserves a shape for each 16 bytes and a ruling for each 8, as its glyphs are reserved, instead of growing both by doubling|odl 141 page faults 480 → 446; heavy10 −0.153 %, SafeDocs −0.066 %, odl −0.036 %; fresh instructions −0.14 %|
+
+Profile of font loading (odl, `--batch --workers=1`, callgrind): `FontCache::Load` 9.9 % of the
+instructions, of which `LoadToUnicode` 5.6 % (its stream's inflate 2.4 %, `ParseToUnicode` 2.7 %);
+on `multi_column` 12.5 %, `LoadType0` 6.2 % (`LoadToUnicode` 4.2 %). The copy out of the inflate
+buffer was 0.35 M over odl's 669 inflates, 583 of them ToUnicode streams. Font programs stay
+copied: a program's bytes live while other streams of the font inflate (the CIDToGIDMap of a
+CIDFontType2, the simple font's cached program).
+
+### Tried and rejected (2026-11-26 and 27)
+
+- **Lines built as pages are read** (`e1/pipeline`): with page threads and no OCR able to act, a
+  page's `PrepareMathGlyphs` and `BuildLines` ran as soon as the page was interpreted, from a
+  queue any idle worker took, and pages were handed out largest content first. Output identical
+  (one binary at `--workers=1` against `--workers=4` over every G-bytes input in three sets:
+  17,658 comparisons, 0 differ). The 27 multi-page documents at 4 workers (`bench.py pages`,
+  CPUs 0-2 and 4-8, A/B/A/B, quiet window): 126.3 and 126.4 ms against 125.9 and 125.2 ms
+  (−0.6 %), at one worker 184-185 ms both; page faults +4.7 %. The waits at the end of the
+  reading round were not what held the 4-worker sum up: not kept.
+- **The duplicate filter at whole pages** (2n words rounded up to 512 words above 512, a
+  multiply-shift index instead of a mask): page faults median 132 → 131, p95 207 → 193, fresh
+  instructions −0.18 %, but user instructions odl +0.027 %, `multi_column` +0.082 %, `tables`
+  +0.064 % (the index); odl 141's filter left huge pages (480 → 987 faults). Not kept.
+- **The thread's inflate buffer and the document's stream scratch freed with the page content:**
+  faults median 132 → 134, mean 140 → 141; instructions unchanged. Not kept (as the twenty-fifth
+  round's early inflate free: the later stages allocate elsewhere).
+- **Shapes and rulings reserved on every page** (a shape for 16 bytes of content, a ruling for
+  8): odl −0.097 %, heavy10 −0.156 %, but +1.5 page faults a document (reserves never written,
+  on pages of their own); kept only for pages of 256 KiB or more (above).
 - **Output written through `O_TMPFILE`** (`WriteAll`: a file without a name in the target's
   directory, linked under the target's name; no temporary name, no rename). The write's system
   calls alone (1,575 bytes, median of 3,000 writes, one CPU), old way against the design:
@@ -1889,11 +1931,6 @@ odl 053. Binaries compared fresh are copied at the same moment.
   one large image holds the layout up. Overlapping them needs the decisions and the files' naming
   apart and a round that runs beside the layout's, for untagged pages without inline images (a
   gain in wall time only).
-- **Heavy pages:** after the twenty-fifth round the interpreter's `Shape` and `Ruling` vectors
-  still grow by doubling (0.29 M instructions of copies on heavy10); reserved from the content's
-  length they would copy nothing.
-- **`--serve` with `--batch`'s malloc settings:** -2 % wall over 400 SafeDocs documents at the
-  same peak RSS, but freed memory stays with the process (wall time only, not measured in round 10).
 - **JPEG 2000:** registers for the significance and cleanup passes; a row-streaming vertical
   wavelet pass; ICT and RGB interleave per row. JPEG, JPEG 2000, CCITT and JBIG2 decoded a row or
   band at a time for bounded RSS.
