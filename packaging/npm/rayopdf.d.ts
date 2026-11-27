@@ -117,8 +117,16 @@ export interface JsonDocument {
   repaired: boolean;
   /** title, author, subject, keywords, creator, producer, created, modified, language: those the PDF has. */
   metadata: Record<string, string>;
-  /** label only when the PDF has page labels. */
-  pages: { page: number; width: number; height: number; label?: string }[];
+  /** label only when the PDF has page labels; links only when the page has link annotations
+   *  (a URI link's uri, or the page a GoTo link leads to, null when none; --annotations=none: none). */
+  pages: {
+    page: number;
+    width: number;
+    height: number;
+    label?: string;
+    links?: ({ box: [number, number, number, number]; uri: string } |
+             { box: [number, number, number, number]; page: number | null })[];
+  }[];
   /** Only when the PDF has bookmarks; page null when the destination leads to none. */
   outline?: { level: number; title: string; page: number | null }[];
   blocks: JsonBlock[];

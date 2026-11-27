@@ -224,6 +224,7 @@ void ConvertPages(std::vector<PageData>& pages, const std::vector<PageTextQualit
         settings.chunkBy = output->chunkBy;
         settings.jsonDetail = output->jsonDetail;
         settings.fields = output->fields;
+        settings.links = output->links;
         settings.xfa = output->xfa;
     }
     if (output && output->format == OutputFormat::Json) {

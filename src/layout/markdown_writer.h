@@ -89,6 +89,9 @@ struct WriteSettings {
     // JSON: the document's form fields (layout/forms.h), written as "fields" after "pages" and "outline" when
     // there are any; null for none.
     const std::vector<FormField>* fields = nullptr;
+    // JSON: the pages' link annotations (InterpretPage `links`), one list a page of `pages`, written
+    // as the pages' "links"; null or a shorter list for none.
+    const std::vector<std::vector<PageLink>>* links = nullptr;
     // Markdown: the document is an XFA form whose fields are not read (layout/forms.h XfaForm); a
     // comment says so after the one of a repaired file.
     bool xfa = false;
@@ -151,7 +154,9 @@ void WriteHtml(const std::vector<PageData>& pages, const BlockList& blocks, bool
 // {"rayopdf":VERSION,"schema":1,"repaired":bool,"metadata":{non-empty fields},"pages":[{"page",
 // "width","height"}...],"blocks":[{"type","page","boxes":[{"page","bbox":[x0,y0,x1,y1]}...],
 // ...,"markdown"}...]}. Boxes are in page points, origin at the lower left; `metadata` null
-// writes an empty object, and its `labels`, when it has them, are the pages' "label". A non-empty
+// writes an empty object, and its `labels`, when it has them, are the pages' "label". A page with
+// link annotations (`settings.links`) has "links":[{"box":[x0,y0,x1,y1],"uri"} or {"box","page"}
+// ...] after "label" (page null when a GoTo destination leads to none). A non-empty
 // `outline` is written after "pages" as "outline":[{"level","title","page"}...] (page null when
 // its destination led to none).
 // `counts` as WriteMarkdown counts; each block's Markdown as WriteMarkdown

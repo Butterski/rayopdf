@@ -466,7 +466,7 @@ void TestFontGlyphs() {
         PageStats stats;
         std::vector<GlyphUse> uses;
         stats.uses = &uses;
-        InterpretPage(*doc, fonts, 0, AnnotationMode::None, page, stats);
+        InterpretPage(*doc, fonts, 0, AnnotationMode::None, nullptr, page, stats);
         RAYOPDF_CHECK(!uses.empty() && uses.size() == page.glyphs.size() && uses[0].code == 1 && stats.unmapped > 0, 1355);
         Text::FontGlyphs glyphs;
         const Text::FontGlyphs::Kind loaded = glyphs.Load(*doc, *uses[0].font);

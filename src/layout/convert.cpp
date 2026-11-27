@@ -39,6 +39,7 @@ struct Conversion {
     Text::FontCache fonts;
     std::vector<OutlineEntry> outline;
     Structure structure;
+    std::vector<std::vector<PageLink>> links;  // the JSON output's, a list a page (empty otherwise)
 };
 
 // A page just interpreted: its counters into its quality, and its OCR route. They read the page
@@ -112,7 +113,8 @@ bool InterpretShared(const Document& document, const ConvertOptions& options, in
                 stats[slot].contentRead = &ThreadStart::ContentRead;
                 stats[slot].contentContext = &start;
             }
-            InterpretPage(document, cache, first + static_cast<int>(slot), options.annotations, conversion.pages[slot],
+            InterpretPage(document, cache, first + static_cast<int>(slot), options.annotations,
+                          conversion.links.empty() ? nullptr : &conversion.links[slot], conversion.pages[slot],
                           stats[slot]);
             Measure(stats[slot], options.ocr.mode, slot, conversion);
         });
@@ -141,12 +143,13 @@ struct DocumentParts {
     int last;
     bool structure;                // ConvertOptions::structure
     DocumentMetadata* metadata;    // the JSON or HTML output's, or null
-    bool json;                     // the JSON output: outline targets and page labels too
+    bool json;                     // the JSON output: outline targets, page labels and link targets too
     std::vector<FormField>* fields;  // the JSON output's form fields (--annotations=all only), or null
 
     static bool Read(void* context) {
         const DocumentParts& parts = *static_cast<const DocumentParts*>(context);
         ReadOutline(*parts.document, parts.conversion->outline, parts.json);
+        if (parts.json) ResolveLinkTargets(*parts.document, parts.conversion->links);
         if (parts.structure && parts.first <= parts.last)
             ReadStructure(*parts.document, parts.first, parts.last, parts.conversion->structure);
         if (parts.metadata) ReadMetadata(*parts.document, *parts.metadata);
@@ -173,6 +176,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
         pages.resize(static_cast<size_t>(last - first + 1));
         quality.resize(pages.size());
         if (options.ocr.mode != OcrMode::Off) conversion->routes.resize(pages.size());
+        if (options.format == OutputFormat::Json) conversion->links.resize(pages.size());
     }
     const unsigned workers = PageWorkers(options.pageWorkers, pages.size());
     if (workers > 1) {
@@ -185,7 +189,8 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
         for (int index = first - 1; index < last; ++index) {
             const size_t slot = static_cast<size_t>(index - (first - 1));
             PageStats stats;
-            InterpretPage(document, fonts, index, options.annotations, pages[slot], stats);
+            InterpretPage(document, fonts, index, options.annotations,
+                          conversion->links.empty() ? nullptr : &conversion->links[slot], pages[slot], stats);
             Measure(stats, options.ocr.mode, slot, *conversion);
             Tally(stats, report);
         }
@@ -226,6 +231,7 @@ std::unique_ptr<Conversion> ConvertDocument(const Document& document, const Conv
     output.features = options.features;
     output.metadata = &metadata;
     output.fields = &fields;
+    output.links = &conversion->links;
     output.oneShot = options.oneShot;
     const bool html = options.format == OutputFormat::Html;
     // An XFA form whose fields are not read says so (the Markdown only; links-only reads as 1.1).

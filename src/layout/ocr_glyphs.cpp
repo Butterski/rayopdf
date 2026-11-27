@@ -834,7 +834,7 @@ OcrStatus RecoverGlyphShapes(const Document& document, Text::FontCache& fonts, O
         PageStats pageStats;
         pageStats.uses = &uses[p];
         // Read as the conversion read it (its annotations' glyphs too), so that glyph i is glyph i.
-        InterpretPage(document, fonts, pages[p].number - 1, annotations, scratch, pageStats);
+        InterpretPage(document, fonts, pages[p].number - 1, annotations, nullptr, scratch, pageStats);
         if (scratch.glyphs.size() != pages[p].glyphs.size()) uses[p].clear();  // not the same page: left alone
     };
     std::unordered_map<const Text::Font*, FontStats> fontStats;

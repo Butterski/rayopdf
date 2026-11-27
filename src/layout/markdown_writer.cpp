@@ -3152,6 +3152,24 @@ void WriteJson(const std::vector<PageData>& pages, const BlockList& list, bool r
             AppendKey(out, "label");
             Batch::AppendJsonString(out, metadata->labels[p]);
         }
+        // The page's link annotations: {"box","uri"} or {"box","page"} (null: it leads to no page).
+        if (settings.links && p < settings.links->size() && !(*settings.links)[p].empty()) {
+            const std::vector<PageLink>& links = (*settings.links)[p];
+            out += ",\"links\":[";
+            for (size_t l = 0; l < links.size(); ++l) {
+                out += l > 0 ? ",{" : "{";
+                AppendFrameBox(out, 0, links[l].x0, links[l].y0, links[l].x1, links[l].y1);
+                if (links[l].uriLength > 0) {
+                    out += ",\"uri\":";
+                    Batch::AppendJsonString(out, pages[p].LinkUri(links[l]));
+                } else {
+                    out += ",\"page\":";
+                    out += links[l].page > 0 ? std::to_string(links[l].page) : "null";
+                }
+                out.push_back('}');
+            }
+            out.push_back(']');
+        }
         out.push_back('}');
     }
     out.push_back(']');

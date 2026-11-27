@@ -113,7 +113,7 @@ void FilledTextField() {
     Text::FontCache fonts(*document);
     PageData page;
     PageStats stats;
-    InterpretPage(*document, fonts, 0, AnnotationMode::All, page, stats);
+    InterpretPage(*document, fonts, 0, AnnotationMode::All, nullptr, page, stats);
     RAYOPDF_CHECK(page.shapes.empty() && page.rulings.empty() && page.annotationTexts.size() == 1 &&
                       page.annotationFirst == 5 && page.annotationEnd == page.glyphs.size() && page.glyphs.size() == 13,
                   2603);
@@ -324,7 +324,7 @@ void OcrRouting() {
     Text::FontCache fonts(*document);
     PageData data;
     PageStats stats;
-    InterpretPage(*document, fonts, 0, AnnotationMode::All, data, stats);
+    InterpretPage(*document, fonts, 0, AnnotationMode::All, nullptr, data, stats);
     RAYOPDF_CHECK(data.annotationEnd - data.annotationFirst >= 50 && data.images.size() == 1, 2622);
     PageTextQuality quality;
     quality.glyphs = stats.glyphs;
@@ -488,7 +488,7 @@ void Limits() {
     Text::FontCache fonts(*cyclic);
     PageData page;
     PageStats stats;
-    InterpretPage(*cyclic, fonts, 0, AnnotationMode::All, page, stats);
+    InterpretPage(*cyclic, fonts, 0, AnnotationMode::All, nullptr, page, stats);
     RAYOPDF_CHECK(page.contentErrors > 0 && page.annotationTexts.empty() && !page.limitHit, 2627);
 
     FormDoc g;
@@ -510,7 +510,7 @@ void Limits() {
     const std::string crowdedPdf = g.b.Build(catalog);
     std::unique_ptr<Document> crowded = Open(crowdedPdf);
     Text::FontCache crowdedFonts(*crowded);
-    InterpretPage(*crowded, crowdedFonts, 0, AnnotationMode::All, page, stats);
+    InterpretPage(*crowded, crowdedFonts, 0, AnnotationMode::All, nullptr, page, stats);
     RAYOPDF_CHECK(page.limitHit && page.annotationTexts.size() == kMaxAnnotationsPerPage, 2628);
     // Every one is also a markup annotation, kept up to kMaxMarkupsPerPage.
     RAYOPDF_CHECK(page.markups.size() == kMaxMarkupsPerPage && page.markupBoxes.size() == kMaxMarkupsPerPage, 2637);

@@ -176,6 +176,18 @@ struct MarkupBox {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
 
+// A link annotation as the JSON output's pages[].links has it (InterpretPage `links`, a list of
+// its own beside the page, never the link areas the Markdown uses): a URI action's (uriLength > 0,
+// the URI in the page's PageData::text as LinkArea's) or a GoTo link's, whose destination
+// (`target`: its /Dest or its GoTo action's /D, unresolved) ResolveLinkTargets turns into `page`
+// (1-based; 0 when it leads to no page) once every page is read.
+struct PageLink {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    uint32_t uri = 0, uriLength = 0;
+    const PdfValue* target = nullptr;
+    int page = 0;
+};
+
 // A straight axis-aligned piece of a painted path, as painted (a stroke widened by its line width,
 // a filled rectangle as its box, a side of a filled polygon with no thickness): the raw material of
 // table rulings (algorithms §6.7). A stroked rectangle is recorded as its four sides; pieces under
@@ -338,6 +350,7 @@ struct PageData {
 
     std::string_view GlyphText(const Glyph& g) const { return std::string_view(text).substr(g.text, g.textLength); }
     std::string_view LinkUri(const LinkArea& l) const { return std::string_view(text).substr(l.uri, l.uriLength); }
+    std::string_view LinkUri(const PageLink& l) const { return std::string_view(text).substr(l.uri, l.uriLength); }
     std::string_view ImageName(const ImageBox& i) const { return std::string_view(text).substr(i.name, i.nameLength); }
     std::string_view ImageAlt(const ImageBox& i) const { return std::string_view(text).substr(i.alt, i.altLength); }
     std::string_view ImageOcrText(const ImageBox& i) const { return std::string_view(text).substr(i.ocr, i.ocrLength); }

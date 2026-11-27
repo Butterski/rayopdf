@@ -386,7 +386,7 @@ public:
     Interpreter(const Document& document, Text::FontCache& fonts, PageData& page, PageStats& stats)
         : doc_(document), fonts_(fonts), page_(page), stats_(stats) {}
 
-    void Run(int index, AnnotationMode annotations);
+    void Run(int index, AnnotationMode annotations, std::vector<PageLink>* links);
 
 private:
     void RunStream(std::string_view content, const PdfValue& resources, int depth);
@@ -419,8 +419,8 @@ private:
     RAYOPDF_HOT_INLINE void AddPiece(double x0, double y0, double x1, double y1, bool rect);
     RAYOPDF_NOINLINE void InlineImage(const PdfValue& dictionary, const PdfValue& resources, std::string_view data);
     void PaintedSample(const PdfValue& dictionary, std::string_view data);
-    // The page's /Annots in order (Run, after the content): link areas, and with `draw` the text
-    // of form fields and FreeText annotations.
+    // The page's /Annots in order (Run, after the content): link areas (and with links_ the JSON
+    // output's links), and with `draw` the text of form fields and FreeText annotations.
     void ReadAnnotations(int index, bool draw);
     void ReadLink(const PdfValue& annot);
     // A markup annotation kept as data (PageData::markups), unless the page holds
@@ -523,9 +523,12 @@ private:
     std::string_view formDa_;
     bool needAppearances_ = false;
     uint32_t annotationsDrawn_ = 0;
+    std::vector<PageLink>* links_ = nullptr;  // Run's `links`: the JSON output's, or null
 };
 
-void Interpreter::Run(int index, AnnotationMode annotations) {
+void Interpreter::Run(int index, AnnotationMode annotations, std::vector<PageLink>* links) {
+    links_ = links;
+    if (links) links->clear();
     const PdfRect crop = doc_.CropBox(index);
     const int rotate = doc_.Rotate(index);
     const double w = crop.Width(), h = crop.Height();
@@ -1787,7 +1790,7 @@ void Interpreter::ReadAnnotations(int index, bool draw) {
         const PdfValue& annot = doc_.Resolve(item);
         const PdfValue& subtype = doc_.Get(annot, "Subtype");
         if (subtype.IsName("Link")) {
-            if (page_.links.size() < kMaxLinksPerPage) ReadLink(annot);
+            ReadLink(annot);
             continue;
         }
         if (draw && subtype.IsName()) {
@@ -1832,15 +1835,28 @@ void Interpreter::ReadAnnotations(int index, bool draw) {
 }
 
 void Interpreter::ReadLink(const PdfValue& annot) {
+    const bool area = page_.links.size() < kMaxLinksPerPage;
+    const bool listed = links_ && links_->size() < kMaxLinksPerPage;
+    if (!area && !listed) return;
     const PdfValue& action = doc_.Get(annot, "A");
-    if (!doc_.Get(action, "S").IsName("URI")) return;
+    const bool uriAction = doc_.Get(action, "S").IsName("URI");
+    // A GoTo link, the JSON output's only: its destination, resolved once every page is read.
+    const PdfValue* target = !uriAction && listed ? Destinations(doc_).TargetOf(annot) : nullptr;
+    if (!uriAction && !target) return;
     const PdfValue& uri = doc_.Get(action, "URI");
-    if (!uri.IsString() || uri.String().empty()) return;
+    if (uriAction && (!uri.IsString() || uri.String().empty())) return;
     PdfRect rect;
     if (!doc_.Rect(doc_.Get(annot, "Rect"), rect)) return;
     Box box = UnitSquare(Multiply(Matrix{rect.Width(), 0, 0, rect.Height(), rect.x0, rect.y0}, pageMatrix_));
+    PageLink entry;
+    entry.x0 = float(box.x0), entry.y0 = float(box.y0), entry.x1 = float(box.x1), entry.y1 = float(box.y1);
+    if (target) {
+        entry.target = target;
+        links_->push_back(entry);
+        return;
+    }
     LinkArea link;
-    link.x0 = float(box.x0), link.y0 = float(box.y0), link.x1 = float(box.x1), link.y1 = float(box.y1);
+    link.x0 = entry.x0, link.y0 = entry.y0, link.x1 = entry.x1, link.y1 = entry.y1;
     link.uri = static_cast<uint32_t>(page_.text.size());
     std::string_view bytes = uri.String().substr(0, 8192);
     // URIs are 7-bit ASCII (§12.6.4.7); spaces and controls are percent-encoded.
@@ -1855,7 +1871,11 @@ void Interpreter::ReadLink(const PdfValue& annot) {
         }
     }
     link.uriLength = static_cast<uint32_t>(page_.text.size() - link.uri);
-    page_.links.push_back(link);
+    if (area) page_.links.push_back(link);
+    if (listed) {
+        entry.uri = link.uri, entry.uriLength = link.uriLength;
+        links_->push_back(entry);
+    }
 }
 
 void Interpreter::ReadMarkup(const PdfValue& annot, MarkupKind kind) {
@@ -2246,11 +2266,18 @@ void AppendTextString(std::string_view bytes, std::string& out) {
 }
 
 void InterpretPage(const Document& document, Text::FontCache& fonts, int index, AnnotationMode annotations,
-                   PageData& page, PageStats& stats) {
+                   std::vector<PageLink>* links, PageData& page, PageStats& stats) {
     page.Clear();
     page.number = index + 1;
     Interpreter interpreter(document, fonts, page, stats);
-    interpreter.Run(index, annotations);
+    interpreter.Run(index, annotations, links);
+}
+
+void ResolveLinkTargets(const Document& document, std::vector<std::vector<PageLink>>& links) {
+    Destinations destinations(document);
+    for (std::vector<PageLink>& page : links)
+        for (PageLink& link : page)
+            if (link.target) link.page = destinations.PageOf(*link.target) + 1;
 }
 
 void ReadOutline(const Document& document, std::vector<OutlineEntry>& out, bool targets) {

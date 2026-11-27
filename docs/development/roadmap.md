@@ -303,6 +303,14 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   range in style `/S` (`D`; `R`, `r` Roman, thousands as M repeated at most 64 times; `A`, `a`
   one letter repeated, at most 64 times; beyond those limits decimal); no `/S` gives the prefix
   alone, a page before every range `""`.
+  Page links (2026-11-27): a page with link annotations has `links` after `label`, one
+  `{"box","uri"}` (a URI action, as the Markdown's link areas read it) or `{"box","page"}` (a
+  `/Dest` or GoTo action's destination, resolved after the pages are read through the
+  destinations of the outline: explicit, named in `/Dests` or in `/Names /Dests`; `null` when it
+  leads to no page) a link in `/Annots` order, at most 16,384 a page. They are a list of their
+  own beside the pages (InterpretPage's `links`, read in the same `/Annots` pass; PageData is
+  unchanged), never the Markdown's link areas; read only for JSON and not with
+  `--annotations=none`.
 - Output options for conventions on which benchmarks' ground truths contradict each other
   (decided 2026-11-13; off by default, the default output byte-identical): `--plain` writes no
   inline markup (no emphasis, code spans, strikethrough or links, whose text stays; scripts

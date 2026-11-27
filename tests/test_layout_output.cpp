@@ -933,9 +933,9 @@ void TestJsonDetail() {
 // A PDF of `count` pages (at most 6), each with a sentence of its own in the middle of the page
 // (page 1: "Alpha is the first page."): the catalog is object 1, the page tree 2, page N object
 // N + 2; `extra` bodies follow as objects 2 * count + 3 on. `catalog` adds entries to the catalog,
-// `trailer` to the trailer.
+// `trailer` to the trailer, `firstPage` to page 1's dictionary.
 std::string PagesPdf(int count, const std::string& catalog, const std::vector<std::string>& extra = {},
-                     const std::string& trailer = "") {
+                     const std::string& trailer = "", const std::string& firstPage = "") {
     static const char* const kWords[] = {"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"};
     static const char* const kOrdinals[] = {"first", "second", "third", "fourth", "fifth", "sixth"};
     Test::PdfBuilder b;
@@ -947,7 +947,8 @@ std::string PagesPdf(int count, const std::string& catalog, const std::vector<st
         const int content = b.AddFlateStream("", std::string("BT /F1 12 Tf 72 ") + std::to_string(500 - 40 * n) + " Td (" +
                                                      kWords[n - 1] + " is the " + kOrdinals[n - 1] + " page.) Tj ET");
         b.Set(n + 2, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font "
-                     "/Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents " + std::to_string(content) + " 0 R >>");
+                     "/Subtype /Type1 /BaseFont /Helvetica >> >> >> " + (n == 1 ? firstPage + " " : std::string()) +
+                     "/Contents " + std::to_string(content) + " 0 R >>");
     }
     for (const std::string& body : extra) b.Add(body);
     b.Set(root, "<< /Type /Catalog /Pages 2 0 R " + catalog + " >>");
@@ -1024,6 +1025,43 @@ void TestLabelsAndLanguage() {
     RAYOPDF_CHECK(ConvertPdf(PagesPdf(1, "/Lang (de)"), options) ==
                       "---\nlanguage: \"de\"\npages: 1\n---\n\nAlpha is the first page.\n",
                   2664);
+}
+
+// The JSON output's page links: a URI link (its URI percent-encoded as the Markdown's), GoTo links
+// to an explicit destination, a name in the catalog's /Dests and nothing, in /Annots order; a
+// Launch link and a link without a rectangle left out; none with --annotations=none; a target
+// outside --pages still resolved; the Markdown as without the GoTo links.
+void TestJsonLinks() {
+    const std::string goTo = "/Annots [<< /Subtype /Link /Rect [72 600 100 610] /Dest [5 0 R /Fit] >> "
+                             "<< /Subtype /Link /Rect [72 580 100 590] /A << /S /GoTo /D /results >> >> "
+                             "<< /Subtype /Link /Rect [72 560 100 570] /Dest (missing) >> "
+                             "<< /Subtype /Link /Rect [72 540 100 550] /A << /S /Launch /F (x.pdf) >> >> "
+                             "<< /Subtype /Link /Dest [4 0 R /Fit] >>";
+    const std::string uri = "<< /Subtype /Link /Rect [200 720 72 700] /A << /S /URI /URI (https://example.org/a b) >> >>";
+    const std::string catalog = "/Dests << /results [4 0 R /FitH 700] >>";
+    const std::string pdf = PagesPdf(3, catalog, {}, "", goTo + " " + uri + "]");
+    ConvertOptions options;
+    options.ocr.mode = OcrMode::Off;
+    options.format = OutputFormat::Json;
+    const std::string json = ConvertPdf(pdf, options);
+    Show("links", json);
+    RAYOPDF_CHECK(Contains(json, "\"pages\":[{\"page\":1,\"width\":612.00,\"height\":792.00,\"links\":["
+                                 "{\"box\":[72.00,600.00,100.00,610.00],\"page\":3},"
+                                 "{\"box\":[72.00,580.00,100.00,590.00],\"page\":2},"
+                                 "{\"box\":[72.00,560.00,100.00,570.00],\"page\":null},"
+                                 "{\"box\":[72.00,700.00,200.00,720.00],\"uri\":\"https://example.org/a%20b\"}]},"
+                                 "{\"page\":2,\"width\":612.00,\"height\":792.00},"),
+                  2684);
+    options.firstPage = options.lastPage = 1;
+    RAYOPDF_CHECK(Contains(ConvertPdf(pdf, options), "{\"box\":[72.00,600.00,100.00,610.00],\"page\":3}"), 2685);
+    options.firstPage = options.lastPage = 0;
+    options.annotations = AnnotationMode::None;
+    RAYOPDF_CHECK(!Contains(ConvertPdf(pdf, options), "\"links\""), 2686);
+    options.annotations = AnnotationMode::All;
+    options.format = OutputFormat::Markdown;
+    RAYOPDF_CHECK(ConvertPdf(PagesPdf(3, catalog, {}, "", goTo + "]"), options) ==
+                      ConvertPdf(PagesPdf(3, catalog), options),
+                  2687);
 }
 
 // A figure's caption and a sentence that names a table.
@@ -1169,6 +1207,7 @@ int main() {
     TestJsonDetail();
     TestOutlineTargets();
     TestLabelsAndLanguage();
+    TestJsonLinks();
     TestRoles();
     TestText();
     TestHtml();

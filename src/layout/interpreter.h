@@ -11,7 +11,8 @@
 // operator; a stream that cannot be decoded or interpreted fully counts as a content error.
 //
 // After the content, the page's annotations (§12.5) in /Annots order: link annotations with a URI
-// action become link areas; with AnnotationMode::All the text of form fields (widgets: not
+// action become link areas (and, for the JSON output, the page's PageLink list also takes GoTo links);
+// with AnnotationMode::All the text of form fields (widgets: not
 // pushbuttons or signatures) and FreeText annotations is drawn as glyphs after the content's, as a
 // viewer shows it on screen (not Hidden or NoView). An appearance (/AP /N, a state dictionary's
 // stream through /AS) is placed on /Rect (§12.5.5) from the state the content left reset, and
@@ -84,9 +85,15 @@ struct PageStats {
 };
 
 // Interprets page `index` (0-based) of `document` into `page` (cleared first), with its
-// annotations as `annotations` asks.
+// annotations as `annotations` asks. `links` (the JSON output's, else null), cleared first, also
+// gets the page's link annotations, URI and GoTo (none when `annotations` is None).
 void InterpretPage(const Document& document, Text::FontCache& fonts, int index, AnnotationMode annotations,
-                   PageData& page, PageStats& stats);
+                   std::vector<PageLink>* links, PageData& page, PageStats& stats);
+
+// The pages the GoTo links of `links` (one list a page) lead to, through the document's
+// destinations (an explicit destination, or one named in the catalog's /Dests or /Names /Dests;
+// pdf/trees.h).
+void ResolveLinkTargets(const Document& document, std::vector<std::vector<PageLink>>& links);
 
 // The document outline (§12.3.3), depth-first, at most kMaxOutlineEntries entries. `targets` also
 // resolves each item's destination (its /Dest, or the /D of a GoTo action: an explicit
