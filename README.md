@@ -105,7 +105,7 @@ print(rayopdf.convert("paper.pdf").text)
 ## Usage
 
 ```sh
-rayopdf --convert IN.pdf OUT.md [options]          # one PDF; OUT.md "-" writes to standard output
+rayopdf --convert IN.pdf OUT.md [options]          # one PDF; "-" reads standard input or writes standard output
 rayopdf --batch IN-FOLDER OUT-FOLDER [options]     # every *.pdf of a folder
 rayopdf --serve --json [options]                   # a long-running process: JSON requests, one a line
 rayopdf --inspect IN.pdf                           # the document's properties as JSON, no conversion

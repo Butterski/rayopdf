@@ -173,8 +173,11 @@ std::vector<std::string> Scripts(const Ocr::Dictionary& dictionary) {
     return scripts;
 }
 
+// A read error ends the requests as the end of the input does.
 size_t ReadInput(void*, char* buffer, size_t size) {
-    return File::ReadStandardInput(buffer, size);
+    size_t got = 0;
+    File::ReadStandardInput(buffer, size, got);
+    return got;
 }
 
 bool WriteOutput(void*, std::string_view bytes) {

@@ -143,11 +143,12 @@ private:
 
 // The standard streams as bytes: no text-mode translation and no stdio buffer. A write is one
 // system call for the whole text (repeated only when the system takes part of it), so the lines of
-// several threads do not mix. ReadStandardInput returns what the input has, up to `size` bytes, as
-// soon as it has any (never waiting for a full buffer); 0 at its end or on an error.
+// several threads do not mix. ReadStandardInput puts into `got` what the input has, up to `size`
+// bytes, as soon as it has any (never waiting for a full buffer), and 0 at its end; false (and
+// `got` 0) when the read fails, which is not the end of the input.
 bool WriteStandardOutput(std::string_view content);
 bool WriteStandardError(std::string_view content);
-size_t ReadStandardInput(char* buffer, size_t size);
+bool ReadStandardInput(char* buffer, size_t size, size_t& got);
 
 // The command line's arguments as UTF-8: `argv` as given on Linux; on Windows the wide command line,
 // as `argv` holds only the system's ANSI code page. Puts the standard streams into binary mode there.

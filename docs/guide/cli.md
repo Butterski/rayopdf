@@ -47,6 +47,15 @@ rayopdf --convert report.pdf - | less
 
 The same file and the same options always give the same bytes.
 
+The input `-` reads the PDF from standard input, to its end, and converts it as the file with
+the same bytes; messages call it `standard input`, and the `--report` record's `input` is `-`:
+
+```sh
+curl -s https://example.org/report.pdf | rayopdf --convert - report.md
+```
+
+`--batch`, `--serve` and the developer option `--bench` read files only.
+
 ## Options
 
 ### Pages, passwords and images
@@ -250,7 +259,8 @@ rayopdf --inspect file.pdf [--password=PW]
 `--inspect` prints the document's properties as one JSON object, without converting it:
 `file`, `bytes`, `version`, `pages`, `objects`, `encrypted`, `repaired`, `linearized`,
 `xref_sections`, `title`, `producer` and `creator` (when the PDF has them), `tagged`,
-`first_page` (its `width`, `height` and `rotate`) and `broken_objects`.
+`first_page` (its `width`, `height` and `rotate`) and `broken_objects`. The input `-` reads the
+PDF from standard input, as with `--convert`; `file` is then `-`.
 
 ## Exit codes
 
@@ -258,7 +268,7 @@ rayopdf --inspect file.pdf [--password=PW]
 |---|---|
 | 0 | Converted. |
 | 2 | Usage error: an unknown option or an invalid value. |
-| 3 | The input cannot be read: missing, not a file, or larger than 4 GiB. |
+| 3 | The input cannot be read: missing, not a file, larger than 4 GiB, or a failed read of standard input. |
 | 10 | Not a PDF, corrupt beyond repair, or past a document limit. |
 | 11 | Password required: the PDF is encrypted and no password, or a wrong one, was given. |
 | 12 | An output could not be written. |

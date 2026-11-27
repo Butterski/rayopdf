@@ -418,6 +418,12 @@ rayopdf --bench IN.pdf TMPDIR N [options]       (developer option, performance.m
 rayopdf --features edge-rows IN.pdf OUT.jsonl [options]   (developer option, eval/train/)
 ```
 
+IN.pdf `-` (2026-11-27) reads the PDF from standard input, to its end (at most 4 GiB; a failed
+read is exit code 3, not the end of the input), for `--convert` and `--inspect`; messages name it
+`standard input`, the record's `input` is `-`. `--bench -` is a usage error (it reads its input
+once a run); `--batch` and a serve request's `input` read files only, as serve's requests come
+on standard input.
+
 `--features` converts IN.pdf on one page thread and writes, one JSON object a line, the feature
 vectors of the decisions small models may learn (`src/layout/features.h`): every edge row the
 furniture rules examine in the outer tenth of a page, `{"page","box":[x0,y0,x1,y1],"text","f":[23

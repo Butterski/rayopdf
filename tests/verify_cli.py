@@ -6,8 +6,8 @@ one), --batch (records, exit codes, subfolders, skipping, the same files and rec
 workers) and --serve --json (several requests, malformed ones among them, answers in request order
 with 1 and 4 workers), and the output options (--format=json, --format=chunks, --chunk-chars,
 --format=inspect, --format=text, --format=html, --page-markers, --front-matter, --furniture,
---plain, --tables). It builds the PDFs it needs in a temporary directory (none are committed) and
-never times anything.
+--plain, --tables) and IN.pdf "-" (standard input). It builds the PDFs it needs in a temporary
+directory (none are committed) and never times anything.
 
 Usage:
   python3 tests/verify_cli.py --binary build/release/rayopdf [--emulator wine]
@@ -557,6 +557,46 @@ def check_html(c: Checker, work: Path, hello: str) -> None:
             "markdown" not in answer, repr(answer)[:300])
 
 
+def check_standard_input(c: Checker, work: Path, hello: str, emulated: bool) -> None:
+    """IN.pdf "-": --convert and --inspect read the PDF from standard input, with the output and
+    record of the file; empty input is not a PDF; a failed read is an unreadable input, not the end
+    of the input; --bench refuses it."""
+    pdf = Path(hello).read_bytes()
+    pages = str(work / "pages.pdf")
+    expected = c.run("--convert", pages, "-").stdout
+    r = c.run("--convert", "-", "-", stdin=Path(pages).read_bytes())
+    c.check("convert from standard input", r.returncode == 0 and r.stdout == expected and expected != b"",
+            f"{r.returncode} {r.stderr!r}")
+    out = work / "stdin.md"
+    r = c.run("--convert", "-", str(out), "--report", stdin=pdf)
+    try:
+        report = json.loads(r.stdout)
+    except ValueError:
+        report = {}
+    c.check("standard input with a report", r.returncode == 0 and report.get("input") == "-" and
+            report.get("status") == "ok" and report.get("pages") == 1 and out.is_file() and
+            "Hello World" in out.read_text(encoding="utf-8"), repr(r.stdout))
+    r = c.run("--inspect", "-", stdin=pdf)
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        info = {}
+    c.check("inspect from standard input", r.returncode == 0 and info.get("file") == "-" and
+            info.get("bytes") == len(pdf) and info.get("pages") == 1, repr(r.stdout))
+    r = c.run("--convert", "-", "-", stdin=b"")
+    c.check("empty standard input", r.returncode == 10 and b"standard input" in r.stderr, repr(r.stderr))
+    r = c.run("--bench", "-", str(work / "bench-stdin"), "1", stdin=pdf)
+    c.check("bench refuses standard input", r.returncode == 2, repr(r.stderr))
+    if os.name == "posix" and not emulated:
+        folder = os.open(work, os.O_RDONLY)  # read(2) on a directory fails with EISDIR
+        try:
+            r = subprocess.run([*c.command, "--convert", "-", "-"], stdin=folder, capture_output=True, timeout=300)
+        finally:
+            os.close(folder)
+        c.check("failed read of standard input", r.returncode == 3 and b"cannot read standard input" in r.stderr,
+                f"{r.returncode} {r.stderr!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--binary", required=True)
@@ -672,6 +712,7 @@ def main() -> int:
         check_inspect(c, work, hello)
         check_text(c, work, hello)
         check_html(c, work, hello)
+        check_standard_input(c, work, hello, args.emulator is not None)
         check_batch(c, work, picture)
         check_serve(c, work, hello, locked, picture)
 

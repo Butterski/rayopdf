@@ -81,6 +81,12 @@ are written):
 rayopdf --convert paper.pdf -
 ```
 
+Input `-` reads the PDF from standard input (1.2.0 and later), for a PDF that is not a file:
+
+```sh
+curl -s https://example.org/paper.pdf | rayopdf --convert - paper.md
+```
+
 Options go after the output path, in any order:
 
 | Ask | Arguments |

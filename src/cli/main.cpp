@@ -17,14 +17,15 @@
 //   rayopdf --features edge-rows IN.pdf OUT.jsonl [options]                    (developer option)
 //   rayopdf --version | --help
 //
-// OUT.md "-" writes the Markdown to standard output. Images go to OUT-images/ beside OUT.md
-// unless --images says otherwise (none with "-"). Exit codes: 0 converted, 2 usage error,
-// 3 unreadable input, 10 corrupt beyond repair, 11 password required, 12 unwritable output,
-// 13 unsupported encryption. A batch exits with the code of its last failed document in input
-// order. The batch modes' records and files never depend on the number of workers: documents are
-// converted independently and records are written in input order. --convert (and --bench with
-// --workers) reads the pages of a document of several pages on several threads instead, with the
-// same output (layout/convert.h). Each worker keeps its own OCR
+// IN.pdf "-" reads the PDF from standard input, to its end (--convert and --inspect; not --bench,
+// which reads its input once a run). OUT.md "-" writes the Markdown to standard output. Images go
+// to OUT-images/ beside OUT.md unless --images says otherwise (none with "-"). Exit codes: 0
+// converted, 2 usage error, 3 unreadable input, 10 corrupt beyond repair, 11 password required,
+// 12 unwritable output, 13 unsupported encryption. A batch exits with the code of its last failed
+// document in input order. The batch modes' records and files never depend on the number of
+// workers: documents are converted independently and records are written in input order.
+// --convert (and --bench with --workers) reads the pages of a document of several pages on
+// several threads instead, with the same output (layout/convert.h). Each worker keeps its own OCR
 // add-on process (started when a document first needs it), and the add-on answers the same
 // request the same way, so OCR does not change that.
 
@@ -97,12 +98,14 @@ void PrintUsage(std::FILE* out) {
         "rayopdf " RAYOPDF_VERSION " - PDF to Markdown\n"
         "\n"
         "Usage:\n"
-        "  rayopdf --convert IN.pdf OUT.md [options]   convert (OUT.md \"-\" is standard output)\n"
+        "  rayopdf --convert IN.pdf OUT.md [options]   convert (IN.pdf \"-\" is standard input,\n"
+        "                                               OUT.md \"-\" standard output)\n"
         "  rayopdf --batch IN-FOLDER OUT-FOLDER [options] [batch options]\n"
         "                                               convert every *.pdf of a folder to OUT-FOLDER\n"
         "  rayopdf --serve --json [options] [--workers=N]\n"
         "                                               answer JSON requests, one a line (protocol 1)\n"
         "  rayopdf --inspect IN.pdf [--password=PW]     print the document's structure as JSON\n"
+        "                                               (IN.pdf \"-\" is standard input)\n"
         "  rayopdf --version | --help\n"
         "\n"
         "Developer option (performance measurements, docs/development/performance.md):\n"
@@ -281,21 +284,72 @@ void ChooseImageTarget(const std::string& output, const DocumentOptions& documen
     options.imageLinkPrefix = Relative(from, File::AbsolutePath(directory));
 }
 
-int Inspect(const std::string& input, std::string_view password) {
+// Reads standard input to its end into `bytes` (--convert - and --inspect -): at most
+// Api::kMaxInputBytes, and a failed read is an error, not the end of a shorter input.
+int ReadAllStandardInput(std::string& bytes, std::string& error) {
+    const uint64_t limit = std::min<uint64_t>(Api::kMaxInputBytes, SIZE_MAX / 2);
+    size_t size = 0;
+    bytes.resize(size_t(1) << 16);
+    for (;;) {
+        if (size == bytes.size()) {
+            if (size > limit) {
+                error = "standard input is too large";
+                return kExitUnreadable;
+            }
+            bytes.resize(static_cast<size_t>(std::min<uint64_t>(uint64_t(size) * 2, limit + 1)));
+        }
+        size_t got = 0;
+        if (!File::ReadStandardInput(&bytes[size], bytes.size() - size, got)) {
+            error = "cannot read standard input";
+            return kExitUnreadable;
+        }
+        if (got == 0) break;
+        size += got;
+    }
+    bytes.resize(size);
+    return kExitOk;
+}
+
+// What a conversion reads: the input's bytes and the document over them.
+struct Source {
     File::InputFile file;
-    std::string error;
+    std::string standardInput;  // the input's bytes when it is standard input
     std::unique_ptr<Document> document;
-    int code = static_cast<int>(Api::ReadInput(input, file, error));
-    if (code == kExitOk) code = static_cast<int>(Api::OpenDocument(input, file.Bytes(), password, document, error));
+
+    std::string_view Bytes() const { return standardInput.empty() ? file.Bytes() : std::string_view(standardInput); }
+};
+
+// Reads `input` into `source` and opens the document over it; a code other than kExitOk, with
+// `error`, when it cannot. With `standardInput` (--convert and --inspect), the input "-" is
+// standard input, read to its end; elsewhere "-" is a path like any other (serve's requests come
+// on standard input). `inputBuffer` as ConvertSource's.
+int OpenSource(const std::string& input, std::string_view password, bool standardInput, Source& source,
+               std::string* inputBuffer, std::string& error) {
+    if (standardInput && input == "-") {
+        const int code = ReadAllStandardInput(source.standardInput, error);
+        if (code != kExitOk) return code;
+        return static_cast<int>(Api::OpenDocument("standard input", source.standardInput, password, source.document,
+                                                  error));
+    }
+    const int code = static_cast<int>(Api::ReadInput(input, source.file, error, inputBuffer));
+    if (code != kExitOk) return code;
+    return static_cast<int>(Api::OpenDocument(input, source.file.Bytes(), password, source.document, error));
+}
+
+int Inspect(const std::string& input, std::string_view password) {
+    Source source;
+    std::string error;
+    const int code = OpenSource(input, password, true, source, nullptr, error);
     if (code != kExitOk) {
         PrintError(error);
         return code;
     }
+    const std::unique_ptr<Document>& document = source.document;
 
     const DocumentReport& report = document->Report();
     std::string json = "{";
     AppendField(json, "file", std::string_view(input));
-    AppendField(json, "bytes", static_cast<uint64_t>(file.Bytes().size()));
+    AppendField(json, "bytes", static_cast<uint64_t>(source.Bytes().size()));
     AppendField(json, "version", document->Version());
     AppendField(json, "pages", static_cast<uint64_t>(document->PageCount()));
     AppendField(json, "objects", static_cast<uint64_t>(document->ObjectCount()));
@@ -353,24 +407,15 @@ void SetOneShotAllocator() {
 #endif
 }
 
-// What a conversion reads: the input's bytes and the document over them.
-struct Source {
-    File::InputFile file;
-    std::unique_ptr<Document> document;
-};
-
 // Converts `input` into `markdown` and writes it to `output` ("-": standard output; "": not
 // written, the caller takes `markdown`). `record` gets the outcome: code, error, pages, bytes and,
 // when `counters`, the counters (ms is the caller's). `source` holds the input and the document
 // until the caller drops it. `inputBuffer`: a buffer the caller keeps from document to document
-// for small inputs (the batch modes' workers), or null.
+// for small inputs (the batch modes' workers), or null. `standardInput`: as OpenSource's.
 void ConvertSource(const std::string& input, const std::string& output, std::string_view password,
                    const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
-                   bool counters, Source& source, std::string* inputBuffer) {
-    int code = static_cast<int>(Api::ReadInput(input, source.file, record.error, inputBuffer));
-    if (code == kExitOk) {
-        code = static_cast<int>(Api::OpenDocument(input, source.file.Bytes(), password, source.document, record.error));
-    }
+                   bool counters, Source& source, std::string* inputBuffer, bool standardInput) {
+    const int code = OpenSource(input, password, standardInput, source, inputBuffer, record.error);
     if (code != kExitOk) {
         record.status = "error";
         record.code = code;
@@ -394,7 +439,7 @@ void ConvertDocument(const std::string& input, const std::string& output, std::s
                      const Layout::ConvertOptions& options, std::string& markdown, Batch::Record& record,
                      bool counters, std::string* inputBuffer = nullptr) {
     Source source;
-    ConvertSource(input, output, password, options, markdown, record, counters, source, inputBuffer);
+    ConvertSource(input, output, password, options, markdown, record, counters, source, inputBuffer, false);
 }
 
 // --convert: one conversion in a process of its own, which main ends with _Exit when this
@@ -406,7 +451,7 @@ int ConvertFile(const std::string& input, const std::string& output, const Docum
     const Clock::time_point start = report ? Clock::now() : Clock::time_point();
     std::string& markdown = *new std::string();
     Batch::Record record;
-    ConvertSource(input, output, document.password, options, markdown, record, report, *new Source(), nullptr);
+    ConvertSource(input, output, document.password, options, markdown, record, report, *new Source(), nullptr, true);
     if (record.code != kExitOk) PrintError(record.error);
     if (report) {
         record.input = input;
@@ -802,8 +847,11 @@ std::string ServeError(const std::string& id, const std::string& error) {
     return line;
 }
 
+// A read error ends the requests as the end of the input does.
 size_t ReadStandardInput(void*, char* buffer, size_t size) {
-    return File::ReadStandardInput(buffer, size);
+    size_t got = 0;
+    File::ReadStandardInput(buffer, size, got);
+    return got;
 }
 
 // Requests waiting for a serve worker, at most `capacity`; the reader waits while it is full.
@@ -962,6 +1010,7 @@ int main(int argc, char** argv) {
             if (i + 3 >= args.size()) return Usage("--bench needs IN.pdf, TMPDIR and N");
             mode = Mode::Bench;
             input = args[++i];
+            if (input == "-") return Usage("--bench reads its input again for each run: give a file, not -");
             output = args[++i];
             benchCount = args[++i];
         } else if (arg == "--report") {

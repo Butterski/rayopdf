@@ -384,11 +384,16 @@ bool WriteStandardError(std::string_view content) {
     return WriteHandle(GetStdHandle(STD_ERROR_HANDLE), content);
 }
 
-size_t ReadStandardInput(char* buffer, size_t size) {
+bool ReadStandardInput(char* buffer, size_t size, size_t& got) {
     const DWORD chunk = size > (DWORD(1) << 30) ? (DWORD(1) << 30) : static_cast<DWORD>(size);
-    DWORD got = 0;
-    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, chunk, &got, nullptr)) return 0;
-    return got;
+    DWORD count = 0;
+    got = 0;
+    // A pipe whose writer has closed it ends with ERROR_BROKEN_PIPE: the end of the input.
+    if (!ReadFile(GetStdHandle(STD_INPUT_HANDLE), buffer, chunk, &count, nullptr)) {
+        return GetLastError() == ERROR_BROKEN_PIPE;
+    }
+    got = count;
+    return true;
 }
 
 std::vector<std::string> Arguments(int argc, char** argv) {
@@ -750,11 +755,15 @@ bool WriteStandardError(std::string_view content) {
     return WriteFd(STDERR_FILENO, content);
 }
 
-size_t ReadStandardInput(char* buffer, size_t size) {
+bool ReadStandardInput(char* buffer, size_t size, size_t& got) {
+    got = 0;
     for (;;) {
-        const ssize_t got = read(STDIN_FILENO, buffer, size);
-        if (got >= 0) return static_cast<size_t>(got);
-        if (errno != EINTR) return 0;
+        const ssize_t count = read(STDIN_FILENO, buffer, size);
+        if (count >= 0) {
+            got = static_cast<size_t>(count);
+            return true;
+        }
+        if (errno != EINTR) return false;
     }
 }
 
