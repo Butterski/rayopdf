@@ -786,8 +786,9 @@ void DropLineNumbers(PageData& page) {
     std::vector<uint32_t> byBase;
     for (uint32_t li = 0; li < page.lines.size(); ++li)
         if (page.lines[li].dir == 0 && page.lines[li].count > 0) byBase.push_back(li);
-    std::sort(byBase.begin(), byBase.end(),
-              [&](uint32_t a, uint32_t b) { return page.lines[a].baseline < page.lines[b].baseline; });
+    std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
+        return page.lines[a].baseline != page.lines[b].baseline ? page.lines[a].baseline < page.lines[b].baseline : a < b;
+    });
     for (NumberCandidate& c : cands) {
         if (c.code || c.digits != page.lines[c.line].count) continue;
         auto it = std::lower_bound(byBase.begin(), byBase.end(), c.baseline - 0.3f * c.size,
@@ -805,7 +806,8 @@ void DropLineNumbers(PageData& page) {
 
     // Runs, top to bottom.
     std::sort(cands.begin(), cands.end(), [](const NumberCandidate& a, const NumberCandidate& b) {
-        return a.baseline != b.baseline ? a.baseline > b.baseline : a.right < b.right;
+        if (a.baseline != b.baseline) return a.baseline > b.baseline;
+        return a.right != b.right ? a.right < b.right : a.line < b.line;
     });
     std::vector<uint8_t> drop(cands.size(), 0);
     size_t begin = 0;
@@ -1767,7 +1769,8 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         const Fragment& y = frags[b];
         if (x.dir != y.dir) return x.dir < y.dir;
         if (x.baseline != y.baseline) return x.baseline > y.baseline;
-        return x.u0 < y.u0;
+        if (x.u0 != y.u0) return x.u0 < y.u0;
+        return x.u1 != y.u1 ? x.u1 < y.u1 : a < b;
     });
 
     std::vector<uint32_t>& members = place.members;
@@ -1784,7 +1787,14 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
             ++end;
         }
         cluster.assign(fo.begin() + static_cast<std::ptrdiff_t>(at), fo.begin() + static_cast<std::ptrdiff_t>(end));
-        std::sort(cluster.begin(), cluster.end(), [&](uint32_t a, uint32_t b) { return frags[a].u0 < frags[b].u0; });
+        // Ties keep the baseline order above (a fragment on a higher baseline first).
+        std::sort(cluster.begin(), cluster.end(), [&](uint32_t a, uint32_t b) {
+            const Fragment& x = frags[a];
+            const Fragment& y = frags[b];
+            if (x.u0 != y.u0) return x.u0 < y.u0;
+            if (x.baseline != y.baseline) return x.baseline > y.baseline;
+            return x.u1 != y.u1 ? x.u1 < y.u1 : a < b;
+        });
         Group g;
         for (size_t c = 0; c < cluster.size(); ++c) {
             const Fragment& f = frags[cluster[c]];
@@ -2226,7 +2236,7 @@ void PlaceGlyphs(PageData& page, std::vector<uint32_t>& vis, bool mathScripts, c
         for (uint32_t i = 0; i < protos.size(); ++i) byBase[i] = i;
         std::sort(byBase.begin(), byBase.end(), [&](uint32_t a, uint32_t b) {
             if (protos[a].dir != protos[b].dir) return protos[a].dir < protos[b].dir;
-            return protos[a].baseline > protos[b].baseline;
+            return protos[a].baseline != protos[b].baseline ? protos[a].baseline > protos[b].baseline : a < b;
         });
         uint32_t candidates = 0;
         for (size_t r = 0; r < byBase.size(); ++r) {

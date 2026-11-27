@@ -31,6 +31,25 @@ struct Edge {
     bool area = false;            // only the side of a filled area (a shaded box), no drawn rule
 };
 
+// Edges along their axis (EdgeAt) or along their run (EdgeAlong), every field breaking ties: one
+// order with any standard library's sort. Function objects, so that each sort inlines them.
+struct EdgeAt {
+    bool operator()(const Edge& p, const Edge& q) const {
+        if (p.pos != q.pos) return p.pos < q.pos;
+        if (p.a != q.a) return p.a < q.a;
+        if (p.b != q.b) return p.b < q.b;
+        return p.area != q.area ? p.area < q.area : p.comp < q.comp;
+    }
+};
+struct EdgeAlong {
+    bool operator()(const Edge& p, const Edge& q) const {
+        if (p.a != q.a) return p.a < q.a;
+        if (p.b != q.b) return p.b < q.b;
+        if (p.pos != q.pos) return p.pos < q.pos;
+        return p.area != q.area ? p.area < q.area : p.comp < q.comp;
+    }
+};
+
 // A word: glyphs of one line between word breaks, with its box.
 struct TWord {
     float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
@@ -139,7 +158,9 @@ bool Overlaps(const Grid& g, float x0, float y0, float x1, float y1) {
     return x0 < g.x1 && x1 > g.x0 && y0 < g.y1 && y1 > g.y0;
 }
 
-// Joins parallel edges within kSnap and collinear pieces within kJoin; drops short ones.
+// Joins parallel edges within kSnap and collinear pieces within kJoin; drops short ones. The first
+// sort needs no tie rule: clusters and their longest piece's position follow from the positions
+// alone, and each cluster is then sorted in one order (EdgeAlong).
 void MergeEdges(std::vector<Edge>& edges) {
     std::sort(edges.begin(), edges.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
     std::vector<Edge> out;
@@ -152,7 +173,7 @@ void MergeEdges(std::vector<Edge>& edges) {
         for (size_t k = i; k < j; ++k)
             if (edges[k].b - edges[k].a > longest) longest = edges[k].b - edges[k].a, pos = edges[k].pos;
         std::sort(edges.begin() + static_cast<std::ptrdiff_t>(i), edges.begin() + static_cast<std::ptrdiff_t>(j),
-                  [](const Edge& p, const Edge& q) { return p.a < q.a; });
+                  EdgeAlong());
         Edge cur = edges[i];
         cur.pos = pos;
         for (size_t k = i + 1; k < j; ++k) {
@@ -871,7 +892,8 @@ void Detector::SortWords() {
     if (!sorted) {
         std::sort(words_.begin(), words_.end(), [](const TWord& a, const TWord& b) {
             if (a.base != b.base) return a.base > b.base;
-            return a.x0 < b.x0;
+            if (a.x0 != b.x0) return a.x0 < b.x0;
+            return a.line != b.line ? a.line < b.line : a.k0 < b.k0;
         });
         return;
     }
@@ -1099,7 +1121,8 @@ void Detector::BuildRows(float xa, float xb, float ylo, float yhi, std::vector<R
         const auto first = rowWords.begin() + r.first, last = first + r.count;
         bool ordered = true;
         for (auto k = first + 1; k < last && ordered; ++k) ordered = words_[*(k - 1)].x0 < words_[*k].x0;
-        if (!ordered) std::sort(first, last, [&](uint32_t a, uint32_t b) { return words_[a].x0 < words_[b].x0; });
+        if (!ordered)
+            std::sort(first, last, [&](uint32_t a, uint32_t b) { return words_[a].x0 != words_[b].x0 ? words_[a].x0 < words_[b].x0 : a < b; });
     }
 }
 
@@ -1427,7 +1450,7 @@ void Detector::TextGrid(const std::vector<Row>& rows, const std::vector<uint32_t
                 if (!crossed) inks.resize(lineInks);
             }
             if (inks.empty()) continue;
-            std::sort(inks.begin(), inks.end(), [](const Gap& p, const Gap& q) { return p.a < q.a; });
+            std::sort(inks.begin(), inks.end(), [](const Gap& p, const Gap& q) { return p.a != q.a ? p.a < q.a : p.b < q.b; });
             float at = gap.a, best = 0;
             Gap clear = gap;
             for (const Gap& ink : inks) {
@@ -2281,7 +2304,7 @@ void Detector::SplitRowsByVerticals(Grid& g, std::vector<Edge>& pieces, bool& re
             const float w = r.x1 - r.x0, t = r.y1 - r.y0;
             if (w >= 0 && w <= kMaxThick && t >= minPiece && t > w) pieces.push_back(Edge{(r.x0 + r.x1) / 2, r.y0, r.y1});
         }
-        std::sort(pieces.begin(), pieces.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
+        std::sort(pieces.begin(), pieces.end(), EdgeAt());
     }
     if (cols < 2 || pieces.size() < 4) return;
     struct Piece {
@@ -2500,8 +2523,8 @@ void Detector::SplitHeaderLevels(Grid& g, const Component& comp, std::vector<Lev
                 lines.back().number = lines.back().number || words[i].number;
             }
             for (Line& l : lines) {
-                std::sort(words.begin() + static_cast<std::ptrdiff_t>(l.w0), words.begin() + static_cast<std::ptrdiff_t>(l.w1),
-                          [](const Word& p, const Word& q) { return p.x0 < q.x0; });
+                std::stable_sort(words.begin() + static_cast<std::ptrdiff_t>(l.w0), words.begin() + static_cast<std::ptrdiff_t>(l.w1),
+                                 [](const Word& p, const Word& q) { return p.x0 < q.x0; });
                 // The boundaries a rule of the lattice runs through at the line's height: no label
                 // runs across one.
                 const float y = l.base + 0.3f * l.size;
@@ -2567,7 +2590,10 @@ void Detector::SplitHeaderLevels(Grid& g, const Component& comp, std::vector<Lev
         header = header && !number;
         // The row's parts, top first: the cuts at least a point apart; per part boundary, the
         // columns under the runs of its cuts.
-        std::sort(cuts.begin(), cuts.end(), [](const Cut& p, const Cut& q) { return p.y > q.y; });
+        std::sort(cuts.begin(), cuts.end(), [](const Cut& p, const Cut& q) {
+            if (p.y != q.y) return p.y > q.y;
+            return p.a != q.a ? p.a < q.a : p.b < q.b;
+        });
         float parts[kMaxParts];
         uint64_t headed[kMaxParts] = {};
         size_t partCount = 0;
@@ -2713,8 +2739,13 @@ void Detector::SplitColumnsByText(Grid& g, const std::vector<LevelLabel>* levels
             ink.push_back(Ink{w.x0, w.x1, w.r, w.number});
             size = Fmax(size, w.size);
         }
-        std::sort(ink.begin(), ink.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
-        std::sort(head.begin(), head.end(), [](const Ink& p, const Ink& q) { return p.a < q.a; });
+        const auto inkBefore = [](const Ink& p, const Ink& q) {
+            if (p.a != q.a) return p.a < q.a;
+            if (p.b != q.b) return p.b < q.b;
+            return p.row != q.row ? p.row < q.row : p.number < q.number;
+        };
+        std::sort(ink.begin(), ink.end(), inkBefore);
+        std::sort(head.begin(), head.end(), inkBefore);
         // Through six rows or more, whitespace as narrow as two word spaces (0.4 em at least)
         // parts columns too (tables of many columns set close).
         const float minGap = rows >= 6 ? Fmax(2.5f, Fmin(size, Fmax(0.4f, 2 * wordSpace_) * size))
@@ -3032,8 +3063,8 @@ void Detector::BoxGrids() {
         centre[i] = (boxes[i].x0 + boxes[i].x1) / 2;
         byCentre[i] = byLeft[i] = static_cast<uint32_t>(i);
     }
-    std::sort(byCentre.begin(), byCentre.end(), [&](uint32_t p, uint32_t q) { return centre[p] < centre[q]; });
-    std::sort(byLeft.begin(), byLeft.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 < boxes[q].x0; });
+    std::sort(byCentre.begin(), byCentre.end(), [&](uint32_t p, uint32_t q) { return centre[p] != centre[q] ? centre[p] < centre[q] : p < q; });
+    std::sort(byLeft.begin(), byLeft.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 != boxes[q].x0 ? boxes[p].x0 < boxes[q].x0 : p < q; });
     std::vector<uint8_t> keep(n, 1);
     for (size_t i = 0; i < n; ++i) {
         const Box& a = boxes[i];
@@ -3057,13 +3088,13 @@ void Detector::BoxGrids() {
     std::vector<uint32_t> sweep;
     for (size_t i = 0; i < n; ++i)
         if (keep[i]) sweep.push_back(static_cast<uint32_t>(i));
-    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].y0 < boxes[q].y0; });
+    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].y0 != boxes[q].y0 ? boxes[p].y0 < boxes[q].y0 : p < q; });
     for (size_t k = 0; k < sweep.size(); ++k)
         for (size_t m = k + 1; m < sweep.size() && boxes[sweep[m]].y0 <= boxes[sweep[k]].y1; ++m) {
             const Box &a = boxes[sweep[k]], &b = boxes[sweep[m]];
             if (Fmin(a.y1, b.y1) - Fmax(a.y0, b.y0) >= 0.5f * Fmin(a.y1 - a.y0, b.y1 - b.y0)) join(rowOf, sweep[k], sweep[m]);
         }
-    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 < boxes[q].x0; });
+    std::sort(sweep.begin(), sweep.end(), [&](uint32_t p, uint32_t q) { return boxes[p].x0 != boxes[q].x0 ? boxes[p].x0 < boxes[q].x0 : p < q; });
     for (size_t k = 0; k < sweep.size(); ++k)
         for (size_t m = k + 1; m < sweep.size() && boxes[sweep[m]].x0 <= boxes[sweep[k]].x1; ++m) {
             const Box &a = boxes[sweep[k]], &b = boxes[sweep[m]];
@@ -3134,8 +3165,14 @@ void Detector::BoxGrids() {
             if (std::find(slots.begin(), slots.end(), std::make_pair(r, k)) == slots.end()) slots.emplace_back(r, k);
         }
         if (rows.size() < 3 || cols.size() < 2 || float(slots.size()) < 0.6f * float(rows.size() * cols.size())) continue;
-        std::sort(rows.begin(), rows.end(), [](const Band& p, const Band& q) { return p.b > q.b; });
-        std::sort(cols.begin(), cols.end(), [](const Band& p, const Band& q) { return p.a < q.a; });
+        std::sort(rows.begin(), rows.end(), [](const Band& p, const Band& q) {
+            if (p.b != q.b) return p.b > q.b;
+            return p.a != q.a ? p.a < q.a : p.root < q.root;
+        });
+        std::sort(cols.begin(), cols.end(), [](const Band& p, const Band& q) {
+            if (p.a != q.a) return p.a < q.a;
+            return p.b != q.b ? p.b < q.b : p.root < q.root;
+        });
         bool gutters = true;
         for (size_t k = 0; k + 1 < rows.size() && gutters; ++k) {
             const float gap = rows[k].a - rows[k + 1].b;
@@ -3662,7 +3699,7 @@ bool Detector::Validate(Grid& g, bool column, bool* figure) {
 // word space apart part there.
 void Detector::RuleStacks() {
     if (rules_.empty() || rules_.size() > kMaxTableEdges) return;
-    std::sort(rules_.begin(), rules_.end(), [](const Edge& a, const Edge& b) { return a.pos > b.pos; });
+    std::sort(rules_.begin(), rules_.end(), [](const Edge& a, const Edge& b) { return EdgeAt()(b, a); });
     struct Stack {
         float a, b;
         std::vector<float> ys;
@@ -3720,7 +3757,7 @@ void Detector::RuleStacks() {
                     const float w = r.x1 - r.x0, t = r.y1 - r.y0;
                     if (t >= 0 && t <= kMaxThick && w >= kMinEdge && w > t) pieces.push_back(Edge{(r.y0 + r.y1) / 2, r.x0, r.x1});
                 }
-                std::sort(pieces.begin(), pieces.end(), [](const Edge& p, const Edge& q) { return p.pos < q.pos; });
+                std::sort(pieces.begin(), pieces.end(), EdgeAt());
             }
         }
         meetings.clear();
@@ -3730,7 +3767,7 @@ void Detector::RuleStacks() {
             auto it = std::lower_bound(pieces.begin(), pieces.end(), s.ys[k] - kSnap, [](const Edge& p, float y) { return p.pos < y; });
             for (; it != pieces.end() && it->pos <= s.ys[k] + kSnap && line.size() < 256; ++it)
                 if (it->a >= xa - kSnap && it->b <= xb + kSnap) line.push_back(*it);
-            std::sort(line.begin(), line.end(), [](const Edge& p, const Edge& q) { return p.a < q.a; });
+            std::sort(line.begin(), line.end(), EdgeAlong());
             for (size_t m = 1; m < line.size() && meetings.size() < 256; ++m)
                 if (std::fabs(line[m].a - line[m - 1].b) <= 1.0f) meetings.push_back(Meeting{(line[m - 1].b + line[m].a) / 2, k});
         }
@@ -5058,7 +5095,7 @@ void Detector::Commit() {
         if (a.grid != b.grid) return a.grid < b.grid;
         if (a.cell != b.cell) return a.cell < b.cell;
         if (a.base != b.base) return a.base > b.base;
-        return a.x0 < b.x0;
+        return a.x0 != b.x0 ? a.x0 < b.x0 : a.first > b.first;
     });
     size_t at = 0;
     for (uint32_t gi = 0; gi < grids_.size(); ++gi) {

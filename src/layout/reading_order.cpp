@@ -325,9 +325,9 @@ int LowestBit(uint64_t m) {
 #endif
 }
 
-// std::sort of [first, last) by `less`, skipped when each element is less than the next: such a
-// sequence has one order only, which std::sort leaves as it is (a NaN or a tie breaks the chain,
-// and the sort runs).
+// std::sort of [first, last) by `less`, a total order (every caller breaks ties by the index, so
+// that every standard library's sort gives the same order), skipped when each element is already
+// before the next.
 template <class Less>
 void SortUnlessOrdered(std::vector<uint32_t>::iterator first, std::vector<uint32_t>::iterator last, Less less) {
     bool ordered = true;
@@ -385,7 +385,7 @@ struct Orderer {
         const float width = u1 - u0;
         SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).vt != L(b).vt) return L(a).vt > L(b).vt;
-            return L(a).u0 < L(b).u0;
+            return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b;
         });
         float bottom = L(items[0]).vb;
         for (size_t k = 1; k < items.size(); ++k) {
@@ -417,7 +417,7 @@ struct Orderer {
     void Fallback(std::vector<uint32_t>& items) {
         SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
-            return L(a).u0 < L(b).u0;
+            return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b;
         });
         size_t at = 0;
         while (at < items.size()) {
@@ -425,7 +425,7 @@ struct Orderer {
             size_t end = at + 1;
             while (end < items.size() && head.baseline - L(items[end]).baseline <= 0.4f * head.size) ++end;
             SortUnlessOrdered(items.begin() + static_cast<std::ptrdiff_t>(at), items.begin() + static_cast<std::ptrdiff_t>(end),
-                              [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
+                              [&](uint32_t a, uint32_t b) { return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b; });
             at = end;
         }
         out.insert(out.end(), items.begin(), items.end());
@@ -434,7 +434,8 @@ struct Orderer {
     // Groups of `items` split at vertical whitespace gaps of at least `minGap` (x projection).
     void SplitX(std::vector<uint32_t>& items, float minGap, std::vector<size_t>& cuts) {
         cuts.clear();
-        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) { return L(a).u0 < L(b).u0; });
+        SortUnlessOrdered(items.begin(), items.end(),
+                          [&](uint32_t a, uint32_t b) { return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b; });
         float right = L(items[0]).u1;
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 - right >= minGap) cuts.push_back(k);
@@ -447,8 +448,10 @@ struct Orderer {
     void SplitXSoft(std::vector<uint32_t>& items, float size, std::vector<size_t>& cuts) {
         cuts.clear();
         const auto shrink = [&](uint32_t i) { return Fmin(0.7f * size, 0.25f * (L(i).u1 - L(i).u0)); };
-        SortUnlessOrdered(items.begin(), items.end(),
-                          [&](uint32_t a, uint32_t b) { return L(a).u0 + shrink(a) < L(b).u0 + shrink(b); });
+        SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
+            const float ka = L(a).u0 + shrink(a), kb = L(b).u0 + shrink(b);
+            return ka != kb ? ka < kb : a < b;
+        });
         float right = L(items[0]).u1 - shrink(items[0]);
         for (size_t k = 1; k < items.size(); ++k) {
             if (L(items[k]).u0 + shrink(items[k]) - right >= 1.0f) cuts.push_back(k);
@@ -464,7 +467,7 @@ struct Orderer {
         cuts.clear();
         SortUnlessOrdered(items.begin(), items.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).vt != L(b).vt) return L(a).vt > L(b).vt;
-            return L(a).u0 < L(b).u0;
+            return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b;
         });
         gaps_.clear();
         float bottom = L(items[0]).vb;
@@ -652,7 +655,7 @@ struct Orderer {
         std::vector<uint32_t> v(items);
         SortUnlessOrdered(v.begin(), v.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
-            return L(a).u0 < L(b).u0;
+            return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b;
         });
         // The lines' boxes in v's order, read by every pair below.
         struct Box {
@@ -768,7 +771,9 @@ struct Orderer {
         // many narrow columns.
         const float wide = Fmin(0.25f * (right - left), 0.6f * median);
         scratch.assign(items.begin(), items.end());
-        std::sort(scratch.begin(), scratch.end(), [&](uint32_t a, uint32_t b) { return L(a).baseline > L(b).baseline; });
+        std::sort(scratch.begin(), scratch.end(), [&](uint32_t a, uint32_t b) {
+            return L(a).baseline != L(b).baseline ? L(a).baseline > L(b).baseline : a < b;
+        });
         crossing_.resize(scratch.size());
         for (size_t j = 0; j < scratch.size(); ++j) {
             const Line& l = L(scratch[j]);
@@ -1021,7 +1026,7 @@ struct Orderer {
         }
         SortUnlessOrdered(separators.begin(), separators.end(), [&](uint32_t a, uint32_t b) {
             if (L(a).baseline != L(b).baseline) return L(a).baseline > L(b).baseline;
-            return L(a).u0 < L(b).u0;
+            return L(a).u0 != L(b).u0 ? L(a).u0 < L(b).u0 : a < b;
         });
         // Band k holds the lines above separator k and below separator k - 1; a line on a
         // separator's baseline follows it.
@@ -1180,7 +1185,8 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     const bool edgeOnly = inside == 0;
     if (lines.size() < 2 && !edgeOnly) return 0;
     std::sort(lines.begin(), lines.end(), [&](uint32_t a, uint32_t b) {
-        return page.lines[a].vb + page.lines[a].vt > page.lines[b].vb + page.lines[b].vt;
+        const float ka = page.lines[a].vb + page.lines[a].vt, kb = page.lines[b].vb + page.lines[b].vt;
+        return ka != kb ? ka > kb : a < b;
     });
     if (inside < kEdgeMinLines) {
         textLeft = INFINITY, textRight = -INFINITY;
@@ -1196,13 +1202,16 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
     }
     const bool artifactsTell = artifactChars * 4 < allChars;
     // The text's own line spacing: the median gap from a line to the next line below it in its
-    // column. A header or footer is set apart by more than that, so double-spaced text keeps its
-    // first and last lines.
+    // column, among the 8 lines after those of its own centre (a row of chart labels: their order
+    // among themselves would decide which lines below are reached). A header or footer is set
+    // apart by more than that, so double-spaced text keeps its first and last lines.
     std::vector<float> gaps;
     gaps.reserve(lines.size());
     for (size_t k = 0; k + 1 < lines.size(); ++k) {
         const Line& a = page.lines[lines[k]];
-        for (size_t j = k + 1; j < lines.size() && j <= k + 8; ++j) {
+        size_t j = k + 1;
+        while (j < lines.size() && page.lines[lines[j]].vb + page.lines[lines[j]].vt == a.vb + a.vt) ++j;
+        for (const size_t end = j + 8; j < lines.size() && j < end; ++j) {
             const Line& b = page.lines[lines[j]];
             if (b.u1 <= a.u0 || b.u0 >= a.u1) continue;
             const float g = a.vb - b.vt;
@@ -1317,8 +1326,9 @@ int RemoveEdgeRows(PageData& page, float body, std::string& text, std::string& k
             const auto readRow = [&] {
                 rowLines.assign(lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first : last - count),
                            lines.begin() + static_cast<std::ptrdiff_t>(side == 0 ? first + count : last));
-                std::sort(rowLines.begin(), rowLines.end(),
-                          [&](uint32_t a, uint32_t b) { return page.lines[a].u0 < page.lines[b].u0; });
+                std::sort(rowLines.begin(), rowLines.end(), [&](uint32_t a, uint32_t b) {
+                    return page.lines[a].u0 != page.lines[b].u0 ? page.lines[a].u0 < page.lines[b].u0 : a < b;
+                });
                 text.clear();
                 for (uint32_t li : rowLines) {
                     if (!text.empty()) text.push_back(' ');
@@ -1731,7 +1741,7 @@ int RemoveCountedPageNumbers(std::vector<PageData>& pages) {
         std::sort(lines.begin(), lines.end(), [](const BandLine& a, const BandLine& b) {
             if (a.band != b.band) return a.band < b.band;
             if (a.cy != b.cy) return a.band == 0 ? a.cy > b.cy : a.cy < b.cy;
-            return a.x0 < b.x0;
+            return a.x0 != b.x0 ? a.x0 < b.x0 : a.line < b.line;
         });
         for (size_t i = 0; i < lines.size(); ++i) {
             BandLine& b = lines[i];

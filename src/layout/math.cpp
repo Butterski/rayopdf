@@ -1086,7 +1086,8 @@ void Builder::Connected(const std::vector<uint32_t>& atoms, std::vector<uint32_t
         const MathRule& o = in_.rules[s];
         stack.push_back(up ? SortKey{o.v0 - edge, o.v1 - edge, 1} : SortKey{edge - o.v1, edge - o.v0, 1});
     }
-    std::sort(stack.begin(), stack.end(), [](const SortKey& a, const SortKey& b) { return a.u0 < b.u0; });
+    std::sort(stack.begin(), stack.end(),
+              [](const SortKey& a, const SortKey& b) { return a.u0 != b.u0 ? a.u0 < b.u0 : a.v < b.v; });
     float reach = 0, cutoff = INFINITY;
     for (const SortKey& s : stack) {
         if (s.u0 > Fmax(reach + 0.45f * em, 0.7f * em)) {
@@ -1376,7 +1377,12 @@ void FindRows(const std::vector<Item>& items, float em, std::vector<RowBand>& ro
         if (it.size < 0.85f * em) continue;
         full.push_back(&it);
     }
-    std::sort(full.begin(), full.end(), [](const Item* a, const Item* b) { return a->v > b->v; });
+    // On equal centres the lowest ink first: a row started by a taller neighbour's higher bottom
+    // would leave the others out.
+    std::sort(full.begin(), full.end(), [](const Item* a, const Item* b) {
+        if (a->v != b->v) return a->v > b->v;
+        return a->bottom != b->bottom ? a->bottom < b->bottom : a < b;
+    });
     for (const Item* it : full) {
         if (!rows.empty() && rows.back().v - it->v <= 0.35f * em && it->top >= rows.back().bottom) {
             RowBand& r = rows.back();
@@ -1411,7 +1417,7 @@ bool Builder::Layout(std::vector<Item>& items, int depth, std::string& out) {
     bool tall = false;
     for (const Item& it : items) tall = tall || (it.tall && (it.kind == Kind::Open || it.kind == Kind::Bar));
     if (tall) {
-        std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.u0 < b.u0; });
+        std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.u0 < b.u0; });
         std::vector<RowBand> bodyRows;
         std::vector<Item> body, rest;
         for (size_t i = 0; i < items.size(); ++i) {
@@ -1644,8 +1650,12 @@ bool Builder::Row(std::vector<Item>& items, int depth, std::string& out, float e
     if (!ordered) {
         sortKeys_.clear();
         for (size_t i = 0; i < items.size(); ++i) sortKeys_.push_back({items[i].u0, items[i].v, static_cast<uint32_t>(i)});
-        std::sort(sortKeys_.begin(), sortKeys_.end(),
-                  [&](const SortKey& a, const SortKey& b) { return before(a.u0, a.v, b.u0, b.v); });
+        std::sort(sortKeys_.begin(), sortKeys_.end(), [&](const SortKey& a, const SortKey& b) {
+            if (before(a.u0, a.v, b.u0, b.v)) return true;
+            if (before(b.u0, b.v, a.u0, a.v)) return false;
+            const bool za = items[a.index].u1 <= items[a.index].u0, zb = items[b.index].u1 <= items[b.index].u0;
+            return za != zb ? zb : a.index < b.index;
+        });
         // Items already in order (the permutation is the identity) stay where they are.
         bool moved = false;
         for (size_t i = 0; i < sortKeys_.size() && !moved; ++i) moved = sortKeys_[i].index != i;
@@ -2284,7 +2294,8 @@ MathStatus Builder::Run(bool display, std::string& out, std::string& tag) {
 void Builder::SplitTag(std::vector<uint32_t>& all, std::string& tag) const {
     std::vector<uint32_t>& byU = scratch_.byU;
     byU.assign(all.begin(), all.end());
-    std::sort(byU.begin(), byU.end(), [&](uint32_t a, uint32_t b) { return atoms_[a].u0 < atoms_[b].u0; });
+    std::sort(byU.begin(), byU.end(),
+              [&](uint32_t a, uint32_t b) { return atoms_[a].u0 != atoms_[b].u0 ? atoms_[a].u0 < atoms_[b].u0 : a < b; });
     const size_t m = byU.size();
     if (m < 4 || atoms_[byU[m - 1]].cp != ')') return;
     size_t k = m - 1;
@@ -2778,7 +2789,8 @@ void PrepareMathGlyphs(PageData& page) {
             sorted = true;
             reach.resize(reaches);
             for (size_t r = 0; r < reach.size(); ++r) reach[r] = Reach{reachLo[r], reachUp[r], reachGlyph[r]};
-            std::sort(reach.begin(), reach.end(), [](const Reach& x, const Reach& y) { return x.lo < y.lo; });
+            std::sort(reach.begin(), reach.end(),
+                      [](const Reach& x, const Reach& y) { return x.lo != y.lo ? x.lo < y.lo : x.glyph < y.glyph; });
             reachHi.resize(reach.size());
             float hi = -INFINITY;
             for (size_t r = 0; r < reach.size(); ++r) {
