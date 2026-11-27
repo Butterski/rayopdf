@@ -6,6 +6,10 @@ text drawn as outlines. The optional OCR add-on reads those pages. It is a separ
 
 ## Install
 
+The add-on is built for Linux x64 and Windows x64 only. On Linux arm64 and macOS, `rayopdf`
+runs without it: pages that need OCR are converted without their text, as when the add-on is
+missing.
+
 1. Download `rayopdf-ocr-VERSION-linux-x64-static.tar.gz` or `rayopdf-ocr-VERSION-windows-x64.zip`
    from [Releases](https://github.com/Butterski/rayopdf/releases/latest). It holds the
    `rayopdf-ocr` program and its models (`rayopdf-ocr-models/`: PP-OCRv6 small and tiny on

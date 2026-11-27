@@ -339,7 +339,8 @@ loss in G1 is the stronger evidence. Issues with 20 or more reactions on these t
   PyPI step has not been done for any version yet. Publishing to npm is a decision to change that
   rule.
 
-**G3. Builds for Linux arm64 and macOS.**
+**G3. Builds for Linux arm64 and macOS.** Done in 1.2: Linux arm64 and macOS arm64 and x64
+archives, libraries and wheels, their output compared with Linux x64's in CI (roadmap D1).
 - *Who has it:* edgeparse ships Linux, macOS and Windows on x64 plus Linux and macOS on arm64;
   liteparse Linux and macOS on x64 and arm64; PyMuPDF wheels for macOS arm64, Linux aarch64, Linux
   x86_64 and Windows ([PyPI](https://pypi.org/project/pymupdf/2.2/#files)); the Python and Java

@@ -6,9 +6,11 @@ once.
 
 ## C++ API
 
-The archives `rayopdf-lib-VERSION-linux-x64.tar.gz` and `rayopdf-lib-VERSION-windows-x64.zip`
-(MinGW-w64), attached to each [release](https://github.com/Butterski/rayopdf/releases/latest),
-hold the converter as a static library, `lib/librayopdf.a`, with its one header,
+The archives `rayopdf-lib-VERSION-linux-x64.tar.gz`, `rayopdf-lib-VERSION-linux-arm64.tar.gz`,
+`rayopdf-lib-VERSION-macos-arm64.tar.gz`, `rayopdf-lib-VERSION-macos-x64.tar.gz` (Apple Clang,
+libc++) and `rayopdf-lib-VERSION-windows-x64.zip` (MinGW-w64), attached to each
+[release](https://github.com/Butterski/rayopdf/releases/latest), hold the converter as a static
+library, `lib/librayopdf.a`, with its one header,
 `include/rayopdf/rayopdf.h`, and an example, `example.cpp`:
 
 ```cpp
@@ -58,8 +60,8 @@ The library throws no exceptions: a failure is reported in `Result::status`.
 `include/rayopdf/rayopdf_c.h` is a C99 interface to the same converter, for C programs and other
 languages; the Python package and the WebAssembly build use it. It is not in the `rayopdf-lib`
 archives. The header is in this repository, and the shared library that exports it
-(`librayopdf.so` on Linux, `rayopdf.dll` on Windows) is inside the Python wheels, under
-`rayopdf/_lib/`, or is built with the CMake option `RAYOPDF_SHARED`
+(`librayopdf.so` on Linux, `librayopdf.dylib` on macOS, `rayopdf.dll` on Windows) is inside the
+Python wheels, under `rayopdf/_lib/`, or is built with the CMake option `RAYOPDF_SHARED`
 ([CONTRIBUTING.md](../../CONTRIBUTING.md)).
 
 ```c

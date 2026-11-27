@@ -15,7 +15,7 @@ No GPU, no Python or Java runtime, no models to download. The reverse of [RayoMD
 <a href="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Butterski/rayopdf/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://github.com/Butterski/rayopdf/actions/workflows/hygiene.yml"><img alt="Repository Hygiene" src="https://github.com/Butterski/rayopdf/actions/workflows/hygiene.yml/badge.svg"></a>
 <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white">
-<img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-2ea44f">
+<img alt="Platforms: Linux, macOS and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-2ea44f">
 
 </div>
 
@@ -23,8 +23,8 @@ RayoPDF reads a PDF and writes GitHub Flavored Markdown: headings, paragraphs, l
 code, links, footnotes, formulas and images, rebuilt from the page's layout. It can also write
 JSON with every block's position on the page, chunks for retrieval-augmented generation, or an
 HTML view of the page layout. It runs on your machine, converts a typical page in about a
-millisecond, and is one static executable for Linux or Windows. Python, JavaScript and C/C++
-programs can call it in-process.
+millisecond, and is one self-contained executable for Linux, macOS or Windows. Python,
+JavaScript and C/C++ programs can call it in-process.
 
 ## Status
 
@@ -58,8 +58,16 @@ tar -xzf rayopdf-1.1.0-linux-x64-static.tar.gz
 ./rayopdf-1.1.0-linux-x64-static/rayopdf --version
 ```
 
+- **Linux arm64** (from 1.2): `rayopdf-<version>-linux-arm64-static.tar.gz`, the same static
+  executable for aarch64.
+- **macOS** (from 1.2; 11 or newer on Apple silicon, 10.15 or newer on Intel):
+  `rayopdf-<version>-macos-arm64.tar.gz` or `rayopdf-<version>-macos-x64.tar.gz`. Downloaded with
+  `curl` it runs as it is; downloaded with a browser, Gatekeeper refuses the unsigned program
+  until `xattr -d com.apple.quarantine rayopdf`.
 - **Windows x64:** unpack `rayopdf-1.1.0-windows-x64.zip` and run `rayopdf.exe`.
-- **Python 3.9 or newer** (Linux x64 with glibc 2.28 or newer, Windows x64): `pip install rayopdf`.
+- Every platform writes the same bytes for the same file and options.
+- **Python 3.9 or newer** (Linux x64 and arm64 with glibc 2.28 or newer, macOS, Windows x64):
+  `pip install rayopdf`.
   See the [Python guide](docs/guide/python.md).
 - **JavaScript** (browsers and Node.js 18 or newer, WebAssembly): the npm package is attached to
   the release and is not on the npm registry: `npm install ./rayopdf-1.1.0.tgz`. See the
@@ -68,18 +76,20 @@ tar -xzf rayopdf-1.1.0-linux-x64-static.tar.gz
   See the [container guide](docs/guide/container.md).
 - **C and C++:** the `rayopdf-lib` archives hold a static library and its header. See the
   [C and C++ guide](docs/guide/cpp.md).
-- **OCR add-on (optional):** unpack `rayopdf-ocr-1.1.0-<platform>` into the same folder as
-  `rayopdf`. RayoPDF then finds `rayopdf-ocr` beside itself and starts it only for pages that
-  have no usable text. It reads Latin and CJK text; the optional script pack adds Cyrillic,
-  Korean, Arabic, Devanagari, Tamil and Kannada. OCR takes about 2 seconds a page, not
-  milliseconds. See the [OCR guide](docs/guide/ocr.md).
+- **OCR add-on (optional, Linux x64 and Windows x64):** unpack `rayopdf-ocr-1.1.0-<platform>`
+  into the same folder as `rayopdf`. RayoPDF then finds `rayopdf-ocr` beside itself and starts it
+  only for pages that have no usable text. It reads Latin and CJK text; the optional script pack
+  adds Cyrillic, Korean, Arabic, Devanagari, Tamil and Kannada. OCR takes about 2 seconds a page,
+  not milliseconds. See the [OCR guide](docs/guide/ocr.md).
 
 | Release file | Size, 1.1.0 | For |
 |---|---:|---|
 | `rayopdf-<version>-linux-x64-static.tar.gz` | 2,139 KB | Linux: one static executable |
+| `rayopdf-<version>-linux-arm64-static.tar.gz` | new in 1.2 | Linux arm64: one static executable |
+| `rayopdf-<version>-macos-arm64.tar.gz`, `-macos-x64.tar.gz` | new in 1.2 | macOS: `rayopdf` |
 | `rayopdf-<version>-windows-x64.zip` | 2,138 KB | Windows: `rayopdf.exe` |
-| `rayopdf-lib-<version>-<platform>` | 1,949 KB / 2,042 KB | C++ API for Linux / Windows: `librayopdf.a`, header, example |
-| `rayopdf-<version>-py3-none-<platform>.whl` | 1,792 KB / 2,107 KB | Python on Linux / Windows |
+| `rayopdf-lib-<version>-<platform>` | 1,949 KB / 2,042 KB | C++ API for Linux / Windows (Linux arm64 and macOS new in 1.2): `librayopdf.a`, header, example |
+| `rayopdf-<version>-py3-none-<platform>.whl` | 1,792 KB / 2,107 KB | Python on Linux / Windows (Linux arm64 and macOS new in 1.2) |
 | `rayopdf-<version>.tgz` | 1,303 KB | JavaScript (WebAssembly) |
 | `rayopdf-ocr-<version>-<platform>` | 34 MB | The OCR add-on with its models |
 | `rayopdf-ocr-scripts-<version>-<platform>` | 20 MB | Optional: more scripts for the OCR add-on |

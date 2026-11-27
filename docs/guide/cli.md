@@ -25,7 +25,10 @@ rayopdf --version | --help
 ```
 
 Options go after the paths, in any order. On Windows the program is `rayopdf.exe`; paths and
-arguments are UTF-8, and the output is byte for byte the same as on Linux.
+arguments are UTF-8. The output is byte for byte the same on every platform: Linux x64 and arm64,
+macOS arm64 and x64, and Windows x64. On macOS a program downloaded with a browser is refused by
+Gatekeeper (it is not signed by a registered developer) until its quarantine flag is removed:
+`xattr -d com.apple.quarantine rayopdf`; one downloaded with `curl` runs as it is.
 
 ## Converting one PDF
 

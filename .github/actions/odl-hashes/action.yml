@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Output hashes over odl-bench
+description: >-
+  Clone opendataloader-bench's PDFs at the commit tools/eval.py pins (ODL_URL, ODL_COMMIT), convert
+  each with the given binary in four option sets (`tools/bench.py hashes`: exit code, --report
+  record and SHA-256 of every output file) and upload the result as the artifact
+  hashes-<platform>, which the identity job compares across platforms.
+
+inputs:
+  binary:
+    description: the rayopdf binary, built on this runner
+    required: true
+  platform:
+    description: the artifact's name suffix (linux-x64, linux-arm64, macos-arm64, macos-x64)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: odl-bench's PDFs at the pinned commit
+      shell: bash
+      run: |
+        read -r url commit < <(python3 -c "import sys; sys.path.insert(0, 'tools'); import eval as e; print(e.ODL_URL, e.ODL_COMMIT)")
+        git clone --quiet --filter=blob:none --no-checkout "$url" "$RUNNER_TEMP/odl-bench"
+        git -C "$RUNNER_TEMP/odl-bench" sparse-checkout set pdfs
+        git -C "$RUNNER_TEMP/odl-bench" -c advice.detachedHead=false checkout --quiet "$commit"
+    - name: Output hashes
+      shell: bash
+      run: |
+        python3 tools/bench.py hashes --bin "${{ inputs.binary }}" --dir "$RUNNER_TEMP/odl-bench/pdfs" \
+          --set none=--images=none --set images= --set "latex=--images=none --math=latex" \
+          --set "json=--images=none --format=json" --json "hashes-${{ inputs.platform }}.json"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: hashes-${{ inputs.platform }}
+        path: hashes-${{ inputs.platform }}.json
+        retention-days: 7

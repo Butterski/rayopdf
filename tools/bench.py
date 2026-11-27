@@ -55,9 +55,9 @@ Usage:
   python3 tools/bench.py hashes --compare A.json B.json [--show 20]
       Output identity across machines. On this host, without Docker (macOS runners have none):
       every PDF under the folders converted by the binary with each option set, as `identical`
-      does, and the exit code, the SHA-256 of the --report record without "ms" and of every file
-      written kept in --json; --compare prints the outputs that differ between the files of two
-      platforms and exits with 1 when any does.
+      does, and the exit code, the SHA-256 of the --report record without "ms" and "input" (the
+      path differs between machines) and of every file written kept in --json; --compare prints
+      the outputs that differ between the files of two platforms and exits with 1 when any does.
 
   python3 tools/bench.py instr --bin NAME=PATH [--bin ...] --doc PDF [--doc ...]
                                [--opt=--images=none ...] [--n 5] [--cpus LIST]
@@ -169,6 +169,7 @@ TOOLS = {
     "kordoc": ("rayopdf-eval-kordoc:1", 10, 1, ["/opt/kordoc/node_modules/.bin/kordoc", "{in}", "-o", "/tmp/o.md"]),
 }
 REPORT_MS = re.compile(rb'"ms":[0-9.]+')
+REPORT_INPUT = re.compile(rb'"input":"(?:[^"\\]|\\.)*",?')
 
 
 def log(text: str) -> None:
@@ -529,13 +530,14 @@ def cmd_identical(args) -> int:
 # ---- hashes --------------------------------------------------------------------------------------
 
 def output_hashes(binary: str, doc: str, opts: list[str], folder: Path, timeout: int) -> dict:
-    """Exit code, SHA-256 of the --report record without "ms" and of every file one conversion writes."""
+    """Exit code, SHA-256 of the --report record without "ms" and "input" (the document's path,
+    which differs between machines) and of every file one conversion writes."""
     folder.mkdir(parents=True)
     env = dict(os.environ, RAYOPDF_OCR=NO_OCR.split("=", 1)[1])
     try:
         res = subprocess.run([binary, "--convert", doc, "out.md", "--report"] + opts, cwd=folder, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
-        code, report = res.returncode, REPORT_MS.sub(b"", res.stdout)
+        code, report = res.returncode, REPORT_INPUT.sub(b"", REPORT_MS.sub(b"", res.stdout))
     except subprocess.TimeoutExpired:
         code, report = "timeout", b""
     files = {name: hashlib.sha256((folder / name).read_bytes()).hexdigest() for name in tree(str(folder))}

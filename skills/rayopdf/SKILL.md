@@ -2,7 +2,7 @@
 name: rayopdf
 description: Converts PDF to Markdown (or to structured JSON) with the rayopdf command-line tool (one small static binary, no Python, no GPU, about a millisecond a page), keeping headings, lists, tables, links, footnotes, formulas and images; scans through an optional OCR add-on. Use when the user wants the text of a PDF to read, quote, search, summarise or edit (a paper, report, manual, invoice, slide deck or a folder of them).
 license: Apache-2.0
-compatibility: Needs a shell and the rayopdf binary (Linux x64 or Windows x64 release, or the ghcr.io/butterski/rayopdf container); network access only to download it.
+compatibility: Needs a shell and the rayopdf binary (Linux x64 or arm64, macOS arm64 or x64, or Windows x64 release, or the ghcr.io/butterski/rayopdf container); network access only to download it.
 metadata:
   source: https://github.com/Butterski/rayopdf
 ---
@@ -27,20 +27,29 @@ lists for that asset (`digest` in the releases API, shown on the release page).
 | Asset | Platform |
 |---|---|
 | `rayopdf-<version>-linux-x64-static.tar.gz` | Linux x64, no dependency |
+| `rayopdf-<version>-linux-arm64-static.tar.gz` | Linux arm64 (aarch64), no dependency |
+| `rayopdf-<version>-macos-arm64.tar.gz` | macOS 11 or newer on Apple silicon |
+| `rayopdf-<version>-macos-x64.tar.gz` | macOS 10.15 or newer on Intel |
 | `rayopdf-<version>-windows-x64.zip` | Windows x64, `rayopdf.exe` |
 
-Linux (needs `curl`, `python3`, `sha256sum`):
+Linux and macOS (needs `curl`, `python3`, and `sha256sum` or `shasum`):
 
 ```sh
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) p=linux-x64-static ;; Linux-aarch64) p=linux-arm64-static ;;
+  Darwin-arm64) p=macos-arm64 ;; Darwin-x86_64) p=macos-x64 ;;
+  *) echo "no release for $(uname -s) $(uname -m)" >&2; exit 1 ;;
+esac
 api=$(curl -fsSL https://api.github.com/repos/Butterski/rayopdf/releases/latest)
 set -- $(printf '%s' "$api" | python3 -c 'import json,sys
-d=json.load(sys.stdin); v=d["tag_name"][1:]; n="rayopdf-%s-linux-x64-static.tar.gz" % v
-print(v, n, next(a["digest"] for a in d["assets"] if a["name"] == n).split(":")[1])')
+d=json.load(sys.stdin); v=d["tag_name"][1:]; n="rayopdf-%s-%s.tar.gz" % (v, sys.argv[1])
+print(v, n, next(a["digest"] for a in d["assets"] if a["name"] == n).split(":")[1])' "$p")
 v=$1 asset=$2 sum=$3
 curl -fLO "https://github.com/Butterski/rayopdf/releases/download/v$v/$asset"
-echo "$sum  $asset" | sha256sum -c -        # stop if this does not print "OK"
+if command -v sha256sum > /dev/null; then check="sha256sum -c -"; else check="shasum -a 256 -c -"; fi
+echo "$sum  $asset" | $check        # stop if this does not print "OK"
 tar -xzf "$asset"
-export PATH="$PWD/rayopdf-$v-linux-x64-static:$PATH"
+export PATH="$PWD/rayopdf-$v-$p:$PATH"
 rayopdf --version
 ```
 
@@ -208,7 +217,8 @@ it (`version`, `pages`, `encrypted`, `repaired`, `tagged`, `title`, `producer`, 
 
 Scans, text inside images and text whose font maps to no text are read by a separate program,
 `rayopdf-ocr`, in the release assets `rayopdf-ocr-<version>-linux-x64-static.tar.gz` and
-`rayopdf-ocr-<version>-windows-x64.zip` (check their `digest` as in section 1). Unpack it into the
+`rayopdf-ocr-<version>-windows-x64.zip` (check their `digest` as in section 1; x64 only: Linux
+arm64 and macOS have no add-on, so scanned pages give no text there). Unpack it into the
 same folder as `rayopdf` (its folder has the same name, so it lands beside the binary); `rayopdf`
 then finds it and starts it only for pages that need it. It reads Latin and CJK text; the
 optional `rayopdf-ocr-scripts-<version>-<platform>` asset, unpacked over it, adds Cyrillic,

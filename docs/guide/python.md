@@ -2,7 +2,8 @@
 
 The `rayopdf` package runs RayoPDF's converter inside your Python process: the converter is a
 shared library in the package, so nothing else needs to be installed. It needs Python 3.9 or
-newer on Linux x64 (glibc 2.28 or newer) or Windows x64.
+newer on Linux x64 or arm64 (glibc 2.28 or newer), macOS 11 or newer on Apple silicon, macOS 10.15
+or newer on Intel, or Windows x64.
 
 ## Install
 
@@ -11,12 +12,14 @@ pip install rayopdf
 ```
 
 The wheels are also attached to each [release](https://github.com/Butterski/rayopdf/releases/latest)
-(`rayopdf-<version>-py3-none-manylinux_2_28_x86_64.whl` for Linux,
+(`rayopdf-<version>-py3-none-manylinux_2_28_x86_64.whl` and `…-manylinux_2_28_aarch64.whl` for
+Linux, `…-macosx_11_0_arm64.whl` and `…-macosx_10_15_x86_64.whl` for macOS,
 `rayopdf-<version>-py3-none-win_amd64.whl` for Windows) for installing without PyPI:
 
 ```sh
-pip install rayopdf-1.1.0-py3-none-manylinux_2_28_x86_64.whl   # Linux
-pip install rayopdf-1.1.0-py3-none-win_amd64.whl                # Windows
+pip install rayopdf-<version>-py3-none-manylinux_2_28_x86_64.whl   # Linux x64
+pip install rayopdf-<version>-py3-none-macosx_11_0_arm64.whl       # macOS on Apple silicon
+pip install rayopdf-<version>-py3-none-win_amd64.whl                # Windows
 ```
 
 The LangChain and LlamaIndex loaders and the Haystack component need their own packages: the

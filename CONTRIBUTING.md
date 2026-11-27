@@ -65,7 +65,9 @@ release and ASan + UBSan, and the fuzz regressions; on a tag `v*` and by hand
 on GitHub's arm64 runner (`ubuntu-24.04-arm`) the release build, the tests in release and
 ASan + UBSan, the fuzz regressions and the wheel config natively for Linux arm64, and on the
 `macos-15` (arm64) and `macos-15-intel` (x64) runners the `macos` and `macos-lib` configs and the
-CLI over the fuzz regressions with four page threads. It does not run on pushes to master.
+CLI over the fuzz regressions with four page threads; then its identity job compares the output
+hashes of the four platforms over odl-bench (`tools/bench.py hashes`, four option sets). It does
+not run on pushes to master.
 
 Tests live in `tests/test_<module>[_<part>].cpp`, each check with its own code from the range
 `tests/check.h` lists, and build the PDFs they read in memory. `tests/verify_cli.py` checks the
@@ -147,16 +149,20 @@ git tag v$V && git push origin v$V
 ```
 
 The tag starts two workflows. CI runs every configuration, ThreadSanitizer and Windows included.
-Release stops unless the tag is `v<VERSION>`, builds `--config static` and `--config windows` in
-the build image, `--config wheel` in `rayopdf-wheel:1` and `--config wasm` in `rayopdf-wasm:1`,
-packages them twice to check the bytes repeat, and makes a **draft** release with the seven core
-packages and `SHA256SUMS`: `rayopdf-$V-linux-x64-static.tar.gz`, `rayopdf-$V-windows-x64.zip`,
-the C++ API's `rayopdf-lib-$V-linux-x64.tar.gz` and `rayopdf-lib-$V-windows-x64.zip`
-(`librayopdf.a`, which those builds' `rayopdf_bundle` target merges from the modules, with its
-header and example), the Python wheels `rayopdf-$V-py3-none-manylinux_2_28_x86_64.whl` and
-`rayopdf-$V-py3-none-win_amd64.whl` (`tools/build_wheel.py`: the package with `librayopdf.so` or
-`rayopdf.dll`) and the npm package `rayopdf-$V.tgz` (the WebAssembly module). After the release
-is published, the two wheels go to PyPI by hand (`twine upload`; their description is
+Release stops unless the tag is `v<VERSION>`, builds `--config static`, `--config windows` and
+`--config arm64` in their images, `--config wheel` in `rayopdf-wheel:1` (on `ubuntu-latest` and
+natively on `ubuntu-24.04-arm`), `--config wasm` in `rayopdf-wasm:1` and `--config macos` and
+`macos-lib` on the `macos-15` and `macos-15-intel` runners, packages them twice to check the bytes
+repeat, and makes a **draft** release with the sixteen core packages and `SHA256SUMS`: the
+programs `rayopdf-$V-linux-x64-static.tar.gz`, `rayopdf-$V-linux-arm64-static.tar.gz`,
+`rayopdf-$V-macos-arm64.tar.gz`, `rayopdf-$V-macos-x64.tar.gz` and `rayopdf-$V-windows-x64.zip`,
+the C++ API's `rayopdf-lib-$V-<platform>` for the same five platforms (`librayopdf.a`, which those
+builds' `rayopdf_bundle` target merges from the modules, with its header and example), the Python
+wheels `rayopdf-$V-py3-none-manylinux_2_28_x86_64.whl`, `…-manylinux_2_28_aarch64.whl`,
+`…-macosx_11_0_arm64.whl`, `…-macosx_10_15_x86_64.whl` and `…-win_amd64.whl`
+(`tools/build_wheel.py`: the package with `librayopdf.so`, `librayopdf.dylib` or `rayopdf.dll`)
+and the npm package `rayopdf-$V.tgz` (the WebAssembly module). After the release is published,
+the five wheels go to PyPI by hand (`twine upload`; their description is
 `tools/package.py`'s README excerpt, whose links and images point at the tag); the npm package
 stays on the release only. The Release workflow's `container` job builds the image of
 `packaging/container/Dockerfile` from the Linux archive, checks that it prints its version and
@@ -175,15 +181,15 @@ python3 tools/dev.py --image rayopdf-ocr:2 run -- \
     sh -c 'rm -rf build/ocr-models && cp -r /opt/ocr/models build/ocr-models'
 rm -rf build/dist && mkdir -p build/dist
 gh release download v$V --dir build/dist --pattern "rayopdf-$V-*" --pattern "rayopdf-$V.tgz" \
-    --pattern "rayopdf-lib-$V-*"                             # the seven core packages
+    --pattern "rayopdf-lib-$V-*"                             # the sixteen core packages
 for part in ocr-linux ocr-windows ocr-scripts-linux ocr-scripts-windows; do
     python3 tools/package.py --only $part                    # SHA256SUMS: every archive in build/dist
 done
-(cd build/dist && sha256sum -c SHA256SUMS)                   # eleven packages
+(cd build/dist && sha256sum -c SHA256SUMS)                   # twenty packages
 gh release upload v$V build/dist/rayopdf-ocr-* build/dist/SHA256SUMS --clobber
 ```
 
-`SHA256SUMS` then lists all eleven packages, the seven core ones with the bytes the workflow built.
+`SHA256SUMS` then lists all twenty packages, the sixteen core ones with the bytes the workflow built.
 Publish the draft (`gh release edit v$V --draft=false`) once CI has passed on the tag and the
 version has its record under `docs/benchmarks/`.
 
