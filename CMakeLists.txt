@@ -62,12 +62,18 @@ endif()
 # multiply-add (GCC fuses across statements on aarch64; x86-64 has no FMA in its base set, so this
 # changes nothing there), and `char` signed (unsigned on Linux aarch64). Release builds on Linux
 # also have no unwind tables: nothing unwinds (a throw of libstdc++'s ends the process with or
-# without them), and the tables only take file space.
+# without them), and the tables only take file space. Release builds compile at -O2, the
+# WebAssembly module at -O3 and with link-time optimisation (performance.md, twenty-sixth round).
 function(rayopdf_flags target)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        set(level -O2)
+        if(EMSCRIPTEN)
+            set(level -O3)
+            target_compile_options(${target} PRIVATE $<$<CONFIG:Release>:-flto>)
+        endif()
         target_compile_options(${target} PRIVATE
             -Wall -Wextra -fno-exceptions -fno-rtti -fno-math-errno -ffp-contract=off -fsigned-char
-            $<$<CONFIG:Release>:-O2>
+            $<$<CONFIG:Release>:${level}>
             $<$<CONFIG:Release>:-ffunction-sections>
             $<$<CONFIG:Release>:-fdata-sections>)
         if(NOT WIN32)
@@ -183,14 +189,14 @@ endif()
 
 # The WebAssembly module of the npm package (packaging/npm/): rayopdf-core.mjs (an ES6 module
 # factory for browsers and Node.js) and rayopdf-core.wasm, the C ABI and every module, built
-# without SIMD (the scalar paths) on one thread.
+# without SIMD (the scalar paths) on one thread, at -O3 with link-time optimisation.
 if(TARGET rayopdf_api AND EMSCRIPTEN)
     add_executable(rayopdf_wasm $<TARGET_OBJECTS:rayopdf_c_obj>)
     target_link_libraries(rayopdf_wasm PRIVATE rayopdf_api)
     rayopdf_flags(rayopdf_wasm)
     set_target_properties(rayopdf_wasm PROPERTIES OUTPUT_NAME rayopdf-core SUFFIX ".mjs")
     target_link_options(rayopdf_wasm PRIVATE -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,node
-        -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB
+        -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=8MB $<$<CONFIG:Release>:-flto>
         -sEXPORTED_FUNCTIONS=_rayopdf_convert,_rayopdf_output_free,_rayopdf_version,_malloc,_free
         -sEXPORTED_RUNTIME_METHODS=FS,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8,HEAPU32)
 endif()
