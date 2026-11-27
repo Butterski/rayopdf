@@ -175,6 +175,25 @@ Source: [algorithms §6.10](../research/algorithms.md#610-tagged-pdf-as-the-prim
   odl TEDS 0.8819, below 0.884) and every span as pipe except body cells spanning rows in a table
   of two columns (validation arXiv 0.5835, olmOCR table tests 636 → 632, odl TEDS 0.8887): that
   exception fits one odl document, not a kind of table.
+- Rows found from the text (1.2): a title or section row is one cell across the table in HTML
+  and JSON and is written once in a pipe table, as before, so it flips no table to HTML (decided
+  2026-11-27: odl TEDS 0.9336 → 0.9366; Markdown unchanged on olmOCR, READoc-dev and synthetic; a
+  first form that wrote every full-width span once cost olmOCR table tests −1 of 1020). A line
+  filling the first cell alone, in upper case, between full rows indented under it, names a
+  section and is a row; one filling it after a hyphen joins the cell above, and so does a unit in
+  parentheses or a word in lower case set tighter than the rows or indented under the cell's text
+  (decided 2026-11-27: OmniParseBench-dev tables 0.5946 → 0.6122, headline 0.7093 → 0.7152,
+  validation tables 0.5530 → 0.5566; olmOCR table tests 666 → 669 of 1020; without the spacing
+  and indent tests READoc-dev2 arXiv table TEDS −0.0004 and OmniParseBench-val tables −0.0007:
+  LaTeX tables break a label into rows by hand on the row pitch, and READoc's ground truth keeps
+  them). Tried in 1.2 and not kept: a phrase guard in `SplitByText` (odl TEDS +0.0011,
+  OmniParseBench-dev tables +0.0015, below the 0.002 a step must gain); row-group labels spanning
+  their groups (OmniParseBench-dev tables −0.0176 as first built, labels set at the top of their
+  groups read as centred; narrowed +0.0008, READoc-dev arXiv table TEDS −0.0001); a header-only
+  lattice joined with the table under it (no development output changed); a lattice header's
+  first-column cell spanning down (0 on every gated metric in an output counterfactual); header
+  lines set to the middle of two bands (a ceiling of odl TEDS +0.0021 from one document; not
+  built).
 - Text is escaped only where it would otherwise change the structure. `*` and `_` are escaped only
   where CommonMark could read them as emphasis delimiters: a run that can open, or could close a
   `*` or `_` written raw before it in the block, or stands beside a non-ASCII character or at the
